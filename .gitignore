@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# Deep learning and project outputs
+logs/
+outputs/
+results/
+logs_v1/
+outputs_v1/
+results_v1/
+data/
+
+# Model checkpoints and weights
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+*.onnx
+*.pb
+
+# Large data and logs
+*.log
+*.csv
+*.json
+!agent_meta.json
+!memory_store.json
+!diagnostics.json
+!metrics.json
+
+# IDE and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
