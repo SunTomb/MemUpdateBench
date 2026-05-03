@@ -53,6 +53,13 @@ def test_imports(results: SmokeTestResult) -> None:
         "scripts.eval_evomemory",
         "scripts.analyze_ood_errors",
         "scripts.summarize_update_frequency",
+        "scripts.summarize_prompt_robustness",
+        "scripts.analyze_action_pathology",
+        "scripts.eval_mem0_baseline",
+        "scripts.analyze_answer_layer_mechanism",
+        "scripts.analyze_stale_intervention",
+        "scripts.summarize_heuristic_threshold",
+        "scripts.merge_evomemory_shards",
         "scripts.generate_constrained_sft",
         "scripts.train_constrained_sft",
     ]
@@ -152,6 +159,16 @@ def test_update_frequency_data(results: SmokeTestResult) -> None:
             assert data[0]["k_updates"] == 16
             assert data[0]["distractor_level"] == "same_name_multi_entity"
             results.ok("update_frequency_hard split generation")
+
+            prepare_evomemory(tmpdir, variant="update_frequency_expanded", seed=83, output_suffix="smoke")
+            path = Path(tmpdir) / "evomemory_update_frequency_expanded_k16_smoke_test.json"
+            assert path.exists()
+            data = json.loads(path.read_text(encoding="utf-8"))
+            assert data
+            assert data[0]["stress_type"] == "update_frequency_expanded"
+            assert data[0]["k_updates"] == 16
+            assert {item["attribute"] for item in data} >= {"timezone", "hobby", "instrument", "project"}
+            results.ok("update_frequency_expanded split generation")
     except Exception as exc:
         results.fail("update_frequency_hard split generation", exc)
 
@@ -162,7 +179,14 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         import numpy as np
         from mub.manager.memory_manager import MemoryManager
         from mub.memory.store import MemoryStore
-        from scripts.eval_evomemory import EpisodeEntityResolver, parse_event_slot, run_constrained_slot_crud
+        from scripts.eval_evomemory import (
+            EpisodeEntityResolver,
+            build_slot_answer_prompt,
+            filter_latest_per_slot,
+            parse_event_slot,
+            retrieved_trace,
+            run_constrained_slot_crud,
+        )
 
         resolver = EpisodeEntityResolver()
         parse_event_slot("User says: My manager Tom works at Tencent.", 0, resolver=resolver)
@@ -170,6 +194,10 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         assert slot["entity"] == "manager_tom"
         assert slot["attribute"] == "company"
         assert slot["value"] == "JD"
+        assert parse_event_slot("User says: my advisor Nora timezone is UTC+8.", 2)["attribute"] == "timezone"
+        assert parse_event_slot("User says: my teammate Leo hobby is climbing.", 3)["attribute"] == "hobby"
+        assert parse_event_slot("User says: my cousin Mia instrument is erhu.", 4)["attribute"] == "instrument"
+        assert parse_event_slot("User says: my neighbor Hank now works on project Atlas.", 5)["attribute"] == "project"
 
         parsed = MemoryManager.parse_constrained_slot_operation("UPDATE brother_chen.language = Kotlin NOOP")
         assert parsed["operation"] == "UPDATE"
@@ -185,7 +213,37 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         assert actions[1]["operation"] == "UPDATE"
         assert stats["requested"]["UPDATE"] == 1
         assert store.get_latest_by_slot("friend_alex", "location").slot["value"] == "Chengdu"
-        results.ok("parser and constrained CRUD")
+
+        prompt = build_slot_answer_prompt(
+            "Where does Alex live?",
+            "- User says: Alex relocated to Chengdu.",
+            {"entity": "friend_alex", "attribute": "location"},
+            "v2_ignore_distractors",
+        )
+        assert "Ignore all memories" in prompt
+        relevant = store.retrieve("Where does Alex live?", topk=5)
+        trace = retrieved_trace(
+            {"entity": "friend_alex", "attribute": "location", "answer": "Chengdu"},
+            relevant,
+            answer_topk=5,
+        )
+        assert trace["gold_value_in_retrieved"]
+        assert "retrieved_entries" in trace
+
+        raw_store = MemoryStore()
+        raw_store._encode = lambda text: np.zeros(raw_store.config.embedding_dim, dtype="float32")
+        first = raw_store.add(
+            "User says: My friend Alex lives in Shanghai.",
+            slot_meta={"entity": "friend_alex", "attribute": "location", "value": "Shanghai", "event_idx": 0},
+        )
+        second = raw_store.add(
+            "User says: Alex relocated to Chengdu.",
+            slot_meta={"entity": "friend_alex", "attribute": "location", "value": "Chengdu", "event_idx": 1},
+        )
+        filtered = filter_latest_per_slot([(first, 0.9), (second, 0.8)], raw_store, topk=5)
+        assert len(filtered) == 1
+        assert filtered[0][0].slot["value"] == "Chengdu"
+        results.ok("parser, constrained CRUD, answer traces, and latest-slot retrieval filter")
     except Exception as exc:
         results.fail("parser and constrained CRUD", exc)
 

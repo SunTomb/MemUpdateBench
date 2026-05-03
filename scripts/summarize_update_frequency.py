@@ -27,6 +27,7 @@ FIELDNAMES = [
     "final_memory_size_avg",
     "write_amplification_avg",
     "target_slot_write_count_avg",
+    "retrieval_policy",
     "lora_checkpoint",
 ]
 
@@ -36,12 +37,21 @@ K_ORDER = [1, 2, 4, 8, 16, 32]
 
 
 def parse_result_name(name: str) -> tuple[str, str, int | None]:
-    match = re.match(r"^(?P<prefix>.+)_k(?P<k>\d+)$", name)
+    match = re.match(r"^(?P<prefix>.+)_k(?P<k>\d+)(?:_.+)?$", name)
     if not match:
         return name, "unknown", None
 
     prefix = match.group("prefix")
     k_updates = int(match.group("k"))
+    mode_aliases = {
+        "direct": "slot_direct",
+        "prompt": "slot_prompt",
+    }
+    for suffix, normalized in mode_aliases.items():
+        marker = f"_{suffix}"
+        if prefix.endswith(marker):
+            method = prefix[: -len(marker)]
+            return method, normalized, k_updates
     for answer_mode in ("slot_direct", "slot_prompt", "short_prompt", "rag"):
         suffix = f"_{answer_mode}"
         if prefix.endswith(suffix):
@@ -87,6 +97,7 @@ def load_rows(result_roots: list[Path]) -> list[dict[str, Any]]:
                 "final_memory_size_avg": summary.get("final_memory_size_avg", ""),
                 "write_amplification_avg": summary.get("write_amplification_avg", ""),
                 "target_slot_write_count_avg": summary.get("target_slot_write_count_avg", ""),
+                "retrieval_policy": summary.get("retrieval_policy", "normal"),
                 "lora_checkpoint": summary.get("lora_checkpoint", ""),
             }
             rows.append(row)

@@ -30,6 +30,39 @@ def classify_error(result: dict) -> str:
     return "correct"
 
 
+def answer_has_multiple_values(result: dict) -> bool:
+    answer = norm(result.get("predicted", ""))
+    trace = result.get("answer_trace") or {}
+    values = {norm(value) for value in trace.get("stale_same_slot_values", []) if norm(value)}
+    gold = norm(result.get("gold_answer", ""))
+    if gold:
+        values.add(gold)
+    return sum(1 for value in values if value and value in answer) > 1
+
+
+def classify_answer_error(result: dict, state_error: str) -> str:
+    if result.get("em", 0.0) == 1.0 or result.get("value_em", False):
+        return "answer_correct"
+    if state_error != "correct":
+        return "state_wrong"
+    trace = result.get("answer_trace") or {}
+    predicted = norm(result.get("predicted", ""))
+    gold = norm(result.get("gold_answer", ""))
+    if predicted and gold and (predicted in gold or gold in predicted):
+        return "format_only_failure"
+    if answer_has_multiple_values(result):
+        return "multiple_values_returned"
+    if not trace:
+        return "state_correct_wrong_answer_no_trace"
+    if not trace.get("gold_value_in_retrieved", False):
+        return "state_correct_gold_not_retrieved"
+    if trace.get("same_name_distractor_in_retrieved", False):
+        return "distractor_contamination"
+    if trace.get("stale_same_slot_in_retrieved", False):
+        return "stale_contamination"
+    return "state_correct_gold_retrieved_wrong_answer"
+
+
 def summarize(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -45,6 +78,10 @@ def summarize(path: Path) -> dict:
     by_noop_level = defaultdict(Counter)
     action_ops = Counter()
     raw_outputs = Counter()
+    answer_errors = Counter()
+    answer_errors_by_attribute = defaultdict(Counter)
+    answer_errors_by_k_updates = defaultdict(Counter)
+    trace_presence = Counter()
     same_slot_entry_counts = []
     stale_same_slot_entry_counts = []
     gold_same_slot_entry_counts = []
@@ -69,6 +106,12 @@ def summarize(path: Path) -> dict:
         by_distractor_level[result.get("distractor_level", "unknown")][error] += 1
         by_noop_level[result.get("noop_level", "unknown")][error] += 1
 
+        answer_error = classify_answer_error(result, error)
+        answer_errors[answer_error] += 1
+        answer_errors_by_attribute[attribute][answer_error] += 1
+        answer_errors_by_k_updates[str(result.get("k_updates", "unknown"))][answer_error] += 1
+        trace_presence["with_trace" if result.get("answer_trace") else "without_trace"] += 1
+
         same_slot_entry_counts.append(result.get("same_slot_entry_count", 0))
         stale_same_slot_entry_counts.append(result.get("stale_same_slot_entry_count", 0))
         gold_same_slot_entry_counts.append(result.get("gold_same_slot_entry_count", 0))
@@ -82,19 +125,26 @@ def summarize(path: Path) -> dict:
             if raw:
                 raw_outputs[raw] += 1
 
-        if error != "correct":
+        if error != "correct" or answer_error != "answer_correct":
             examples.append({
                 "example_id": result.get("example_id"),
                 "question": result.get("question"),
                 "gold_answer": result.get("gold_answer"),
                 "predicted_answer": result.get("predicted"),
                 "error": error,
+                "answer_error": answer_error,
                 "stress_type": result.get("stress_type"),
                 "k_updates": result.get("k_updates"),
                 "distractor_level": result.get("distractor_level"),
                 "noop_level": result.get("noop_level"),
                 "gold_state": gold,
                 "predicted_state": pred,
+                "answer_trace_summary": {
+                    "gold_value_in_retrieved": (result.get("answer_trace") or {}).get("gold_value_in_retrieved"),
+                    "stale_same_slot_in_retrieved": (result.get("answer_trace") or {}).get("stale_same_slot_in_retrieved"),
+                    "same_name_distractor_in_retrieved": (result.get("answer_trace") or {}).get("same_name_distractor_in_retrieved"),
+                    "stale_same_slot_values": (result.get("answer_trace") or {}).get("stale_same_slot_values", []),
+                },
                 "slot_actions_tail": result.get("slot_actions", [])[-6:],
             })
 
@@ -114,6 +164,10 @@ def summarize(path: Path) -> dict:
         "target_slot_write_count_avg": avg(target_slot_write_counts),
         "final_memory_size_avg": avg(memory_sizes),
         "by_error": dict(by_error),
+        "answer_errors": dict(answer_errors),
+        "answer_errors_by_attribute": {k: dict(v) for k, v in sorted(answer_errors_by_attribute.items())},
+        "answer_errors_by_k_updates": {k: dict(v) for k, v in sorted(answer_errors_by_k_updates.items())},
+        "trace_presence": dict(trace_presence),
         "by_entity": {k: dict(v) for k, v in sorted(by_entity.items())},
         "by_attribute": {k: dict(v) for k, v in sorted(by_attribute.items())},
         "by_pair": {k: dict(v) for k, v in sorted(by_pair.items())},

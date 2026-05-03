@@ -160,8 +160,8 @@ def parse_event_slot(
 
     location_patterns = [
         r"(?:live|lives) in ([^.]+)",
-        r"(?:moving|moved|relocated) to ([^.]+)",
-        r"(?:moving|moved) in ([^.]+)",
+        r"(?:is based|relocated|moved|settled) in ([^.]+)",
+        r"(?:moving|moved|relocated|settled) to (?!project\b)([^.]+)",
     ]
     value = _first_pattern_value(text, location_patterns)
     if value:
@@ -169,6 +169,7 @@ def parse_event_slot(
 
     company_patterns = [
         r"(?:work|works) at ([^.]+)",
+        r"is employed at ([^.]+)",
         r"(?:switching|switched) to ([^.]+)",
         r"joined ([^.]+)",
     ]
@@ -188,10 +189,48 @@ def parse_event_slot(
     preference_patterns = [
         r"(?:prefer|prefers) ([^.]+)",
         r"started preferring ([^.]+)",
+        r"now prefers ([^.]+)",
     ]
     value = _first_pattern_value(text, preference_patterns)
     if value:
         return _slot(entity, "preference", value, event_idx)
+
+    timezone_patterns = [
+        r"timezone is ([^.]+)",
+        r"uses ([^.]+) time",
+        r"switched timezone to ([^.]+)",
+    ]
+    value = _first_pattern_value(text, timezone_patterns)
+    if value:
+        return _slot(entity, "timezone", value, event_idx)
+
+    hobby_patterns = [
+        r"hobby is ([^.]+)",
+        r"took up ([^.]+)",
+        r"now practices ([^.]+)",
+    ]
+    value = _first_pattern_value(text, hobby_patterns)
+    if value:
+        return _slot(entity, "hobby", value, event_idx)
+
+    instrument_patterns = [
+        r"instrument is ([^.]+)",
+        r"plays ([^.]+)",
+        r"switched instrument to ([^.]+)",
+    ]
+    value = _first_pattern_value(text, instrument_patterns)
+    if value:
+        return _slot(entity, "instrument", value, event_idx)
+
+    project_patterns = [
+        r"project is ([^.]+)",
+        r"works on project ([^.]+)",
+        r"moved to project ([^.]+)",
+        r"now works on project ([^.]+)",
+    ]
+    value = _first_pattern_value(text, project_patterns)
+    if value:
+        return _slot(entity, "project", value, event_idx)
 
     relation_patterns = [
         r"(?:is|became) my ([^.]+)",
@@ -228,7 +267,7 @@ class EpisodeEntityResolver:
     def resolve(self, text: str) -> str:
         lower = text.lower()
         dynamic = re.search(
-            r"\bmy (friend|sister|brother|mentor|coworker|manager) ([a-z]+)\b",
+            r"\bmy (friend|sister|brother|mentor|coworker|manager|advisor|teammate|neighbor|cousin) ([a-z]+)\b",
             lower,
         )
         if dynamic:
@@ -261,7 +300,7 @@ def _looks_like_company_context(lower: str, value: str) -> bool:
         "google", "microsoft", "alibaba", "bytedance", "huawei",
         "tencent", "baidu", "jd", "netease", "meituan", "pinduoduo",
     }
-    return any(marker in lower for marker in ["work", "works", "switching", "switched", "joined"]) and value.lower() in companies
+    return any(marker in lower for marker in ["work", "works", "employed", "switching", "switched", "joined"]) and value.lower() in companies
 
 
 def _looks_like_language_context(lower: str, value: str) -> bool:
@@ -285,6 +324,54 @@ def answer_contains_value(answer: str, value: str) -> bool:
     gold = normalize_value(value)
     pred = normalize_value(answer)
     return bool(gold) and gold in pred
+
+
+def memory_contains_value(entry, value: str) -> bool:
+    slot_value = ""
+    if entry.slot:
+        slot_value = str(entry.slot.get("value", ""))
+    return answer_contains_value(entry.content, value) or slot_value_match(slot_value, value)
+
+
+def retrieved_trace(example: dict, relevant: list[tuple], answer_topk: int) -> dict:
+    gold_value = str(example.get("answer", ""))
+    gold_entity = example.get("entity", "user")
+    gold_attribute = example.get("attribute", "unknown")
+    stale_same_slot_values = []
+    trace_entries = []
+    gold_in_retrieved = False
+    stale_in_retrieved = False
+    same_name_distractor_in_retrieved = False
+    for rank, (entry, score) in enumerate(relevant, start=1):
+        slot = entry.slot or {}
+        has_gold = memory_contains_value(entry, gold_value)
+        same_slot = slot.get("entity") == gold_entity and slot.get("attribute") == gold_attribute
+        slot_value = str(slot.get("value", ""))
+        stale_same_slot = bool(same_slot and slot_value and not slot_value_match(slot_value, gold_value))
+        if has_gold:
+            gold_in_retrieved = True
+        if stale_same_slot:
+            stale_in_retrieved = True
+            stale_same_slot_values.append(slot_value)
+        if slot and slot.get("entity") != gold_entity and gold_entity.split("_")[-1] in slot.get("entity", ""):
+            same_name_distractor_in_retrieved = True
+        trace_entries.append({
+            "rank": rank,
+            "id": entry.id,
+            "score": float(score),
+            "content": entry.content,
+            "slot": slot,
+            "has_gold_value": has_gold,
+            "stale_same_slot": stale_same_slot,
+        })
+    return {
+        "answer_topk": answer_topk,
+        "retrieved_entries": trace_entries,
+        "gold_value_in_retrieved": gold_in_retrieved,
+        "stale_same_slot_in_retrieved": stale_in_retrieved,
+        "same_name_distractor_in_retrieved": same_name_distractor_in_retrieved,
+        "stale_same_slot_values": stale_same_slot_values,
+    }
 
 
 def compute_state_metrics(example: dict, store: MemoryStore) -> dict:
@@ -531,6 +618,73 @@ def answer_from_slot(example: dict, store: MemoryStore) -> str:
     return ""
 
 
+def build_slot_answer_prompt(
+    question: str,
+    memory_context: str,
+    slot_prompt: dict,
+    variant: str,
+) -> str:
+    entity = slot_prompt.get("entity", "user")
+    attribute = slot_prompt.get("attribute", "unknown")
+    if variant == "v1_value_only":
+        instruction = (
+            "Return only the final value for the target slot. "
+            "Do not include a sentence, label, punctuation, or explanation."
+        )
+    elif variant == "v2_ignore_distractors":
+        instruction = (
+            "Return only the final value for the target slot. "
+            "Ignore all memories about other entities, other attributes, older values, and distractors. "
+            "Do not include a sentence, label, punctuation, or explanation."
+        )
+    else:
+        instruction = (
+            "Answer using only the final value for the specified target slot. "
+            "Do not return a sentence or explanation. Ignore facts about other entities or attributes."
+        )
+    return (
+        f"{instruction}\n\n"
+        f"Target entity: {entity}\n"
+        f"Target attribute: {attribute}\n\n"
+        f"Memory entries:\n{memory_context}\n\n"
+        f"Question: {question}\n\n"
+        "Final value only:"
+    )
+
+
+def filter_latest_per_slot(
+    relevant: list,
+    store: MemoryStore,
+    topk: int,
+) -> list:
+    latest: dict[tuple[str, str], tuple] = {}
+    unscoped = []
+    for entry, score in relevant:
+        slot = entry.slot or {}
+        key = (slot.get("entity"), slot.get("attribute"))
+        if not key[0] or not key[1]:
+            unscoped.append((entry, score))
+            continue
+        current = latest.get(key)
+        if current is None:
+            latest[key] = (entry, score)
+            continue
+        current_entry = current[0]
+        if (
+            slot.get("event_idx", -1),
+            entry.updated_at,
+            entry.created_at,
+        ) > (
+            (current_entry.slot or {}).get("event_idx", -1),
+            current_entry.updated_at,
+            current_entry.created_at,
+        ):
+            latest[key] = (entry, score)
+    filtered = list(latest.values()) + unscoped
+    filtered.sort(key=lambda item: item[1], reverse=True)
+    return filtered[:topk]
+
+
 def answer_question(
     model,
     tokenizer,
@@ -538,25 +692,24 @@ def answer_question(
     store: MemoryStore,
     short_answer: bool = False,
     slot_prompt: dict | None = None,
-) -> str:
+    slot_prompt_variant: str = "v0_current",
+    answer_topk: int = 5,
+    retrieval_policy: str = "normal",
+    return_trace: bool = False,
+) -> str | tuple[str, dict]:
     """Answer a question using retrieved memories."""
     from mub.utils import generate_text
 
-    relevant = store.retrieve(question, topk=5)
+    retrieval_topk = max(answer_topk, store.size()) if retrieval_policy == "latest_per_slot" else answer_topk
+    relevant = store.retrieve(question, topk=retrieval_topk)
+    if retrieval_policy == "latest_per_slot":
+        relevant = filter_latest_per_slot(relevant, store, answer_topk)
     memory_context = "\n".join([
         f"- {entry.content}" for entry, score in relevant
     ]) if relevant else "(no relevant memories)"
 
     if slot_prompt:
-        prompt = (
-            "Answer using only the final value for the specified target slot. "
-            "Do not return a sentence or explanation. Ignore facts about other entities or attributes.\n\n"
-            f"Target entity: {slot_prompt.get('entity', 'user')}\n"
-            f"Target attribute: {slot_prompt.get('attribute', 'unknown')}\n\n"
-            f"Memory entries:\n{memory_context}\n\n"
-            f"Question: {question}\n\n"
-            "Final value only:"
-        )
+        prompt = build_slot_answer_prompt(question, memory_context, slot_prompt, slot_prompt_variant)
     elif short_answer:
         prompt = (
             "Answer using only the final value, with no sentence or explanation. "
@@ -581,6 +734,13 @@ def answer_question(
 
     # Post-process: extract first line, strip
     answer = answer.strip().split("\n")[0].strip()
+    if return_trace:
+        return answer, {
+            "prompt": prompt,
+            "slot_prompt_variant": slot_prompt_variant if slot_prompt else "",
+            "retrieval_policy": retrieval_policy,
+            **retrieved_trace(slot_prompt or {}, relevant, answer_topk),
+        }
     return answer
 
 
@@ -627,7 +787,17 @@ def main(args):
                 raise FileNotFoundError(f"EvoMemory split not found: {data_path}")
     with open(data_path, "r", encoding="utf-8") as f:
         eval_data = json.load(f)
-    logger.info(f"Loaded {len(eval_data)} EvoMemory examples")
+    total_examples = len(eval_data)
+    start_idx = max(args.start_idx, 0)
+    end_idx = args.end_idx if args.end_idx is not None else total_examples
+    end_idx = min(end_idx, total_examples)
+    if start_idx >= end_idx:
+        raise ValueError(f"Invalid shard range: start_idx={start_idx}, end_idx={end_idx}, total={total_examples}")
+    eval_data = eval_data[start_idx:end_idx]
+    logger.info(
+        f"Loaded {len(eval_data)} EvoMemory examples "
+        f"from range [{start_idx}, {end_idx}) of {total_examples}"
+    )
 
     # ---- Evaluation loop ----
     results = []
@@ -636,6 +806,7 @@ def main(args):
     start_time = time.time()
 
     for i, example in enumerate(eval_data):
+        original_example_id = start_idx + i
         events = example["events"]
         question = example["question"]
         gold_answer = example["answer"]
@@ -680,17 +851,27 @@ def main(args):
             raise ValueError(f"Unknown mode: {args.mode}")
 
         # Answer the question
+        answer_trace = None
         if args.answer_mode == "slot_direct":
             predicted = answer_from_slot(example, store)
         else:
-            predicted = answer_question(
+            answer_output = answer_question(
                 model, tokenizer, question, store,
                 short_answer=args.answer_mode == "short_prompt",
                 slot_prompt={
                     "entity": example.get("entity", "user"),
                     "attribute": example.get("attribute", "unknown"),
+                    "answer": gold_answer,
                 } if args.answer_mode == "slot_prompt" else None,
+                slot_prompt_variant=args.slot_prompt_variant,
+                answer_topk=args.answer_topk,
+                retrieval_policy=args.retrieval_policy,
+                return_trace=args.save_answer_traces,
             )
+            if args.save_answer_traces:
+                predicted, answer_trace = answer_output
+            else:
+                predicted = answer_output
 
         # Compute metrics
         f1 = compute_f1(predicted, gold_answer)
@@ -708,7 +889,8 @@ def main(args):
         )
         write_amplification = store.size() / max(len(events), 1)
         result = {
-            "example_id": i,
+            "example_id": original_example_id,
+            "shard_local_example_id": i,
             "question": question,
             "gold_answer": gold_answer,
             "predicted": predicted,
@@ -731,6 +913,17 @@ def main(args):
             "slot_actions": slot_actions,
             **state_metrics,
         }
+        if answer_trace is not None:
+            answer_trace.update({
+                "predicted_answer": predicted,
+                "gold_answer": gold_answer,
+                "em": em,
+                "f1": f1,
+                "value_em": slot_value_match(predicted, gold_answer),
+                "answer_value_present": answer_value_present,
+                "state_value_em": state_metrics.get("state_value_em", False),
+            })
+            result["answer_trace"] = answer_trace
         results.append(result)
 
         if (i + 1) % 10 == 0 or (i + 1) == len(eval_data):
@@ -789,6 +982,9 @@ def main(args):
         "mode": args.mode,
         "data_file": data_path,
         "num_examples": len(eval_data),
+        "total_examples": total_examples,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
         "avg_f1": avg_f1,
         "avg_em": avg_em,
         "value_em": float(np.mean(value_em)) if value_em else 0.0,
@@ -807,6 +1003,10 @@ def main(args):
         "stale_present_rate": float(np.mean(stale_present)) if stale_present else 0.0,
         "decision_temperature": args.decision_temperature,
         "answer_mode": args.answer_mode,
+        "slot_prompt_variant": args.slot_prompt_variant,
+        "answer_topk": args.answer_topk,
+        "retrieval_policy": args.retrieval_policy,
+        "save_answer_traces": args.save_answer_traces,
         "elapsed_seconds": elapsed,
         "lora_checkpoint": args.lora_checkpoint,
     }
@@ -856,6 +1056,10 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", default="data")
     parser.add_argument("--data_file", default="",
                         help="Explicit EvoMemory JSON file; overrides --data_dir/--split")
+    parser.add_argument("--start_idx", type=int, default=0,
+                        help="Inclusive example start index for sharded evaluation")
+    parser.add_argument("--end_idx", type=int, default=None,
+                        help="Exclusive example end index for sharded evaluation")
     parser.add_argument("--split", default="test", choices=["train", "dev", "test"],
                         help="EvoMemory split to evaluate")
     parser.add_argument("--no_qlora", action="store_true")
@@ -868,5 +1072,14 @@ if __name__ == "__main__":
                         help="Temperature for learned CRUD decisions during eval")
     parser.add_argument("--answer_mode", default="rag", choices=["rag", "short_prompt", "slot_prompt", "slot_direct"],
                         help="Answering mode: normal RAG, short prompt, slot-conditioned prompt, or direct slot value")
+    parser.add_argument("--slot_prompt_variant", default="v0_current",
+                        choices=["v0_current", "v1_value_only", "v2_ignore_distractors"],
+                        help="Prompt template variant for slot_prompt answer mode")
+    parser.add_argument("--answer_topk", type=int, default=5,
+                        help="Number of retrieved memories used for prompted answering")
+    parser.add_argument("--retrieval_policy", default="normal", choices=["normal", "latest_per_slot"],
+                        help="Answer-time retrieval policy for prompted answering")
+    parser.add_argument("--save_answer_traces", action="store_true",
+                        help="Save retrieved-memory and answer-layer traces per example")
     args = parser.parse_args()
     main(args)

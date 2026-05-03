@@ -354,6 +354,10 @@ def prepare_evomemory(output_dir: str, variant: str = "clean", seed: int | None 
         return prepare_update_frequency_evomemory(output_dir, seed=seed, output_suffix=output_suffix)
     if variant == "update_frequency_hard":
         return prepare_update_frequency_hard_evomemory(output_dir, seed=seed, output_suffix=output_suffix)
+    if variant == "update_frequency_expanded":
+        return prepare_update_frequency_expanded_evomemory(output_dir, seed=seed, output_suffix=output_suffix)
+    if variant == "update_frequency_expanded_k32":
+        return prepare_update_frequency_expanded_evomemory(output_dir, seed=seed, output_suffix=output_suffix, include_k32=True)
 
     output_train = os.path.join(output_dir, _suffix_name("evomemory", "train", output_suffix))
     output_dev = os.path.join(output_dir, _suffix_name("evomemory", "dev", output_suffix))
@@ -1329,6 +1333,177 @@ def prepare_update_frequency_hard_evomemory(output_dir: str, seed: int | None = 
     )
 
 
+def prepare_update_frequency_expanded_evomemory(
+    output_dir: str,
+    seed: int | None = None,
+    output_suffix: str = "",
+    include_k32: bool = False,
+):
+    """Prepare an opt-in expanded explicit same-slot update split."""
+    import random
+    random.seed(83 if seed is None else seed)
+
+    relations = ["friend", "sister", "brother", "mentor", "coworker", "manager", "advisor", "teammate", "neighbor", "cousin"]
+    names = [
+        "Alex", "Bob", "Lily", "Chen", "Alice", "Tom", "Emma", "Jack", "Sophia", "David",
+        "Wang", "Li", "Nora", "Owen", "Mia", "Leo", "Grace", "Hank", "Ivy", "Noah",
+    ]
+    values = {
+        "location": ["Wuxi", "Ningbo", "Kunming", "Changsha", "Fuzhou", "Dalian", "Qingdao", "Suzhou", "Xiamen", "Wuhan", "Nanjing", "Hefei", "Jinan", "Harbin", "Lanzhou", "Guiyang", "Shenzhen", "Chengdu", "Tianjin", "Shenyang"],
+        "company": ["Tencent", "Baidu", "JD", "NetEase", "Meituan", "Pinduoduo", "Alibaba", "ByteDance", "Huawei", "Microsoft", "Google"],
+        "preference": ["cold brew", "oolong tea", "jasmine tea", "green tea", "espresso", "matcha", "black coffee", "tea", "latte", "mocha", "sparkling water", "lemon tea", "herbal tea", "americano", "milk tea", "cocoa"],
+        "language": ["Kotlin", "Scala", "Python", "Go", "Rust", "TypeScript", "Java"],
+        "timezone": ["UTC+1", "UTC+2", "UTC+3", "UTC+5", "UTC+8", "UTC+9", "UTC-5", "UTC-8"],
+        "hobby": ["climbing", "painting", "cycling", "photography", "gardening", "baking", "running", "swimming", "calligraphy", "chess"],
+        "instrument": ["piano", "violin", "guitar", "cello", "flute", "drums", "erhu", "saxophone"],
+        "project": ["Atlas", "Beacon", "Comet", "Delta", "Echo", "Falcon", "Galaxy", "Harbor", "Ion", "Jade"],
+    }
+    k_values = [1, 2, 4, 8, 16]
+    if include_k32:
+        k_values.append(32)
+    attrs = ["location", "company", "preference", "language", "timezone", "hobby", "instrument", "project"]
+
+    def key(relation: str, name: str) -> str:
+        return f"{relation}_{name.lower()}"
+
+    def update_event(name: str, attr: str, value: str, first: bool, surface: str, qualified: bool = True) -> str:
+        subject = surface if first or qualified else name
+        variants = {
+            "location": (["lives in", "is based in"], ["relocated to", "moved to", "settled in"]),
+            "company": (["works at", "is employed at"], ["joined", "switched to"]),
+            "preference": (["prefers"], ["started preferring", "now prefers"]),
+            "language": (["programming language is"], ["switched to", "now codes in"]),
+            "timezone": (["timezone is"], ["switched timezone to", "uses"]),
+            "hobby": (["hobby is"], ["took up", "now practices"]),
+            "instrument": (["instrument is", "plays"], ["switched instrument to", "now plays"]),
+            "project": (["project is", "works on project"], ["now works on project"]),
+        }
+        first_verbs, update_verbs = variants[attr]
+        verb = random.choice(first_verbs if first else update_verbs)
+        if attr == "timezone" and verb == "uses":
+            return f"User says: {subject} uses {value} time."
+        return f"User says: {subject} {verb} {value}."
+
+    def noop_event(surface: str, attr: str, value: str, i: int) -> str:
+        templates = {
+            "location": [
+                f"User says: {surface} is considering a trip to {value}.",
+                f"User says: {surface} read a travel guide about {value}.",
+            ],
+            "company": [
+                f"User says: {surface} interviewed with {value} but has not changed jobs.",
+                f"User says: {surface} read news about {value}.",
+            ],
+            "preference": [
+                f"User says: {surface} tried {value} once at a cafe.",
+                f"User says: {surface} bought {value} for a guest.",
+            ],
+            "language": [
+                f"User says: {surface} discussed {value} in a workshop.",
+                f"User says: {surface} read a tutorial about {value}.",
+            ],
+            "timezone": [
+                f"User says: {surface} scheduled a call with someone in {value}.",
+                f"User says: {surface} checked a clock labeled {value}.",
+            ],
+            "hobby": [
+                f"User says: {surface} watched a video about {value}.",
+                f"User says: {surface} bought a gift related to {value}.",
+            ],
+            "instrument": [
+                f"User says: {surface} attended a concert featuring {value}.",
+                f"User says: {surface} repaired a case for a {value}.",
+            ],
+            "project": [
+                f"User says: {surface} read a memo that mentioned {value}.",
+                f"User says: {surface} attended a review where {value} was discussed.",
+            ],
+        }
+        return templates[attr][i % len(templates[attr])]
+
+    def question_for(surface: str, attr: str) -> str:
+        questions = {
+            "location": f"Where does {surface} currently live?",
+            "company": f"Which company does {surface} currently work for?",
+            "preference": f"What drink does {surface} currently prefer?",
+            "language": f"What programming language does {surface} currently prefer?",
+            "timezone": f"What timezone does {surface} currently use?",
+            "hobby": f"What hobby does {surface} currently have?",
+            "instrument": f"What instrument does {surface} currently play?",
+            "project": f"Which project does {surface} currently work on?",
+        }
+        return questions[attr]
+
+    def make_episode(i: int, split: str, k_updates: int) -> dict:
+        attr = attrs[(i + len(split)) % len(attrs)]
+        target_relation = relations[(i + k_updates) % len(relations)]
+        distractor_relation = relations[(i + k_updates + 5) % len(relations)]
+        if distractor_relation == target_relation:
+            distractor_relation = relations[(relations.index(target_relation) + 1) % len(relations)]
+        name = names[(i * 5 + k_updates) % len(names)]
+        entity = key(target_relation, name)
+        target_surface = f"my {target_relation} {name}"
+        distractor_surface = f"my {distractor_relation} {name}"
+        pool = values[attr]
+        target_values = [pool[(i + step * 3 + k_updates) % len(pool)] for step in range(k_updates)]
+        distractor_values = [pool[(i + step * 5 + 2) % len(pool)] for step in range(max(k_updates, 3))]
+
+        events = []
+        latest_event_idx = -1
+        for update_idx, value in enumerate(target_values):
+            if update_idx > 0:
+                d_value = distractor_values[update_idx % len(distractor_values)]
+                events.append(update_event(name, attr, d_value, update_idx == 1, distractor_surface, qualified=True))
+            near_value = pool[(i + update_idx * 7 + 1) % len(pool)]
+            events.append(noop_event(target_surface if update_idx % 2 == 0 else distractor_surface, attr, near_value, update_idx))
+            events.append(update_event(name, attr, value, update_idx == 0, target_surface, qualified=True))
+            latest_event_idx = len(events) - 1
+            if update_idx % 4 == 3:
+                events.append("User says: The conversation continued with no memory fact changes.")
+
+        return {
+            "events": events,
+            "question": question_for(target_surface, attr),
+            "answer": target_values[-1],
+            "entity": entity,
+            "attribute": attr,
+            "value": target_values[-1],
+            "latest_event_idx": latest_event_idx,
+            "category": "update_frequency_expanded_evolution_tracking",
+            "stress_type": "update_frequency_expanded",
+            "k_updates": k_updates,
+            "distractor_level": "same_name_multi_entity",
+            "noop_level": "semantic_near_miss",
+            "num_events": len(events),
+            "num_target_updates": k_updates,
+            "num_updates": len(events),
+        }
+
+    def make_split(split: str, per_k: int) -> list[dict]:
+        data = []
+        for k in k_values:
+            for i in range(per_k):
+                data.append(make_episode(i, split, k))
+        random.shuffle(data)
+        return data
+
+    train_data = make_split("train", 500)
+    dev_data = make_split("dev", 200)
+    test_data = make_split("test", 200)
+
+    for k in k_values:
+        _save_json([item for item in dev_data if item["k_updates"] == k], os.path.join(output_dir, _suffix_name(f"evomemory_update_frequency_expanded_k{k}", "dev", output_suffix)))
+        _save_json([item for item in test_data if item["k_updates"] == k], os.path.join(output_dir, _suffix_name(f"evomemory_update_frequency_expanded_k{k}", "test", output_suffix)))
+
+    _save_json(train_data, os.path.join(output_dir, _suffix_name("evomemory_update_frequency_expanded", "train", output_suffix)))
+    _save_json(dev_data, os.path.join(output_dir, _suffix_name("evomemory_update_frequency_expanded", "dev", output_suffix)))
+    _save_json(test_data, os.path.join(output_dir, _suffix_name("evomemory_update_frequency_expanded", "test", output_suffix)))
+    logger.info(
+        f"Expanded update-frequency Evo-Memory: {len(train_data)} train, {len(dev_data)} dev, "
+        f"{len(test_data)} test examples saved across k={k_values} and attrs={attrs}"
+    )
+
+
 
 def _infer_evomemory_attribute(question: str) -> str:
     q = question.lower()
@@ -1434,7 +1609,7 @@ if __name__ == "__main__":
                         choices=["locomo", "longmemeval", "alfworld", "evomemory"],
                         help="Specific dataset to prepare (default: all)")
     parser.add_argument("--evomemory_variant", default="clean",
-                        choices=["clean", "advanced", "hard", "ood", "schema_random", "long_horizon", "update_frequency", "update_frequency_hard"],
+                        choices=["clean", "advanced", "hard", "ood", "schema_random", "long_horizon", "update_frequency", "update_frequency_hard", "update_frequency_expanded", "update_frequency_expanded_k32"],
                         help="EvoMemory variant to prepare")
     parser.add_argument("--seed", type=int, default=None,
                         help="Optional random seed for EvoMemory variant generation")

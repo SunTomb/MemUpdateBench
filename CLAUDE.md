@@ -4,7 +4,9 @@ This file gives Claude Code the project context and operating rules needed to co
 
 ## Project Overview
 
-MemUpdateBench is the clean project extracted from G-MSRA P6.x. It is no longer a broad RL memory-manager project. The main paper direction is a benchmark/diagnostic study of repeated same-slot updates in external memory systems.
+MemUpdateBench is the clean project extracted from G-MSRA P6.x. It is no longer a broad RL memory-manager project. The paper direction should now be a controlled diagnostic study of repeated same-slot updates in external memory systems, not a broad general-purpose memory benchmark.
+
+A strict simulated reviewer review in `docs/critical_review.md` changed the project priorities. The current work is useful infrastructure and a plausible workshop-level diagnostic, but it is not yet strong enough for an ACL/EMNLP/NeurIPS/ICLR main-track benchmark paper. Future work should prioritize evidence that addresses external validity, diagnostic depth, related work positioning, and data diversity rather than continuing prose-only packaging.
 
 Core question:
 
@@ -41,16 +43,17 @@ Most analysis should distinguish:
 - wrong attribute parsing,
 - answer-layer retrieval/prompt failures.
 
-## Current Thesis
+## Current Thesis and Reviewer-Risk Position
 
-Repeated same-slot update frequency is the main paper axis.
+Repeated same-slot update frequency remains the main benchmark axis, but the paper claim must be narrower and sharper than "append more causes stale entries, compact more can lose updates." That framing is too close to a truism unless backed by external systems, method-family sensitivity curves, and deeper failure-mechanism analysis.
 
 The strongest P6.3 result:
 
 - append-only methods can keep final value recoverable under oracle `slot_direct`,
 - but they accumulate stale same-slot entries,
 - under `slot_prompt`, stale burden causes severe answer collapse,
-- learned compact managers reduce stale burden but can miss final updates or remain incompletely compact.
+- learned compact managers reduce stale burden but can miss final updates or remain incompletely compact,
+- even perfect clean state does not guarantee prompted answer correctness, which exposes a distinct retrieval/answer-layer failure mode.
 
 At k=16 on P6.3 hard:
 
@@ -61,7 +64,9 @@ At k=16 on P6.3 hard:
 | heuristic_crud | 1.00 | 0.10 / 0.13 | 7.44 | 26.73 |
 | long25 | 0.91 | 0.48 / 0.53 | 1.13 | 9.43 |
 
-Conclusion: this is a tradeoff curve, not a simple method-win story.
+P6.5 prompt-robustness diagnostics show that mild prompt variants do not remove the high-k ordering: Constrained CRUD remains around 0.68-0.69 EM at k=16, Raw append remains around 0.09-0.11 EM, and Long25 remains between them. Answer traces show different mechanisms: Raw append often fails because gold values are not retrieved under stale burden; Constrained CRUD still has gold-not-retrieved and gold-retrieved-wrong-answer cases despite zero stale same-slot burden; Long25 mixes state errors with stale/distractor answer-context failures.
+
+Current honest positioning: MemUpdateBench is a promising controlled diagnostic benchmark, but it needs external baselines, larger/more diverse data, related work, and deeper mechanism experiments before being positioned as a strong Findings/main-track paper.
 
 ## Important Local Files
 
@@ -81,7 +86,9 @@ Core scripts:
 scripts/prepare_data.py
 scripts/eval_evomemory.py
 scripts/analyze_ood_errors.py
+scripts/analyze_action_pathology.py
 scripts/summarize_update_frequency.py
+scripts/summarize_prompt_robustness.py
 scripts/smoke_test.py
 scripts/generate_constrained_sft.py
 scripts/train_constrained_sft.py
@@ -110,6 +117,10 @@ Main results:
 ```text
 results/update_frequency_p63/
 results/update_frequency_p63_summary/
+results/p65_prompt_robustness/
+results/p65_prompt_robustness_summary/
+results/p65_diagnostics/
+results/p65_stability/
 ```
 
 Historical context:
@@ -130,7 +141,7 @@ docs/MIGRATION_PLAN.md
 Compile and smoke test:
 
 ```bash
-python -m py_compile scripts/prepare_data.py scripts/eval_evomemory.py scripts/analyze_ood_errors.py scripts/summarize_update_frequency.py scripts/generate_constrained_sft.py scripts/train_constrained_sft.py scripts/smoke_test.py
+python -m py_compile scripts/prepare_data.py scripts/eval_evomemory.py scripts/analyze_ood_errors.py scripts/analyze_action_pathology.py scripts/summarize_update_frequency.py scripts/summarize_prompt_robustness.py scripts/generate_constrained_sft.py scripts/train_constrained_sft.py scripts/smoke_test.py
 python scripts/smoke_test.py
 ```
 
@@ -269,7 +280,7 @@ For any new split:
 
 Avoid adding comments unless they explain a non-obvious invariant.
 
-Do not commit unless the user explicitly asks.
+Commits are allowed when they are useful for preserving a coherent completed unit of work. Before committing, make sure the staged diff is intentional, validation has been run or the reason for skipping validation is recorded, and the commit message accurately describes the change.
 
 ## Workflow Documentation
 
@@ -289,11 +300,21 @@ Workflow entries should include:
 
 ## Recommended Next Work
 
-Start P6.5 in MemUpdateBench:
+The project should now respond directly to the strict simulated reviewer concerns in `docs/critical_review.md`. Treat that review as the current threat model: without external baselines, larger/more diverse data, related work, and deeper mechanism analysis, the project is likely workshop-level rather than a strong Findings/main-track submission.
 
-1. turn `results/update_frequency_p63_summary/` into paper-ready figure/table assets,
-2. draft the experimental narrative around the tradeoff curve,
-3. optionally do isolated Mem0 feasibility in a separate environment,
-4. do not start repair training until external-baseline needs and paper presentation are settled.
+Default priority order:
 
-Current k=32 decision: do not add k=32 yet; k=16 already shows decisive separation.
+1. **External baseline feasibility and evaluation.** First try Mem0 because it is likely the lowest-cost real external memory SDK. Then investigate Memory-R1 if code/checkpoints are actually obtainable and runnable. MemGPT/Letta can be probed if they expose enough state. External baselines must be isolated from the main environment and must expose enough memory state to compute stale same-slot burden, not just final answer EM.
+2. **Answer-layer failure analysis.** Deepen the Constrained CRUD k=16 finding where state accuracy is 1.00 but slot-prompt EM is only about 0.70. Run oracle-retrieval, retrieval top-k/context-length sensitivity, prompt variants, and case studies. Treat clean-state answer failure as a central research question, not a footnote.
+3. **Mechanism experiments for stale burden.** Add interventions such as raw_add stale-entry deletion or stale filtering to measure how EM recovers as stale same-slot burden is removed. This should distinguish correlation from mechanism and test whether there is a tipping point.
+4. **Same-method-family tradeoff curves.** Run heuristic CRUD threshold sweeps, e.g. cosine thresholds 0.70/0.80/0.85/0.90/0.95, so the paper has a genuine parameterized tradeoff curve rather than only scatter points from different methods.
+5. **Data scale and diversity expansion.** Add a separate opt-in split with more examples, more attributes, and more paraphrased explicit update templates. Preserve exact `(entity, attribute)` slot semantics. Do not mix implicit updates into the main split until their gold semantics are precisely defined.
+6. **Related work and positioning.** Add a serious related-work section covering AMemGym, Ledger-QA/UMA, Memory-R1, Mem0, MemGPT/Letta, LoCoMo/LongMemEval, dialogue state tracking, and knowledge editing. Position MemUpdateBench narrowly as repeated same-slot update diagnostics, not as a broad memory benchmark.
+7. **Long25 stability and repair.** Finish current seed stability checks. Consider repair training only if diagnostics point to a specific failure target such as operation selection or NOOP discrimination. Do not frame repair as the main contribution unless it is validated across the four benchmark axes.
+8. **k=32 stress.** Add k=32 only after external baseline feasibility and core diagnostics are under control, or when it directly tests extrapolation/saturation behavior requested by reviewers/advisors.
+
+Experimental expansion is allowed and encouraged when it addresses reviewer-risk evidence. For any new split or method, keep exact `(entity, attribute)` slot semantics, run deterministic oracle sanity first when applicable, analyze errors before interpreting learned-manager results, and document commands/metrics/conclusions in `WORKFLOW.md`.
+
+Avoid spending major time on prose-only polishing until the evidence gaps above are reduced. Manuscript edits should follow new results: external validity first, mechanism depth second, narrative polish third.
+
+Commits are allowed for coherent completed units after checking the diff and recording validation status.
