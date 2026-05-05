@@ -78,22 +78,36 @@ Interpretation:
 
 ### 3. Stale-burden intervention analysis
 
-The project added intervention-style analysis for Raw append.
+The project first added intervention-style analysis for Raw append, then added the stronger second-stage retrieval rewrite requested by the second-round review.
 
 Key artifacts:
 
 ```text
 results/p68_stale_intervention/
+results/p70_stale_filter_intervention/
+results/p70_stale_filter_intervention_summary/
 paper/p68_stale_intervention_note.md
+paper/p70_stale_filter_intervention_note.md
+paper/p70_stale_filter_allk_note.md
 scripts/analyze_stale_intervention.py
+scripts/summarize_stale_filter_intervention.py
 ```
 
-Main finding:
+Main findings:
 
 - Raw append top-k5 to gold-only context improves EM by +0.78.
 - Increasing retrieval from top-k5 to top-k10 increases gold retrieval but decreases EM, because stale entries remain present.
+- Under the new P7.0 slot-aware latest-per-slot answer-time retrieval rewrite, raw_add k=16 dev improves from EM/F1 0.14/0.17 to 0.69/0.70 while memory size stays 52.00 and stale same-slot burden stays 14.25.
+- The filtered all-k dev sweep is now complete: EM/F1 is 1.00/1.00 at k=1, 0.91/0.93 at k=2, 0.85/0.86 at k=4, 0.99/1.00 at k=8, and 0.69/0.70 at k=16.
 
-This supports a stale-competition mechanism rather than a simple “retrieve more memories” fix.
+Interpretation:
+
+- The original P6.8 result showed that simply retrieving more context does not solve stale competition.
+- The new P7.0 result shows that exposing only the latest entry per slot at answer time recovers performance dramatically.
+- However, this should be presented carefully: `latest_per_slot` retrieves from the full store before slot deduplication, so it is a slot-aware answer-time retrieval rewrite rather than a pure top-k stale filter.
+- The mechanism story is therefore stronger than before, but the paper should not overclaim exact causal isolation.
+
+This supports a stale-competition mechanism more strongly than the earlier correlation-only story while remaining honest about what the intervention actually changes.
 
 ### 4. Same-method-family tradeoff curve
 
@@ -320,8 +334,17 @@ The project has improved substantially relative to the critical review:
 5. It has k=32 extrapolation as appendix evidence.
 6. It has a real Mem0 external-system probe, although the current result is negative and preliminary.
 7. It has stronger related-work positioning.
+8. It now has a much stronger answer-time intervention result for Raw append: the completed all-k latest-per-slot retrieval rewrite shows that much of the collapse is due to stale/non-final slot exposure, not just generic answer-model weakness.
 
-The remaining weakness is not that the project has no response to the review. The remaining weakness is that the external baseline result is still a small dev20 probe and is currently very poor. The paper must decide how to present that result without overclaiming.
+The remaining weakness is no longer that the mechanism story is shallow. The remaining weaknesses are:
+
+- the external baseline result is still limited: the completed Qwen2.5-VL Mem0 dev20 probe cannot be used as a fair main-table external row, and the attempted Qwen2.5-7B-Instruct text-backend rerun is blocked by Mem0 structured-extraction parse failures before dev3 completes;
+- Long25 provenance has to be presented carefully because the original P6.3 checkpoint family and later reseeded P6.5 family are not the same run;
+- the new slot-aware retrieval rewrite is highly informative, but it is not a pure top-k stale filter and should be described honestly.
+
+The paper must decide how to present these results without overclaiming.
+
+A practical implication is that the stale-burden reviewer concern is now much better answered than before, while the external-baseline fairness concern remains the main unresolved paper-level weakness.
 
 ## Questions for advisor
 
@@ -354,13 +377,13 @@ My current recommendation is option 2 or 3, unless the advisor wants the paper t
 
 ### 3. Is dev20 enough for the Mem0 negative result?
 
-Because dev20 is already 0 EM and inspection shows stale/wrong values, running dev100 may mostly confirm the same problem. But reviewers may distrust a 20-example external row.
+For the completed Qwen2.5-VL Mem0 probe, dev20 is already 0 EM and inspection shows stale/wrong values, so running dev100 may mostly confirm the same problem. For the attempted fairer Qwen2.5-7B-Instruct text-backend rerun, scaling is not currently possible because Mem0's structured extraction parser fails before even dev3 completes.
 
 Should we:
 
-- run dev100 despite expected low value;
-- keep dev20 as a feasibility/diagnostic result only;
-- or first improve the Mem0 extraction/update prompt before scaling?
+- keep the Qwen2.5-VL dev20 result as a feasibility/diagnostic result only;
+- first improve the Mem0 extraction/update prompt or server JSON behavior before scaling;
+- or drop Mem0 from empirical tables and discuss it only as an unresolved external-validity target?
 
 ### 4. Should k=32 appear in the main paper or appendix?
 
@@ -403,8 +426,8 @@ My current recommendation is to aim for a strong Findings-style empirical diagno
 
 Depending on the answers above:
 
-1. If Mem0 should be reported: run dev100 and write an appendix table.
-2. If Mem0 should be improved: modify extraction/update prompts and re-run dev20 before scaling.
+1. If Mem0 should be reported: keep the completed Qwen2.5-VL dev20 result in appendix/qualitative form only.
+2. If Mem0 should become a fairer empirical row: first fix extraction/update prompts or server JSON behavior, then re-run k=16 dev20 before any dev100/test200 scaling.
 3. If expanded test confirmation is required: run expanded all-k test slot-prompt on Tang/Sui.
 4. If repair is desired: design a small targeted repair dataset from action-pathology findings.
-5. If paper writing should start: update the manuscript around the new P6.8/P6.9 evidence and move k=32/Mem0 details to appendix.
+5. If paper writing should start: update the manuscript around the new P6.8/P6.9/P7.0 evidence and move k=32/Mem0 details to appendix.

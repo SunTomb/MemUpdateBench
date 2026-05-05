@@ -183,6 +183,7 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
             EpisodeEntityResolver,
             build_slot_answer_prompt,
             filter_latest_per_slot,
+            format_memory_context,
             parse_event_slot,
             retrieved_trace,
             run_constrained_slot_crud,
@@ -243,7 +244,38 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         filtered = filter_latest_per_slot([(first, 0.9), (second, 0.8)], raw_store, topk=5)
         assert len(filtered) == 1
         assert filtered[0][0].slot["value"] == "Chengdu"
-        results.ok("parser, constrained CRUD, answer traces, and latest-slot retrieval filter")
+
+        context, ordered = format_memory_context(
+            [(first, 0.9), (second, 0.8)],
+            {"entity": "friend_alex", "attribute": "location"},
+            context_order="current_first",
+            context_annotation="latest_outdated_label",
+        )
+        assert ordered[0][0].slot["value"] == "Chengdu"
+        assert "[latest]" in context
+        assert "[outdated]" in context
+
+        import mub.utils as mub_utils
+        from scripts.eval_evomemory import answer_question
+        original_generate_text = mub_utils.generate_text
+        mub_utils.generate_text = lambda model, tokenizer, prompt, **kwargs: "Chengdu"
+        try:
+            answer, policy_trace = answer_question(
+                None,
+                None,
+                "Where does Alex live?",
+                raw_store,
+                slot_prompt={"entity": "friend_alex", "attribute": "location", "answer": "Chengdu"},
+                answer_topk=1,
+                retrieval_policy="latest_per_slot",
+                return_trace=True,
+            )
+        finally:
+            mub_utils.generate_text = original_generate_text
+        assert answer == "Chengdu"
+        assert policy_trace["retrieval_policy"] == "latest_per_slot"
+        assert policy_trace["retrieved_entries"][0]["slot"]["value"] == "Chengdu"
+        results.ok("parser, constrained CRUD, answer traces, and latest-slot retrieval policy")
     except Exception as exc:
         results.fail("parser and constrained CRUD", exc)
 

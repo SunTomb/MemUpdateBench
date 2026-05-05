@@ -2,7 +2,7 @@
 
 ## Motivation
 
-`docs/critical_review_v2.md` argues that the stale-burden mechanism still lacks the most direct causal intervention: on `raw_add`, remove stale same-slot entries from the answer-time retrieval context while leaving the stored memory unchanged. This note records that intervention.
+`docs/critical_review_v2.md` argues that the stale-burden mechanism still lacks a direct retrieval-time intervention. This note records a slot-aware answer-time retrieval intervention for `raw_add`: leave the stored memory unchanged, but expose only the latest entry per `(entity, attribute)` slot to the answer prompt.
 
 ## Implementation
 
@@ -12,7 +12,7 @@ A new answer-time retrieval policy was added to `scripts/eval_evomemory.py`:
 --retrieval_policy normal | latest_per_slot
 ```
 
-`latest_per_slot` keeps the raw memory writes unchanged, retrieves candidate entries, then deduplicates the answer context by `(entity, attribute)` and keeps only the latest entry for each slot according to `event_idx` / update timestamps. This is an answer-time intervention only, not a memory-manager method.
+`latest_per_slot` keeps the raw memory writes unchanged, retrieves from the full store, then deduplicates the answer context by `(entity, attribute)` and keeps only the latest entry for each slot according to `event_idx` / update timestamps. This is an answer-time intervention only, not a memory-manager method. It is not a pure filter over the original top-k context: it also changes retrieval scope by allowing the latest slot entry to be recovered from outside the normal top-k set.
 
 Validation:
 
@@ -51,11 +51,11 @@ Effect:
 
 ## Interpretation
 
-This is the strongest causal evidence so far for the stale-competition mechanism. Raw append still stores the same 52 memories on average and still contains the same 14.25 stale same-slot entries on average. The intervention only changes which entries are exposed to the answer prompt. Under that answer-time filter, EM rises from 0.14 to 0.69.
+This is strong intervention evidence for the stale-competition mechanism, but it should be interpreted carefully. Raw append still stores the same 52 memories on average and still contains the same 14.25 stale same-slot entries on average. The intervention changes only answer-time retrieval/context construction, not memory writes. Because `latest_per_slot` retrieves from the full store before slot deduplication, the gain mixes stale suppression with slot-aware recall expansion. Under that answer-time retrieval rewrite, EM rises from 0.14 to 0.69.
 
 The recovery is large but not complete relative to the gold-context result from P6.8 (EM 0.92). This implies two things:
 
-1. stale same-slot contamination is a major cause of raw append collapse;
-2. answer-layer and retrieval-context limitations remain even after stale same-slot entries are filtered from the prompted context.
+1. stale same-slot contamination and failure to surface the latest slot entry are major causes of raw append collapse;
+2. answer-layer and retrieval-context limitations remain even after the answer context is rewritten to latest-per-slot entries.
 
 The manuscript should present this as an intervention/ablation, not as a new proposed method. It answers the reviewer concern that the earlier stale-burden story was only correlational.

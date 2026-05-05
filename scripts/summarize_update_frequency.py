@@ -121,11 +121,20 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def row_map(rows: list[dict[str, Any]]) -> dict[tuple[str, str, int], dict[str, Any]]:
-    return {
-        (row["method"], row["answer_mode"], row["k_updates"]): row
-        for row in rows
-        if row["k_updates"] is not None
-    }
+    mapped = {}
+    for row in rows:
+        if row["k_updates"] is None:
+            continue
+        key = (row["method"], row["answer_mode"], row["k_updates"])
+        if key in mapped:
+            previous = mapped[key]
+            if previous.get("retrieval_policy") != row.get("retrieval_policy"):
+                raise ValueError(
+                    "Duplicate summary cell with different retrieval policies: "
+                    f"{key} -> {previous.get('result_path')} vs {row.get('result_path')}"
+                )
+        mapped[key] = row
+    return mapped
 
 
 def make_metric_table(rows: list[dict[str, Any]], answer_mode: str, metric: str, methods: list[str], digits: int = 2) -> str:

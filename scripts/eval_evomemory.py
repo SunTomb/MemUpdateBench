@@ -685,6 +685,66 @@ def filter_latest_per_slot(
     return filtered[:topk]
 
 
+def sort_relevant_for_context(relevant: list, context_order: str, slot_prompt: dict | None) -> list:
+    if context_order == "normal":
+        return relevant
+
+    def event_idx(item: tuple) -> int:
+        entry = item[0]
+        return int((entry.slot or {}).get("event_idx", -1))
+
+    if context_order == "chronological":
+        return sorted(relevant, key=event_idx)
+    if context_order == "reverse_chronological":
+        return sorted(relevant, key=event_idx, reverse=True)
+    if context_order in {"current_first", "current_last"}:
+        entity = (slot_prompt or {}).get("entity")
+        attribute = (slot_prompt or {}).get("attribute")
+        same_slot = [item for item in relevant if (item[0].slot or {}).get("entity") == entity and (item[0].slot or {}).get("attribute") == attribute]
+        others = [item for item in relevant if item not in same_slot]
+        same_slot = sorted(same_slot, key=event_idx, reverse=True)
+        if context_order == "current_first":
+            return same_slot + others
+        return others + same_slot
+    raise ValueError(f"Unknown context_order: {context_order}")
+
+
+def format_memory_context(
+    relevant: list,
+    slot_prompt: dict | None,
+    context_order: str = "normal",
+    context_annotation: str = "none",
+) -> tuple[str, list]:
+    ordered = sort_relevant_for_context(relevant, context_order, slot_prompt)
+    if not ordered:
+        return "(no relevant memories)", ordered
+
+    entity = (slot_prompt or {}).get("entity")
+    attribute = (slot_prompt or {}).get("attribute")
+    latest_idx = None
+    if entity and attribute:
+        same_slot_indices = [
+            int((entry.slot or {}).get("event_idx", -1))
+            for entry, _ in ordered
+            if (entry.slot or {}).get("entity") == entity and (entry.slot or {}).get("attribute") == attribute
+        ]
+        latest_idx = max(same_slot_indices) if same_slot_indices else None
+
+    lines = []
+    for entry, score in ordered:
+        prefix = ""
+        if context_annotation in {"timestamp", "latest_outdated_label"}:
+            slot = entry.slot or {}
+            event_idx = int(slot.get("event_idx", -1))
+            if context_annotation == "timestamp":
+                prefix = f"[event_idx={event_idx}] "
+            elif slot.get("entity") == entity and slot.get("attribute") == attribute:
+                label = "latest" if latest_idx is not None and event_idx == latest_idx else "outdated"
+                prefix = f"[{label}] "
+        lines.append(f"- {prefix}{entry.content}")
+    return "\n".join(lines), ordered
+
+
 def answer_question(
     model,
     tokenizer,
@@ -695,6 +755,8 @@ def answer_question(
     slot_prompt_variant: str = "v0_current",
     answer_topk: int = 5,
     retrieval_policy: str = "normal",
+    context_order: str = "normal",
+    context_annotation: str = "none",
     return_trace: bool = False,
 ) -> str | tuple[str, dict]:
     """Answer a question using retrieved memories."""
@@ -704,9 +766,12 @@ def answer_question(
     relevant = store.retrieve(question, topk=retrieval_topk)
     if retrieval_policy == "latest_per_slot":
         relevant = filter_latest_per_slot(relevant, store, answer_topk)
-    memory_context = "\n".join([
-        f"- {entry.content}" for entry, score in relevant
-    ]) if relevant else "(no relevant memories)"
+    memory_context, context_relevant = format_memory_context(
+        relevant,
+        slot_prompt,
+        context_order=context_order,
+        context_annotation=context_annotation,
+    )
 
     if slot_prompt:
         prompt = build_slot_answer_prompt(question, memory_context, slot_prompt, slot_prompt_variant)
@@ -739,7 +804,9 @@ def answer_question(
             "prompt": prompt,
             "slot_prompt_variant": slot_prompt_variant if slot_prompt else "",
             "retrieval_policy": retrieval_policy,
-            **retrieved_trace(slot_prompt or {}, relevant, answer_topk),
+            "context_order": context_order,
+            "context_annotation": context_annotation,
+            **retrieved_trace(slot_prompt or {}, context_relevant, answer_topk),
         }
     return answer
 
@@ -757,12 +824,12 @@ def main(args):
     needs_model = needs_model or args.answer_mode in {"short_prompt", "slot_prompt", "rag"}
     if needs_model:
         model, tokenizer = load_model_and_tokenizer(
-            config.model.model_name,
+            args.model_name,
             use_qlora=use_qlora,
             load_in_4bit=args.load_in_4bit,
         )
 
-        lora_path = args.lora_checkpoint
+        lora_path = args.lora_checkpoint if args.mode == "learned_constrained_slot" else ""
         if lora_path and os.path.exists(os.path.join(lora_path, "adapter_config.json")):
             from peft import PeftModel
             model = PeftModel.from_pretrained(model, lora_path)
@@ -866,6 +933,8 @@ def main(args):
                 slot_prompt_variant=args.slot_prompt_variant,
                 answer_topk=args.answer_topk,
                 retrieval_policy=args.retrieval_policy,
+                context_order=args.context_order,
+                context_annotation=args.context_annotation,
                 return_trace=args.save_answer_traces,
             )
             if args.save_answer_traces:
@@ -980,6 +1049,7 @@ def main(args):
     summary = {
         "benchmark": "evomemory",
         "mode": args.mode,
+        "model_name": args.model_name,
         "data_file": data_path,
         "num_examples": len(eval_data),
         "total_examples": total_examples,
@@ -1006,6 +1076,8 @@ def main(args):
         "slot_prompt_variant": args.slot_prompt_variant,
         "answer_topk": args.answer_topk,
         "retrieval_policy": args.retrieval_policy,
+        "context_order": args.context_order,
+        "context_annotation": args.context_annotation,
         "save_answer_traces": args.save_answer_traces,
         "elapsed_seconds": elapsed,
         "lora_checkpoint": args.lora_checkpoint,
@@ -1050,6 +1122,8 @@ if __name__ == "__main__":
                         choices=["raw_add", "heuristic_crud", "heuristic_slot_crud",
                                  "constrained_slot_crud", "learned_constrained_slot"],
                         help="Evaluation mode")
+    parser.add_argument("--model_name", default="Qwen/Qwen2.5-7B-Instruct",
+                        help="Base model used for learned decisions and prompted answering")
     parser.add_argument("--lora_checkpoint", default="checkpoints/long25/best",
                         help="LoRA adapter directory")
     parser.add_argument("--output_dir", default="results/evomemory")
@@ -1078,7 +1152,12 @@ if __name__ == "__main__":
     parser.add_argument("--answer_topk", type=int, default=5,
                         help="Number of retrieved memories used for prompted answering")
     parser.add_argument("--retrieval_policy", default="normal", choices=["normal", "latest_per_slot"],
-                        help="Answer-time retrieval policy for prompted answering")
+                        help="Answer-time retrieval policy; latest_per_slot retrieves the full store before slot deduplication")
+    parser.add_argument("--context_order", default="normal",
+                        choices=["normal", "chronological", "reverse_chronological", "current_first", "current_last"],
+                        help="Order retrieved memories before building the answer context")
+    parser.add_argument("--context_annotation", default="none", choices=["none", "timestamp", "latest_outdated_label"],
+                        help="Annotate retrieved memories with timestamps or latest/outdated labels")
     parser.add_argument("--save_answer_traces", action="store_true",
                         help="Save retrieved-memory and answer-layer traces per example")
     args = parser.parse_args()

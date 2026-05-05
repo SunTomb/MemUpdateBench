@@ -2,7 +2,7 @@
 
 MemUpdateBench is a focused diagnostic toolkit for repeated same-slot memory updates. It isolates the P6.x direction from the original G-MSRA research repo: how external memory systems behave when the same `(entity, attribute)` slot is updated many times.
 
-The current project direction is reviewer-risk driven. A strict review in `docs/critical_review.md` identified external validity, data diversity, related work, and diagnostic depth as the main blockers. The near-term goal is therefore not more paper packaging, but stronger evidence: real external baselines, deeper answer-layer analysis, same-method-family tradeoff curves, and expanded data.
+The current project direction is reviewer-risk driven. Strict reviews in `docs/critical_review.md` and `docs/critical_review_v3.md` narrowed the target to a controlled benchmark plus empirical analysis paper: final-state reliability, stale same-slot burden, memory compactness, and answer robustness should be reported separately.
 
 ## Core claim
 
@@ -40,18 +40,26 @@ python scripts/summarize_update_frequency.py \
   --output_dir results/update_frequency_p63_summary
 ```
 
-## Current priority experiments
+## Current analysis status
 
-The default next work should address `docs/critical_review.md`:
+The P8.0 analysis layer adds:
 
-1. isolated Mem0 feasibility and, if viable, full k=1/2/4/8/16 external-baseline evaluation;
-2. answer-layer diagnostics for Constrained CRUD, including oracle retrieval and top-k/context-length sensitivity;
-3. stale-burden interventions for Raw append;
-4. heuristic CRUD threshold sweeps for same-method-family tradeoff curves;
-5. expanded data with more examples, attributes, and paraphrased explicit update templates;
-6. serious related-work positioning against AMemGym, Ledger-QA/UMA, Memory-R1, Mem0, MemGPT/Letta, LoCoMo/LongMemEval, dialogue state tracking, and knowledge editing.
+1. stale dose-response analysis;
+2. real-context order and annotation probes;
+3. synthetic same-slot mechanism probes;
+4. expanded latest-per-slot all-k validation;
+5. Llama3.1-8B multi-model replication;
+6. Long25 checkpoint/training-provenance audit.
+
+Core release checklist:
+
+```text
+paper/p80_release_candidate_checklist.md
+```
 
 ## Generate paper assets
+
+P6.3 tradeoff figures:
 
 ```bash
 python scripts/package_update_frequency_paper_assets.py \
@@ -59,13 +67,39 @@ python scripts/package_update_frequency_paper_assets.py \
   --paper_dir paper
 ```
 
-This writes paper-facing tradeoff figures, derived diagnostic figures, LaTeX snippets, appendix tables, and narrative notes under `paper/`. Treat this as support work after the evidence gaps above, not the default main path.
+P8.0 tables and figures:
+
+```bash
+PYTHONPATH=. python scripts/package_p80_paper_tables.py
+PYTHONPATH=. python scripts/package_p80_figures.py
+```
+
+Generated P8 artifacts include:
+
+```text
+paper/p80_paper_tables.md
+paper/figures/p80_figure_manifest.json
+paper/manuscript_sections/p80_results_section_draft.md
+```
 
 ## Smoke test
 
 ```bash
-python -m py_compile scripts/prepare_data.py scripts/eval_evomemory.py scripts/analyze_ood_errors.py scripts/analyze_action_pathology.py scripts/summarize_update_frequency.py scripts/summarize_prompt_robustness.py scripts/generate_constrained_sft.py scripts/train_constrained_sft.py scripts/smoke_test.py scripts/package_update_frequency_paper_assets.py
-python scripts/smoke_test.py
+PYTHONPATH=. python -m py_compile \
+  scripts/prepare_data.py \
+  scripts/eval_evomemory.py \
+  scripts/analyze_ood_errors.py \
+  scripts/analyze_action_pathology.py \
+  scripts/summarize_update_frequency.py \
+  scripts/summarize_prompt_robustness.py \
+  scripts/generate_constrained_sft.py \
+  scripts/train_constrained_sft.py \
+  scripts/smoke_test.py \
+  scripts/package_update_frequency_paper_assets.py \
+  scripts/build_evidence_manifest.py \
+  scripts/package_p80_paper_tables.py \
+  scripts/package_p80_figures.py
+PYTHONPATH=. python scripts/smoke_test.py
 ```
 
 ## Learned baseline checkpoint

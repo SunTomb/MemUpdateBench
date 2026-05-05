@@ -1,0 +1,41 @@
+\relax 
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{}\protected@file@percent }
+\citation{locomo,longmemeval,amemgym,ledgerqa_uma}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Benchmark}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Methods and Evaluation}{2}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Update-frequency stress test on P6.3 hard splits. Oracle-like slot-direct state evaluation hides stale-memory burden for append-only and heuristic methods, while slot-prompt answering reveals answer collapse as repeated same-slot updates accumulate stale entries. Long25 is substantially more compact but sacrifices final-state reliability under hard distractors.}}{3}{}\protected@file@percent }
+\newlabel{fig:p63-update-frequency-tradeoff}{{1}{3}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Main Results}{3}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces High-frequency \(k=16\) tradeoff among final-state reliability, slot-prompt answer quality, stale same-slot burden, and memory compactness. Append-only and heuristic managers preserve slot-direct recoverability but collapse under slot-prompt answering; Long25 is compact but not fully reliable.}}{4}{}\protected@file@percent }
+\newlabel{tab:p63-k16-tradeoff}{{1}{4}{}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Ceiling recovery across answer models on P6.3 hard \(k=16\) dev. Normal raw-add retrieval collapses for all three models under stale-contaminated top-\(k\) contexts. Latest-per-slot filtering removes stale retrieved entries and recovers each model to approximately its own zero-stale constrained CRUD slot-prompt ceiling. Absolute EM levels differ mostly because models have different clean-context slot-prompt ceilings.}}{4}{}\protected@file@percent }
+\newlabel{tab:ceiling-recovery}{{2}{4}{}{table.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Mechanism and Error Analysis}{4}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Real-context mechanism probe on raw append \(k=16\) dev. Retrieved composition is fixed across rows: gold retrieval is 0.360 and retrieved stale count is 4.040. Changes in EM therefore reflect answer-layer sensitivity to context presentation rather than retrieval composition.}}{5}{}\protected@file@percent }
+\newlabel{tab:real-context-mechanism}{{3}{5}{}{table.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Discussion}{5}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Synthetic same-slot probes isolate gold-present answer behavior by controlling stale count, value conflict, order, and explicit version labels. Conflict plus reverse chronological order collapses without labels, while latest/outdated labels largely repair the failure. Same-value repetition still reduces exact EM at high stale counts despite answer-value-present staying 1.000.}}{6}{}\protected@file@percent }
+\newlabel{fig:synthetic-same-slot}{{2}{6}{}{figure.2}{}}
+\citation{mem0,letta,memgpt,memoryr1}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Dose-response of raw append under slot-conditioned answering. EM falls sharply once stale same-slot entries appear. Retrieved stale exposure has a steeper lightweight logistic slope and lower ED50 than stored stale burden, supporting an answer-context exposure mechanism.}}{7}{}\protected@file@percent }
+\newlabel{fig:stale-dose-response}{{3}{7}{}{figure.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Limitations}{7}{}\protected@file@percent }
+\citation{locomo,longmemeval,amemgym,ledgerqa_uma}
+\citation{mem0,memgpt,letta}
+\citation{knowledge_editing_survey}
+\citation{dialogue_state_tracking}
+\bibstyle{plainnat}
+\bibdata{paper/references_todo}
+\bibcite{amemgym}{{1}{TODO{}}{{TODO}}{{}}}
+\bibcite{dialogue_state_tracking}{{2}{TODO{}}{{TODO}}{{}}}
+\bibcite{knowledge_editing_survey}{{3}{TODO{}}{{TODO}}{{}}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Related Work Positioning}{8}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Reproducibility}{8}{}\protected@file@percent }
+\bibcite{ledgerqa_uma}{{4}{TODO{}}{{TODO}}{{}}}
+\bibcite{letta}{{5}{TODO{}}{{TODO}}{{}}}
+\bibcite{locomo}{{6}{TODO{}}{{TODO}}{{}}}
+\bibcite{longmemeval}{{7}{TODO{}}{{TODO}}{{}}}
+\bibcite{mem0}{{8}{TODO{}}{{TODO}}{{}}}
+\bibcite{memgpt}{{9}{TODO{}}{{TODO}}{{}}}
+\bibcite{memoryr1}{{10}{TODO{}}{{TODO}}{{}}}
+\gdef \@abspage@last{9}

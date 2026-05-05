@@ -31,6 +31,15 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    required_matches = ["mode", "answer_mode", "num_examples", "answer_topk", "slot_prompt_variant"]
+    mismatches = {
+        key: [normal.get(key), filtered.get(key)]
+        for key in required_matches
+        if normal.get(key) != filtered.get(key)
+    }
+    if mismatches and not args.baseline_note:
+        raise ValueError(f"Summary provenance mismatch without baseline note: {mismatches}")
+
     rows = [
         {"condition": "normal", **normal},
         {"condition": "latest_per_slot", **filtered},

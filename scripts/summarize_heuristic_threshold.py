@@ -70,14 +70,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize heuristic CRUD threshold sweeps")
     parser.add_argument("--result_root", required=True)
     parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--prefix", default="heuristic_threshold_summary", help="Output filename prefix")
     args = parser.parse_args()
 
     rows = load_rows(Path(args.result_root))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "heuristic_threshold_summary.json").write_text(json.dumps({"rows": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
-    write_csv(rows, output_dir / "heuristic_threshold_summary.csv")
-    write_md(rows, output_dir / "heuristic_threshold_summary.md")
+    prefix = args.prefix
+    (output_dir / f"{prefix}.json").write_text(json.dumps({"rows": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_csv(rows, output_dir / f"{prefix}.csv")
+    write_md(rows, output_dir / f"{prefix}.md")
     print(f"Loaded {len(rows)} rows")
     print(f"Wrote {output_dir}")
 

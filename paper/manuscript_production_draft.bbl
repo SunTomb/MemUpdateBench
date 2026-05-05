@@ -1,0 +1,61 @@
+\begin{thebibliography}{10}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{TODO}(TODO{\natexlab{a}})]{amemgym}
+{TODO}.
+\newblock Amemgym: Agent memory benchmark, TODO{\natexlab{a}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{b}})]{dialogue_state_tracking}
+{TODO}.
+\newblock Dialogue state tracking, TODO{\natexlab{b}}.
+\newblock Placeholder citation; replace with canonical DST reference.
+
+\bibitem[{TODO}(TODO{\natexlab{c}})]{knowledge_editing_survey}
+{TODO}.
+\newblock Knowledge editing for large language models: A survey,
+  TODO{\natexlab{c}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{d}})]{ledgerqa_uma}
+{TODO}.
+\newblock Ledger-qa / uma memory evaluation, TODO{\natexlab{d}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{e}})]{letta}
+{TODO}.
+\newblock Letta: Stateful agents with memory, TODO{\natexlab{e}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{f}})]{locomo}
+{TODO}.
+\newblock Locomo: Long-term conversational memory benchmark,
+  TODO{\natexlab{f}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{g}})]{longmemeval}
+{TODO}.
+\newblock Longmemeval: Long-term memory evaluation for language models,
+  TODO{\natexlab{g}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{h}})]{mem0}
+{TODO}.
+\newblock Mem0: Memory layer for ai applications, TODO{\natexlab{h}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{i}})]{memgpt}
+{TODO}.
+\newblock Memgpt: Towards llms as operating systems, TODO{\natexlab{i}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\bibitem[{TODO}(TODO{\natexlab{j}})]{memoryr1}
+{TODO}.
+\newblock Memory-r1, TODO{\natexlab{j}}.
+\newblock Placeholder citation; replace with official BibTeX.
+
+\end{thebibliography}

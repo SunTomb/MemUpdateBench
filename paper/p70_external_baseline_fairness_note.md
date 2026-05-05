@@ -26,9 +26,11 @@ port 8011: Qwen2.5-VL
 ports 8000, 8001, 8002, 8010, 8012, 8020: no response
 ```
 
-Therefore, there is currently no discovered text-only Qwen2.5-7B-Instruct endpoint suitable for a fair Mem0 rerun.
+A follow-up project-local endpoint was then launched on Sui-3 using `scripts/serve_openai_compatible_transformers.py` with `/NAS/HuggingFaceModels/Qwen2.5-7B-Instruct` at `http://127.0.0.1:8013/v1`. The endpoint passed `/v1/models` and simple chat-completion checks, and Mem0 was rerun with MiniLM forced to CPU via `configs/mem0_qwen25_text_qdrant_minilm384_cpu.json`.
 
-Existing Mem0 dev20 results remain:
+That text-backend Mem0 path did not complete: k=16 dev20 and k=16 dev3 both stalled before the first completed example with repeated Mem0 extraction JSON parse errors. Thus, the remaining blocker is no longer just endpoint availability; it is adapter/extraction compatibility between Mem0's structured extraction prompts and the lightweight transformers server.
+
+Existing completed Mem0 dev20 results remain:
 
 | Variant | N | EM | F1 | Inspectable | Stale same-slot | Same-slot | Gold same-slot | Memory size |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -41,14 +43,14 @@ The current Mem0 result should **not** be placed in the main comparison table.
 
 It is useful only as a qualitative runnable-probe result:
 
-- Mem0 can be installed and run end-to-end on the cluster.
-- Its memory state is inspectable.
-- Under the only currently discovered local backend, it is badly misaligned with exact repeated same-slot final-value tracking.
-- Because that backend is Qwen2.5-VL and the run is dev20, the result is not a fair external baseline row.
+- Mem0 can be installed and run end-to-end on the cluster with the Qwen2.5-VL endpoint.
+- Its memory state is inspectable in that completed probe.
+- Under Qwen2.5-VL dev20, it is badly misaligned with exact repeated same-slot final-value tracking.
+- A fairer Qwen2.5-7B-Instruct text endpoint can be launched, but the current lightweight endpoint plus Mem0 adapter fails structured extraction before completing even dev3.
 
 A fair Mem0 main-table row requires at least one of:
 
-1. a text-only OpenAI-compatible endpoint, ideally Qwen2.5-7B-Instruct or comparable;
+1. a text-only OpenAI-compatible endpoint whose outputs satisfy Mem0's structured extraction parser, ideally Qwen2.5-7B-Instruct or comparable;
 2. a larger run, at least k=16 dev100/test200 after the backend is fixed;
 3. a documented adapter/prompt that gives Mem0 a reasonable chance to preserve exact final slot values.
 
