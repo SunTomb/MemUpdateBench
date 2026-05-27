@@ -275,6 +275,41 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         assert answer == "Chengdu"
         assert policy_trace["retrieval_policy"] == "latest_per_slot"
         assert policy_trace["retrieved_entries"][0]["slot"]["value"] == "Chengdu"
+
+        from scripts.run_conflict_type_probe import make_example as make_conflict_example
+        conflict_example = make_conflict_example(
+            example_id=0,
+            attribute="location",
+            condition="stale_same_slot",
+            distractor_count=2,
+        )
+        assert "Target entity: friend_alice" in conflict_example["prompt"]
+        assert "Target attribute: location" in conflict_example["prompt"]
+        assert conflict_example["prompt"].count("User says:") == 3
+
+        from scripts.run_synthetic_same_slot_probe import build_context as build_synthetic_context
+        middle_context = build_synthetic_context(
+            "friend",
+            "Alex",
+            "location",
+            "Chengdu",
+            ["Shanghai", "Beijing", "Wuhan", "Nanjing"],
+            "middle",
+            "latest_outdated_label",
+        )
+        assert middle_context.count("User says:") == 5
+        assert "[latest]" in middle_context
+        random_context = build_synthetic_context(
+            "friend",
+            "Alex",
+            "location",
+            "Chengdu",
+            ["Shanghai", "Beijing"],
+            "random",
+            "none",
+        )
+        assert random_context.count("User says:") == 3
+
         results.ok("parser, constrained CRUD, answer traces, and latest-slot retrieval policy")
     except Exception as exc:
         results.fail("parser and constrained CRUD", exc)

@@ -369,3 +369,58 @@ Mistral latest_per_slot was already EM/F1 0.720/0.735, so the zero-stale ceiling
 ### Conclusion
 
 The final v5-requested experiment is complete. Experiments should now freeze. Remaining work should be manuscript production, citation cleanup, figure/table placement, numerical consistency checking, README polishing, and result packaging.
+
+## P8.3 stale same-slot conflict mechanism package
+
+### Motivation
+
+P8.3 sharpens the paper's novelty by testing whether stale same-slot entries are a distinct high-similarity version-conflict mechanism rather than generic retrieval noise.
+
+### Files changed/generated
+
+```text
+scripts/run_conflict_type_probe.py
+scripts/summarize_conflict_type_probe.py
+scripts/run_synthetic_same_slot_probe.py
+scripts/analyze_stale_specific_removal.py
+scripts/run_p83_conflict_type_probe_sui3.sh
+scripts/run_p83_stale_conflict_dose_sui3.sh
+results/p83_conflict_type_probe/
+results/p83_conflict_type_probe_summary/
+results/p83_stale_conflict_dose/
+results/p83_stale_conflict_dose_summary/
+results/p83_raw_add_k16_trace/
+results/p83_stale_specific_removal_trace/
+paper/p83_stale_same_slot_conflict_plan_note.md
+```
+
+### Commands run
+
+```bash
+PYTHONPATH=. python scripts/smoke_test.py
+PYTHONPATH=. python -m py_compile scripts/run_conflict_type_probe.py scripts/summarize_conflict_type_probe.py scripts/run_synthetic_same_slot_probe.py scripts/analyze_stale_specific_removal.py scripts/smoke_test.py
+PYTHONPATH=. python scripts/summarize_conflict_type_probe.py --input_csv results/tmp_conflict_summary_fixture/conflict_type_examples.csv --output_dir results/tmp_conflict_summary_fixture/summary
+bash -n scripts/run_p83_conflict_type_probe_sui3.sh
+bash -n scripts/run_p83_stale_conflict_dose_sui3.sh
+CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python scripts/run_conflict_type_probe.py --model_name /NAS/HuggingFaceModels/Qwen2.5-7B-Instruct --examples_per_condition 128 --distractor_count 4 --conditions final_only,unrelated_distractors,same_entity_different_attribute,different_entity_same_attribute,stale_same_slot --output_dir results/p83_conflict_type_probe/qwen25_7b_d4 --no_qlora
+PYTHONPATH=. python scripts/summarize_conflict_type_probe.py --input_csv results/p83_conflict_type_probe/qwen25_7b_d4/conflict_type_examples.csv --output_dir results/p83_conflict_type_probe_summary/qwen25_7b_d4
+CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python scripts/run_synthetic_same_slot_probe.py --model_name /NAS/HuggingFaceModels/Qwen2.5-7B-Instruct --examples_per_condition 64 --stale_counts 0,1,2,4,8,16 --value_policies conflict --context_orders chronological,reverse_chronological,middle,random --context_annotations none,latest_outdated_label --output_dir results/p83_stale_conflict_dose/qwen25_7b --no_qlora
+PYTHONPATH=. python scripts/summarize_synthetic_same_slot_probe.py --input_csv results/p83_stale_conflict_dose/qwen25_7b/synthetic_same_slot_examples.csv --output_dir results/p83_stale_conflict_dose_summary/qwen25_7b
+CUDA_VISIBLE_DEVICES=2 PYTHONPATH=. python scripts/eval_evomemory.py --mode raw_add --answer_mode slot_prompt --data_file data/evomemory_update_frequency_hard_k16_p63_dev.json --output_dir results/p83_raw_add_k16_trace --model_name /NAS/HuggingFaceModels/Qwen2.5-7B-Instruct --no_qlora --save_answer_traces
+PYTHONPATH=. python scripts/analyze_stale_specific_removal.py --input_json results/p83_raw_add_k16_trace/evomemory_results.json --output_dir results/p83_stale_specific_removal_trace
+```
+
+Remote execution used Tang-1-Wu GPU7 for the conflict-type and synthetic dose-response probes, and Tang-2-Wu GPU2 for the raw_add k16 trace rerun.
+
+### Results
+
+Conflict-type decomposition on Qwen2.5-7B-Instruct produced 640 examples. With four distractors, final-only EM/F1 was 0.875/0.888. Same-entity/different-attribute distractors were easiest (1.000/1.000), different-entity/same-attribute was comparable to final-only (0.891/0.944), stale same-slot was also comparable (0.867/0.899, stale copied 0.133), while unrelated distractors were worse (0.750/0.887). This first construction therefore does not support the strongest claim that stale same-slot entries are always more harmful than generic distractors; it suggests that the prompt/context template and distractor naturalness matter and that the paper should not overclaim from this table alone.
+
+Version-conflict dose-response produced 3072 examples. The refined synthetic probe strongly supports order-sensitive version conflict: without labels, reverse-chronological EM collapsed from 0.234 at stale=1 to 0.094 at stale=2, 0.000 at stale=8, and 0.031 at stale=16. Random order without labels also degraded with stale count, reaching EM 0.047 at stale=16. Middle placement without labels was unstable but much lower than chronological placement for most stale counts. Chronological/no-label remained comparatively robust, with EM 0.812 at stale=16, because the current value appears last. Latest/outdated labels largely repaired all non-chronological conflict settings, with reverse-chronological EM 1.000 at stale=8 and stale=16.
+
+The raw_add k=16 dev trace rerun reproduced low slot-prompt performance: EM/F1 0.130/0.163 with final memory size 52. Trace-level stale-specific removal analysis over 100 examples showed normal retrieved contexts had gold-in-context rate 0.320 and average stale same-slot count 4.040. Removing stale same-slot entries reduced stale count to 0.000 while preserving gold-in-context rate 0.320 and leaving 0.960 entries on average. Random non-gold removal removed the same average number of entries and left stale count 0.270, while unrelated and near-slot removal barely changed stale exposure. Latest-per-slot reduced context to 1.500 entries on average but had lower gold-in-context rate 0.310 and residual stale count 0.690 in this trace-level analyzer, indicating that event-index availability and retrieved-entry schema should be audited before treating this proxy as equivalent to the full answer-time latest-per-slot intervention.
+
+### Conclusion
+
+P8.3 strengthens the mechanism-first framing mainly through the refined synthetic dose-response and trace-level removal diagnostics. The cleanest supported claim is that stale same-slot conflict creates severe answer-layer failures when version order is ambiguous or the current value is not presented last, and that explicit latest/outdated metadata can largely repair the synthetic conflict. The conflict-type decomposition is a useful negative/nuanced result: in its current surface form, stale same-slot distractors are not uniformly worse than all generic distractors, so the manuscript should frame stale conflict as an order- and metadata-sensitive version arbitration mechanism rather than a universally largest distractor category.
+

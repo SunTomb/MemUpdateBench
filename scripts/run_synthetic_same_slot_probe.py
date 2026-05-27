@@ -108,6 +108,14 @@ def build_context(
         entries = sorted(entries, key=lambda item: item["idx"], reverse=True)
     elif context_order == "chronological":
         entries = sorted(entries, key=lambda item: item["idx"])
+    elif context_order == "middle":
+        stale_entries = [entry for entry in entries if not entry["latest"]]
+        latest_entries = [entry for entry in entries if entry["latest"]]
+        midpoint = len(stale_entries) // 2
+        entries = stale_entries[:midpoint] + latest_entries + stale_entries[midpoint:]
+    elif context_order == "random":
+        rng = random.Random(len(stale_values) * 1009 + len(gold) * 17 + len(attribute))
+        rng.shuffle(entries)
     elif context_order != "normal":
         raise ValueError(f"unknown context_order: {context_order}")
 
