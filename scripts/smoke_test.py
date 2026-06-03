@@ -62,6 +62,8 @@ def test_imports(results: SmokeTestResult) -> None:
         "scripts.merge_evomemory_shards",
         "scripts.generate_constrained_sft",
         "scripts.train_constrained_sft",
+        "scripts.probe_api_answer_model",
+        "scripts.summarize_api_latest_model_probe",
     ]
     for module in modules:
         try:
@@ -315,6 +317,87 @@ def test_constrained_slots(results: SmokeTestResult) -> None:
         results.fail("parser and constrained CRUD", exc)
 
 
+def test_api_probe_helpers(results: SmokeTestResult) -> None:
+    print("\n[7/7] Testing API probe helpers...")
+    try:
+        from scripts.probe_api_answer_model import (
+            build_chat_payload,
+            build_headers,
+            build_probe_examples,
+            exact_value_prediction,
+            parse_json_body,
+            parse_sse_chat_body,
+            redact_secret,
+        )
+
+        sse = b'data: {"choices":[{"delta":{"content":"OK"},"index":0}]}\n\ndata: [DONE]'
+        assert parse_sse_chat_body(sse) == {"choices": [{"message": {"content": "OK"}}]}
+        assert parse_json_body(b'{"ok": true}', "/models") == {"ok": True}
+        try:
+            parse_json_body(b"not json", "/chat/completions")
+            raise AssertionError("parse_json_body should reject non-JSON responses")
+        except RuntimeError as exc:
+            assert "Non-JSON response from /chat/completions" in str(exc)
+        headers = build_headers("testkey_abcdef1234567890")
+        assert headers["Authorization"] == "Bearer testkey_abcdef1234567890"
+        assert "Claude-Code" in headers["User-Agent"]
+        assert redact_secret("testkey_abcdef1234567890") == "tes...7890"
+        payload = build_chat_payload("gpt-test", "Answer OK", max_tokens=8, temperature=0.0)
+        assert payload["model"] == "gpt-test"
+        assert payload["messages"][-1]["content"] == "Answer OK"
+        assert payload["max_tokens"] == 8
+        assert payload["temperature"] == 0.0
+
+        examples = build_probe_examples()
+        names = {example["condition"] for example in examples}
+        assert "final_only" in names
+        assert "stale_same_slot_reverse_no_label" in names
+        assert "stale_same_slot_reverse_with_label" in names
+        reverse = next(example for example in examples if example["condition"] == "stale_same_slot_reverse_no_label")
+        assert reverse["gold"] == "Chengdu"
+        assert reverse["stale_values"] == ["Beijing", "Shanghai"]
+        assert exact_value_prediction("Chengdu.") == "Chengdu"
+        assert exact_value_prediction("The answer is Chengdu") == "Chengdu"
+        assert exact_value_prediction("Kunming") == "Kunming"
+        assert exact_value_prediction("The answer is Urumqi.") == "Urumqi"
+
+        from scripts.probe_api_answer_model import build_synthetic_dose_examples
+
+        synthetic = build_synthetic_dose_examples(stale_counts=[0, 1, 4], examples_per_condition=2)
+        assert synthetic
+        conditions = {example["condition"] for example in synthetic}
+        assert "chronological_none" in conditions
+        assert "reverse_chronological_none" in conditions
+        assert "reverse_chronological_latest_outdated_label" in conditions
+        reverse = [example for example in synthetic if example["condition"] == "reverse_chronological_none"]
+        assert {example["stale_count"] for example in reverse} == {0, 1, 4}
+        assert all(example["gold"] in example["prompt"] for example in synthetic)
+        assert all("api_key" not in example for example in synthetic)
+
+        from scripts.probe_api_answer_model import summarize_rows
+
+        rows = [
+            {"condition": "reverse_chronological_none", "stale_count": 1, "em": 0.0, "stale_copied": 1.0},
+            {"condition": "reverse_chronological_none", "stale_count": 1, "em": 1.0, "stale_copied": 0.0},
+            {"condition": "chronological_none", "stale_count": 1, "em": 1.0, "stale_copied": 0.0},
+        ]
+        summary = summarize_rows(rows)
+        assert summary["reverse_chronological_none"]["1"]["n"] == 2
+        assert summary["reverse_chronological_none"]["1"]["em"] == 0.5
+        assert summary["reverse_chronological_none"]["1"]["stale_copied"] == 0.5
+
+        from scripts.probe_api_answer_model import should_retry_api_error
+
+        assert should_retry_api_error(RuntimeError("Non-JSON response from /chat/completions: <!doctype html>"))
+        assert should_retry_api_error(RuntimeError("HTTP 429 from /chat/completions: rate limit"))
+        assert should_retry_api_error(RuntimeError("HTTP 500 from /chat/completions: upstream"))
+        assert should_retry_api_error(TimeoutError("The read operation timed out"))
+        assert not should_retry_api_error(RuntimeError("Unexpected chat response schema: {}"))
+        results.ok("API probe helpers")
+    except Exception as exc:
+        results.fail("API probe helpers", exc)
+
+
 def main() -> int:
     print("=" * 50)
     print("MemUpdateBench SMOKE TEST")
@@ -327,6 +410,7 @@ def main() -> int:
     test_utils(results)
     test_update_frequency_data(results)
     test_constrained_slots(results)
+    test_api_probe_helpers(results)
     return 0 if results.summary() else 1
 
 

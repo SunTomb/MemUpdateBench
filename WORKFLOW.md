@@ -424,3 +424,92 @@ The raw_add k=16 dev trace rerun reproduced low slot-prompt performance: EM/F1 0
 
 P8.3 strengthens the mechanism-first framing mainly through the refined synthetic dose-response and trace-level removal diagnostics. The cleanest supported claim is that stale same-slot conflict creates severe answer-layer failures when version order is ambiguous or the current value is not presented last, and that explicit latest/outdated metadata can largely repair the synthetic conflict. The conflict-type decomposition is a useful negative/nuanced result: in its current surface form, stale same-slot distractors are not uniformly worse than all generic distractors, so the manuscript should frame stale conflict as an order- and metadata-sensitive version arbitration mechanism rather than a universally largest distractor category.
 
+## P8.4 latest API answer-model probe
+
+### Motivation
+
+Advisor feedback after the group meeting raised a model-recency concern: the existing Qwen2.5/Llama3.1/Mistral evidence might look dated to future readers or reviewers. P8.4 therefore adds a latest GPT/Gemini API answer-layer probe to test whether the stale same-slot version-arbitration mechanism persists beyond the earlier open-weight answer models.
+
+### Files changed/generated
+
+```text
+scripts/probe_api_answer_model.py
+scripts/summarize_api_latest_model_probe.py
+scripts/run_p84_api_latest_models_tang2.sh
+results/p84_api_latest_model_probe_summary/api_latest_model_summary.{json,csv,md}
+paper/p84_latest_api_model_probe_note.md
+docs/superpowers/plans/2026-06-02-latest-api-answer-models.md
+```
+
+Remote per-model outputs were generated under:
+
+```text
+/NAS/yesh/MemUpdateBench/results/p84_api_latest_model_probe/
+```
+
+### Commands run
+
+Local validation:
+
+```bash
+PYTHONPATH=. python scripts/smoke_test.py
+PYTHONPATH=. python -m py_compile scripts/probe_api_answer_model.py scripts/summarize_api_latest_model_probe.py scripts/smoke_test.py
+```
+
+Server API feasibility and runs used environment variables for the API base URL/key and did not write secrets to repository files. The main remote pattern was:
+
+```bash
+source activate.sh
+MUB_API_MODEL=<model> PYTHONPATH=. python scripts/probe_api_answer_model.py \
+  --connectivity \
+  --synthetic-dose-probe \
+  --stale-counts 0,1,2,4,8,16 \
+  --examples-per-condition 16 \
+  --output-dir results/p84_api_latest_model_probe \
+  --timeout 120
+PYTHONPATH=. python scripts/summarize_api_latest_model_probe.py \
+  --result-root results/p84_api_latest_model_probe \
+  --output-dir results/p84_api_latest_model_probe_summary
+```
+
+### Model availability
+
+Completed synthetic-dose summaries:
+
+```text
+gpt-5.5
+gpt-5.4
+gpt-5.4-mini
+gemini-2.5-flash
+gemini-2.5-pro
+gemini-3-flash-preview
+gemini-3.1-flash-lite-preview
+```
+
+Excluded or non-interpretable:
+
+```text
+gemini-3-pro-preview        # minimal OK probe passed, but synthetic run returned empty content
+gemini-3.1-pro-preview      # empty chat response
+gpt-5.3-codex-spark        # account/model support error
+gpt-5.3-codex              # account/model support error
+gpt-5.2                    # account/model support error
+```
+
+### Results
+
+The clean, format-stable latest-model subset strongly reproduces the version-arbitration mechanism. For `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gemini-3.1-flash-lite-preview`:
+
+- chronological/no-label at stale=16: EM 1.000, stale copied 0.000;
+- reverse/no-label at stale=1: EM 0.000, stale copied 1.000;
+- reverse/no-label at stale=16: EM 0.000, stale copied 1.000;
+- reverse+latest/outdated label at stale=16: EM 1.000, stale copied 0.000.
+
+This is a direct latest-model replication of the P8.3 synthetic mechanism: when the current value is present but appears before stale same-slot versions and lacks explicit version metadata, even very recent GPT-family answer models copy stale values; explicit latest/outdated metadata repairs the conflict.
+
+Gemini results require caution. `gemini-2.5-flash` and `gemini-2.5-pro` show stale copying in reverse/no-label contexts, but also many empty or truncated outputs under this prompt format. `gemini-3-flash-preview` produced mostly empty outputs, so it is not interpretable for the mechanism claim despite completing the run. These rows should be kept as API/prompt-format diagnostics rather than central evidence.
+
+### Conclusion
+
+P8.4 addresses the model-recency criticism without changing the paper's narrow claim. The strongest defensible statement is that the order- and metadata-sensitive stale same-slot version-arbitration failure is reproduced by current GPT API models and one current Gemini flash-lite model in a controlled answer-layer probe. Do not present these API runs as external memory baselines; they are latest-model robustness checks for the answer-layer mechanism.
+
