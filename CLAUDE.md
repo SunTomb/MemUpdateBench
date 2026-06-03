@@ -66,7 +66,13 @@ At k=16 on P6.3 hard:
 
 P6.5 prompt-robustness diagnostics show that mild prompt variants do not remove the high-k ordering: Constrained CRUD remains around 0.68-0.69 EM at k=16, Raw append remains around 0.09-0.11 EM, and Long25 remains between them. Answer traces show different mechanisms: Raw append often fails because gold values are not retrieved under stale burden; Constrained CRUD still has gold-not-retrieved and gold-retrieved-wrong-answer cases despite zero stale same-slot burden; Long25 mixes state errors with stale/distractor answer-context failures.
 
-Current honest positioning: MemUpdateBench is a promising controlled diagnostic benchmark, but it needs external baselines, larger/more diverse data, related work, and deeper mechanism experiments before being positioned as a strong Findings/main-track paper.
+Current honest positioning: MemUpdateBench is a promising controlled diagnostic benchmark. The project has now strengthened the mechanism story with P8.x evidence, including latest API answer-model probes, but manuscript work should still avoid broad benchmark overclaiming and should foreground definitions, method meanings, and the order/metadata-sensitive version-arbitration mechanism.
+
+Recent mechanism lock:
+
+- P8.3 shows the claim must be nuanced: stale same-slot conflict is an **order- and metadata-sensitive version arbitration failure**, not a universally strongest distractor. The conflict-type decomposition found `unrelated_distractors` harder than `stale_same_slot` in one surface construction, so do not claim stale same-slot is always the strongest distractor.
+- P8.3 synthetic dose-response is the strongest mechanism evidence: reverse/no-label stale=8 EM 0.000 and stale=16 EM 0.031, while reverse+latest/outdated label reaches EM 1.000 at stale=8 and stale=16. Gold is in context; missing current-version signal causes stale copying.
+- P8.4 latest API answer-model probes address model-recency concerns. On the clean, format-stable subset (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gemini-3.1-flash-lite-preview`), chronological/no-label stale=16 has EM 1.000, reverse/no-label stale=1/16 has EM 0.000 with stale copied 1.000, and reverse+latest/outdated stale=16 recovers to EM 1.000. Treat other Gemini rows with empty/truncated outputs as API/prompt-format caveats, not central mechanism evidence.
 
 ## Important Local Files
 
@@ -92,6 +98,9 @@ scripts/summarize_prompt_robustness.py
 scripts/smoke_test.py
 scripts/generate_constrained_sft.py
 scripts/train_constrained_sft.py
+scripts/probe_api_answer_model.py
+scripts/summarize_api_latest_model_probe.py
+scripts/run_p84_api_latest_models_tang2.sh
 ```
 
 Main data:
@@ -121,6 +130,10 @@ results/p65_prompt_robustness/
 results/p65_prompt_robustness_summary/
 results/p65_diagnostics/
 results/p65_stability/
+results/p83_conflict_type_probe_summary/
+results/p83_stale_conflict_dose_summary/
+results/p83_stale_specific_removal_trace/
+results/p84_api_latest_model_probe_summary/
 ```
 
 Historical context:
@@ -300,18 +313,17 @@ Workflow entries should include:
 
 ## Recommended Next Work
 
-The project should now respond directly to the strict simulated reviewer concerns in `docs/critical_review.md`. Treat that review as the current threat model: without external baselines, larger/more diverse data, related work, and deeper mechanism analysis, the project is likely workshop-level rather than a strong Findings/main-track submission.
+After the completed P8.3/P8.4 mechanism and latest-model probes, the default priority is now **paper production and narrative clarification**, not more broad experiments unless a reviewer/advisor asks for a specific missing control. The next group-meeting material should follow the paper logic rather than mechanically listing experiment tables.
 
 Default priority order:
 
-1. **External baseline feasibility and evaluation.** First try Mem0 because it is likely the lowest-cost real external memory SDK. Then investigate Memory-R1 if code/checkpoints are actually obtainable and runnable. MemGPT/Letta can be probed if they expose enough state. External baselines must be isolated from the main environment and must expose enough memory state to compute stale same-slot burden, not just final answer EM.
-2. **Answer-layer failure analysis.** Deepen the Constrained CRUD k=16 finding where state accuracy is 1.00 but slot-prompt EM is only about 0.70. Run oracle-retrieval, retrieval top-k/context-length sensitivity, prompt variants, and case studies. Treat clean-state answer failure as a central research question, not a footnote.
-3. **Mechanism experiments for stale burden.** Add interventions such as raw_add stale-entry deletion or stale filtering to measure how EM recovers as stale same-slot burden is removed. This should distinguish correlation from mechanism and test whether there is a tipping point.
-4. **Same-method-family tradeoff curves.** Run heuristic CRUD threshold sweeps, e.g. cosine thresholds 0.70/0.80/0.85/0.90/0.95, so the paper has a genuine parameterized tradeoff curve rather than only scatter points from different methods.
-5. **Data scale and diversity expansion.** Add a separate opt-in split with more examples, more attributes, and more paraphrased explicit update templates. Preserve exact `(entity, attribute)` slot semantics. Do not mix implicit updates into the main split until their gold semantics are precisely defined.
-6. **Related work and positioning.** Add a serious related-work section covering AMemGym, Ledger-QA/UMA, Memory-R1, Mem0, MemGPT/Letta, LoCoMo/LongMemEval, dialogue state tracking, and knowledge editing. Position MemUpdateBench narrowly as repeated same-slot update diagnostics, not as a broad memory benchmark.
-7. **Long25 stability and repair.** Finish current seed stability checks. Consider repair training only if diagnostics point to a specific failure target such as operation selection or NOOP discrimination. Do not frame repair as the main contribution unless it is validated across the four benchmark axes.
-8. **k=32 stress.** Add k=32 only after external baseline feasibility and core diagnostics are under control, or when it directly tests extrapolation/saturation behavior requested by reviewers/advisors.
+1. **Rewrite the manuscript story first.** Define `slot_direct`, `slot_prompt`, `raw_add`, `latest_per_slot`, context order, version labels, EM/F1, stale copied, and stale same-slot burden before presenting numbers. The paper should read as a mechanism argument, not a results dump.
+2. **Frame the central claim narrowly.** State that stale same-slot conflict is an order- and metadata-sensitive version-arbitration failure. Do not claim stale same-slot is always the strongest distractor; use the P8.3 conflict-type decomposition as a boundary result.
+3. **Use P8.4 latest-model evidence carefully.** The stable latest-model subset supports the mechanism across current GPT-family models and one Gemini flash-lite model. Treat empty/truncated Gemini outputs as API/prompt-format caveats.
+4. **Integrate figures/tables.** Prioritize dose-response, latest/outdated repair, stale-specific removal, latest-model replication, and a clear benchmark overview figure. Every table/figure must explain what each method/condition name means.
+5. **Numerical consistency audit.** Cross-check manuscript numbers against `paper/p80_canonical_main_number_ledger.md`, `paper/p83_stale_same_slot_conflict_plan_note.md`, `paper/p84_latest_api_model_probe_note.md`, and generated summaries before editing final prose.
+6. **Update presentation only after paper narrative stabilizes.** The next PPT should mirror the paper: problem definition → benchmark design → failure decomposition → main evidence → mechanism → latest-model robustness → limitations.
+7. **Only add new experiments if they resolve a named narrative gap.** Candidate gaps include harder real-context API probes for Gemini, or a more natural prompt for API models, but these should not distract from manuscript integration.
 
 Experimental expansion is allowed and encouraged when it addresses reviewer-risk evidence. For any new split or method, keep exact `(entity, attribute)` slot semantics, run deterministic oracle sanity first when applicable, analyze errors before interpreting learned-manager results, and document commands/metrics/conclusions in `WORKFLOW.md`.
 
