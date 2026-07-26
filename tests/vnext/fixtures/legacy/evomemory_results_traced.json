@@ -1,0 +1,94 @@
+{
+  "summary": {
+    "benchmark": "evomemory",
+    "mode": "raw_add",
+    "answer_mode": "slot_prompt",
+    "answer_topk": 2,
+    "context_order": "reverse_chronological",
+    "context_annotation": "none",
+    "save_answer_traces": true,
+    "num_examples": 2,
+    "avg_em": 0.5,
+    "legacy_analysis_metadata": {
+      "legacy_phase": "P6.5",
+      "fixture_origin": "handwritten_synthetic",
+      "contains_private_payload": false
+    }
+  },
+  "results": [
+    {
+      "example_id": 0,
+      "shard_local_example_id": 0,
+      "question": "Where does my friend Alex currently live?",
+      "gold_answer": "Suzhou",
+      "predicted": "Wuxi",
+      "f1": 0.0,
+      "em": 0.0,
+      "value_em": false,
+      "answer_value_present": false,
+      "state_value_em": true,
+      "answer_trace": {
+        "answer_topk": 2,
+        "retrieved_entries": [
+          {
+            "rank": 1,
+            "id": "synthetic-entry-current",
+            "score": 0.91,
+            "content": "User says: my friend Alex moved to Suzhou.",
+            "slot": {
+              "entity": "friend_alex",
+              "attribute": "location",
+              "value": "Suzhou",
+              "event_idx": 3
+            },
+            "source_event_id": "synthetic-p63-k2:event:3",
+            "has_gold_value": true,
+            "stale_same_slot": false
+          },
+          {
+            "rank": 2,
+            "id": "synthetic-entry-stale",
+            "score": 0.83,
+            "content": "User says: my friend Alex lives in Wuxi.",
+            "slot": {
+              "entity": "friend_alex",
+              "attribute": "location",
+              "value": "Wuxi",
+              "event_idx": 0
+            },
+            "source_event_id": "synthetic-p63-k2:event:0",
+            "has_gold_value": false,
+            "stale_same_slot": true
+          }
+        ],
+        "source_event_ids": [
+          "synthetic-p63-k2:event:3",
+          "synthetic-p63-k2:event:0"
+        ],
+        "gold_value_in_retrieved": true,
+        "stale_same_slot_in_retrieved": true,
+        "same_name_distractor_in_retrieved": false,
+        "stale_same_slot_values": ["Wuxi"],
+        "predicted_answer": "Wuxi",
+        "gold_answer": "Suzhou",
+        "em": 0.0,
+        "f1": 0.0,
+        "value_em": false,
+        "answer_value_present": false,
+        "state_value_em": true
+      }
+    },
+    {
+      "example_id": 1,
+      "shard_local_example_id": 1,
+      "question": "Where does my friend Alex currently live?",
+      "gold_answer": "Suzhou",
+      "predicted": "Suzhou",
+      "f1": 1.0,
+      "em": 1.0,
+      "value_em": true,
+      "answer_value_present": true,
+      "state_value_em": true
+    }
+  ]
+}

@@ -32,6 +32,10 @@ data/
 *.log
 *.csv
 *.json
+!tests/vnext/fixtures/legacy/*.csv
+!tests/vnext/fixtures/legacy/*.json
+!schemas/vnext/*.schema.json
+!schemas/legacy/*.schema.json
 !agent_meta.json
 !memory_store.json
 !diagnostics.json

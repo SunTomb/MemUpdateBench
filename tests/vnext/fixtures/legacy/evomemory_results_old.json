@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "benchmark": "evomemory",
+    "mode": "raw_add",
+    "answer_mode": "slot_prompt",
+    "num_examples": 2,
+    "avg_em": 0.5,
+    "avg_f1": 0.5,
+    "legacy_analysis_metadata": {
+      "legacy_phase": "P6.3",
+      "fixture_origin": "handwritten_synthetic",
+      "contains_private_payload": false
+    }
+  },
+  "results": [
+    {
+      "example_id": 0,
+      "shard_local_example_id": 0,
+      "question": "Where does my friend Alex currently live?",
+      "gold_answer": "Suzhou",
+      "predicted": "Wuxi",
+      "f1": 0.0,
+      "em": 0.0,
+      "value_em": false,
+      "answer_value_present": false,
+      "state_value_em": true,
+      "num_events": 4,
+      "num_target_updates": 2,
+      "num_updates": 4,
+      "legacy_note": null
+    },
+    {
+      "example_id": 1,
+      "shard_local_example_id": 1,
+      "question": "Where does my friend Alex currently live?",
+      "gold_answer": "Suzhou",
+      "predicted": "Suzhou",
+      "f1": 1.0,
+      "em": 1.0,
+      "value_em": true,
+      "answer_value_present": true,
+      "state_value_em": true,
+      "num_events": 3,
+      "num_target_updates": 1,
+      "num_updates": 3,
+      "legacy_note": ""
+    }
+  ]
+}

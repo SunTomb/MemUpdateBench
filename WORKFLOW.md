@@ -513,3 +513,394 @@ Gemini results require caution. `gemini-2.5-flash` and `gemini-2.5-pro` show sta
 
 P8.4 addresses the model-recency criticism without changing the paper's narrow claim. The strongest defensible statement is that the order- and metadata-sensitive stale same-slot version-arbitration failure is reproduced by current GPT API models and one current Gemini flash-lite model in a controlled answer-layer probe. Do not present these API runs as external memory baselines; they are latest-model robustness checks for the answer-layer mechanism.
 
+## vNext Phase 0 Task 15: no-network smoke and legacy bridge handoff
+
+### Motivation
+
+Task 15 closes Phase 0 by exercising the accepted vNext contracts through the normal no-network smoke entry point and documenting the legacy compatibility boundary. The work intentionally does not start the Pilot, generate model results, or turn compatibility rows into benchmark or paper claims.
+
+### Files changed
+
+```text
+scripts/smoke_test.py
+tests/vnext/test_smoke_vnext.py
+tests/vnext/test_environment.py
+.gitattributes
+docs/vnext/legacy_bridge.md
+docs/superpowers/plans/2026-07-20-memupdatebench-vnext-phase0-contract-legacy-bridge.md
+docs/superpowers/plans/2026-07-20-memupdatebench-vnext-pilot.md
+WORKFLOW.md
+```
+
+No generated acceptance artifact was written under `data/` or `results/`; all schema exports and compiled fixture outputs used temporary directories.
+
+### TDD and commands run
+
+The focused test first ran RED against the existing smoke executable: the script returned 0 with its existing `29/29` checks, but the required vNext pass line was absent. A direct import attempt also exposed an existing Windows pytest-capture interaction caused by the smoke script's stdout wrapper; Task 15 did not alter that unrelated behavior. The focused test was changed to execute the smoke script in an isolated subprocess and then passed GREEN.
+
+```bash
+PYTHONPATH=<worktree> python -m pytest tests/vnext/test_smoke_vnext.py -q
+# RED: 1 failed; required vNext pass line absent from an otherwise green 29/29 smoke run
+# GREEN: 1 passed in 9.82s
+
+PYTHONPATH=<worktree> python scripts/smoke_test.py
+# SMOKE TEST: 30/30 passed = 29 existing + 1 vNext
+
+PYTHONPATH=<worktree> python -m pytest tests/vnext \
+  --ignore=tests/vnext/test_phase0_cli.py -q
+# 1476 passed in 53.39s
+
+PYTHONPATH=<worktree> python -m pytest tests/vnext/test_phase0_cli.py -q -k 'atomic'
+# 11 passed, 28 deselected in 10.35s
+
+PYTHONPATH=<worktree> python -m pytest tests/vnext/test_phase0_cli.py -q \
+  -k '(validator or source_recompilation) and not atomic'
+# 10 passed, 29 deselected in 827.79s
+
+PYTHONPATH=<worktree> python -m pytest tests/vnext/test_phase0_cli.py -q \
+  -k 'not atomic and not validator and not source_recompilation'
+# 18 passed, 21 deselected in 184.87s
+```
+
+After the review corrections, the final focused smoke rerun passed `1` test in `19.43s`, the normal smoke executable passed `30/30`, and `python -m py_compile scripts/smoke_test.py scripts/vnext_export_schemas.py scripts/vnext_compile_legacy.py scripts/vnext_validate_artifacts.py` exited 0 with no output.
+
+The required unpartitioned command was first run exactly from the repository root before the final LF-attribute regression test was added:
+
+```bash
+python -m pytest tests/vnext -q
+# historical snapshot: 1515 passed in 1144.50s (0:19:04)
+```
+
+That 1,515-test result and the earlier nonoverlapping partition run (`1476` non-Task 14 plus `11 + 10 + 18 = 39` Task 14 tests) are retained as historical/reviewer evidence for the pre-attribute-lock snapshot.
+
+Final controller verification then ran the same exact command on the latest 1,516-test snapshot:
+
+```bash
+python -m pytest tests/vnext -q
+# final authoritative result: 1516 passed in 1298.05s (0:21:38)
+```
+
+The compile command covered every Python module under `mub/vnext/`, including `failure.py`, `io/atomic.py`, and `legacy/artifacts.py`, plus all three vNext CLIs and `scripts/smoke_test.py`:
+
+```bash
+PYTHONPATH=<worktree> python -m py_compile \
+  mub/vnext/__init__.py mub/vnext/version.py mub/vnext/profiles.py \
+  mub/vnext/schema_export.py mub/vnext/failure.py \
+  mub/vnext/contracts/{__init__,enums,common,task,runtime,score,manifest,adapter}.py \
+  mub/vnext/io/{__init__,canonical,jsonl,atomic}.py \
+  mub/vnext/validation/{__init__,issues,task,replay,split}.py \
+  mub/vnext/scoring/{__init__,registry,failures,scorer}.py \
+  mub/vnext/legacy/{__init__,artifacts,caveats,names,loaders,dataset,results,mechanisms,ledger}.py \
+  scripts/vnext_export_schemas.py scripts/vnext_compile_legacy.py \
+  scripts/vnext_validate_artifacts.py scripts/smoke_test.py
+# exit 0, no output
+```
+
+Schema acceptance exported the five canonical schemas twice to distinct `TemporaryDirectory` roots, compared the two exact SHA-256 maps, and compared them with `schemas/vnext/`. The compatibility schema was independently regenerated from `LegacyAnalysisManifest.model_json_schema(mode="serialization")` and compared byte-for-byte with `schemas/legacy/legacy_analysis_manifest.schema.json`.
+
+After review, representative commands were copied from `docs/vnext/legacy_bridge.md` and run from the repository root with `PYTHONPATH=.`. They exported five schemas, verified the canonical legacy schema at 1,829 bytes, compiled dataset/results/conflict/ledger fixtures in a temporary root, and produced `valid: true` for `tasks`, `task-manifest`, `task-runs`, `scores`, and `run-manifest`. Observed compatibility warnings were `legacy_answer_mode_unverified` for the intentionally incomplete result fixture and `unresolved_ledger_references` for the ledger fixture. The temporary command-probe root was removed afterward.
+
+Final quality review corrected the bridge's namespace wording: imported P6.x slot keys use `MemoryObjectKey(namespace="default", subkey=None, object_type="slot")`, while `legacy_p63` and related values belong only to `LegacyProvenance.legacy_metric_namespace` and compatibility metric identity. Three focused compiler tests covering exact slot identity, provenance-only legacy identity, and the immutable legacy namespace registry passed as part of a 14-test environment/schema/compiler run in `10.31s`.
+
+The already-approved Pilot implementation plan was present only in the original main workspace. It was inspected read-only, confirmed to contain planning/tasks rather than Pilot implementation artifacts, and copied byte-for-byte to `docs/superpowers/plans/2026-07-20-memupdatebench-vnext-pilot.md`. Both copies are 53,678 bytes with SHA-256 `6be5401a758074c69048728c249bfc711f1007f046ca9f47f69026be27c3bb99`; the original was not modified.
+
+A focused TDD check locked LF checkout policy for hash-sensitive artifacts. RED failed with exactly the three missing rules; after adding `text eol=lf` rules for `schemas/vnext/*.schema.json`, `schemas/legacy/*.schema.json`, and `tests/vnext/fixtures/legacy/*.md`, GREEN passed `1` test in `0.07s`. `git check-attr text eol --` reported `text: set` and `eol: lf` for representatives of all three classes. All six schema files and `ledger_references.md` contain LF-only bytes, retain the hash values below, and are unchanged by both direct LF normalization simulation and Git clean-filter simulation. Final focused verification passed 14 environment/schema/compiler tests in `10.31s`, the smoke integration test in `12.39s`, normal smoke `30/30`, and changed-file py_compile with no output. The final controller subsequently verified the complete current 1,516-test snapshot: `1516 passed in 1298.05s (0:21:38)`. This is the authoritative Phase 0 test result; the earlier 1,515-test run is a superseded snapshot retained only as historical/reviewer evidence.
+
+Fixture acceptance compiled the dataset, results, all four mechanism kinds, and ledger fixture to one temporary destination, validated all five canonical artifact kinds, recompiled to the same authenticated destination with `--overwrite`, revalidated, and compared all 15 output hashes. The source fixtures were hashed before and after. An initial cross-directory comparison correctly found that manifests differ when the authenticated absolute output root differs; payloads were stable. The final determinism check therefore used the same destination, matching the manifest authentication contract rather than removing path evidence.
+
+Read-only real-artifact checks found no P6.3 files under `data/` and no P8.3/P8.4 trees under `results/` in this worktree. Paper ledgers/notes are present, but were not substituted for authenticated source/result artifacts and were not converted into claims.
+
+Final repository checks used:
+
+```bash
+git diff --check
+git status --short
+git diff --cached --name-only
+git diff -- requirements.txt pytest.ini mub/vnext \
+  scripts/vnext_export_schemas.py scripts/vnext_compile_legacy.py \
+  scripts/vnext_validate_artifacts.py scripts/smoke_test.py schemas/vnext \
+  tests/vnext docs/vnext/legacy_bridge.md WORKFLOW.md
+```
+
+The exact plan-scoped diff command showed the tracked `WORKFLOW.md`, `requirements.txt`, and `scripts/smoke_test.py` changes. As expected, Git omitted untracked Phase 0 paths. Supplementary scoped `git status --short` identified the expected untracked `.gitattributes`, both plans, bridge guide, `mub/vnext/`, `pytest.ini`, `schemas/{vnext,legacy}/`, three vNext CLIs, and `tests/vnext/`. Explicit no-index stats reviewed the 5-line `.gitattributes`, 25-line environment test, 24-line focused smoke test, 304-line bridge guide, 1,385-line corrected Phase 0 plan, and 1,167-line exact Pilot plan copy. A recursive inventory reviewed 85 scoped files and found no trailing whitespace. `git diff --check` passed apart from Git's LF-to-CRLF warnings for both `.gitignore` and `WORKFLOW.md`; neither file was normalized merely to silence warnings. No file was staged.
+
+### Deterministic schema hash ledger
+
+| Schema | SHA-256 |
+| --- | --- |
+| `schemas/vnext/mem_update_task.schema.json` | `d02f587b7856c6f970b374fda07051ec4e2d0d7f1243be7e6ade9678ca49f2fc` |
+| `schemas/vnext/run_manifest.schema.json` | `c09278d4c82ba7167abb27c37870038b69d13747b2cb30093115b390ee0576fa` |
+| `schemas/vnext/score_record.schema.json` | `fddf41b727e699ed5a72b866b22f696be52727f6b35b5caa4d15e08eaddb0891` |
+| `schemas/vnext/task_manifest.schema.json` | `e952f446cfd574dc82c2f4a072c6c3dd7a51bc5062d62a2b043c90238a152207` |
+| `schemas/vnext/task_run_record.schema.json` | `5427ebc86482b5bfd4f6e2d41ad053552a1415b641ed384c3836f39d2275de2a` |
+| `schemas/legacy/legacy_analysis_manifest.schema.json` | `ee5193147b4df6d052c4cfa2df6e71e1ac2115fffcf6fc07ba697c7a69bd5877` |
+
+### Deterministic fixture output hash ledger
+
+These hashes are from the observed temporary destination. Manifest hashes intentionally authenticate that absolute destination and therefore differ across different output roots while remaining exact across overwrite recompilation to the same root.
+
+| Temporary relative output | SHA-256 |
+| --- | --- |
+| `api/legacy_analysis.jsonl` | `aa7a1193709204e7dc9de24d7788e8e86b4bb510396f2052f6003d5752728026` |
+| `api/legacy_analysis_manifest.json` | `9f4af23677cae4bd03dd5cd3a0ddc7e4c369a0cf08c6b1a974e45be90215e2fc` |
+| `conflict/legacy_analysis.jsonl` | `df2a5dcef527e608e68b4c141ee2dc00decbf2c833574c37747409d7dfee692b` |
+| `conflict/legacy_analysis_manifest.json` | `d1037ab9752d4235354e4fa9e012365568a6f206465578f63cdc807d14811441` |
+| `dose/legacy_analysis.jsonl` | `2279272935e22b1f117ddf2a045c3e8814aef49bad97657499bb67b6f9dc96af` |
+| `dose/legacy_analysis_manifest.json` | `b9e5b1799ea2cc23727a958c2e2d9a25beec9a7e9f35075ff36ff78b18dcc82e` |
+| `ledger/ledger_audit.json` | `e40f77ee558792ac72e1b2f6d843f71cf4e5f786f34190598596ee07e55025f5` |
+| `ledger/legacy_analysis_manifest.json` | `c09ac6dbcbbdf51b5c4dff8bf987a77222f8994fb3ebd5ee34f48c32be18be57` |
+| `results/run_manifest.json` | `721cc3cd496a7a8289e2642551366f5c6600a78012fbe828192d319792a23bb9` |
+| `results/scores.jsonl` | `bb9db7c8211934a652d8faec002adeaab04de7abae1d0c935f306664dc01257a` |
+| `results/task_runs.jsonl` | `05730374613ffb6843e9a59d8255fa62a0d60d50633a2bec136574515a570587` |
+| `stale-removal/legacy_analysis.jsonl` | `9b4007859a7ca4747df2e086f3f2299f72328f3515d451266ed5f3f993cabc70` |
+| `stale-removal/legacy_analysis_manifest.json` | `13aabe9bc840de1c7265634467552afe4e7c4240baf5defeaa5d3dccadcf8231` |
+| `tasks/task_manifest.json` | `fc38d4aaa221db6061b3004a3b1d45ba7217344c9bd2f3aa2341e7c67cc3a86c` |
+| `tasks/tasks.jsonl` | `a93b5613bab7214d4eb687c6e79232814031058b5adb38a4aeb919d32784b617` |
+
+Fixture record counts were: two tasks, two runtime records, two score records, conflict/dose/stale-removal two rows each, API three rows, and one ledger audit.
+
+### Immutable source hash ledger
+
+| Fixture | SHA-256 before and after |
+| --- | --- |
+| `p63_dataset_minimal.json` | `18b4c1346da3c4ee723be89882c764df3fa3d99a45d0ec121009244909caf47f` |
+| `evomemory_results_old.json` | `0070edab3bb643680b23a2de0f760364b16e5d7f14dc10ec12760a91b0bdf960` |
+| `p83_conflict_rows.csv` | `88395320807df32898345511906e8116e3b5c4f59e09b6f3fe95bfcbf9b8e4e8` |
+| `p83_synthetic_dose_rows.csv` | `97a2528eeb01208710bfeb0ebdaacde69799bd4b8d3f9c92899b6d2de3da36d9` |
+| `p83_stale_removal_rows.csv` | `f0990d9cc72ea48669ba1b0092814732af92a5f7a06fae057d8d5d5e676b4026` |
+| `p84_api_rows.csv` | `fad6fe12443580ef1e94f39c86d5d2cfcb4bb94eafe8a45124e6fd4dfaf0210e` |
+| `ledger_references.md` | `66e59c4ed7bf0340e1bea0b4e0d2d85a08ead75f9cc366f4341717687033b752` |
+
+### Warnings, conclusion, and next steps
+
+- Smoke emitted the expected FAISS-unavailable numpy-fallback logs; all checks passed.
+- The fixture ledger intentionally reports `unresolved_ledger_references`; that warning remains visible in its compatibility manifest.
+- Real P6.3/P8.3/P8.4 source/result artifacts are absent from this worktree, so read-only real-artifact authentication is unavailable here.
+- The authoritative Phase 0 plan acceptance line 1361 was corrected to match the approved design and current code: identity is exactly `(namespace, entity, attribute, subkey)`, while `object_type` is classification metadata excluded from identity.
+- Phase 0 creates compatibility/regression artifacts only. It reports no Pilot/model metric and makes no new paper claim.
+- No commit or push was made. The corrected Phase 0 plan and implementation remain in the isolated `vnext-phase0` worktree. Read-only inspection of the original main workspace found overlapping uncommitted changes in `WORKFLOW.md` and `scripts/smoke_test.py` plus an untracked Phase 0 plan, so later synchronization requires manual/three-way reconciliation rather than overwriting either workspace. The original main workspace was not modified by Task 15.
+- The next process step is independent spec/quality review of this Task 15 handoff. Do not start the Pilot until Phase 0 is reviewed and accepted.
+
+## vNext Phase 0 Task 118: final integration revalidation
+
+### Motivation and gate status
+
+Task 118 regenerates and revalidates the integrated Phase 0 snapshot after Task 116 and Task 117 both passed their required gates: `SPEC_COMPLIANT` and `QUALITY_APPROVED`. This is integration/regeneration evidence only. It does not declare `FINAL_APPROVED`, does not declare Phase 0 complete, and does not start the Pilot. The final whole-phase reviewer remains required.
+
+Task 118 intentionally changed only:
+
+```text
+schemas/vnext/mem_update_task.schema.json
+WORKFLOW.md
+```
+
+The other four checked vNext schemas regenerated byte-identically. No source fixture, legacy result, paper artifact, Pilot implementation file, or original-main-workspace file was changed.
+
+### Fresh commands and authoritative results
+
+Baseline status and immutable inputs were captured before generation:
+
+```bash
+git status --short
+python scripts/vnext_export_schemas.py --help
+python <Task118 SHA-256 baseline script>
+```
+
+The baseline contained five checked schemas, eleven files under `tests/vnext/fixtures/legacy/`, and the pre-Task118 WORKFLOW hash. The complete immutable source hash ledger is below.
+
+Checked schemas were regenerated transactionally through the official interface, not edited by hand:
+
+```bash
+PYTHONPATH=. python scripts/vnext_export_schemas.py --output-dir schemas/vnext
+```
+
+Result:
+
+```text
+Exported 5 vNext schemas to schemas\vnext
+schema_debris=0
+```
+
+Only `mem_update_task.schema.json` changed. Its old stale hash was `d02f587b7856c6f970b374fda07051ec4e2d0d7f1243be7e6ade9678ca49f2fc`; its regenerated hash is `d377d386296aac94731df81cc5de4fd21a43433538f2bc62ec36c3d945e8b4ec`. The regenerated schema contains typed `GeneratorProvenance` under `$defs`, and `SourceRecord.generator` references it.
+
+A second complete official export used a clean `TemporaryDirectory`, matched all five checked filenames and bytes, and was removed automatically:
+
+```text
+deterministic_schema_files=5
+byte_exact=PASS
+temp_cleaned=PASS
+```
+
+Full schema tests ran without deselection:
+
+```bash
+python -m pytest tests/vnext/test_schema_export.py -q
+# 17 passed in 15.02s
+```
+
+The exact full suite then ran fresh from the repository root:
+
+```bash
+python -m pytest tests/vnext -q
+# 1743 passed, 8 skipped in 1331.98s (0:22:11)
+```
+
+This `1743 passed, 8 skipped` result supersedes the earlier 1,516-era acceptance snapshot as the authoritative Task 118 integration result. The eight skips are explicitly limited to Windows symlink-privilege cases (`WinError 1314`) in `tests/vnext/test_atomic_quality.py`: four foreign-symlink prepared-recovery cases and four broken reserved-reparse transaction-marker cases. They are not hidden failures.
+
+Fresh smoke:
+
+```bash
+python scripts/smoke_test.py
+# SMOKE TEST: 30/30 passed
+```
+
+Fresh compilation used an explicit Python inventory script equivalent to:
+
+```bash
+python -m py_compile <all mub/vnext/**/*.py> \
+  scripts/vnext_export_schemas.py scripts/vnext_compile_legacy.py \
+  scripts/vnext_validate_artifacts.py scripts/smoke_test.py \
+  scripts/prepare_data.py scripts/eval_evomemory.py \
+  scripts/analyze_ood_errors.py scripts/analyze_action_pathology.py \
+  scripts/summarize_update_frequency.py scripts/summarize_prompt_robustness.py \
+  scripts/generate_constrained_sft.py scripts/train_constrained_sft.py
+# py_compile_files=47, exit=0
+```
+
+### Focused deterministic and artifact validation
+
+A same-destination, overwrite-enabled temporary fixture pipeline compiled dataset, results, all four mechanism kinds, and ledger twice. It ran the official validator for `tasks`, `task-manifest`, `task-runs`, `scores`, and `run-manifest`; parsed canonical task/run/score manifests and rows with their public models; and parsed all mechanism/ledger compatibility manifests with `LegacyAnalysisManifest`.
+
+```text
+artifact_files=15
+deterministic_same_destination=PASS
+validators=5
+typed_reconstruction=PASS
+```
+
+An initial separate-root comparison was rejected during the acceptance script because authenticated manifests intentionally encode absolute output paths. The corrected same-destination check passed; contract authentication was not weakened. Temporary transaction lock files existed only inside the task-local `TemporaryDirectory` and were removed with it.
+
+Focused authenticated-artifact and atomic-publication tests ran separately:
+
+```bash
+python -m pytest \
+  tests/vnext/test_phase0_cli.py::test_dataset_cli_writes_canonical_tasks_and_exact_manifest \
+  tests/vnext/test_phase0_cli.py::test_results_cli_writes_canonical_records_and_authenticated_manifest \
+  tests/vnext/test_phase0_cli.py::test_mechanism_and_ledger_subcommands_emit_typed_compatibility_manifests \
+  tests/vnext/test_phase0_cli.py::test_atomic_publication_rolls_back_staged_set_on_prepublish_failure \
+  tests/vnext/test_phase0_cli.py::test_atomic_rejects_existing_destination_aliases -q
+# 5 passed in 61.23s
+```
+
+Fixture record counts were two tasks, two runtime records, two score records, two conflict rows, two dose rows, two stale-removal rows, three API rows, and one ledger audit.
+
+### Fresh schema hash ledger
+
+| Checked schema | Task 118 SHA-256 |
+| --- | --- |
+| `mem_update_task.schema.json` | `d377d386296aac94731df81cc5de4fd21a43433538f2bc62ec36c3d945e8b4ec` |
+| `run_manifest.schema.json` | `c09278d4c82ba7167abb27c37870038b69d13747b2cb30093115b390ee0576fa` |
+| `score_record.schema.json` | `fddf41b727e699ed5a72b866b22f696be52727f6b35b5caa4d15e08eaddb0891` |
+| `task_manifest.schema.json` | `e952f446cfd574dc82c2f4a072c6c3dd7a51bc5062d62a2b043c90238a152207` |
+| `task_run_record.schema.json` | `5427ebc86482b5bfd4f6e2d41ad053552a1415b641ed384c3836f39d2275de2a` |
+
+### Fresh fixture artifact hash ledger
+
+These hashes are from the successful same-destination temporary compilation. Manifest hashes authenticate that temporary absolute path; payload hashes are path-independent.
+
+| Relative artifact | SHA-256 |
+| --- | --- |
+| `tasks/tasks.jsonl` | `697e0808d13ef0ca0fa5deba8805d74088cf6a7ebfc488dfb654d1b147783f38` |
+| `tasks/task_manifest.json` | `1b8bf07d2a4cf5799cf3f647a6ebfa8a33639f0e05055d2e1f4a9fc92ab7d9fb` |
+| `results/task_runs.jsonl` | `afa94d67c1f22b991a08652fd0e136d1935e69fe4bea7d22bfed9f1209c816f3` |
+| `results/scores.jsonl` | `96bb6d2017167a366b876bcbc58573814f85dc8fc16020f6b5301f0dc194c611` |
+| `results/run_manifest.json` | `05b135ba99bdf9142caee0b5e664f6ed4a314661f7fd12b1f471069fb740cca1` |
+| `conflict/legacy_analysis.jsonl` | `df2a5dcef527e608e68b4c141ee2dc00decbf2c833574c37747409d7dfee692b` |
+| `conflict/legacy_analysis_manifest.json` | `cc574c982c17054af4f3574ef3318905ee27defcf8708357d6a57f612d36bc8d` |
+| `dose/legacy_analysis.jsonl` | `2279272935e22b1f117ddf2a045c3e8814aef49bad97657499bb67b6f9dc96af` |
+| `dose/legacy_analysis_manifest.json` | `0578dbee974de59851c278f5e06e236e651427390d65287c912852ca5db2f0e3` |
+| `stale-removal/legacy_analysis.jsonl` | `9b4007859a7ca4747df2e086f3f2299f72328f3515d451266ed5f3f993cabc70` |
+| `stale-removal/legacy_analysis_manifest.json` | `491505acd3836955a74c359f991dfdb397f292082137abe439be037df27b6344` |
+| `api/legacy_analysis.jsonl` | `aa7a1193709204e7dc9de24d7788e8e86b4bb510396f2052f6003d5752728026` |
+| `api/legacy_analysis_manifest.json` | `4a3d319de6eed37fe4c53b552ce380b0d0af8ecb8099934406efe9d587eaf964` |
+| `ledger/ledger_audit.json` | `e40f77ee558792ac72e1b2f6d843f71cf4e5f786f34190598596ee07e55025f5` |
+| `ledger/legacy_analysis_manifest.json` | `18d2a2d79f3edddb514bf2fe4807079ba75f9c2ba910cb85f187eca6c602af98` |
+
+### Immutable source before/after ledger
+
+All eleven source fixture hashes after every generation, validation, test, and smoke command exactly matched the pre-generation baseline:
+
+| Immutable source | SHA-256 before and after |
+| --- | --- |
+| `evomemory_results_old.json` | `0070edab3bb643680b23a2de0f760364b16e5d7f14dc10ec12760a91b0bdf960` |
+| `evomemory_results_traced.json` | `cdb3de2b4b01c7279817942ccc49b0e3776f37d2076173482a4e43f7880f1c74` |
+| `ledger_fenced_references.md` | `5c82b215d3ccd400303de06c3ea37f3939fea908f5e18f1dc87f7d5f5bb46206` |
+| `ledger_references.md` | `66e59c4ed7bf0340e1bea0b4e0d2d85a08ead75f9cc366f4341717687033b752` |
+| `p63_dataset_minimal.json` | `18b4c1346da3c4ee723be89882c764df3fa3d99a45d0ec121009244909caf47f` |
+| `p65_prompt_summary_minimal.json` | `b31dbf21ab53871cf4d814ed37748f1982b321b9cdb729df7fd887f4bee7f660` |
+| `p83_conflict_rows.csv` | `88395320807df32898345511906e8116e3b5c4f59e09b6f3fe95bfcbf9b8e4e8` |
+| `p83_stale_removal_rows.csv` | `f0990d9cc72ea48669ba1b0092814732af92a5f7a06fae057d8d5d5e676b4026` |
+| `p83_synthetic_dose_rows.csv` | `97a2528eeb01208710bfeb0ebdaacde69799bd4b8d3f9c92899b6d2de3da36d9` |
+| `p84_api_rows.csv` | `fad6fe12443580ef1e94f39c86d5d2cfcb4bb94eafe8a45124e6fd4dfaf0210e` |
+| `p84_api_state_rows.csv` | `175f48206a69c6d43d43d32645d70ddf31ecb91faa8e8191deb6a238863dc45d` |
+
+### Final repository and scope checks
+
+```bash
+git diff --check
+git diff --cached --name-only
+git status --short
+python <Task118 final-newline/whitespace/debris/scope script>
+```
+
+Fresh result:
+
+```text
+git diff --check: exit 0
+staged files: none
+fixture_immutability=11 PASS
+schema_changed=['mem_update_task.schema.json']
+schema_newlines=PASS
+whitespace=PASS
+prohibited_debris=0
+coordination_locks=1
+no_pilot=PASS
+```
+
+Git emitted the existing LF-to-CRLF advisories for `.gitignore` and `WORKFLOW.md`; no unrelated file was normalized to hide them. The single `schemas/.mub-vnext-publish-<hash>.lock` is the current atomic publisher's intentional one-byte persistent coordination lock, verified against `_directory_lock`; it is not journal/tombstone/witness/stage/backup debris and was not deleted. No tracked `data/`, `results/`, or `paper/` file changed. No transaction journal, tombstone, witness, stage, temporary, or backup file remains. No file is staged, and no commit or push was made.
+
+### Conclusion, limitation, and next step
+
+Task 118 found and corrected one integration artifact: the checked `MemUpdateTask` schema was stale relative to the current typed `GeneratorProvenance` contract. Official regeneration, deterministic re-export, schema tests, the exact full suite, smoke, py_compile, focused artifact reconstruction, atomic tests, and source immutability all passed.
+
+This is not a Phase 0 completion or acceptance declaration. The Pilot remains blocked. The next step is the coordinator-dispatched final whole-Phase-0 reviewer, which must decide whether the integrated Phase 0 snapshot is accepted.
+
+## vNext Phase 0 final whole-phase gate
+
+### Decision
+
+The independent whole-Phase-0 reviewer returned:
+
+```text
+FINAL_APPROVED
+```
+
+This decision supersedes only Task 118's pending-review status. Task 118's fresh integration evidence remains authoritative:
+
+```text
+python -m pytest tests/vnext -q
+# 1743 passed, 8 skipped in 1331.98s (0:22:11)
+
+python scripts/smoke_test.py
+# SMOKE TEST: 30/30 passed
+```
+
+The eight skips are the documented Windows symlink-privilege (`WinError 1314`) cases, not hidden failures. Available Windows junction/reparse and hardlink equivalents passed. Schema regeneration and byte-exact re-export, 47-file compilation, focused artifact validation, and all eleven immutable fixture before/after hashes also passed as recorded above.
+
+### Accepted scope and publication boundary
+
+Phase 0 is accepted as contract, validation, scoring, provenance, legacy-compatibility, and transactional-publication infrastructure. It produced no Pilot dataset, model result, external-validity result, benchmark metric, or new paper claim.
+
+The approved Pilot plan now satisfies its Phase 0 prerequisite, but Pilot status remains `NOT_STARTED`. Beginning Pilot implementation requires a separate explicit instruction.
+
+The accepted snapshot is published from the isolated `worktree-vnext-phase0` worktree. This publication does not merge or overwrite the independently dirty main workspace, whose newer P8.5/API content requires later manual or three-way reconciliation.

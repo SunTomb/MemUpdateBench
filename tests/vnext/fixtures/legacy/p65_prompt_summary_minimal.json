@@ -1,0 +1,22 @@
+{
+  "analysis_metadata": {
+    "legacy_phase": "P6.5",
+    "artifact_kind": "prompt_robustness_retrieval_summary",
+    "fixture_origin": "handwritten_synthetic",
+    "contains_private_payload": false
+  },
+  "rows": [
+    {
+      "method": "synthetic_raw_add",
+      "update_depth": 1,
+      "gold_retrieval_rate": 1.0,
+      "stale_retrieval_rate": 0.0
+    },
+    {
+      "method": "synthetic_raw_add",
+      "update_depth": 2,
+      "gold_retrieval_rate": 0.5,
+      "stale_retrieval_rate": 1.0
+    }
+  ]
+}

@@ -29,11 +29,13 @@ UPDATE <entity>.<attribute> = <value>
 NOOP
 ```
 
-Central invariant:
+Central invariant for the existing P6/P8 experimental line:
 
 ```text
-exact slot resolution by (entity, attribute)
+exact legacy slot resolution by (entity, attribute)
 ```
+
+The vNext canonical identity extends this to the four-part object key defined below.
 
 Most analysis should distinguish:
 
@@ -73,6 +75,30 @@ Recent mechanism lock:
 - P8.3 shows the claim must be nuanced: stale same-slot conflict is an **order- and metadata-sensitive version arbitration failure**, not a universally strongest distractor. The conflict-type decomposition found `unrelated_distractors` harder than `stale_same_slot` in one surface construction, so do not claim stale same-slot is always the strongest distractor.
 - P8.3 synthetic dose-response is the strongest mechanism evidence: reverse/no-label stale=8 EM 0.000 and stale=16 EM 0.031, while reverse+latest/outdated label reaches EM 1.000 at stale=8 and stale=16. Gold is in context; missing current-version signal causes stale copying.
 - P8.4 latest API answer-model probes address model-recency concerns. On the clean, format-stable subset (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gemini-3.1-flash-lite-preview`), chronological/no-label stale=16 has EM 1.000, reverse/no-label stale=1/16 has EM 0.000 with stale copied 1.000, and reverse+latest/outdated stale=16 recovers to EM 1.000. Treat other Gemini rows with empty/truncated outputs as API/prompt-format caveats, not central mechanism evidence.
+
+## vNext Status
+
+MemUpdateBench vNext Phase 0 is `FINAL_APPROVED`. It establishes the reusable contract, validation, scoring, provenance, legacy-compatibility, and transactional-publication foundation; it does not add Pilot examples, model results, external-validity evidence, benchmark metrics, or paper claims.
+
+Canonical vNext memory-object identity is exactly:
+
+```text
+(namespace, entity, attribute, subkey)
+```
+
+`object_type` is classification metadata and is excluded from identity, semantic hashes, replay keys, and exact object resolution. Imported P6.x `(entity, attribute)` slots use `namespace="default"` and `subkey=null`; legacy phase and metric names remain provenance rather than canonical namespaces.
+
+Authoritative vNext references:
+
+```text
+docs/specs/memupdatebench_vnext_benchmark_design.md
+docs/superpowers/plans/2026-07-20-memupdatebench-vnext-phase0-contract-legacy-bridge.md
+docs/superpowers/plans/2026-07-20-memupdatebench-vnext-pilot.md
+docs/vnext/legacy_bridge.md
+WORKFLOW.md
+```
+
+The approved next engineering milestone is the 1,440-task Families A–D Pilot, which must reuse the Phase 0 contracts rather than introduce parallel task, runtime, score, capability, or manifest dictionaries. Pilot status remains `NOT_STARTED`; beginning it requires a separate explicit instruction. Files under `tests/vnext/fixtures/legacy/` are immutable authenticated regression inputs and must not be edited during Pilot work.
 
 ## Important Local Files
 
@@ -313,7 +339,7 @@ Workflow entries should include:
 
 ## Recommended Next Work
 
-After the completed P8.3/P8.4 mechanism and latest-model probes, the default priority is now **paper production and narrative clarification**, not more broad experiments unless a reviewer/advisor asks for a specific missing control. The next group-meeting material should follow the paper logic rather than mechanically listing experiment tables.
+After Phase 0 `FINAL_APPROVED`, the primary engineering milestone is the approved vNext Pilot. It must consume the Phase 0 contracts and preserve the exact four-part object identity; do not start it without a separate explicit instruction. Paper production and narrative clarification remain a bounded parallel track, and broad new experiments should still be added only to resolve named reviewer or benchmark-engineering gaps. The next group-meeting material should follow the paper logic rather than mechanically listing experiment tables.
 
 Default priority order:
 

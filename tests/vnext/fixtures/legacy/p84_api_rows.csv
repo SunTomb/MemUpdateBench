@@ -1,0 +1,4 @@
+example_id,condition,stale_count,model,prompt_sha256,gold,prediction,raw_response,em,stale_copied,latency_seconds,row_status,caveat,capacity_failed,provenance
+synthetic-api-1,chronological_none,16,synthetic-current-model,aa763699d785dc8f,Suzhou,Suzhou,Suzhou,1.0,0.0,0.321,clean,,0.0,handwritten_synthetic
+synthetic-api-2,reverse_chronological_none,16,synthetic-current-model,64a135c60de837a7,Suzhou,,,,,,empty_truncated_response_caveat,empty_or_truncated_response,,handwritten_synthetic
+synthetic-api-3,reverse_chronological_none,16,synthetic-current-model,64a135c60de837a7,Suzhou,,,,,,capacity_failed,capacity_exhausted,1.0,handwritten_synthetic

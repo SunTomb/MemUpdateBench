@@ -1,0 +1,3 @@
+condition,example_id,attribute,entity,gold_answer,distractor_count,predicted,em,f1,value_em,answer_value_present,stale_value_copied,prompt,provenance
+stale_same_slot,0,location,friend_alex,Suzhou,4,Wuxi,0.0,0.0,0.0,False,True,synthetic prompt omitted,handwritten_synthetic
+unrelated_distractors,1,company,coworker_bob,Tencent,4,Tencent,1.0,1.0,1.0,True,False,synthetic prompt omitted,handwritten_synthetic

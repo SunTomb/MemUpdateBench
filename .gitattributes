@@ -1,0 +1,5 @@
+tests/vnext/fixtures/legacy/*.json text eol=lf
+tests/vnext/fixtures/legacy/*.csv text eol=lf
+tests/vnext/fixtures/legacy/*.md text eol=lf
+schemas/vnext/*.schema.json text eol=lf
+schemas/legacy/*.schema.json text eol=lf

@@ -1,0 +1,5 @@
+example_id,condition,stale_count,model,prompt_sha256,gold,prediction,raw_response,em,stale_copied,latency_seconds,row_status,caveat,capacity_failed,raw_response_path,raw_response_sha256,provenance
+api-gpt,chronological_none,16,gpt-5.5,0123456789abcdef,Suzhou,Suzhou,Suzhou,1.0,0.0,0.2,clean,,0.0,,,handwritten_synthetic
+api-flash,chronological_none,16,gemini-2.5-flash,1111111111111111,Suzhou,,,0.0,0.0,0.2,clean,empty_or_truncated_response,0.0,,,handwritten_synthetic
+api-pro,reverse_chronological_none,16,gemini-2.5-pro,2222222222222222,Suzhou,,,,,,capacity_failed,capacity_exhausted,1.0,,,handwritten_synthetic
+api-flash-lite,reverse_chronological_latest_outdated_label,16,gemini-3.1-flash-lite-preview,3333333333333333,Suzhou,Suzhou,Suzhou,1.0,0.0,0.2,clean,,0.0,,,handwritten_synthetic

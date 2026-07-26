@@ -398,6 +398,275 @@ def test_api_probe_helpers(results: SmokeTestResult) -> None:
         results.fail("API probe helpers", exc)
 
 
+def test_vnext_contracts(results: SmokeTestResult) -> None:
+    print("\n[8/8] Testing vNext contracts...")
+    name = "vNext contracts, replay, serialization, and capability gating"
+    try:
+        from mub.vnext.contracts import (
+            ActionScope,
+            AnswerSchema,
+            CompletionStatus,
+            Difficulty,
+            EvaluationMode,
+            EventRole,
+            MemUpdateTask,
+            MemoryObjectKey,
+            MetricFieldSupport,
+            Operation,
+            QueryType,
+            RunManifest,
+            ScoreRecord,
+            SourceType,
+            Split,
+            SupportReason,
+            TaskFamily,
+            TaskManifest,
+            TaskRunRecord,
+        )
+        from mub.vnext.contracts.score import SCORE_LAYER_TYPES
+        from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
+        from mub.vnext.io.jsonl import read_models, write_models
+        from mub.vnext.validation import replay_actions, validate_task_semantics
+
+        assert all(
+            model.model_fields
+            for model in (
+                MemUpdateTask,
+                TaskRunRecord,
+                ScoreRecord,
+                TaskManifest,
+                RunManifest,
+            )
+        )
+
+        object_key = MemoryObjectKey(
+            object_type="slot",
+            namespace="default",
+            entity="friend:alex",
+            attribute="location",
+            subkey=None,
+        )
+        metadata_variant = MemoryObjectKey(
+            object_type="profile_field",
+            namespace="default",
+            entity="friend:alex",
+            attribute="location",
+            subkey=None,
+        )
+        assert object_key.canonical_id == metadata_variant.canonical_id
+        assert object_key.canonical_id == "default|friend:alex|location|"
+
+        task = MemUpdateTask.model_validate(
+            {
+                "task_id": "task_vnext_smoke_add_update_0001",
+                "task_family": TaskFamily.REPEATED_SAME_SLOT.value,
+                "difficulty": Difficulty.EASY,
+                "source": {
+                    "source_id": "source_vnext_smoke_0001",
+                    "source_type": SourceType.SYNTHETIC,
+                    "source_uri": "memory://vnext-smoke/source-0001",
+                    "license_or_privacy": "synthetic_redistributable",
+                    "raw_hash": "a" * 64,
+                    "normalized_hash": "b" * 64,
+                    "normalization_version": "1.0.0",
+                    "provenance": {
+                        "source_group_id": "source_group_vnext_smoke_0001",
+                        "redistributable": True,
+                    },
+                    "generator": {
+                        "generator_name": "vnext_smoke",
+                        "seed": 0,
+                        "config_sha256": "c" * 64,
+                        "code_revision": "fixed-smoke-revision",
+                        "compiler_version": "1.0.0",
+                    },
+                },
+                "events": [
+                    {
+                        "event_id": "event_0",
+                        "sequence_index": 0,
+                        "timestamp": None,
+                        "raw_text": "My friend Alex lives in Dalian.",
+                        "normalized_text": "My friend Alex lives in Dalian.",
+                        "speaker": None,
+                        "gold_action_ids": ["action_0"],
+                        "role": EventRole.STALE_SAME_SLOT,
+                    },
+                    {
+                        "event_id": "event_1",
+                        "sequence_index": 1,
+                        "timestamp": None,
+                        "raw_text": "My friend Alex relocated to Qingdao.",
+                        "normalized_text": "My friend Alex relocated to Qingdao.",
+                        "speaker": None,
+                        "gold_action_ids": ["action_1"],
+                        "role": EventRole.LATEST_GOLD,
+                    },
+                ],
+                "target_objects": [object_key],
+                "queries": [
+                    {
+                        "query_id": "query_0",
+                        "query_type": QueryType.CURRENT_STATE,
+                        "text": "Where does my friend Alex live now?",
+                        "target_object_keys": [object_key],
+                        "answer_schema": AnswerSchema.STRING,
+                        "evaluation_mode": EvaluationMode.RETRIEVED_PROMPT,
+                    }
+                ],
+                "gold": {
+                    "actions": [
+                        {
+                            "action_id": "action_0",
+                            "event_id": "event_0",
+                            "operation": Operation.ADD,
+                            "scope": ActionScope.ATTRIBUTE,
+                            "target_object_keys": [object_key],
+                            "value": "Dalian",
+                            "effective_at": None,
+                        },
+                        {
+                            "action_id": "action_1",
+                            "event_id": "event_1",
+                            "operation": Operation.UPDATE,
+                            "scope": ActionScope.ATTRIBUTE,
+                            "target_object_keys": [object_key],
+                            "value": "Qingdao",
+                            "effective_at": None,
+                        },
+                    ],
+                    "action_sequence": ["action_0", "action_1"],
+                    "final_state": {object_key.canonical_id: "Qingdao"},
+                    "version_history": {
+                        object_key.canonical_id: ["Dalian", "Qingdao"]
+                    },
+                    "expected_present_objects": [object_key],
+                    "expected_absent_objects": [],
+                    "gold_source_event_ids": ["event_1"],
+                    "gold_answers": {"query_0": "Qingdao"},
+                    "acceptable_answers": {"query_0": ["Qingdao"]},
+                },
+                "metadata": {
+                    "split": Split.TEST,
+                    "split_key": {
+                        "semantic_core_id": "semantic_core_vnext_smoke_0001",
+                        "source_group_id": "source_group_vnext_smoke_0001",
+                        "trajectory_id": "trajectory_vnext_smoke_0001",
+                        "split_policy_version": "1.0.0",
+                    },
+                    "profile_name": Difficulty.EASY,
+                    "resolved_profile": {"update_depth": 1},
+                    "generation_config_hash": "c" * 64,
+                    "compiler_version": "1.0.0",
+                },
+            }
+        )
+
+        validation = validate_task_semantics(task)
+        assert validation.valid, validation.issues
+        actions_by_id = {action.action_id: action for action in task.gold.actions}
+        replay = replay_actions(
+            actions_by_id[action_id] for action_id in task.gold.action_sequence
+        )
+        assert dict(replay.final_state) == dict(task.gold.final_state)
+        assert dict(replay.version_history) == {
+            object_key.canonical_id: ("Dalian", "Qingdao")
+        }
+        assert replay.mutation_count == 2
+
+        canonical_payload = canonical_json_bytes(task)
+        original_hash = sha256_model(task)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "task.json"
+            json_path.write_bytes(canonical_payload)
+            json_restored = MemUpdateTask.model_validate_json(json_path.read_bytes())
+            assert json_restored == task
+            assert sha256_model(json_restored) == original_hash
+
+            jsonl_path = Path(tmpdir) / "tasks.jsonl"
+            write_models(jsonl_path, [task], id_field="task_id")
+            assert jsonl_path.read_bytes() == canonical_payload + b"\n"
+            restored_rows = list(
+                read_models(jsonl_path, MemUpdateTask, id_field="task_id")
+            )
+            assert restored_rows == [task]
+            assert sha256_model(restored_rows[0]) == original_hash
+
+        score_layers = {
+            layer_name: ({"action_parse_valid": True} if layer_name == "protocol_scores" else {})
+            for layer_name in SCORE_LAYER_TYPES
+        }
+        support_map = {}
+        for layer_name, layer_type in SCORE_LAYER_TYPES.items():
+            for field_name in layer_type.model_fields:
+                if layer_name == "protocol_scores" and field_name == "action_parse_valid":
+                    continue
+                path = f"{layer_name}.{field_name}"
+                support_map[path] = MetricFieldSupport(
+                    reason=SupportReason.NOT_APPLICABLE,
+                    null_policy="exclude_from_aggregation",
+                    detail="not requested by this focused smoke row",
+                )
+        reason_cases = {
+            "answer_scores.structured_field_accuracy": (
+                SupportReason.NOT_APPLICABLE,
+                "string-answer query has no structured fields",
+            ),
+            "retrieval_scores.current_mrr": (
+                SupportReason.NOT_SUPPORTED,
+                "adapter capability does not export ranked retrieval scores",
+            ),
+            "action_scores.operation_accuracy": (
+                SupportReason.RUNTIME_FAILED,
+                "partial runtime did not complete the expected action trace",
+            ),
+            "state_scores.final_state_accuracy": (
+                SupportReason.MISSING_ARTIFACT,
+                "final state snapshot artifact is absent",
+            ),
+        }
+        for path, (reason, detail) in reason_cases.items():
+            support_map[path] = MetricFieldSupport(
+                reason=reason,
+                null_policy="exclude_from_aggregation",
+                detail=detail,
+            )
+
+        score = ScoreRecord(
+            task_id=task.task_id,
+            run_id="run_vnext_smoke_0001",
+            adapter_id="adapter_vnext_smoke",
+            task_family=task.task_family,
+            difficulty=task.difficulty,
+            completion_status=CompletionStatus.PARTIAL,
+            supported_metric_fields=support_map,
+            **score_layers,
+        )
+        score = ScoreRecord.model_validate(score.model_dump(mode="json"))
+        observed = {
+            f"{layer_name}.{field_name}": value
+            for layer_name in SCORE_LAYER_TYPES
+            for field_name, value in getattr(score, layer_name)
+        }
+        null_paths = {path for path, value in observed.items() if value is None}
+        denominator_paths = {path for path, value in observed.items() if value is not None}
+        assert null_paths == set(score.supported_metric_fields)
+        assert denominator_paths == {"protocol_scores.action_parse_valid"}
+        assert denominator_paths.isdisjoint(score.supported_metric_fields)
+        assert {
+            score.supported_metric_fields[path].reason for path in reason_cases
+        } == {
+            SupportReason.NOT_APPLICABLE,
+            SupportReason.NOT_SUPPORTED,
+            SupportReason.RUNTIME_FAILED,
+            SupportReason.MISSING_ARTIFACT,
+        }
+
+        results.ok(name)
+    except Exception as exc:
+        results.fail(name, exc)
+
+
 def main() -> int:
     print("=" * 50)
     print("MemUpdateBench SMOKE TEST")
@@ -411,6 +680,7 @@ def main() -> int:
     test_update_frequency_data(results)
     test_constrained_slots(results)
     test_api_probe_helpers(results)
+    test_vnext_contracts(results)
     return 0 if results.summary() else 1
 
 

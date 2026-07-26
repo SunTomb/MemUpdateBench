@@ -1,0 +1,84 @@
+[
+  {
+    "episode_id": "synthetic-p63-k1",
+    "events": [
+      "User says: my friend Alex is considering a trip to Paris.",
+      "User says: my manager Alex lives in Berlin.",
+      "User says: my friend Alex lives in Suzhou."
+    ],
+    "question": "Where does my friend Alex currently live?",
+    "answer": "Suzhou",
+    "entity": "friend_alex",
+    "attribute": "location",
+    "value": "Suzhou",
+    "latest_event_idx": 2,
+    "category": "update_frequency_hard_evolution_tracking",
+    "stress_type": "update_frequency_hard",
+    "k_updates": 1,
+    "distractor_level": "same_name_multi_entity",
+    "noop_level": "semantic_near_miss",
+    "num_events": 3,
+    "num_target_updates": 1,
+    "num_updates": 3,
+    "same_name_distractor": {
+      "entity": "manager_alex",
+      "surface_name": "Alex",
+      "event_idx": 1
+    },
+    "semantic_near_miss": {
+      "entity": "friend_alex",
+      "attribute": "location",
+      "event_idx": 0
+    },
+    "explicit_zero": 0,
+    "explicit_false": false,
+    "explicit_null": null,
+    "provenance": {
+      "kind": "LegacyProvenance",
+      "legacy_phase": "P6.3",
+      "synthetic": true,
+      "origin": "handwritten_test_fixture",
+      "contains_private_payload": false
+    }
+  },
+  {
+    "episode_id": "synthetic-p63-k2",
+    "events": [
+      "User says: my friend Alex lives in Wuxi.",
+      "User says: my friend Alex visited Ningbo last year.",
+      "User says: my manager Alex lives in Dalian.",
+      "User says: my friend Alex moved to Suzhou."
+    ],
+    "question": "Where does my friend Alex currently live?",
+    "answer": "Suzhou",
+    "entity": "friend_alex",
+    "attribute": "location",
+    "value": "Suzhou",
+    "latest_event_idx": 3,
+    "category": "update_frequency_hard_evolution_tracking",
+    "stress_type": "update_frequency_hard",
+    "k_updates": 2,
+    "distractor_level": "same_name_multi_entity",
+    "noop_level": "semantic_near_miss",
+    "num_events": 4,
+    "num_target_updates": 2,
+    "num_updates": 4,
+    "same_name_distractor": {
+      "entity": "manager_alex",
+      "surface_name": "Alex",
+      "event_idx": 2
+    },
+    "semantic_near_miss": {
+      "entity": "friend_alex",
+      "attribute": "location",
+      "event_idx": 1
+    },
+    "provenance": {
+      "kind": "LegacyProvenance",
+      "legacy_phase": "P6.3",
+      "synthetic": true,
+      "origin": "handwritten_test_fixture",
+      "contains_private_payload": false
+    }
+  }
+]

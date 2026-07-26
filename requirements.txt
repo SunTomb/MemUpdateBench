@@ -27,3 +27,5 @@ tqdm>=4.66.0
 loguru>=0.7.2
 jsonlines>=4.0.0
 matplotlib>=3.8.0
+pydantic>=2.12.0,<3.0.0
+pytest>=8.2.0,<9.0.0
