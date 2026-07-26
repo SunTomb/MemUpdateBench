@@ -187,6 +187,29 @@ def test_split_ratios_must_allocate_whole_cores_per_family() -> None:
         PilotConfig.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("staging_dir", "release_dir"),
+    [
+        ("data/vnext/pilot", "./data/vnext/pilot"),
+        (r"data\vnext\pilot", "data/vnext/pilot"),
+        (r"DATA\VNEXT\PILOT", "data/vnext/pilot"),
+        ("data/vnext/staging/../pilot", "data/vnext/pilot"),
+    ],
+)
+def test_output_paths_reject_cross_platform_lexical_aliases(
+    staging_dir: str,
+    release_dir: str,
+) -> None:
+    payload = fixed_payload()
+    payload["output"] = {
+        "staging_dir": staging_dir,
+        "release_dir": release_dir,
+    }
+
+    with pytest.raises(ValidationError, match="must be distinct"):
+        PilotConfig.model_validate(payload)
+
+
 def test_all_four_pilot_families_must_be_enabled() -> None:
     payload = fixed_payload()
     payload["families"]["noop_write_discipline"]["enabled"] = False

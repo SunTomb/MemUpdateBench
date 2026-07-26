@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +48,10 @@ def _require_unique(values: list[AxisValue], field_name: str) -> list[AxisValue]
     if len(values) != len(set(values)):
         raise ValueError(f"{field_name} values must be unique")
     return values
+
+
+def _lexical_path_identity(value: str) -> str:
+    return ntpath.normcase(ntpath.normpath(value))
 
 
 class DifficultyNonnegativeCounts(ContractModel):
@@ -200,7 +205,9 @@ class OutputConfig(ContractModel):
 
     @model_validator(mode="after")
     def _require_distinct_paths(self) -> OutputConfig:
-        if self.staging_dir == self.release_dir:
+        if _lexical_path_identity(self.staging_dir) == _lexical_path_identity(
+            self.release_dir
+        ):
             raise ValueError("staging_dir and release_dir must be distinct")
         return self
 
