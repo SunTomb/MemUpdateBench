@@ -295,6 +295,8 @@ def test_broken_reserved_reparse_object_blocks_publication(
         except OSError as exc:
             pytest.skip(f"symlink unavailable: {exc}")
     else:
+        if os.name != "nt":
+            pytest.skip("Windows junction coverage")
         target = tmp_path / f"junction-target-{hashlib.sha256(name.encode()).hexdigest()[:8]}"
         target.mkdir()
         created = subprocess.run(
