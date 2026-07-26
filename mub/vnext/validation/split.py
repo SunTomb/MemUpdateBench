@@ -6,9 +6,10 @@ import warnings
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any, Self
+from typing import Any
 
 from pydantic import JsonValue, field_validator, model_validator
+from typing_extensions import Self
 
 from mub.vnext.contracts.common import (
     ArtifactRef,

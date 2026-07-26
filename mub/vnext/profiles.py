@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Self
+from typing import Any
 
 from pydantic import JsonValue, field_validator, model_validator
+from typing_extensions import Self
 
 from mub.vnext.contracts.common import (
     FrozenDict,

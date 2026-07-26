@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal
 
 from pydantic import PlainSerializer, model_validator
+from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 
