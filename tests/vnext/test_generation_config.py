@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from mub.vnext.contracts.enums import Difficulty
 from mub.vnext.generation.config import PilotConfig, load_pilot_config
+from mub.vnext.io import canonical_json_bytes
 
 
 CONFIG_PATH = Path("configs/vnext/pilot.yaml")
@@ -43,6 +44,19 @@ def test_fixed_config_computes_release_size() -> None:
         Difficulty.MEDIUM,
         Difficulty.HARD,
     ]
+
+
+def test_config_canonical_serialization_round_trip_is_stable() -> None:
+    config = load_pilot_config(CONFIG_PATH)
+    reordered_payload = dict(reversed(config.model_dump(mode="json").items()))
+    reordered = PilotConfig.model_validate(reordered_payload)
+
+    canonical = canonical_json_bytes(config)
+    restored = PilotConfig.model_validate_json(canonical)
+
+    assert canonical_json_bytes(reordered) == canonical
+    assert restored == config
+    assert canonical_json_bytes(restored) == canonical
 
 
 @pytest.mark.parametrize(
