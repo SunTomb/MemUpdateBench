@@ -1,0 +1,44 @@
+schema_version: "1.0.0"
+profile_version: "1.0.0"
+release_id: "vnext-pilot-2026-07"
+seed: 20260720
+surface_variants_per_core: 3
+cores_per_family: 120
+splits:
+  train: 0.70
+  dev: 0.10
+  test: 0.20
+families:
+  repeated_same_slot_update:
+    enabled: true
+    update_depths: [1, 4, 16]
+    difficulties: [easy, medium, hard]
+    same_name_distractors: {easy: 0, medium: 2, hard: 4}
+    same_entity_other_attribute: {easy: 0, medium: 1, hard: 2}
+    noop_near_miss: {easy: 0, medium: 2, hard: 4}
+  interleaved_multi_slot_update:
+    enabled: true
+    update_depths: [1, 4, 16]
+    difficulties: [easy, medium, hard]
+    active_object_counts: {easy: 2, medium: 4, hard: 8}
+    interleaving_patterns: [round_robin, burst, adversarial_adjacent]
+    cross_slot_distractor_density: {easy: 0.0, medium: 0.25, hard: 0.50}
+  entity_attribute_grounding:
+    enabled: true
+    difficulties: [easy, medium, hard]
+    entity_conditions: [distinct, same_name, alias, namespace_collision]
+    attribute_conditions: [exact, paraphrase, near_name]
+  noop_write_discipline:
+    enabled: true
+    difficulties: [easy, medium, hard]
+    noop_densities: [0.25, 0.50, 0.75]
+    trap_types: [semantic_near_miss, duplicate_current, other_entity_correction, other_attribute_correction]
+mechanism_slice:
+  stale_counts: [1, 16]
+  conditions:
+    - {context_order: chronological, context_annotation: none}
+    - {context_order: reverse_chronological, context_annotation: none}
+    - {context_order: reverse_chronological, context_annotation: latest_outdated_label}
+output:
+  staging_dir: "data/vnext/.pilot-staging"
+  release_dir: "data/vnext/pilot"
