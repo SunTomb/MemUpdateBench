@@ -264,18 +264,15 @@ def _select_query_template(
     query_type: QueryType,
     answer_schema: AnswerSchema,
     current_template: str,
-    deletion_template: str,
+    deletion_templates: Mapping[AnswerSchema, str],
 ) -> str:
     if query_type is QueryType.DELETION_COMPLIANCE:
-        if answer_schema not in {
-            AnswerSchema.BOOLEAN,
-            AnswerSchema.NUMBER,
-            AnswerSchema.STRING,
-            AnswerSchema.LIST,
-            AnswerSchema.OBJECT,
-        }:
-            raise ValueError("render_core deletion query has unsupported answer schema")
-        return deletion_template
+        try:
+            return deletion_templates[answer_schema]
+        except KeyError as exc:
+            raise ValueError(
+                "render_core deletion query has unsupported answer schema"
+            ) from exc
     return current_template
 
 
@@ -386,13 +383,23 @@ def render_core(
         delete_template,
         noop_template,
         current_query_template,
-        deletion_query_template,
+        deletion_boolean_template,
+        deletion_number_template,
+        deletion_sequence_template,
+        deletion_string_template,
     ) = SURFACE_TEMPLATE_SETS[surface_variant]
     operation_templates = {
         Operation.ADD: add_template,
         Operation.UPDATE: update_template,
         Operation.DELETE: delete_template,
         Operation.NOOP: noop_template,
+    }
+    deletion_templates = {
+        AnswerSchema.BOOLEAN: deletion_boolean_template,
+        AnswerSchema.NUMBER: deletion_number_template,
+        AnswerSchema.LIST: deletion_sequence_template,
+        AnswerSchema.OBJECT: deletion_sequence_template,
+        AnswerSchema.STRING: deletion_string_template,
     }
     renderer_admin = {
         "surface_template": template_name,
@@ -477,7 +484,7 @@ def render_core(
         query_type,
         answer_schema,
         current_query_template,
-        deletion_query_template,
+        deletion_templates,
     )
     query_text = _render_query_text(core, query_template)
     query = MemoryQuery(

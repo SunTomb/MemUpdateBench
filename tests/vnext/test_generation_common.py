@@ -368,31 +368,51 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
     ).encode("utf-8")
 
     assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
-        "17150c7e97cc0dba48047e753a4a1c7ebcb168fe17a8cda173ea7301cadc9606"
+        "9ed32ac41f4670193dbaee2d56a2cee3cf4dc08a5bc7b5e82b912d6e0d48fb53"
     )
 
 
 def test_surface_catalog_has_exactly_three_immutable_operation_complete_sets() -> None:
     assert len(SURFACE_TEMPLATE_SETS) == 3
     assert all(isinstance(template_set, tuple) for template_set in SURFACE_TEMPLATE_SETS)
-    assert all(len(template_set) == 7 for template_set in SURFACE_TEMPLATE_SETS)
+    assert all(len(template_set) == 10 for template_set in SURFACE_TEMPLATE_SETS)
 
     variant_ids = [template_set[0] for template_set in SURFACE_TEMPLATE_SETS]
     assert len(variant_ids) == len(set(variant_ids))
     for template_set in SURFACE_TEMPLATE_SETS:
-        _, add_template, update_template, delete_template, noop_template, query_template, deletion_query_template = (
-            template_set
-        )
+        (
+            _,
+            add_template,
+            update_template,
+            delete_template,
+            noop_template,
+            query_template,
+            deletion_boolean_template,
+            deletion_number_template,
+            deletion_sequence_template,
+            deletion_string_template,
+        ) = template_set
         assert len({add_template, update_template, delete_template, noop_template}) == 4
         assert "$targets" in add_template and "$value" in add_template
         assert "$targets" in update_template and "$value" in update_template
         assert "$targets" in delete_template and "$value" not in delete_template
         assert "$statement" in noop_template
         assert "$targets" in query_template
-        assert "$targets" in deletion_query_template
-        assert "present" in deletion_query_template and "absent" in deletion_query_template
+        assert "all" in deletion_boolean_template.lower()
+        assert "absent" in deletion_boolean_template.lower()
+        assert "how many" in deletion_number_template.lower()
+        assert "absent" in deletion_number_template.lower()
+        assert "true if absent" in deletion_sequence_template.lower()
+        assert "false if present" in deletion_sequence_template.lower()
+        assert "listed order" in deletion_sequence_template.lower()
+        assert "keyed" in deletion_sequence_template.lower()
+        assert all(
+            status in deletion_string_template.lower()
+            for status in ("absent", "present", "mixed")
+        )
+        assert all("$targets" in template for template in template_set[5:])
 
-    for template_index in range(1, 6):
+    for template_index in range(1, 10):
         assert len({template_set[template_index] for template_set in SURFACE_TEMPLATE_SETS}) == 3
 
     with pytest.raises(TypeError):
@@ -2081,14 +2101,47 @@ def test_render_core_rejects_profile_query_type_conflict() -> None:
         render_core(core, split=Split.TEST, surface_variant=0)
 
 
-def test_render_core_selects_reviewed_deletion_wording_for_all_three_surfaces() -> None:
-    core = _absence_core([False], None)
+@pytest.mark.parametrize(
+    ("expected", "answer_schema", "prompt_terms"),
+    [
+        (False, AnswerSchema.BOOLEAN, ("all", "absent")),
+        (1, AnswerSchema.NUMBER, ("how many", "absent")),
+        (
+            [False, True],
+            AnswerSchema.LIST,
+            ("true if absent", "false if present", "listed order", "keyed"),
+        ),
+        (
+            {
+                "default|friend:absence-0|location|": False,
+                "default|friend:absence-1|location|": True,
+            },
+            AnswerSchema.OBJECT,
+            ("true if absent", "false if present", "listed order", "keyed"),
+        ),
+        ("mixed", AnswerSchema.STRING, ("absent", "present", "mixed")),
+    ],
+    ids=["boolean", "number", "list", "object", "string"],
+)
+@pytest.mark.parametrize("surface_variant", range(3))
+def test_render_core_selects_schema_specific_reviewed_deletion_wording(
+    expected: object,
+    answer_schema: AnswerSchema,
+    prompt_terms: tuple[str, ...],
+    surface_variant: int,
+) -> None:
+    task = render_core(
+        _absence_core([True, False], expected),
+        split=Split.TEST,
+        surface_variant=surface_variant,
+    )
+    query = task.queries[0]
+    text = query.text.lower()
 
-    texts = [render_core(core, split=Split.TEST, surface_variant=variant).queries[0].text for variant in range(3)]
-
-    assert len(set(texts)) == 3
-    assert all("present" in text.lower() and "absent" in text.lower() for text in texts)
-    assert all("current value" not in text.lower() for text in texts)
+    assert query.query_type is QueryType.DELETION_COMPLIANCE
+    assert query.answer_schema is answer_schema
+    assert all(term in text for term in prompt_terms)
+    assert task.gold.gold_answers[query.query_id] == expected
 
 
 def test_render_core_replays_nested_structured_multi_target_values_authoritatively() -> None:

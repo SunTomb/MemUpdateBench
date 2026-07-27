@@ -98,7 +98,10 @@ SURFACE_TEMPLATE_SETS = (
         "Forget $targets.",
         "$statement No memory change is required.",
         "What is the current value of $targets?",
-        "Is each of $targets present or absent in memory?",
+        "Are all queried targets absent from memory: $targets?",
+        "How many queried targets are absent from memory: $targets?",
+        "Report each target's absence status (true if absent, false if present), in listed order or keyed by target for $targets.",
+        "What is the aggregate status of $targets: absent, present, or mixed?",
     ),
     (
         "conversational",
@@ -107,7 +110,10 @@ SURFACE_TEMPLATE_SETS = (
         "Please remove $targets from memory.",
         "$statement Keep memory unchanged.",
         "Can you report the latest value for $targets?",
-        "Can you report whether each of $targets is present or absent in memory?",
+        "Can you confirm whether all of $targets are absent from memory?",
+        "Can you report how many of $targets are absent from memory?",
+        "Can you report each target's absence status for $targets (true if absent, false if present), in listed order or keyed by target?",
+        "Can you report whether the status of $targets is absent, present, or mixed?",
     ),
     (
         "correction",
@@ -116,7 +122,10 @@ SURFACE_TEMPLATE_SETS = (
         "Erase the stored entry for $targets.",
         "$statement Do not write anything to memory.",
         "According to the record, what value belongs to $targets?",
-        "According to the record, is each of $targets present or absent?",
+        "According to the record, are all of $targets absent?",
+        "According to the record, how many of $targets are absent?",
+        "According to the record, report per-target absence statuses for $targets (true if absent, false if present), in listed order or keyed by target.",
+        "According to the record, is the status of $targets absent, present, or mixed?",
     ),
 )
 
