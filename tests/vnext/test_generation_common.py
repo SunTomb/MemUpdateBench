@@ -54,7 +54,7 @@ from mub.vnext.generation.render import render_core as _render_core
 
 
 PILOT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs/vnext/pilot.yaml"
-PILOT_CONFIG_SHA256 = "5188ea64160319ff3368ac51ebf030c9ff2dcc8943018829f1fdea77f53b3564"
+PILOT_CONFIG_SHA256 = "685759627773beba18f431a53c43f7077d9639596ee1a78fe970265a0d0626bf"
 _fixed_context = GenerationContext(
     config=load_pilot_config(PILOT_CONFIG_PATH),
     code_revision="revision-abc123",
@@ -1432,7 +1432,7 @@ def test_render_core_builds_deterministic_ids_source_provenance_and_profile() ->
     assert resolved["task_family"] == core.task_family.value
     assert resolved["difficulty"] == core.difficulty.value
     assert resolved["profile_name"] == core.difficulty.value
-    assert resolved["profile_version"] == "1.0.0"
+    assert resolved["profile_version"] == "2.0.0"
     assert resolved["update_depth"] == 1
     assert resolved["update_depth_bucket"] == "1"
     assert task.metadata.extra["semantic_core_id"] == core.core_id
@@ -1885,11 +1885,11 @@ def test_generation_context_exposes_fixed_config_provenance() -> None:
 
     assert context.seed == 20260720
     assert context.release_id == "vnext-pilot-2026-07"
-    assert context.schema_version == "1.0.0"
-    assert context.profile_version == "1.0.0"
+    assert context.schema_version == "2.0.0"
+    assert context.profile_version == "2.0.0"
     assert context.config_sha256 == sha256_model(config)
     assert context.config_sha256 == PILOT_CONFIG_SHA256
-    assert context.compiler_version == "1.0.0"
+    assert context.compiler_version == "2.0.0"
     assert context.generator_name == "memupdatebench_vnext_pilot"
 
 

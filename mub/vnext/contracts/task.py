@@ -6,7 +6,12 @@ from typing_extensions import Self
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
-from mub.vnext.contracts.common import ContractModel, MemoryObjectKey, SourceRecord
+from mub.vnext.contracts.common import (
+    ContractModel,
+    MemoryObjectKey,
+    SourceAnchor,
+    SourceRecord,
+)
 from mub.vnext.contracts.enums import (
     ActionScope,
     AnswerDisposition,
@@ -99,27 +104,44 @@ class MemoryEvent(ContractModel):
 
 
 class ReferenceCandidate(ContractModel):
+    candidate_id: str
     object_key: MemoryObjectKey
+    evidence: str | None = None
+    source_anchors: list[SourceAnchor] = Field(default_factory=list)
 
 
 class SurfaceReference(ContractModel):
-    text: str
-    resolution_status: ReferenceResolutionStatus
-    candidates: list[ReferenceCandidate] = Field(default_factory=list)
+    reference_id: str
+    surface_text: str
+    normalized_text: str
+    condition_kind: str | None = None
+    evidence_kind: str | None = None
+    candidate_ids: list[str] = Field(default_factory=list)
 
 
 class CanonicalAnswer(ContractModel):
     disposition: AnswerDisposition
+    resolution_status: ReferenceResolutionStatus
+    selected_candidate_ids: list[str] = Field(default_factory=list)
+    abstention_reason: str | None = None
     value: JsonValue | None = None
 
     @model_validator(mode="after")
     def _validate_gold_disposition(self) -> Self:
         if self.disposition == AnswerDisposition.UNAVAILABLE:
             raise ValueError("UNAVAILABLE is runtime-only")
-        if self.disposition == AnswerDisposition.ANSWERED and self.value is None:
-            raise ValueError("ANSWERED canonical answers require a value")
-        if self.disposition == AnswerDisposition.ABSTAINED and self.value is not None:
-            raise ValueError("ABSTAINED canonical answers cannot carry a value")
+        if self.disposition == AnswerDisposition.ANSWERED:
+            if self.value is None:
+                raise ValueError("ANSWERED canonical answers require a value")
+            if self.abstention_reason is not None:
+                raise ValueError("ANSWERED canonical answers cannot carry abstention_reason")
+        elif self.disposition == AnswerDisposition.ABSTAINED:
+            if self.value is not None:
+                raise ValueError("ABSTAINED canonical answers cannot carry a value")
+            if not self.abstention_reason or not self.abstention_reason.strip():
+                raise ValueError("ABSTAINED canonical answers require abstention_reason")
+            if self.selected_candidate_ids:
+                raise ValueError("ABSTAINED canonical answers cannot select candidates")
         return self
 
 
@@ -128,6 +150,7 @@ class MemoryQuery(ContractModel):
     query_type: QueryType
     text: str
     target_object_keys: list[MemoryObjectKey] = Field(default_factory=list)
+    reference_candidates: list[ReferenceCandidate] = Field(default_factory=list)
     surface_references: list[SurfaceReference] = Field(default_factory=list)
     answer_schema: AnswerSchema
     evaluation_mode: EvaluationMode
@@ -225,6 +248,48 @@ class MemUpdateTask(ContractModel):
                 if _object_identity(key) not in declared_objects:
                     raise ValueError(f"query {query.query_id} targets undeclared object {key.canonical_id}")
 
+            candidate_ids = [candidate.candidate_id for candidate in query.reference_candidates]
+            _reject_blank_ids(candidate_ids, f"reference candidate IDs for query {query.query_id}")
+            _reject_duplicates(candidate_ids, f"reference candidate IDs for query {query.query_id}")
+            candidate_by_id = {
+                candidate.candidate_id: candidate for candidate in query.reference_candidates
+            }
+            for candidate in query.reference_candidates:
+                if _object_identity(candidate.object_key) not in declared_objects:
+                    raise ValueError(
+                        f"query {query.query_id} reference candidate {candidate.candidate_id} "
+                        f"targets undeclared object {candidate.object_key.canonical_id}"
+                    )
+
+            reference_ids = [reference.reference_id for reference in query.surface_references]
+            _reject_blank_ids(reference_ids, f"surface reference IDs for query {query.query_id}")
+            _reject_duplicates(reference_ids, f"surface reference IDs for query {query.query_id}")
+            for reference in query.surface_references:
+                _reject_blank_ids(
+                    reference.candidate_ids,
+                    f"candidate IDs for surface reference {reference.reference_id}",
+                )
+                _reject_duplicates(
+                    reference.candidate_ids,
+                    f"candidate IDs for surface reference {reference.reference_id}",
+                )
+                missing_candidates = set(reference.candidate_ids) - set(candidate_by_id)
+                if missing_candidates:
+                    raise ValueError(
+                        f"surface reference {reference.reference_id} references unknown candidates "
+                        f"{sorted(missing_candidates)}"
+                    )
+
+            if query.query_type == QueryType.UNRESOLVED_REFERENCE:
+                if not query.reference_candidates:
+                    raise ValueError(
+                        f"unresolved query {query.query_id} requires reference candidates"
+                    )
+                if not query.surface_references:
+                    raise ValueError(
+                        f"unresolved query {query.query_id} requires surface references"
+                    )
+
         for key in self.gold.expected_present_objects:
             if _object_identity(key) not in declared_objects:
                 raise ValueError(f"expected_present_objects contains undeclared object {key.canonical_id}")
@@ -238,20 +303,102 @@ class MemUpdateTask(ContractModel):
             if event_id not in event_by_id:
                 raise ValueError(f"gold_source_event_ids references missing event {event_id}")
 
-        gold_answer_ids = set(self.gold.gold_answers)
-        acceptable_answer_ids = set(self.gold.acceptable_answers)
+        canonical_answer_ids = set(self.gold.canonical_answers)
+        unresolved_query_ids = {
+            query.query_id
+            for query in self.queries
+            if query.query_type == QueryType.UNRESOLVED_REFERENCE
+        }
         query_id_set = set(query_ids)
 
-        if gold_answer_ids != query_id_set:
-            missing = query_id_set - gold_answer_ids
+        if canonical_answer_ids - query_id_set:
+            raise ValueError("canonical_answers contains unknown query ID")
+        if canonical_answer_ids != unresolved_query_ids:
+            missing = unresolved_query_ids - canonical_answer_ids
             if missing:
+                raise ValueError("unresolved queries require canonical_answers")
+            raise ValueError("canonical_answers may only contain unresolved query IDs")
+
+        for query in self.queries:
+            if query.query_type != QueryType.UNRESOLVED_REFERENCE:
+                continue
+            canonical = self.gold.canonical_answers[query.query_id]
+            candidate_ids = {candidate.candidate_id for candidate in query.reference_candidates}
+            referenced_candidate_ids = {
+                candidate_id
+                for reference in query.surface_references
+                for candidate_id in reference.candidate_ids
+            }
+            if canonical.resolution_status == ReferenceResolutionStatus.UNIQUE and len(referenced_candidate_ids) != 1:
+                raise ValueError(
+                    f"unique resolution for query {query.query_id} must reference one candidate"
+                )
+            if canonical.resolution_status == ReferenceResolutionStatus.AMBIGUOUS and len(referenced_candidate_ids) < 2:
+                raise ValueError(
+                    f"ambiguous resolution for query {query.query_id} must reference multiple candidates"
+                )
+            if canonical.resolution_status == ReferenceResolutionStatus.NO_MATCH and referenced_candidate_ids:
+                raise ValueError(
+                    f"no-match resolution for query {query.query_id} cannot reference candidates"
+                )
+            if canonical.selected_candidate_ids:
+                _reject_blank_ids(
+                    canonical.selected_candidate_ids,
+                    f"selected candidate IDs for query {query.query_id}",
+                )
+                _reject_duplicates(
+                    canonical.selected_candidate_ids,
+                    f"selected candidate IDs for query {query.query_id}",
+                )
+            if set(canonical.selected_candidate_ids) - candidate_ids:
+                raise ValueError(
+                    f"canonical answer for query {query.query_id} selects unknown candidates"
+                )
+            if set(canonical.selected_candidate_ids) - referenced_candidate_ids:
+                raise ValueError(
+                    f"canonical answer for query {query.query_id} selects unreferenced candidates"
+                )
+            if canonical.disposition == AnswerDisposition.ANSWERED:
+                if canonical.resolution_status != ReferenceResolutionStatus.UNIQUE:
+                    raise ValueError(
+                        f"answered unresolved query {query.query_id} must have UNIQUE resolution_status"
+                    )
+                if len(canonical.selected_candidate_ids) != 1:
+                    raise ValueError(
+                        f"answered unresolved query {query.query_id} must select one candidate"
+                    )
+            elif canonical.disposition == AnswerDisposition.ABSTAINED:
+                if canonical.resolution_status == ReferenceResolutionStatus.UNIQUE:
+                    raise ValueError(
+                        f"abstained unresolved query {query.query_id} cannot have UNIQUE resolution_status"
+                    )
+                if canonical.selected_candidate_ids:
+                    raise ValueError(
+                        f"abstained unresolved query {query.query_id} cannot select candidates"
+                    )
+
+        ordinary_query_ids = query_id_set - unresolved_query_ids
+        gold_answer_ids = set(self.gold.gold_answers)
+        acceptable_answer_ids = set(self.gold.acceptable_answers)
+
+        if gold_answer_ids != ordinary_query_ids:
+            missing = ordinary_query_ids - gold_answer_ids
+            if missing:
+                if unresolved_query_ids:
+                    raise ValueError("gold_answers must contain every ordinary query ID")
                 raise ValueError("gold_answers must contain every query ID")
+            if unresolved_query_ids:
+                raise ValueError("gold_answers contains unknown or unresolved query ID")
             raise ValueError("gold_answers contains unknown query ID")
 
-        if acceptable_answer_ids != query_id_set:
-            missing = query_id_set - acceptable_answer_ids
+        if acceptable_answer_ids != ordinary_query_ids:
+            missing = ordinary_query_ids - acceptable_answer_ids
             if missing:
+                if unresolved_query_ids:
+                    raise ValueError("acceptable_answers must contain every ordinary query ID")
                 raise ValueError("acceptable_answers must contain every query ID")
+            if unresolved_query_ids:
+                raise ValueError("acceptable_answers contains unknown or unresolved query ID")
             raise ValueError("acceptable_answers contains unknown query ID")
 
         return self

@@ -40,6 +40,7 @@ from mub.vnext.generation.config import (
     SplitConfig,
 )
 from mub.vnext.io import sha256_model
+from mub.vnext.version import COMPILER_VERSION
 
 
 _CORE_ID_PATTERN = r"^core_[0-9a-f]{16}$"
@@ -248,7 +249,7 @@ class _FrozenCoreModel(ContractModel):
 class GenerationContext(_FrozenCoreModel):
     config: PilotConfig
     code_revision: str = Field(min_length=1, strict=True)
-    compiler_version: str = Field(default="1.0.0", strict=True)
+    compiler_version: str = Field(default=COMPILER_VERSION, strict=True)
     generator_name: str = Field(
         default="memupdatebench_vnext_pilot",
         strict=True,

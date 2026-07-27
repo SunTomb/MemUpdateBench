@@ -103,13 +103,18 @@ class AnswerResult(ContractModel):
     query_id: str
     raw_output: str
     disposition: AnswerDisposition = AnswerDisposition.ANSWERED
+    value: JsonValue | None = None
     usage: dict[str, NonnegativeStrictInt] = Field(default_factory=dict)
     cost: StrictNonnegativeFloat | None = None
     latency_ms: StrictNonnegativeFloat | None = None
     error: JsonValue | None = None
 
     @model_validator(mode="after")
-    def _validate_usage_counts(self):
+    def _validate_answer_disposition(self):
+        if self.disposition != AnswerDisposition.ANSWERED and self.value is not None:
+            raise ValueError("non-answered results cannot carry value")
+        if self.disposition == AnswerDisposition.ANSWERED and not self.raw_output.strip() and self.value is None:
+            raise ValueError("answered results require raw_output or value")
         for key, value in self.usage.items():
             if value < 0:
                 raise ValueError(f"usage count {key} must be nonnegative")

@@ -1,5 +1,5 @@
-schema_version: "1.0.0"
-profile_version: "1.0.0"
+schema_version: "2.0.0"
+profile_version: "2.0.0"
 release_id: "vnext-pilot-2026-07"
 seed: 20260720
 surface_variants_per_core: 3

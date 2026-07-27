@@ -295,6 +295,7 @@ def test_adapter_result_records_are_direct_design_records() -> None:
         "query_id": "query_0",
         "raw_output": "Qingdao",
         "disposition": "answered",
+        "value": None,
         "usage": {"output_tokens": 3},
         "cost": 0.01,
         "latency_ms": 4.0,
@@ -407,9 +408,9 @@ def test_nonnegative_runtime_and_adapter_numeric_fields_are_enforced(make_task_r
     with pytest.raises(ValidationError):
         AnswerPrediction(**{**answer_data, "usage": {"output_tokens": -1}})
     with pytest.raises(ValidationError):
-        AnswerResult(query_id="query_0", raw_output="", usage={"output_tokens": -1}, cost=0.0, latency_ms=0.0, error=None)
+        AnswerResult(query_id="query_0", raw_output="", value="answer", usage={"output_tokens": -1}, cost=0.0, latency_ms=0.0, error=None)
     with pytest.raises(ValidationError):
-        AnswerResult(query_id="query_0", raw_output="", usage={}, cost=-0.1, latency_ms=0.0, error=None)
+        AnswerResult(query_id="query_0", raw_output="", value="answer", usage={}, cost=-0.1, latency_ms=0.0, error=None)
 
 
 def test_strict_integer_fields_reject_bool_and_string_values(make_task_run) -> None:
@@ -422,7 +423,7 @@ def test_strict_integer_fields_reject_bool_and_string_values(make_task_run) -> N
     assert MemorySnapshot(**{**snapshot_data, "store_size": 2}).store_size == 2
     assert RetrievalTrace(**{**trace_data, "ranks": [2]}).ranks == [2]
     assert AnswerPrediction(**{**answer_data, "usage": {"output_tokens": 2}}).usage == {"output_tokens": 2}
-    assert AnswerResult(query_id="query_0", raw_output="", usage={"output_tokens": 2}, cost=0.0, latency_ms=0.0, error=None).usage == {"output_tokens": 2}
+    assert AnswerResult(query_id="query_0", raw_output="", value="answer", usage={"output_tokens": 2}, cost=0.0, latency_ms=0.0, error=None).usage == {"output_tokens": 2}
 
     for invalid_value in (True, "2"):
         with pytest.raises(ValidationError):
@@ -434,7 +435,7 @@ def test_strict_integer_fields_reject_bool_and_string_values(make_task_run) -> N
         with pytest.raises(ValidationError):
             AnswerPrediction(**{**answer_data, "usage": {"output_tokens": invalid_value}})
         with pytest.raises(ValidationError):
-            AnswerResult(query_id="query_0", raw_output="", usage={"output_tokens": invalid_value}, cost=0.0, latency_ms=0.0, error=None)
+            AnswerResult(query_id="query_0", raw_output="", value="answer", usage={"output_tokens": invalid_value}, cost=0.0, latency_ms=0.0, error=None)
 
 
 @pytest.mark.parametrize("valid_value", [0, 0.0, 1, 1.5])
@@ -455,8 +456,8 @@ def test_task4_nonnegative_float_fields_accept_json_numeric_values(make_task_run
         error=None,
     ).latency_ms == valid_value
     assert RetrievalResult(query_id="query_0", entries=[], scores=[], raw_result={}, latency_ms=valid_value, error=None).latency_ms == valid_value
-    assert AnswerResult(query_id="query_0", raw_output="", usage={}, cost=valid_value, latency_ms=valid_value, error=None).cost == valid_value
-    assert AnswerResult(query_id="query_0", raw_output="", usage={}, cost=0.0, latency_ms=valid_value, error=None).latency_ms == valid_value
+    assert AnswerResult(query_id="query_0", raw_output="", value="answer", usage={}, cost=valid_value, latency_ms=valid_value, error=None).cost == valid_value
+    assert AnswerResult(query_id="query_0", raw_output="", value="answer", usage={}, cost=0.0, latency_ms=valid_value, error=None).latency_ms == valid_value
     assert RetrievalTrace(**{**trace_data, "scores": [valid_value]}).scores == [valid_value]
     assert RetrievalResult(query_id="query_0", entries=trace_data["retrieved_entries"], scores=[valid_value], raw_result={}, latency_ms=0.0, error=None).scores == [valid_value]
 
@@ -484,9 +485,9 @@ def test_task4_float_fields_reject_bool_and_numeric_strings(make_task_run, inval
     with pytest.raises(ValidationError):
         RetrievalResult(query_id="query_0", entries=[], scores=[], raw_result={}, latency_ms=invalid_value, error=None)
     with pytest.raises(ValidationError):
-        AnswerResult(query_id="query_0", raw_output="", usage={}, cost=invalid_value, latency_ms=0.0, error=None)
+        AnswerResult(query_id="query_0", raw_output="", value="answer", usage={}, cost=invalid_value, latency_ms=0.0, error=None)
     with pytest.raises(ValidationError):
-        AnswerResult(query_id="query_0", raw_output="", usage={}, cost=0.0, latency_ms=invalid_value, error=None)
+        AnswerResult(query_id="query_0", raw_output="", value="answer", usage={}, cost=0.0, latency_ms=invalid_value, error=None)
     with pytest.raises(ValidationError):
         RetrievalTrace(**{**trace_data, "scores": [invalid_value]})
     with pytest.raises(ValidationError):

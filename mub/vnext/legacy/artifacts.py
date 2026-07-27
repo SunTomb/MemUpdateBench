@@ -23,17 +23,17 @@ from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.legacy.dataset import compile_legacy_episode
 from mub.vnext.legacy.loaders import load_evomemory_dataset
 from mub.vnext.profiles import hard_profile, resolve_profile
-from mub.vnext.version import COMPILER_VERSION, SCHEMA_VERSION
 
 
+LEGACY_SCHEMA_VERSION = "1.0.0"
 LEGACY_ANALYSIS_MANIFEST_VERSION = "1.0.0"
-LEGACY_CLI_COMPILER_VERSION = f"vnext-phase0-cli-{COMPILER_VERSION}"
+LEGACY_CLI_COMPILER_VERSION = "vnext-phase0-cli-1.0.0"
 LEGACY_CLI_CODE_REVISION = "legacy-compatibility-import"
 LegacyAnalysisKind = Literal["conflict", "dose", "stale-removal", "api", "ledger"]
 
 
 class LegacyAnalysisManifest(ImmutableContractModel):
-    schema_version: Literal["1.0.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.0.0"] = LEGACY_SCHEMA_VERSION
     legacy_analysis_manifest_version: Literal["1.0.0"] = LEGACY_ANALYSIS_MANIFEST_VERSION
     analysis_kind: LegacyAnalysisKind
     compiler_version: Literal["vnext-phase0-cli-1.0.0"]
@@ -327,6 +327,7 @@ __all__ = [
     "LEGACY_ANALYSIS_MANIFEST_VERSION",
     "LEGACY_CLI_CODE_REVISION",
     "LEGACY_CLI_COMPILER_VERSION",
+    "LEGACY_SCHEMA_VERSION",
     "LegacyAnalysisManifest",
     "authenticate_legacy_task_manifest",
     "build_expected_legacy_task_manifest",

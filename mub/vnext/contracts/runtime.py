@@ -86,7 +86,11 @@ class AnswerPrediction(ContractModel):
     usage: dict[str, NonnegativeStrictInt] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _validate_usage_counts(self):
+    def _validate_answer_disposition(self):
+        if self.disposition != AnswerDisposition.ANSWERED and self.parsed_answer is not None:
+            raise ValueError("non-answered predictions cannot carry parsed_answer")
+        if self.disposition == AnswerDisposition.ANSWERED and self.format_valid and self.parsed_answer is None:
+            raise ValueError("answered predictions with valid format require parsed_answer")
         _validate_nonnegative_usage(self.usage)
         return self
 
