@@ -232,7 +232,15 @@ def test_unresolved_task_accepts_ambiguous_no_match_and_unique_contracts(make_ta
         assert task.gold.canonical_answers["query_0"].resolution_status.value == status
 
 
-def test_ordinary_task_defaults_and_answer_rules_are_unchanged(make_task) -> None:
+def test_unique_answered_unresolved_query_preserves_non_string_schema(make_task) -> None:
+    data = _unresolved_payload(make_task, status="unique")
+    data["queries"][0]["answer_schema"] = "number"
+
+    task = type(make_task()).model_validate(data)
+
+    assert task.gold.canonical_answers["query_0"].disposition == AnswerDisposition.ANSWERED
+
+
     task = make_task()
 
     assert task.queries[0].reference_candidates == []
@@ -246,11 +254,13 @@ def test_ordinary_task_defaults_and_answer_rules_are_unchanged(make_task) -> Non
     [
         ("missing_canonical", "require canonical_answers"),
         ("duplicate_candidates", "duplicate reference candidate IDs"),
+        ("duplicate_candidate_identity", "duplicate reference candidate identities"),
         ("unknown_surface_candidate", "references unknown candidates"),
         ("unknown_selected_candidate", "selects unknown candidates"),
         ("answered_ambiguous", "must have UNIQUE"),
         ("answered_without_selection", "must select one candidate"),
         ("abstained_unique", "cannot have UNIQUE"),
+        ("abstained_non_string", "requires answer_schema=string"),
         ("unresolved_bare_none", "unknown or unresolved query ID"),
     ],
 )
@@ -264,6 +274,10 @@ def test_unresolved_task_rejects_invalid_status_disposition_and_linkage(
         data["queries"][0]["reference_candidates"][1]["candidate_id"] = (
             "candidate_alex_friend"
         )
+    elif mutation == "duplicate_candidate_identity":
+        candidate = data["queries"][0]["reference_candidates"][1]
+        candidate["object_key"]["entity"] = data["target_objects"][0]["entity"]
+        candidate["object_key"]["object_type"] = "profile"
     elif mutation == "unknown_surface_candidate":
         data["queries"][0]["surface_references"][0]["candidate_ids"] = ["missing"]
     elif mutation == "unknown_selected_candidate":
@@ -302,6 +316,8 @@ def test_unresolved_task_rejects_invalid_status_disposition_and_linkage(
             "candidate_alex_friend"
         ]
         data["gold"]["canonical_answers"]["query_0"]["resolution_status"] = "unique"
+    elif mutation == "abstained_non_string":
+        data["queries"][0]["answer_schema"] = "number"
     elif mutation == "unresolved_bare_none":
         data["gold"]["gold_answers"] = {"query_0": None}
 

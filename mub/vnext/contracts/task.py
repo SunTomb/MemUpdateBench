@@ -251,6 +251,14 @@ class MemUpdateTask(ContractModel):
             candidate_ids = [candidate.candidate_id for candidate in query.reference_candidates]
             _reject_blank_ids(candidate_ids, f"reference candidate IDs for query {query.query_id}")
             _reject_duplicates(candidate_ids, f"reference candidate IDs for query {query.query_id}")
+            candidate_identities = [
+                _object_identity(candidate.object_key)
+                for candidate in query.reference_candidates
+            ]
+            _reject_duplicates(
+                candidate_identities,
+                f"reference candidate identities for query {query.query_id}",
+            )
             candidate_by_id = {
                 candidate.candidate_id: candidate for candidate in query.reference_candidates
             }
@@ -323,6 +331,19 @@ class MemUpdateTask(ContractModel):
             if query.query_type != QueryType.UNRESOLVED_REFERENCE:
                 continue
             canonical = self.gold.canonical_answers[query.query_id]
+            if (
+                canonical.value is None
+                and canonical.disposition == AnswerDisposition.ABSTAINED
+                and canonical.resolution_status
+                in {
+                    ReferenceResolutionStatus.AMBIGUOUS,
+                    ReferenceResolutionStatus.NO_MATCH,
+                }
+                and query.answer_schema != AnswerSchema.STRING
+            ):
+                raise ValueError(
+                    f"abstained unresolved query {query.query_id} requires answer_schema=string"
+                )
             candidate_ids = {candidate.candidate_id for candidate in query.reference_candidates}
             referenced_candidate_ids = {
                 candidate_id
