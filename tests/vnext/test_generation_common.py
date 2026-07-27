@@ -43,7 +43,30 @@ from mub.vnext.generation import (
     task_id,
     trajectory_id,
 )
-from mub.vnext.generation.render import render_core
+from mub.vnext.generation.render import render_core as _render_core
+
+
+PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+PILOT_CONFIG_SHA256 = "5188ea64160319ff3368ac51ebf030c9ff2dcc8943018829f1fdea77f53b3564"
+_fixed_context = GenerationContext(
+    config=load_pilot_config(PILOT_CONFIG_PATH),
+    code_revision="revision-abc123",
+)
+
+
+def render_core(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext = _fixed_context,
+):
+    return _render_core(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+    )
 
 
 def test_stable_id_is_canonical_and_repeatable() -> None:
@@ -630,7 +653,104 @@ class _GoldProjection(RootModel[object]):
 
 
 def test_render_core_is_exported_from_generation_package() -> None:
-    assert exported_render_core is render_core
+    assert exported_render_core is _render_core
+
+
+def test_render_core_requires_generation_context() -> None:
+    with pytest.raises(TypeError, match="required keyword-only argument: 'context'"):
+        _render_core(  # type: ignore[call-arg]
+            _representative_core(),
+            split=Split.TEST,
+            surface_variant=0,
+        )
+
+
+def test_render_core_rejects_wrong_generation_context_type() -> None:
+    with pytest.raises(TypeError, match="context must be a GenerationContext"):
+        _render_core(
+            _representative_core(),
+            split=Split.TEST,
+            surface_variant=0,
+            context={},  # type: ignore[arg-type]
+        )
+
+
+def test_render_core_binds_generation_context_provenance() -> None:
+    task = _render_core(
+        _representative_core(),
+        split=Split.TEST,
+        surface_variant=0,
+        context=_fixed_context,
+    )
+
+    assert task.source.generator is not None
+    assert task.source.generator.seed == 20260720
+    assert task.source.generator.config_sha256 == sha256_model(_fixed_context.config)
+    assert task.source.generator.code_revision == "revision-abc123"
+    assert task.source.generator.generator_name == _fixed_context.generator_name
+    assert task.source.generator.compiler_version == _fixed_context.compiler_version
+    assert task.metadata.generation_config_hash == _fixed_context.config_sha256
+    assert task.metadata.compiler_version == _fixed_context.compiler_version
+    assert task.source.provenance["release_id"] == _fixed_context.release_id
+    assert task.source.provenance["schema_version"] == _fixed_context.schema_version
+    assert task.source.provenance["profile_version"] == _fixed_context.profile_version
+
+
+def test_render_core_context_changes_only_artifact_provenance() -> None:
+    core = _representative_core()
+    changed_payload = _fixed_context.config.model_dump(mode="python")
+    changed_payload["seed"] = _fixed_context.seed + 1
+    changed_config = type(_fixed_context.config).model_validate(changed_payload)
+    revision_context = _fixed_context.model_copy(
+        update={"code_revision": "revision-def456"}
+    )
+    config_context = GenerationContext(
+        config=changed_config,
+        code_revision=_fixed_context.code_revision,
+    )
+
+    original = _render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=_fixed_context,
+    )
+    repeated = _render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=_fixed_context,
+    )
+    changed_revision = _render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=revision_context,
+    )
+    changed_config_task = _render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=config_context,
+    )
+
+    assert canonical_json_bytes(original) == canonical_json_bytes(repeated)
+    assert canonical_json_bytes(original) != canonical_json_bytes(changed_revision)
+    assert canonical_json_bytes(original) != canonical_json_bytes(changed_config_task)
+    assert changed_revision.source.generator is not None
+    assert changed_revision.source.generator.code_revision == "revision-def456"
+    assert changed_config_task.source.generator is not None
+    assert changed_config_task.source.generator.config_sha256 == sha256_model(
+        changed_config
+    )
+    assert changed_config_task.source.generator.seed == 20260721
+    assert len(
+        {
+            semantic_task_hash(original),
+            semantic_task_hash(changed_revision),
+            semantic_task_hash(changed_config_task),
+        }
+    ) == 1
 
 
 def _normalized_gold_bytes(task: object) -> bytes:
@@ -798,10 +918,12 @@ def test_render_core_builds_deterministic_ids_source_provenance_and_profile() ->
         task.metadata.split_key.version_group_id
     )
     assert source.generator is not None
-    assert source.generator.generator_name == "memupdatebench_vnext_pilot"
-    assert source.generator.seed == core.core_index
+    assert source.generator.generator_name == _fixed_context.generator_name
+    assert source.generator.seed == _fixed_context.seed
+    assert source.generator.config_sha256 == _fixed_context.config_sha256
     assert source.generator.config_sha256 == task.metadata.generation_config_hash
-    assert source.generator.code_revision == "vnext-pilot-task-2c"
+    assert source.generator.code_revision == _fixed_context.code_revision
+    assert source.generator.compiler_version == _fixed_context.compiler_version
     assert source.generator.compiler_version == task.metadata.compiler_version
 
     resolved = task.metadata.resolved_profile
@@ -1212,10 +1334,6 @@ def test_public_core_validation_remains_strict_about_sequence_input_types() -> N
                 "query_targets": tuple(core_data["query_targets"]),
             }
         )
-
-
-PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
-PILOT_CONFIG_SHA256 = "5188ea64160319ff3368ac51ebf030c9ff2dcc8943018829f1fdea77f53b3564"
 
 
 def test_generation_context_exposes_fixed_config_provenance() -> None:

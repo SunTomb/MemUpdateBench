@@ -31,7 +31,7 @@ from mub.vnext.contracts.task import (
     TaskMetadata,
 )
 from mub.vnext.generation.catalogs import SURFACE_TEMPLATE_SETS
-from mub.vnext.generation.core import CoreEvent, SemanticCore
+from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.identity import (
     action_id,
     event_id,
@@ -50,11 +50,8 @@ from mub.vnext.profiles import (
 )
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
-from mub.vnext.version import COMPILER_VERSION
 
 
-_GENERATOR_NAME = "memupdatebench_vnext_pilot"
-_CODE_REVISION = "vnext-pilot-task-2c"
 _NORMALIZATION_VERSION = "vnext-pilot-semantic-v1"
 _SPLIT_POLICY_VERSION = "vnext-pilot-core-v1"
 _SPEAKERS = ("Narrator", "User", "Records clerk")
@@ -327,9 +324,12 @@ def render_core(
     *,
     split: Split,
     surface_variant: int,
+    context: GenerationContext,
 ) -> MemUpdateTask:
     if not isinstance(core, SemanticCore):
         raise TypeError("core must be a SemanticCore")
+    if not isinstance(context, GenerationContext):
+        raise TypeError("context must be a GenerationContext")
     if not isinstance(split, Split):
         raise TypeError("split must be a Split")
     if type(surface_variant) is not int:
@@ -461,15 +461,6 @@ def render_core(
     )
 
     resolved_profile = _resolve_core_profile(core)
-    generation_config_hash = _payload_sha256(
-        {
-            "generator_name": _GENERATOR_NAME,
-            "compiler_version": COMPILER_VERSION,
-            "profile": _plain(core.profile),
-            "surface_template_sets": SURFACE_TEMPLATE_SETS,
-            "split_policy_version": _SPLIT_POLICY_VERSION,
-        }
-    )
     normalized_source_hash = _payload_sha256(
         _normalized_source_semantic_projection(core)
     )
@@ -505,13 +496,16 @@ def render_core(
             "version_group_id": version_group,
             "surface_variant": surface_variant,
             "surface_template": template_name,
+            "release_id": context.release_id,
+            "schema_version": context.schema_version,
+            "profile_version": context.profile_version,
         },
         generator=GeneratorProvenance(
-            generator_name=_GENERATOR_NAME,
-            seed=core.core_index,
-            config_sha256=generation_config_hash,
-            code_revision=_CODE_REVISION,
-            compiler_version=COMPILER_VERSION,
+            generator_name=context.generator_name,
+            seed=context.seed,
+            config_sha256=context.config_sha256,
+            code_revision=context.code_revision,
+            compiler_version=context.compiler_version,
         ),
     )
 
@@ -538,8 +532,8 @@ def render_core(
             ),
             profile_name=core.difficulty,
             resolved_profile=_plain(resolved_profile),
-            generation_config_hash=generation_config_hash,
-            compiler_version=COMPILER_VERSION,
+            generation_config_hash=context.config_sha256,
+            compiler_version=context.compiler_version,
             tags=[
                 "vnext_pilot",
                 core.task_family.value,

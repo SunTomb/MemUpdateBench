@@ -286,7 +286,7 @@ Commit only when execution-time permission is active; otherwise record the scope
 
 - [ ] **Step 1: Write failing determinism and semantic-invariance tests**
 
-Assert the same seed/config/core index produces identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing relation wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics.
+Assert the same `GenerationContext` and semantic core produce identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing relation wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics.
 
 ```python
 from mub.vnext.contracts.common import MemoryObjectKey
@@ -370,7 +370,7 @@ class SemanticCore(ContractModel):
     stratification: dict[str, str | int | float | bool]
 ```
 
-`render_core` converts core events into natural-language `MemoryEvent`s and ordered `GoldAction`s, attaches generator provenance, and validates replay before returning a task. Surface variants may change wording, speaker labels, and deterministic linked task/source/event/action/query IDs. Event/action and query/gold references remain exact; semantic equivalence is established by identical semantic task hashes, replay state/history/answers, and the linked-ID-normalized gold projection above.
+`render_core(core, *, split: Split, surface_variant: int, context: GenerationContext) -> MemUpdateTask` converts core events into natural-language `MemoryEvent`s and ordered `GoldAction`s, attaches generator provenance from the required caller-supplied context, and validates replay before returning a task. The context is built from the fixed Pilot config plus the explicit code revision, generator name, and compiler version; release, schema, and profile versions remain recorded as artifact provenance but excluded from semantic task hashes. Surface variants may change wording, speaker labels, and deterministic linked task/source/event/action/query IDs. Event/action and query/gold references remain exact; semantic equivalence is established by identical semantic task hashes, replay state/history/answers, and the linked-ID-normalized gold projection above.
 
 - [ ] **Step 5: Run common generation tests**
 
