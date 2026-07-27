@@ -130,12 +130,20 @@ class CanonicalAnswer(ContractModel):
     def _validate_gold_disposition(self) -> Self:
         if self.disposition == AnswerDisposition.UNAVAILABLE:
             raise ValueError("UNAVAILABLE is runtime-only")
+        _reject_blank_ids(self.selected_candidate_ids, "selected candidate IDs")
+        _reject_duplicates(self.selected_candidate_ids, "selected candidate IDs")
         if self.disposition == AnswerDisposition.ANSWERED:
+            if self.resolution_status != ReferenceResolutionStatus.UNIQUE:
+                raise ValueError("ANSWERED canonical answers must have UNIQUE resolution_status")
+            if len(self.selected_candidate_ids) != 1:
+                raise ValueError("ANSWERED canonical answers must select one candidate")
             if self.value is None:
                 raise ValueError("ANSWERED canonical answers require a value")
             if self.abstention_reason is not None:
                 raise ValueError("ANSWERED canonical answers cannot carry abstention_reason")
         elif self.disposition == AnswerDisposition.ABSTAINED:
+            if self.resolution_status == ReferenceResolutionStatus.UNIQUE:
+                raise ValueError("ABSTAINED canonical answers cannot have UNIQUE resolution_status")
             if self.value is not None:
                 raise ValueError("ABSTAINED canonical answers cannot carry a value")
             if not self.abstention_reason or not self.abstention_reason.strip():
@@ -362,15 +370,6 @@ class MemUpdateTask(ContractModel):
                 raise ValueError(
                     f"no-match resolution for query {query.query_id} cannot reference candidates"
                 )
-            if canonical.selected_candidate_ids:
-                _reject_blank_ids(
-                    canonical.selected_candidate_ids,
-                    f"selected candidate IDs for query {query.query_id}",
-                )
-                _reject_duplicates(
-                    canonical.selected_candidate_ids,
-                    f"selected candidate IDs for query {query.query_id}",
-                )
             if set(canonical.selected_candidate_ids) - candidate_ids:
                 raise ValueError(
                     f"canonical answer for query {query.query_id} selects unknown candidates"
@@ -379,24 +378,6 @@ class MemUpdateTask(ContractModel):
                 raise ValueError(
                     f"canonical answer for query {query.query_id} selects unreferenced candidates"
                 )
-            if canonical.disposition == AnswerDisposition.ANSWERED:
-                if canonical.resolution_status != ReferenceResolutionStatus.UNIQUE:
-                    raise ValueError(
-                        f"answered unresolved query {query.query_id} must have UNIQUE resolution_status"
-                    )
-                if len(canonical.selected_candidate_ids) != 1:
-                    raise ValueError(
-                        f"answered unresolved query {query.query_id} must select one candidate"
-                    )
-            elif canonical.disposition == AnswerDisposition.ABSTAINED:
-                if canonical.resolution_status == ReferenceResolutionStatus.UNIQUE:
-                    raise ValueError(
-                        f"abstained unresolved query {query.query_id} cannot have UNIQUE resolution_status"
-                    )
-                if canonical.selected_candidate_ids:
-                    raise ValueError(
-                        f"abstained unresolved query {query.query_id} cannot select candidates"
-                    )
 
         ordinary_query_ids = query_id_set - unresolved_query_ids
         gold_answer_ids = set(self.gold.gold_answers)

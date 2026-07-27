@@ -223,6 +223,43 @@ def test_canonical_answer_encodes_resolution_and_abstention_explicitly() -> None
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "disposition": "answered",
+            "resolution_status": "ambiguous",
+            "selected_candidate_ids": ["candidate_alex"],
+            "value": "Qingdao",
+        },
+        {
+            "disposition": "abstained",
+            "resolution_status": "unique",
+            "selected_candidate_ids": [],
+            "abstention_reason": "cannot decide",
+            "value": None,
+        },
+        {
+            "disposition": "answered",
+            "resolution_status": "unique",
+            "selected_candidate_ids": [],
+            "value": "Qingdao",
+        },
+        {
+            "disposition": "answered",
+            "resolution_status": "unique",
+            "selected_candidate_ids": ["candidate_alex", "candidate_other"],
+            "value": "Qingdao",
+        },
+    ],
+)
+def test_canonical_answer_rejects_invalid_standalone_status_disposition_shapes(
+    payload: dict,
+) -> None:
+    with pytest.raises(ValidationError):
+        CanonicalAnswer.model_validate(payload)
+
+
 def test_unresolved_task_accepts_ambiguous_no_match_and_unique_contracts(make_task) -> None:
     for status in ("ambiguous", "no_match", "unique"):
         task = type(make_task()).model_validate(
@@ -241,6 +278,7 @@ def test_unique_answered_unresolved_query_preserves_non_string_schema(make_task)
     assert task.gold.canonical_answers["query_0"].disposition == AnswerDisposition.ANSWERED
 
 
+def test_ordinary_task_defaults_and_answer_rules_are_unchanged(make_task) -> None:
     task = make_task()
 
     assert task.queries[0].reference_candidates == []
