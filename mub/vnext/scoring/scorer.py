@@ -12,7 +12,14 @@ from pydantic import BaseModel
 
 from mub.vnext.contracts.adapter import AdapterCapabilities
 from mub.vnext.contracts.common import MetricFieldSupport
-from mub.vnext.contracts.enums import CompletionStatus, Operation, QueryType, SupportReason
+from mub.vnext.contracts.enums import (
+    AnswerDisposition,
+    CompletionStatus,
+    Operation,
+    QueryType,
+    ReferenceResolutionStatus,
+    SupportReason,
+)
 from mub.vnext.contracts.manifest import (
     ANSWER_NORMALIZATION_PROFILE,
     ScorerConfig,
@@ -64,6 +71,7 @@ _CORRECTNESS_ONE_PATHS = frozenset(
         "retrieval_scores.current_mrr",
         "answer_scores.exact_match",
         "answer_scores.normalized_match",
+        "answer_scores.reference_resolution_accuracy",
         "answer_scores.token_f1",
         "answer_scores.structured_field_accuracy",
         "answer_scores.answer_state_consistency",
@@ -160,6 +168,14 @@ def _accepted_values(task: MemUpdateTask, query_id: str) -> tuple[Any, ...]:
 
 def _current_queries(task: MemUpdateTask) -> tuple[MemoryQuery, ...]:
     return tuple(query for query in task.queries if query.query_type is QueryType.CURRENT_STATE)
+
+
+def _reference_queries(task: MemUpdateTask) -> tuple[MemoryQuery, ...]:
+    return tuple(
+        query
+        for query in task.queries
+        if query.query_type is QueryType.UNRESOLVED_REFERENCE
+    )
 
 
 def _actions_by_event(run: TaskRunRecord):
@@ -489,6 +505,10 @@ class _EvidenceContext:
     @cached_property
     def current_queries(self):
         return _current_queries(self.task)
+
+    @cached_property
+    def reference_queries(self):
+        return _reference_queries(self.task)
 
     @cached_property
     def action_pairs(self):
@@ -1116,6 +1136,54 @@ def _is_distractor_copy(
     )
 
 
+def _compute_reference_resolution(
+    task: MemUpdateTask,
+    run: TaskRunRecord,
+    context: _EvidenceContext | None,
+):
+    queries = context.reference_queries if context is not None else _reference_queries(task)
+    answers = context.answers_by_query if context is not None else _answers_by_query(run)
+    evidence = tuple((query, answers.get(query.query_id)) for query in queries)
+    if not evidence:
+        return None, "task has no unresolved-reference query"
+    if any(prediction is None for _, prediction in evidence):
+        return None, "answer prediction is absent for an unresolved-reference query"
+    if any(
+        prediction.disposition is AnswerDisposition.UNAVAILABLE
+        for _, prediction in evidence
+        if prediction is not None
+    ):
+        return None, "reference-resolution outcome is explicitly unavailable"
+
+    values: list[float] = []
+    for query, prediction in evidence:
+        assert prediction is not None
+        canonical = task.gold.canonical_answers[query.query_id]
+        if canonical.resolution_status in {
+            ReferenceResolutionStatus.AMBIGUOUS,
+            ReferenceResolutionStatus.NO_MATCH,
+        }:
+            values.append(
+                float(
+                    canonical.disposition is AnswerDisposition.ABSTAINED
+                    and prediction.disposition is AnswerDisposition.ABSTAINED
+                )
+            )
+            continue
+        if prediction.disposition is AnswerDisposition.ANSWERED:
+            if prediction.parsed_answer is None:
+                return None, "parsed unique-reference answer artifact is absent"
+            values.append(
+                float(
+                    canonical.disposition is AnswerDisposition.ANSWERED
+                    and _same_value(prediction.parsed_answer, canonical.value)
+                )
+            )
+        else:
+            values.append(0.0)
+    return _mean(values), None
+
+
 def _compute_answer(
     path: str,
     task: MemUpdateTask,
@@ -1123,6 +1191,9 @@ def _compute_answer(
     config: ScorerConfig,
     context: _EvidenceContext | None = None,
 ):
+    leaf = path.split(".", 1)[1]
+    if leaf == "reference_resolution_accuracy":
+        return _compute_reference_resolution(task, run, context)
     evidence = context.query_evidence if context is not None else _query_evidence(task, run)
     if not evidence:
         return None, "task has no current-state query"
@@ -1130,7 +1201,6 @@ def _compute_answer(
         return None, "answer prediction is absent for a current-state query"
     if any(answer.parsed_answer is None for _, _, answer in evidence if answer is not None):
         return None, "parsed answer artifact is absent for a current-state query"
-    leaf = path.split(".", 1)[1]
     values: list[float] = []
     snapshot = context.final_snapshot if context is not None else _final_snapshot(run)
     for query, trace, prediction in evidence:
@@ -1427,6 +1497,21 @@ def _derive_failure_flags(context: _EvidenceContext):
                 flags.add("gold_retrieved_wrong_answer")
             if not prediction.format_valid and normalized_match:
                 flags.add("answer_format_only")
+    for query in context.reference_queries:
+        prediction = answers.get(query.query_id)
+        if prediction is None or prediction.disposition is AnswerDisposition.UNAVAILABLE:
+            continue
+        canonical = task.gold.canonical_answers[query.query_id]
+        if (
+            canonical.disposition is AnswerDisposition.ABSTAINED
+            and prediction.disposition is AnswerDisposition.ANSWERED
+        ):
+            flags.add("wrong_reference_guess")
+        elif (
+            canonical.disposition is AnswerDisposition.ANSWERED
+            and prediction.disposition is AnswerDisposition.ABSTAINED
+        ):
+            flags.add("unjustified_abstention")
     return canonicalize_failure_flags(flags)
 
 
@@ -1451,6 +1536,9 @@ def _metric_applies_to_task(
         len(action.target_object_keys) > 1 for action in task.gold.actions
     ):
         return False
+    if path == "answer_scores.reference_resolution_accuracy":
+        queries = context.reference_queries if context is not None else _reference_queries(task)
+        return bool(queries)
     if layer in {"retrieval_scores", "answer_scores"}:
         queries = context.current_queries if context is not None else _current_queries(task)
         return bool(queries)
@@ -1524,6 +1612,8 @@ def _derive_primary_label(
             decisive_paths.append("action_scores.full_action_exact_match")
     if any(query.query_type is QueryType.CURRENT_STATE for query in task.queries):
         decisive_paths.append("answer_scores.normalized_match")
+    if any(query.query_type is QueryType.UNRESOLVED_REFERENCE for query in task.queries):
+        decisive_paths.append("answer_scores.reference_resolution_accuracy")
     if (
         task.gold.final_state
         or task.gold.expected_present_objects

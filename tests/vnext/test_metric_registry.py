@@ -31,7 +31,7 @@ def test_registry_exactly_covers_all_score_layer_fields_once() -> None:
         for layer, model in SCORE_LAYER_TYPES.items()
         for field in model.model_fields
     ]
-    assert len(flattened) == 51
+    assert len(flattened) == 52
     assert set(flattened) == METRIC_FIELD_PATHS == set(METRIC_REGISTRY)
     assert len(METRIC_REGISTRY) == len(set(METRIC_REGISTRY))
     assert tuple(METRIC_REGISTRY) == tuple(sorted(METRIC_REGISTRY))
@@ -201,7 +201,7 @@ def test_metric_definition_rejects_blank_malformed_and_mutable_shape_inputs() ->
 
 def test_legacy_aliases_are_exact_global_unambiguous_and_inventory_safe() -> None:
     aliases = [alias for definition in METRIC_REGISTRY.values() for alias in definition.legacy_aliases]
-    assert len(METRIC_REGISTRY) == 51
+    assert len(METRIC_REGISTRY) == 52
     assert len(aliases) == len(set(aliases)) == len(LEGACY_ALIAS_TO_FIELD)
     assert dict(LEGACY_ALIAS_TO_FIELD) == {}
     for nonidentical_alias in (

@@ -89,6 +89,7 @@ class AnswerScores(ImmutableContractModel):
     normalized_match: StrictOptionalRate = None
     token_f1: StrictOptionalRate = None
     structured_field_accuracy: StrictOptionalRate = None
+    reference_resolution_accuracy: StrictOptionalRate = None
     stale_copied: StrictOptionalRate = None
     distractor_copied: StrictOptionalRate = None
     gold_retrieved_wrong_answer: StrictOptionalRate = None

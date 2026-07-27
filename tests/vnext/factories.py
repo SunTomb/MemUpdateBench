@@ -105,6 +105,7 @@ def make_score_record(**overrides) -> ScoreRecord:
             "normalized_match": 1.0,
             "token_f1": 1.0,
             "structured_field_accuracy": 1.0,
+            "reference_resolution_accuracy": 1.0,
             "stale_copied": 0.0,
             "distractor_copied": 0.0,
             "gold_retrieved_wrong_answer": 0.0,

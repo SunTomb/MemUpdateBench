@@ -94,7 +94,8 @@ SCORE_LAYER_FIELDS = {
     ],
     AnswerScores: [
         "exact_match", "normalized_match", "token_f1",
-        "structured_field_accuracy", "stale_copied", "distractor_copied",
+        "structured_field_accuracy", "reference_resolution_accuracy",
+        "stale_copied", "distractor_copied",
         "gold_retrieved_wrong_answer", "answer_state_consistency",
     ],
     SystemScores: [

@@ -26,6 +26,8 @@ class FailureFlag(str, Enum):
     DISTRACTOR_RETRIEVED = "distractor_retrieved"
     DISTRACTOR_COPIED = "distractor_copied"
     GOLD_RETRIEVED_WRONG_ANSWER = "gold_retrieved_wrong_answer"
+    WRONG_REFERENCE_GUESS = "wrong_reference_guess"
+    UNJUSTIFIED_ABSTENTION = "unjustified_abstention"
     ANSWER_FORMAT_ONLY = "answer_format_only"
     SYSTEM_EXCEPTION = "system_exception"
 
@@ -51,6 +53,7 @@ PRIMARY_FAILURE_PRECEDENCE = (
         "stale_retained",
     ),
     ("current_not_retrieved", "stale_retrieved", "distractor_retrieved"),
+    ("wrong_reference_guess", "unjustified_abstention"),
     ("stale_copied", "distractor_copied", "gold_retrieved_wrong_answer"),
     ("answer_format_only",),
 )

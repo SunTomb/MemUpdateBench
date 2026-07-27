@@ -30,6 +30,7 @@ CANONICAL_METRIC_PATHS = (
     "answer_scores.exact_match",
     "answer_scores.gold_retrieved_wrong_answer",
     "answer_scores.normalized_match",
+    "answer_scores.reference_resolution_accuracy",
     "answer_scores.stale_copied",
     "answer_scores.structured_field_accuracy",
     "answer_scores.token_f1",
@@ -242,6 +243,7 @@ _STALE_FAMILIES = (
     TaskFamily.REALISTIC_SOURCE_UPDATE.value,
 )
 _DELETE_FAMILY = (TaskFamily.DELETION_FORGETTING.value,)
+_REFERENCE_FAMILY = (TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,)
 
 _ACTION_CAPS = ("exports_action_trace",)
 _LEVEL_TWO_ENTRY_CAPS = ("exports_entries", "supports_isolated_reset")
@@ -315,6 +317,7 @@ _FAMILIES_BY_PATH = {
     "retrieval_scores.stale_exposure_rate": _STALE_FAMILIES,
     "retrieval_scores.stale_count_in_context": _STALE_FAMILIES,
     "answer_scores.stale_copied": _STALE_FAMILIES,
+    "answer_scores.reference_resolution_accuracy": _REFERENCE_FAMILY,
 }
 
 _ALIASES_BY_PATH: dict[str, tuple[str, ...]] = {}
@@ -457,6 +460,10 @@ _SEMANTICS_BY_PATH = {
         "Count of parsed answers matching a gold or accepted answer after versioned normalization.",
         "Count of current-state queries with parsed answer artifacts.",
     ),
+    "answer_scores.reference_resolution_accuracy": (
+        "Count of unresolved-reference queries with exact prediction disposition and resolution outcome: explicit abstention for ambiguous or no-match gold, or an exact answered value for unique gold.",
+        "Count of unresolved-reference queries with explicit ANSWERED or ABSTAINED prediction outcomes and required parsed values.",
+    ),
     "answer_scores.token_f1": (
         "Sum of duplicate-aware token overlap precision/recall harmonic means.",
         "Count of current-state queries with parsed answer artifacts.",
@@ -538,6 +545,7 @@ _RUNTIME_NULL_PATHS = frozenset(
         "retrieval_scores.current_mrr",
         "answer_scores.exact_match",
         "answer_scores.normalized_match",
+        "answer_scores.reference_resolution_accuracy",
         "answer_scores.token_f1",
         "answer_scores.structured_field_accuracy",
         "answer_scores.answer_state_consistency",
@@ -572,7 +580,11 @@ def _definition_payload(path: str) -> dict[str, object]:
         "aggregation_rule": aggregation,
         "applicable_task_families": _FAMILIES_BY_PATH.get(path, _ALL),
         "required_adapter_capabilities": _CAPABILITIES_BY_PATH.get(path, ()),
-        "unsupported_value_policy": "Serialize null with support reason and exclude from aggregation.",
+        "unsupported_value_policy": (
+            "Treat UNAVAILABLE or missing prediction outcomes as missing artifacts; serialize null with support reason and exclude from aggregation."
+            if path == "answer_scores.reference_resolution_accuracy"
+            else "Serialize null with support reason and exclude from aggregation."
+        ),
         "runtime_failure_policy": (
             RUNTIME_NULL_POLICY
             if path in _RUNTIME_NULL_PATHS

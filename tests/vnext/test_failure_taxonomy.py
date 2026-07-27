@@ -35,6 +35,8 @@ EXPECTED_FLAGS = (
     "distractor_retrieved",
     "distractor_copied",
     "gold_retrieved_wrong_answer",
+    "wrong_reference_guess",
+    "unjustified_abstention",
     "answer_format_only",
     "system_exception",
 )
@@ -63,6 +65,10 @@ EXPECTED_PRECEDENCE = (
         "current_not_retrieved",
         "stale_retrieved",
         "distractor_retrieved",
+    ),
+    (
+        "wrong_reference_guess",
+        "unjustified_abstention",
     ),
     (
         "stale_copied",
@@ -97,6 +103,8 @@ def test_overlap_uses_explicit_layer_and_intra_layer_precedence() -> None:
     assert primary_failure(["stale_retained", "current_state_missing"]) == "current_state_missing"
     assert primary_failure(["distractor_retrieved", "stale_retrieved"]) == "stale_retrieved"
     assert primary_failure(["gold_retrieved_wrong_answer", "distractor_copied"]) == "distractor_copied"
+    assert primary_failure(["stale_copied", "unjustified_abstention"]) == "unjustified_abstention"
+    assert primary_failure(["unjustified_abstention", "wrong_reference_guess"]) == "wrong_reference_guess"
 
 
 def test_primary_is_permutation_and_duplicate_invariant_without_mutating_caller() -> None:
