@@ -6,17 +6,19 @@ from typing import Any
 
 from mub.vnext.contracts.enums import (
     ActionScope,
+    AnswerDisposition,
     AnswerSchema,
     Difficulty,
     EvaluationMode,
     EventRole,
     Operation,
     QueryType,
+    ReferenceResolutionStatus,
     SourceType,
     Split,
     TaskFamily,
 )
-from mub.vnext.contracts.task import MemUpdateTask
+from mub.vnext.contracts.task import CanonicalAnswer, MemUpdateTask
 from mub.vnext.validation.issues import ValidationIssue, ValidationReport, build_report
 from mub.vnext.version import SCHEMA_VERSION
 
@@ -164,6 +166,420 @@ def acceptable_candidates(value: Any, schema: Any, gold_answer: Any = None) -> l
     if isinstance(value, (list, tuple)):
         return list(value)
     return [value]
+
+
+def _record_value(record: Any, name: str, default: Any = None) -> Any:
+    if isinstance(record, Mapping):
+        return record.get(name, default)
+    return getattr(record, name, default)
+
+
+def _reference_resolution_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    queries = _items(getattr(task, "queries", None))
+    gold = getattr(task, "gold", None)
+    raw_canonical_answers = getattr(gold, "canonical_answers", None)
+    if not isinstance(raw_canonical_answers, Mapping):
+        _issue(
+            issues,
+            "malformed_canonical_answers",
+            "gold.canonical_answers must be a map",
+            "gold.canonical_answers",
+        )
+        canonical_answers: Mapping[str, Any] = {}
+    else:
+        canonical_answers = raw_canonical_answers
+
+    raw_gold_answers = getattr(gold, "gold_answers", None)
+    gold_answers = raw_gold_answers if isinstance(raw_gold_answers, Mapping) else {}
+    raw_acceptable_answers = getattr(gold, "acceptable_answers", None)
+    acceptable_answers = (
+        raw_acceptable_answers if isinstance(raw_acceptable_answers, Mapping) else {}
+    )
+
+    declared_ids = {
+        canonical_id
+        for key in _items(getattr(task, "target_objects", None))
+        if (canonical_id := _canonical_id(key)) is not None
+    }
+    query_by_id: dict[str, tuple[int, Any]] = {}
+    unresolved_ids: set[str] = set()
+    for query_index, query in enumerate(queries):
+        query_id = getattr(query, "query_id", None)
+        if not _nonblank(query_id) or query_id in query_by_id:
+            continue
+        query_by_id[query_id] = (query_index, query)
+        if _enum_value(getattr(query, "query_type", None)) == QueryType.UNRESOLVED_REFERENCE.value:
+            unresolved_ids.add(query_id)
+
+    for query_id in sorted(canonical_answers, key=str):
+        if query_id not in query_by_id:
+            _issue(
+                issues,
+                "unknown_canonical_answer_query",
+                f"canonical answer references unknown query {query_id}",
+                f"gold.canonical_answers.{query_id}",
+            )
+        elif query_id not in unresolved_ids:
+            _issue(
+                issues,
+                "ordinary_query_canonical_answer",
+                f"ordinary query {query_id} cannot use canonical abstention records",
+                f"gold.canonical_answers.{query_id}",
+            )
+
+    for query_id in sorted(unresolved_ids):
+        query_index, query = query_by_id[query_id]
+        query_path = f"queries[{query_index}]"
+        if query_id in gold_answers:
+            _issue(
+                issues,
+                "unresolved_raw_answer",
+                f"unresolved query {query_id} must use a typed canonical answer",
+                f"gold.gold_answers.{query_id}",
+            )
+        if query_id in acceptable_answers:
+            _issue(
+                issues,
+                "unresolved_raw_answer",
+                f"unresolved query {query_id} must not use raw acceptable answers",
+                f"gold.acceptable_answers.{query_id}",
+            )
+
+        raw_candidates = getattr(query, "reference_candidates", None)
+        if not isinstance(raw_candidates, list):
+            _issue(
+                issues,
+                "malformed_reference_candidates",
+                "reference_candidates must be a list",
+                f"{query_path}.reference_candidates",
+            )
+            candidates: list[Any] = []
+        else:
+            candidates = raw_candidates
+        if not candidates:
+            _issue(
+                issues,
+                "missing_reference_candidates",
+                "unresolved queries require reference candidates",
+                f"{query_path}.reference_candidates",
+            )
+
+        candidate_by_id: dict[str, Any] = {}
+        identity_owner: dict[str, int] = {}
+        for candidate_index, candidate in enumerate(candidates):
+            path = f"{query_path}.reference_candidates[{candidate_index}]"
+            candidate_id = _record_value(candidate, "candidate_id")
+            if not _nonblank(candidate_id):
+                _issue(
+                    issues,
+                    "blank_reference_candidate_id",
+                    "reference candidate ID must be nonblank",
+                    f"{path}.candidate_id",
+                )
+            elif candidate_id in candidate_by_id:
+                _issue(
+                    issues,
+                    "duplicate_reference_candidate_id",
+                    f"duplicate reference candidate ID {candidate_id}",
+                    f"{path}.candidate_id",
+                )
+            else:
+                candidate_by_id[candidate_id] = candidate
+            canonical_id = _canonical_id(_record_value(candidate, "object_key"))
+            if canonical_id is None:
+                _issue(
+                    issues,
+                    "malformed_reference_candidate",
+                    "reference candidate object identity is malformed",
+                    f"{path}.object_key",
+                )
+            elif canonical_id in identity_owner:
+                _issue(
+                    issues,
+                    "duplicate_reference_candidate_identity",
+                    f"duplicate reference candidate identity {canonical_id}",
+                    f"{path}.object_key",
+                )
+            else:
+                identity_owner[canonical_id] = candidate_index
+                if canonical_id not in declared_ids:
+                    _issue(
+                        issues,
+                        "undeclared_reference_candidate",
+                        f"reference candidate {canonical_id} is not declared",
+                        f"{path}.object_key",
+                    )
+
+        raw_references = getattr(query, "surface_references", None)
+        if not isinstance(raw_references, list):
+            _issue(
+                issues,
+                "malformed_surface_references",
+                "surface_references must be a list",
+                f"{query_path}.surface_references",
+            )
+            references: list[Any] = []
+        else:
+            references = raw_references
+        if not references:
+            _issue(
+                issues,
+                "missing_surface_references",
+                "unresolved queries require surface references",
+                f"{query_path}.surface_references",
+            )
+
+        reference_ids: set[str] = set()
+        linked_candidate_ids: set[str] = set()
+        for reference_index, reference in enumerate(references):
+            path = f"{query_path}.surface_references[{reference_index}]"
+            reference_id = _record_value(reference, "reference_id")
+            if not _nonblank(reference_id):
+                _issue(
+                    issues,
+                    "blank_surface_reference_id",
+                    "surface reference ID must be nonblank",
+                    f"{path}.reference_id",
+                )
+            elif reference_id in reference_ids:
+                _issue(
+                    issues,
+                    "duplicate_surface_reference_id",
+                    f"duplicate surface reference ID {reference_id}",
+                    f"{path}.reference_id",
+                )
+            else:
+                reference_ids.add(reference_id)
+            raw_candidate_ids = _record_value(reference, "candidate_ids")
+            if not isinstance(raw_candidate_ids, list):
+                _issue(
+                    issues,
+                    "malformed_surface_candidate_ids",
+                    "surface reference candidate_ids must be a list",
+                    f"{path}.candidate_ids",
+                )
+                candidate_ids: list[Any] = []
+            else:
+                candidate_ids = raw_candidate_ids
+            seen_reference_candidates: set[str] = set()
+            for link_index, candidate_id in enumerate(candidate_ids):
+                link_path = f"{path}.candidate_ids[{link_index}]"
+                if not _nonblank(candidate_id):
+                    _issue(
+                        issues,
+                        "blank_surface_candidate_id",
+                        "surface candidate link must be nonblank",
+                        link_path,
+                    )
+                    continue
+                if candidate_id in seen_reference_candidates:
+                    _issue(
+                        issues,
+                        "duplicate_surface_candidate_id",
+                        f"duplicate surface candidate link {candidate_id}",
+                        link_path,
+                    )
+                elif candidate_id not in candidate_by_id:
+                    _issue(
+                        issues,
+                        "unknown_surface_candidate_id",
+                        f"surface reference links unknown candidate {candidate_id}",
+                        link_path,
+                    )
+                else:
+                    linked_candidate_ids.add(candidate_id)
+                seen_reference_candidates.add(candidate_id)
+
+        if query_id not in canonical_answers:
+            _issue(
+                issues,
+                "missing_canonical_answer",
+                f"unresolved query {query_id} requires a typed canonical answer",
+                f"gold.canonical_answers.{query_id}",
+            )
+            continue
+        canonical = canonical_answers[query_id]
+        if not isinstance(canonical, CanonicalAnswer):
+            _issue(
+                issues,
+                "malformed_canonical_answer",
+                "canonical answer must be a typed record",
+                f"gold.canonical_answers.{query_id}",
+            )
+            continue
+
+        canonical_path = f"gold.canonical_answers.{query_id}"
+        disposition = _enum_value(_record_value(canonical, "disposition"))
+        status = _enum_value(_record_value(canonical, "resolution_status"))
+        if disposition not in {item.value for item in AnswerDisposition}:
+            _issue(
+                issues,
+                "invalid_canonical_answer_disposition",
+                "canonical answer disposition is not recognized",
+                f"{canonical_path}.disposition",
+            )
+        if status not in {item.value for item in ReferenceResolutionStatus}:
+            _issue(
+                issues,
+                "invalid_reference_resolution_status",
+                "reference resolution status is not recognized",
+                f"{canonical_path}.resolution_status",
+            )
+
+        raw_selected_ids = _record_value(canonical, "selected_candidate_ids")
+        if not isinstance(raw_selected_ids, list):
+            _issue(
+                issues,
+                "malformed_selected_candidate_ids",
+                "selected_candidate_ids must be a list",
+                f"{canonical_path}.selected_candidate_ids",
+            )
+            selected_ids: list[Any] = []
+        else:
+            selected_ids = raw_selected_ids
+        seen_selected: set[str] = set()
+        for selected_index, candidate_id in enumerate(selected_ids):
+            selected_path = f"{canonical_path}.selected_candidate_ids[{selected_index}]"
+            if not _nonblank(candidate_id):
+                _issue(
+                    issues,
+                    "blank_selected_candidate_id",
+                    "selected candidate ID must be nonblank",
+                    selected_path,
+                )
+                continue
+            if candidate_id in seen_selected:
+                _issue(
+                    issues,
+                    "duplicate_selected_candidate_id",
+                    f"duplicate selected candidate ID {candidate_id}",
+                    selected_path,
+                )
+            elif candidate_id not in candidate_by_id:
+                _issue(
+                    issues,
+                    "unknown_selected_candidate_id",
+                    f"canonical answer selects unknown candidate {candidate_id}",
+                    selected_path,
+                )
+            elif candidate_id not in linked_candidate_ids:
+                _issue(
+                    issues,
+                    "unlinked_selected_candidate_id",
+                    f"canonical answer selects unlinked candidate {candidate_id}",
+                    selected_path,
+                )
+            seen_selected.add(candidate_id)
+
+        value = _record_value(canonical, "value")
+        abstention_reason = _record_value(canonical, "abstention_reason")
+        if status == ReferenceResolutionStatus.UNIQUE.value:
+            if len(linked_candidate_ids) != 1:
+                _issue(
+                    issues,
+                    "reference_resolution_linkage_mismatch",
+                    "UNIQUE resolution must expose exactly one linked candidate",
+                    f"{query_path}.surface_references",
+                )
+        elif status == ReferenceResolutionStatus.AMBIGUOUS.value:
+            if len(linked_candidate_ids) < 2:
+                _issue(
+                    issues,
+                    "reference_resolution_linkage_mismatch",
+                    "AMBIGUOUS resolution must expose multiple linked candidates",
+                    f"{query_path}.surface_references",
+                )
+        elif status == ReferenceResolutionStatus.NO_MATCH.value and linked_candidate_ids:
+            _issue(
+                issues,
+                "reference_resolution_linkage_mismatch",
+                "NO_MATCH resolution cannot expose linked candidates",
+                f"{query_path}.surface_references",
+            )
+
+        if disposition == AnswerDisposition.ANSWERED.value:
+            if status != ReferenceResolutionStatus.UNIQUE.value:
+                _issue(
+                    issues,
+                    "canonical_answer_status_disposition_mismatch",
+                    "ANSWERED canonical answers require UNIQUE resolution",
+                    canonical_path,
+                )
+            if len(selected_ids) != 1:
+                _issue(
+                    issues,
+                    "canonical_answer_status_disposition_mismatch",
+                    "ANSWERED canonical answers must select one candidate",
+                    f"{canonical_path}.selected_candidate_ids",
+                )
+            if value is None or not _answer_matches_schema(
+                value, getattr(query, "answer_schema", None)
+            ):
+                _issue(
+                    issues,
+                    "invalid_canonical_answer_schema",
+                    "answered canonical value must match the query answer schema",
+                    f"{canonical_path}.value",
+                )
+            if abstention_reason is not None:
+                _issue(
+                    issues,
+                    "canonical_answer_status_disposition_mismatch",
+                    "ANSWERED canonical answers cannot carry abstention_reason",
+                    f"{canonical_path}.abstention_reason",
+                )
+        elif disposition == AnswerDisposition.ABSTAINED.value:
+            if status not in {
+                ReferenceResolutionStatus.AMBIGUOUS.value,
+                ReferenceResolutionStatus.NO_MATCH.value,
+            }:
+                _issue(
+                    issues,
+                    "canonical_answer_status_disposition_mismatch",
+                    "ABSTAINED canonical answers require AMBIGUOUS or NO_MATCH resolution",
+                    canonical_path,
+                )
+            if selected_ids or value is not None:
+                _issue(
+                    issues,
+                    "guessed_ambiguous_candidate",
+                    "abstained unresolved answers cannot guess a candidate or value",
+                    canonical_path,
+                )
+            if not _nonblank(abstention_reason):
+                _issue(
+                    issues,
+                    "invalid_canonical_abstention_reason",
+                    "abstained canonical answers require an abstention reason",
+                    f"{canonical_path}.abstention_reason",
+                )
+            if _enum_value(getattr(query, "answer_schema", None)) != AnswerSchema.STRING.value:
+                _issue(
+                    issues,
+                    "invalid_canonical_answer_schema",
+                    "abstained unresolved answers require string answer schema",
+                    f"{query_path}.answer_schema",
+                )
+        elif disposition == AnswerDisposition.UNAVAILABLE.value:
+            _issue(
+                issues,
+                "invalid_canonical_answer_disposition",
+                "UNAVAILABLE is runtime-only and cannot be gold",
+                f"{canonical_path}.disposition",
+            )
+
+        if status == ReferenceResolutionStatus.AMBIGUOUS.value and (
+            disposition == AnswerDisposition.ANSWERED.value or selected_ids or value is not None
+        ):
+            _issue(
+                issues,
+                "guessed_ambiguous_candidate",
+                "ambiguous references must abstain without selecting a candidate",
+                canonical_path,
+            )
+
+    return issues
 
 
 def validate_task(task: MemUpdateTask) -> ValidationReport:
@@ -424,6 +840,7 @@ def validate_task(task: MemUpdateTask) -> ValidationReport:
 
         gold_answers = _map_field(issues, getattr(gold, "gold_answers", None), "gold.gold_answers", "malformed_gold_answers")
         acceptable_answers = _map_field(issues, getattr(gold, "acceptable_answers", None), "gold.acceptable_answers", "malformed_acceptable_answers")
+        issues.extend(_reference_resolution_issues(task))
         query_id_set = {query_id for query_id in query_ids if _nonblank(query_id)}
         for query_id in sorted(set(gold_answers) - query_id_set, key=str):
             _issue(issues, "unknown_gold_answer_query", f"gold answer references unknown query {query_id}", f"gold.gold_answers.{query_id}")
@@ -483,6 +900,8 @@ def validate_task(task: MemUpdateTask) -> ValidationReport:
                         code = "undeclared_deletion_query_target" if query_type == QueryType.DELETION_COMPLIANCE.value else "undeclared_query_target"
                         _issue(issues, code, f"query target {canonical_id} is neither declared nor expected absent", path)
 
+            if query_type == QueryType.UNRESOLVED_REFERENCE.value:
+                continue
             if not _nonblank(query_id):
                 continue
             if query_id not in gold_answers:

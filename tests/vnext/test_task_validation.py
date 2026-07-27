@@ -5,7 +5,17 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from mub.vnext.contracts import AnswerSchema, Difficulty, MemoryObjectKey, Operation, QueryType, TaskFamily
+from mub.vnext.contracts import (
+    AnswerDisposition,
+    AnswerSchema,
+    CanonicalAnswer,
+    Difficulty,
+    MemoryObjectKey,
+    Operation,
+    QueryType,
+    ReferenceResolutionStatus,
+    TaskFamily,
+)
 from mub.vnext.validation import ValidationIssue, ValidationReport, validate_task
 from mub.vnext.version import SCHEMA_VERSION
 
@@ -22,6 +32,69 @@ def _codes(report):
 
 def _paths(report, code):
     return [issue.path for issue in report.issues if issue.code == code]
+
+
+def _unresolved_task(make_task, status="ambiguous"):
+    data = make_task().model_dump(mode="json")
+    second_key = {
+        **data["target_objects"][0],
+        "object_type": "profile",
+        "entity": "colleague:alex",
+    }
+    data["target_objects"].append(second_key)
+    linked_ids = {
+        "unique": ["candidate_friend"],
+        "ambiguous": ["candidate_friend", "candidate_colleague"],
+        "no_match": [],
+    }[status]
+    data["queries"][0].update(
+        query_type="unresolved_reference",
+        target_object_keys=[],
+        reference_candidates=[
+            {
+                "candidate_id": "candidate_friend",
+                "object_key": data["target_objects"][0],
+                "evidence": "friend-qualified Alex",
+                "source_anchors": [],
+            },
+            {
+                "candidate_id": "candidate_colleague",
+                "object_key": second_key,
+                "evidence": "colleague-qualified Alex",
+                "source_anchors": [],
+            },
+        ],
+        surface_references=[
+            {
+                "reference_id": "reference_alex",
+                "surface_text": "Alex",
+                "normalized_text": "alex",
+                "condition_kind": "same_surface_name",
+                "evidence_kind": "query_span",
+                "candidate_ids": linked_ids,
+            }
+        ],
+    )
+    data["gold"]["gold_answers"] = {}
+    data["gold"]["acceptable_answers"] = {}
+    if status == "unique":
+        canonical = {
+            "disposition": "answered",
+            "resolution_status": "unique",
+            "selected_candidate_ids": ["candidate_friend"],
+            "abstention_reason": None,
+            "value": "Qingdao",
+        }
+    else:
+        canonical = {
+            "disposition": "abstained",
+            "resolution_status": status,
+            "selected_candidate_ids": [],
+            "abstention_reason": "reference is not uniquely resolvable",
+            "value": None,
+        }
+    data["gold"]["canonical_answers"] = {"query_0": canonical}
+    return type(make_task()).model_validate(data)
 
 
 def test_validation_report_enforces_error_consistency_and_strict_bool():
@@ -53,6 +126,85 @@ def test_validation_artifacts_are_immutable_and_round_trip():
 
 def test_valid_task_has_exactly_empty_valid_report(make_task):
     assert validate_task(make_task()) == ValidationReport(valid=True, issues=[])
+
+
+@pytest.mark.parametrize("status", ["unique", "ambiguous", "no_match"])
+def test_unresolved_reference_structural_validation_accepts_explicit_gold(
+    make_task, status
+):
+    assert validate_task(_unresolved_task(make_task, status)) == ValidationReport(
+        valid=True, issues=[]
+    )
+
+
+def test_unresolved_reference_structural_validation_reports_linkage_defects(make_task):
+    task = _unresolved_task(make_task)
+    candidates = task.queries[0].reference_candidates
+    duplicate_candidate = _replace(
+        candidates[1], candidate_id=candidates[0].candidate_id
+    )
+    surface = _replace(
+        task.queries[0].surface_references[0],
+        candidate_ids=[candidates[0].candidate_id, candidates[0].candidate_id, "missing"],
+    )
+    query = _replace(
+        task.queries[0],
+        reference_candidates=[candidates[0], duplicate_candidate],
+        surface_references=[surface],
+    )
+
+    report = validate_task(_replace(task, queries=[query]))
+
+    assert "duplicate_reference_candidate_id" in _codes(report)
+    assert "duplicate_surface_candidate_id" in _codes(report)
+    assert "unknown_surface_candidate_id" in _codes(report)
+
+
+def test_unresolved_reference_structural_validation_rejects_typed_gold_mismatches(
+    make_task,
+):
+    task = _unresolved_task(make_task)
+    canonical = CanonicalAnswer.model_construct(
+        disposition=AnswerDisposition.ANSWERED,
+        resolution_status=ReferenceResolutionStatus.AMBIGUOUS,
+        selected_candidate_ids=["candidate_friend"],
+        abstention_reason=None,
+        value="Qingdao",
+    )
+    gold = _replace(
+        task.gold,
+        gold_answers={"query_0": None},
+        canonical_answers={"query_0": canonical},
+    )
+
+    codes = _codes(validate_task(_replace(task, gold=gold)))
+
+    assert "unresolved_raw_answer" in codes
+    assert "canonical_answer_status_disposition_mismatch" in codes
+    assert "guessed_ambiguous_candidate" in codes
+
+
+def test_unresolved_reference_structural_validation_rejects_missing_and_ordinary_canonical_gold(
+    make_task,
+):
+    unresolved = _unresolved_task(make_task)
+    assert "missing_canonical_answer" in _codes(
+        validate_task(_replace(unresolved, gold=_replace(unresolved.gold, canonical_answers={})))
+    )
+
+    ordinary = make_task()
+    abstention = CanonicalAnswer(
+        disposition=AnswerDisposition.ABSTAINED,
+        resolution_status=ReferenceResolutionStatus.NO_MATCH,
+        abstention_reason="not found",
+    )
+    report = validate_task(
+        _replace(
+            ordinary,
+            gold=_replace(ordinary.gold, canonical_answers={"query_0": abstention}),
+        )
+    )
+    assert "ordinary_query_canonical_answer" in _codes(report)
 
 
 def test_validation_is_deterministic_and_does_not_mutate(make_task):

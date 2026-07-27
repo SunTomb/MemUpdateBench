@@ -96,6 +96,44 @@ def _sorted_object_identities(records: list[dict[str, Any]]) -> list[dict[str, A
     return sorted(projected, key=_canonical_payload_bytes)
 
 
+def _unresolved_reference_projection(
+    query: dict[str, Any], canonical: dict[str, Any]
+) -> dict[str, Any]:
+    candidates = query.get("reference_candidates", [])
+    candidate_indices = {
+        candidate["candidate_id"]: index
+        for index, candidate in enumerate(candidates)
+    }
+    projected_references = []
+    for reference in query.get("surface_references", []):
+        projected_references.append(
+            {
+                "condition_kind": reference["condition_kind"],
+                "evidence_kind": reference["evidence_kind"],
+                "candidate_indices": [
+                    candidate_indices[candidate_id]
+                    for candidate_id in reference["candidate_ids"]
+                ],
+            }
+        )
+    return {
+        "reference_candidates": [
+            {"identity": _object_identity(candidate["object_key"])}
+            for candidate in candidates
+        ],
+        "surface_references": projected_references,
+        "canonical_answer": {
+            "disposition": canonical["disposition"],
+            "resolution_status": canonical["resolution_status"],
+            "selected_candidate_indices": [
+                candidate_indices[candidate_id]
+                for candidate_id in canonical["selected_candidate_ids"]
+            ],
+            "value": canonical["value"],
+        },
+    }
+
+
 def _semantic_task_projection(payload: dict[str, Any]) -> dict[str, Any]:
     events = payload["events"]
     gold = payload["gold"]
@@ -137,18 +175,26 @@ def _semantic_task_projection(payload: dict[str, Any]) -> dict[str, Any]:
     projected_queries = []
     for query in payload["queries"]:
         query_id = query["query_id"]
-        projected_queries.append(
-            {
-                "query_type": query["query_type"],
-                "target_object_keys": _sorted_object_identities(
-                    query["target_object_keys"]
-                ),
-                "answer_schema": query["answer_schema"],
-                "evaluation_mode": query["evaluation_mode"],
-                "gold_answer": gold["gold_answers"][query_id],
-                "acceptable_answers": gold["acceptable_answers"][query_id],
-            }
-        )
+        projected_query = {
+            "query_type": query["query_type"],
+            "target_object_keys": _sorted_object_identities(
+                query["target_object_keys"]
+            ),
+            "answer_schema": query["answer_schema"],
+            "evaluation_mode": query["evaluation_mode"],
+        }
+        if query["query_type"] == "unresolved_reference":
+            projected_query["reference_resolution"] = _unresolved_reference_projection(
+                query, gold["canonical_answers"][query_id]
+            )
+        else:
+            projected_query.update(
+                {
+                    "gold_answer": gold["gold_answers"][query_id],
+                    "acceptable_answers": gold["acceptable_answers"][query_id],
+                }
+            )
+        projected_queries.append(projected_query)
     projected_queries.sort(key=_canonical_payload_bytes)
 
     source = payload["source"]

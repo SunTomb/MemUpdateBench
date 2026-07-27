@@ -64,6 +64,76 @@ def _validated_task(payload: dict[str, Any]) -> MemUpdateTask:
     return MemUpdateTask.model_validate(payload)
 
 
+def _unresolved_task(make_task, status="ambiguous") -> MemUpdateTask:
+    payload = make_task().model_dump(mode="json")
+    second_key = {
+        **payload["target_objects"][0],
+        "object_type": "profile",
+        "entity": "colleague:alex",
+    }
+    payload["target_objects"].append(second_key)
+    linked_ids = {
+        "unique": ["candidate_friend"],
+        "ambiguous": ["candidate_friend", "candidate_colleague"],
+        "no_match": [],
+    }[status]
+    payload["queries"][0].update(
+        query_type="unresolved_reference",
+        target_object_keys=[],
+        reference_candidates=[
+            {
+                "candidate_id": "candidate_friend",
+                "object_key": payload["target_objects"][0],
+                "evidence": "Friend-qualified mention in prose.",
+                "source_anchors": [
+                    {
+                        "document_id": "query_0",
+                        "section_id": "surface",
+                        "start_char": 0,
+                        "end_char": 4,
+                    }
+                ],
+            },
+            {
+                "candidate_id": "candidate_colleague",
+                "object_key": second_key,
+                "evidence": "Colleague-qualified mention in prose.",
+                "source_anchors": [],
+            },
+        ],
+        surface_references=[
+            {
+                "reference_id": "reference_alex",
+                "surface_text": "Alex",
+                "normalized_text": "alex",
+                "condition_kind": "same_surface_name",
+                "evidence_kind": "query_span",
+                "candidate_ids": linked_ids,
+            }
+        ],
+    )
+    payload["gold"]["gold_answers"] = {}
+    payload["gold"]["acceptable_answers"] = {}
+    if status == "unique":
+        canonical = {
+            "disposition": "answered",
+            "resolution_status": "unique",
+            "selected_candidate_ids": ["candidate_friend"],
+            "abstention_reason": None,
+            "value": "Qingdao",
+        }
+    else:
+        canonical = {
+            "disposition": "abstained",
+            "resolution_status": status,
+            "selected_candidate_ids": [],
+            "abstention_reason": "not uniquely resolvable",
+            "value": None,
+        }
+    payload["gold"]["canonical_answers"] = {"query_0": canonical}
+    return _validated_task(payload)
+
+
 def _task_with_anchors(make_task) -> MemUpdateTask:
     payload = make_task().model_dump(mode="json")
     payload["events"][0]["source_anchor"] = {
@@ -502,6 +572,78 @@ def test_semantic_hash_ignores_surface_ids_wording_and_generation_metadata(make_
     paraphrase = _rename_surface_ids_and_text(task)
 
     assert semantic_task_hash(task) == semantic_task_hash(paraphrase)
+
+
+def test_unresolved_semantic_hash_ignores_surface_wording_ids_prose_and_object_type(
+    make_task,
+) -> None:
+    task = _unresolved_task(make_task)
+    payload = task.model_dump(mode="json")
+    query = payload["queries"][0]
+    query["query_id"] = "renamed_query"
+    query["text"] = "Which differently worded Alex reference?"
+    query["metadata"] = {"surface_template": "other"}
+    candidate_ids = ["renamed_friend", "renamed_colleague"]
+    for candidate, candidate_id in zip(query["reference_candidates"], candidate_ids):
+        candidate["candidate_id"] = candidate_id
+        candidate["evidence"] = "Entirely different explanatory prose."
+        candidate["object_key"]["object_type"] = "metadata_only_type"
+    reference = query["surface_references"][0]
+    reference.update(
+        reference_id="renamed_reference",
+        surface_text="that person",
+        normalized_text="that person",
+        candidate_ids=candidate_ids,
+    )
+    payload["gold"]["canonical_answers"] = {
+        "renamed_query": {
+            **payload["gold"]["canonical_answers"]["query_0"],
+            "abstention_reason": "Different prose reason.",
+        }
+    }
+
+    assert semantic_task_hash(task) == semantic_task_hash(_validated_task(payload))
+
+
+def test_unresolved_semantic_hash_preserves_candidate_and_linkage_order(make_task) -> None:
+    task = _unresolved_task(make_task)
+    candidate_order = task.model_dump(mode="json")
+    candidate_order["queries"][0]["reference_candidates"].reverse()
+    linkage_order = task.model_dump(mode="json")
+    linkage_order["queries"][0]["surface_references"][0]["candidate_ids"].reverse()
+
+    assert semantic_task_hash(task) != semantic_task_hash(_validated_task(candidate_order))
+    assert semantic_task_hash(task) != semantic_task_hash(_validated_task(linkage_order))
+
+
+def test_unresolved_semantic_hash_includes_resolution_graph_and_canonical_outcome(
+    make_task,
+) -> None:
+    ambiguous = _unresolved_task(make_task, "ambiguous")
+    no_match = _unresolved_task(make_task, "no_match")
+    unique = _unresolved_task(make_task, "unique")
+    changed_identity = ambiguous.model_dump(mode="json")
+    candidate_key = changed_identity["queries"][0]["reference_candidates"][1][
+        "object_key"
+    ]
+    candidate_key["attribute"] = "timezone"
+    changed_identity["target_objects"][1]["attribute"] = "timezone"
+    changed_evidence = ambiguous.model_dump(mode="json")
+    changed_evidence["queries"][0]["surface_references"][0][
+        "condition_kind"
+    ] = "namespace_collision"
+    changed_value = unique.model_dump(mode="json")
+    changed_value["gold"]["canonical_answers"]["query_0"]["value"] = "Weihai"
+
+    hashes = {
+        semantic_task_hash(ambiguous),
+        semantic_task_hash(no_match),
+        semantic_task_hash(unique),
+        semantic_task_hash(_validated_task(changed_identity)),
+        semantic_task_hash(_validated_task(changed_evidence)),
+        semantic_task_hash(_validated_task(changed_value)),
+    }
+    assert len(hashes) == 6
 
 
 def test_semantic_hash_ignores_difficulty_label_only_change(make_task) -> None:

@@ -6,7 +6,9 @@ import pytest
 
 from mub.vnext.contracts import (
     ActionScope,
+    AnswerDisposition,
     AnswerSchema,
+    CanonicalAnswer,
     EvaluationMode,
     EventRole,
     GoldAction,
@@ -15,6 +17,7 @@ from mub.vnext.contracts import (
     MemoryQuery,
     Operation,
     QueryType,
+    ReferenceResolutionStatus,
 )
 from mub.vnext.validation import (
     ReplayResult,
@@ -33,6 +36,68 @@ def _replace(model, **changes):
 
 def _codes(report):
     return [issue.code for issue in report.issues]
+
+
+def _unresolved_task(make_task, status="ambiguous"):
+    data = make_task().model_dump(mode="json")
+    second_key = {
+        **data["target_objects"][0],
+        "entity": "colleague:alex",
+    }
+    data["target_objects"].append(second_key)
+    linked_ids = {
+        "unique": ["candidate_friend"],
+        "ambiguous": ["candidate_friend", "candidate_colleague"],
+        "no_match": [],
+    }[status]
+    data["queries"][0].update(
+        query_type="unresolved_reference",
+        target_object_keys=[],
+        reference_candidates=[
+            {
+                "candidate_id": "candidate_friend",
+                "object_key": data["target_objects"][0],
+                "evidence": None,
+                "source_anchors": [],
+            },
+            {
+                "candidate_id": "candidate_colleague",
+                "object_key": second_key,
+                "evidence": None,
+                "source_anchors": [],
+            },
+        ],
+        surface_references=[
+            {
+                "reference_id": "reference_alex",
+                "surface_text": "Alex",
+                "normalized_text": "alex",
+                "condition_kind": "same_surface_name",
+                "evidence_kind": "query_span",
+                "candidate_ids": linked_ids,
+            }
+        ],
+    )
+    data["gold"]["gold_answers"] = {}
+    data["gold"]["acceptable_answers"] = {}
+    if status == "unique":
+        canonical = {
+            "disposition": "answered",
+            "resolution_status": "unique",
+            "selected_candidate_ids": ["candidate_friend"],
+            "abstention_reason": None,
+            "value": "Qingdao",
+        }
+    else:
+        canonical = {
+            "disposition": "abstained",
+            "resolution_status": status,
+            "selected_candidate_ids": [],
+            "abstention_reason": "not uniquely resolvable",
+            "value": None,
+        }
+    data["gold"]["canonical_answers"] = {"query_0": canonical}
+    return type(make_task()).model_validate(data)
 
 
 def _action(action_id, event_id, operation, targets, value=None):
@@ -160,6 +225,67 @@ def test_gold_replay_uses_action_sequence_not_storage_order(make_task):
     task = make_task()
     reordered = _replace(task, gold=_replace(task.gold, actions=list(reversed(task.gold.actions))))
     assert validate_gold_replay(reordered).valid is True
+
+
+@pytest.mark.parametrize("status", ["unique", "ambiguous", "no_match"])
+def test_gold_replay_accepts_explicit_unresolved_reference_outcomes(make_task, status):
+    assert validate_gold_replay(_unresolved_task(make_task, status)).valid is True
+
+
+def test_unresolved_reference_replay_is_not_inferred_from_final_state_or_delete(make_task):
+    task = _unresolved_task(make_task, "unique")
+    key = task.target_objects[0]
+    delete = _action("action_1", "event_1", Operation.DELETE, [key])
+    gold = _replace(
+        task.gold,
+        actions=[task.gold.actions[0], delete],
+        final_state={},
+        version_history={key.canonical_id: ["Dalian"]},
+        expected_present_objects=[],
+        expected_absent_objects=[key],
+    )
+
+    report = validate_gold_replay(_replace(task, gold=gold))
+
+    assert report.valid is True
+    assert "current_query_target_absent" not in _codes(report)
+    assert "unresolved_query_semantics" not in _codes(report)
+
+
+def test_unresolved_reference_replay_rejects_guesses_and_raw_none(make_task):
+    task = _unresolved_task(make_task)
+    guessed = CanonicalAnswer.model_construct(
+        disposition=AnswerDisposition.ANSWERED,
+        resolution_status=ReferenceResolutionStatus.AMBIGUOUS,
+        selected_candidate_ids=["candidate_friend"],
+        abstention_reason=None,
+        value="Qingdao",
+    )
+    gold = _replace(
+        task.gold,
+        gold_answers={"query_0": None},
+        canonical_answers={"query_0": guessed},
+    )
+
+    codes = _codes(validate_gold_replay(_replace(task, gold=gold)))
+
+    assert "unresolved_raw_answer" in codes
+    assert "canonical_answer_status_disposition_mismatch" in codes
+    assert "guessed_ambiguous_candidate" in codes
+
+
+def test_gold_replay_rejects_ordinary_query_abstention(make_task):
+    task = make_task()
+    abstention = CanonicalAnswer(
+        disposition=AnswerDisposition.ABSTAINED,
+        resolution_status=ReferenceResolutionStatus.NO_MATCH,
+        abstention_reason="not found",
+    )
+    gold = _replace(task.gold, canonical_answers={"query_0": abstention})
+
+    assert "ordinary_query_canonical_answer" in _codes(
+        validate_gold_replay(_replace(task, gold=gold))
+    )
 
 
 def test_gold_replay_reports_replay_errors_without_escaping(make_task):
