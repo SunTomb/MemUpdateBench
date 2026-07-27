@@ -886,3 +886,109 @@ def test_core_model_copy_preserves_normal_shallow_and_deep_copy_behavior() -> No
     assert deep == core
     assert shallow.events is core.events
     assert deep.events is not core.events
+
+
+def _core_with_key_changes(
+    core: SemanticCore,
+    **changes: object,
+) -> SemanticCore:
+    payload = core.model_dump(mode="python")
+    for event in payload["events"]:
+        for key in event["object_keys"]:
+            key.update(changes)
+    for key in payload["query_targets"]:
+        key.update(changes)
+    return SemanticCore.model_validate(payload)
+
+
+def _core_with_source_semantic_change(
+    core: SemanticCore,
+    change: str,
+) -> SemanticCore:
+    payload = core.model_dump(mode="python")
+    if change == "operation":
+        payload["events"][1]["operation"] = Operation.DELETE
+        payload["events"][1]["value"] = None
+        payload["expected_answer"] = None
+    elif change == "value":
+        payload["events"][1]["value"] = "Weihai"
+        payload["expected_answer"] = "Weihai"
+    elif change == "role":
+        payload["events"][1]["role"] = EventRole.DUPLICATE_CURRENT
+    elif change == "identity":
+        return _core_with_key_changes(core, entity="friend:blair")
+    elif change == "metadata":
+        payload["events"][0]["metadata"] = {
+            "sequence": 0,
+            "semantic_note": "confirmed by the user",
+        }
+    else:
+        raise AssertionError(f"unsupported test change: {change}")
+    return SemanticCore.model_validate(payload)
+
+
+def test_render_hashes_ignore_object_type_classification_metadata() -> None:
+    core = _representative_core()
+    reclassified = _core_with_key_changes(core, object_type="profile")
+
+    original_task = render_core(core, split=Split.TEST, surface_variant=0)
+    reclassified_task = render_core(
+        reclassified,
+        split=Split.TEST,
+        surface_variant=0,
+    )
+
+    assert original_task.source.normalized_hash == (
+        reclassified_task.source.normalized_hash
+    )
+    assert semantic_task_hash(original_task) == semantic_task_hash(
+        reclassified_task
+    )
+    assert replay_actions(original_task.gold.actions).model_dump(mode="json") == (
+        replay_actions(reclassified_task.gold.actions).model_dump(mode="json")
+    )
+
+
+def test_render_hashes_ignore_core_administrative_fields() -> None:
+    core = _representative_core()
+    administratively_changed = core.model_copy(
+        update={
+            "core_id": "core_aaaaaaaaaaaaaaaa",
+            "trajectory_id": "trajectory_bbbbbbbbbbbbbbbb",
+            "difficulty": Difficulty.MEDIUM,
+            "profile": {"update_depth": 2},
+            "stratification": {
+                "update_depth": 2,
+                "administrative_slice": "changed",
+            },
+        }
+    )
+
+    original_task = render_core(core, split=Split.TEST, surface_variant=0)
+    changed_task = render_core(
+        administratively_changed,
+        split=Split.TEST,
+        surface_variant=0,
+    )
+
+    assert original_task.source.normalized_hash == changed_task.source.normalized_hash
+    assert semantic_task_hash(original_task) == semantic_task_hash(changed_task)
+    assert replay_actions(original_task.gold.actions).model_dump(mode="json") == (
+        replay_actions(changed_task.gold.actions).model_dump(mode="json")
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["operation", "value", "role", "identity", "metadata"],
+)
+def test_render_normalized_source_hash_tracks_meaningful_semantics(
+    change: str,
+) -> None:
+    core = _representative_core()
+    changed = _core_with_source_semantic_change(core, change)
+
+    original_task = render_core(core, split=Split.TEST, surface_variant=0)
+    changed_task = render_core(changed, split=Split.TEST, surface_variant=0)
+
+    assert original_task.source.normalized_hash != changed_task.source.normalized_hash

@@ -76,6 +76,32 @@ def _identity(key: MemoryObjectKey) -> str:
     return key.canonical_id
 
 
+def _semantic_object_identity(key: MemoryObjectKey) -> dict[str, str | None]:
+    return {
+        "namespace": key.namespace,
+        "entity": key.entity,
+        "attribute": key.attribute,
+        "subkey": key.subkey,
+    }
+
+
+def _normalized_source_semantic_projection(core: SemanticCore) -> dict[str, Any]:
+    return {
+        "events": [
+            {
+                "operation": event.operation.value,
+                "target_object_keys": [
+                    _semantic_object_identity(key) for key in event.object_keys
+                ],
+                "value": _plain(event.value),
+                "role": event.role.value,
+                "metadata": _plain(event.metadata),
+            }
+            for event in core.events
+        ]
+    }
+
+
 def _plain(value: Any) -> Any:
     return thaw_json(value)
 
@@ -383,11 +409,7 @@ def render_core(
             speaker=_SPEAKERS[surface_variant],
             gold_action_ids=[rendered_action_ids[index]],
             role=core_event.role,
-            source_anchor={
-                "semantic_core_id": core.core_id,
-                "source_document_id": source_document,
-                "event_index": index,
-            },
+            source_anchor={"event_index": index},
             metadata=metadata,
         )
         actions.append(action)
@@ -449,10 +471,7 @@ def render_core(
         }
     )
     normalized_source_hash = _payload_sha256(
-        {
-            "semantic_core": core.model_dump(mode="json"),
-            "source_document_id": source_document,
-        }
+        _normalized_source_semantic_projection(core)
     )
     raw_source_hash = _payload_sha256(
         {
