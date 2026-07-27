@@ -286,14 +286,14 @@ Commit only when execution-time permission is active; otherwise record the scope
 
 - [ ] **Step 1: Write failing determinism and semantic-invariance tests**
 
-Assert the same seed/config/core index produces identical bytes, surface variants have distinct task IDs but one semantic-core ID, and changing only relation wording does not change gold actions or final state.
+Assert the same seed/config/core index produces identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing relation wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics.
 
 ```python
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, Split, TaskFamily
 from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.render import render_core
-from mub.vnext.io.canonical import canonical_json_bytes
+from mub.vnext.io.canonical import canonical_json_bytes, semantic_task_hash
 
 
 def make_test_core() -> SemanticCore:
@@ -330,8 +330,11 @@ def test_surface_variants_share_semantics() -> None:
     tasks = [render_core(core, split=Split.TEST, surface_variant=index) for index in range(3)]
     assert len({task.task_id for task in tasks}) == 3
     assert len({task.metadata.split_key.semantic_core_id for task in tasks}) == 1
-    assert len({canonical_json_bytes(task.gold) for task in tasks}) == 1
+    assert len({_normalized_gold_bytes(task) for task in tasks}) == 1
+    assert len({semantic_task_hash(task) for task in tasks}) == 1
 ```
+
+Here `_normalized_gold_bytes` replaces linked event/action/query IDs and answer-map keys with their event/action/query sequence indices before canonical comparison. Raw `task.gold` bytes may differ only through those required linked IDs.
 
 - [ ] **Step 2: Implement stable identity helpers**
 
@@ -367,7 +370,7 @@ class SemanticCore(ContractModel):
     stratification: dict[str, str | int | float | bool]
 ```
 
-`render_core` converts core events into natural-language `MemoryEvent`s and ordered `GoldAction`s, attaches generator provenance, and validates replay before returning a task. The three surface variants may change wording and speaker labels only.
+`render_core` converts core events into natural-language `MemoryEvent`s and ordered `GoldAction`s, attaches generator provenance, and validates replay before returning a task. Surface variants may change wording, speaker labels, and deterministic linked task/source/event/action/query IDs. Event/action and query/gold references remain exact; semantic equivalence is established by identical semantic task hashes, replay state/history/answers, and the linked-ID-normalized gold projection above.
 
 - [ ] **Step 5: Run common generation tests**
 

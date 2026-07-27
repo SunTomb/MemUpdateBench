@@ -21,6 +21,7 @@ from mub.vnext.generation.identity import (
     task_id,
     trajectory_id,
 )
+from mub.vnext.generation.render import render_core
 
 __all__ = [
     "ALIAS_MAPPINGS",
@@ -39,6 +40,7 @@ __all__ = [
     "load_pilot_config",
     "paraphrase_group_id",
     "query_id",
+    "render_core",
     "select_conflicting_values",
     "source_id",
     "stable_id",

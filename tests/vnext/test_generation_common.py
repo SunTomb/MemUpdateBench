@@ -3,11 +3,20 @@ from __future__ import annotations
 import re
 
 import pytest
-from pydantic import ValidationError
+from pydantic import RootModel, ValidationError
 
 from mub.vnext.contracts.common import ContractModel, MemoryObjectKey
-from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, TaskFamily
-from mub.vnext.io import canonical_json_bytes
+from mub.vnext.contracts.enums import (
+    Difficulty,
+    EventRole,
+    Operation,
+    SourceType,
+    Split,
+    TaskFamily,
+)
+from mub.vnext.io import canonical_json_bytes, semantic_task_hash
+from mub.vnext.validation import validate_gold_replay, validate_task
+from mub.vnext.validation.replay import replay_actions
 
 from mub.vnext.generation import (
     ALIAS_MAPPINGS,
@@ -24,12 +33,14 @@ from mub.vnext.generation import (
     event_id,
     paraphrase_group_id,
     query_id,
+    render_core as exported_render_core,
     select_conflicting_values,
     source_id,
     stable_id,
     task_id,
     trajectory_id,
 )
+from mub.vnext.generation.render import render_core
 
 
 def test_stable_id_is_canonical_and_repeatable() -> None:
@@ -510,3 +521,328 @@ def test_core_model_dumps_are_canonical_safe_and_deterministic() -> None:
     assert isinstance(dumped["stratification"], dict)
     assert canonical_json_bytes(core) == canonical_json_bytes(rebuilt)
     assert canonical_json_bytes(core) == canonical_json_bytes(core)
+
+
+class _GoldProjection(RootModel[object]):
+    pass
+
+
+def test_render_core_is_exported_from_generation_package() -> None:
+    assert exported_render_core is render_core
+
+
+def _normalized_gold_bytes(task: object) -> bytes:
+    payload = task.gold.model_dump(mode="json")
+    event_indices = {
+        event.event_id: index for index, event in enumerate(task.events)
+    }
+    action_indices = {
+        action_identifier: index
+        for index, action_identifier in enumerate(task.gold.action_sequence)
+    }
+    query_indices = {
+        query.query_id: index for index, query in enumerate(task.queries)
+    }
+
+    for action in payload["actions"]:
+        action["action_id"] = f"action[{action_indices[action['action_id']]}]"
+        action["event_id"] = f"event[{event_indices[action['event_id']]}]"
+    payload["action_sequence"] = [
+        f"action[{action_indices[action_identifier]}]"
+        for action_identifier in payload["action_sequence"]
+    ]
+    payload["gold_source_event_ids"] = [
+        f"event[{event_indices[event_identifier]}]"
+        for event_identifier in payload["gold_source_event_ids"]
+    ]
+    payload["gold_answers"] = {
+        f"query[{query_indices[query_identifier]}]": answer
+        for query_identifier, answer in payload["gold_answers"].items()
+    }
+    payload["acceptable_answers"] = {
+        f"query[{query_indices[query_identifier]}]": answers
+        for query_identifier, answers in payload["acceptable_answers"].items()
+    }
+    return canonical_json_bytes(_GoldProjection(root=payload))
+
+
+def test_render_core_produces_valid_semantically_equivalent_surface_variants() -> None:
+    core = _representative_core()
+    tasks = [
+        render_core(core, split=Split.TEST, surface_variant=variant)
+        for variant in range(3)
+    ]
+
+    assert len({task.task_id for task in tasks}) == 3
+    assert len({task.source.source_id for task in tasks}) == 3
+    assert all(
+        len({task.events[index].event_id for task in tasks}) == 3
+        for index in range(len(core.events))
+    )
+    assert all(
+        len({task.gold.actions[index].action_id for task in tasks}) == 3
+        for index in range(len(core.events))
+    )
+    assert len({task.queries[0].query_id for task in tasks}) == 3
+
+    split_keys = [task.metadata.split_key for task in tasks]
+    assert {key.semantic_core_id for key in split_keys} == {core.core_id}
+    assert {key.trajectory_id for key in split_keys} == {core.trajectory_id}
+    assert len({key.source_group_id for key in split_keys}) == 1
+    assert len({key.paraphrase_group_id for key in split_keys}) == 1
+    assert len({key.source_document_id for key in split_keys}) == 1
+    assert len({key.version_group_id for key in split_keys}) == 1
+    assert all(task.metadata.split is Split.TEST for task in tasks)
+
+    assert len({_normalized_gold_bytes(task) for task in tasks}) == 1
+    assert len({semantic_task_hash(task) for task in tasks}) == 1
+    assert all(
+        replay_actions(task.gold.actions).final_state == task.gold.final_state
+        for task in tasks
+    )
+    assert all(
+        replay_actions(task.gold.actions).model_dump(mode="json")["version_history"]
+        == task.gold.model_dump(mode="json")["version_history"]
+        for task in tasks
+    )
+    assert all(task.gold.gold_answers[task.queries[0].query_id] == "Qingdao" for task in tasks)
+
+    assert len({tuple(event.raw_text for event in task.events) for task in tasks}) == 3
+    assert len({tuple(event.speaker for event in task.events) for task in tasks}) == 3
+    assert len({task.queries[0].text for task in tasks}) == 3
+
+
+def test_render_core_preserves_event_action_query_semantics_and_linkage() -> None:
+    core = _representative_core()
+    task = render_core(core, split=Split.DEV, surface_variant=1)
+
+    assert task.task_family == core.task_family.value
+    assert task.difficulty is core.difficulty
+    assert [event.sequence_index for event in task.events] == [0, 1]
+    assert [event.role for event in task.events] == [
+        EventRole.STALE_SAME_SLOT,
+        EventRole.LATEST_GOLD,
+    ]
+    assert [action.operation for action in task.gold.actions] == [
+        Operation.ADD,
+        Operation.UPDATE,
+    ]
+    assert [action.value for action in task.gold.actions] == ["Dalian", "Qingdao"]
+    assert [
+        action.target_object_keys[0].canonical_id for action in task.gold.actions
+    ] == ["default|friend:alex|location|"] * 2
+    assert [event.metadata["sequence"] for event in task.events] == [0, 1]
+    assert task.queries[0].target_object_keys[0].canonical_id == (
+        "default|friend:alex|location|"
+    )
+
+    for event, action in zip(task.events, task.gold.actions):
+        assert event.gold_action_ids == [action.action_id]
+        assert action.event_id == event.event_id
+    assert task.gold.action_sequence == [
+        action.action_id for action in task.gold.actions
+    ]
+    assert task.gold.gold_source_event_ids == [task.events[1].event_id]
+    assert set(task.gold.gold_answers) == {task.queries[0].query_id}
+    assert set(task.gold.acceptable_answers) == {task.queries[0].query_id}
+
+    assert validate_task(task).valid
+    assert validate_gold_replay(task).valid
+    replay = replay_actions(task.gold.actions)
+    assert replay.final_state == {
+        "default|friend:alex|location|": "Qingdao"
+    }
+    assert replay.version_history == {
+        "default|friend:alex|location|": ("Dalian", "Qingdao")
+    }
+
+
+def test_render_core_builds_deterministic_ids_source_provenance_and_profile() -> None:
+    core = _representative_core()
+    variant = 2
+    task = render_core(core, split=Split.TRAIN, surface_variant=variant)
+    expected_task_id = task_id(core.core_id, variant)
+
+    assert task.task_id == expected_task_id
+    assert task.source.source_id == source_id(
+        "vnext_pilot",
+        core.core_index,
+        {"semantic_core_id": core.core_id, "surface_variant": variant},
+    )
+    assert [event.event_id for event in task.events] == [
+        event_id(expected_task_id, index) for index in range(len(core.events))
+    ]
+    assert [action.action_id for action in task.gold.actions] == [
+        action_id(expected_task_id, index, 0) for index in range(len(core.events))
+    ]
+    assert task.queries[0].query_id == query_id(expected_task_id, 0)
+
+    source = task.source
+    assert source.source_type is SourceType.SYNTHETIC
+    assert source.source_uri == f"memory://{source.source_id}"
+    assert source.license_or_privacy == "synthetic_redistributable"
+    assert re.fullmatch(r"[0-9a-f]{64}", source.raw_hash or "")
+    assert re.fullmatch(r"[0-9a-f]{64}", source.normalized_hash)
+    assert source.provenance["redistributable"] is True
+    assert source.provenance["semantic_core_id"] == core.core_id
+    assert source.provenance["surface_variant"] == variant
+    assert source.provenance["source_group_id"] == (
+        task.metadata.split_key.source_group_id
+    )
+    assert source.provenance["source_document_id"] == (
+        task.metadata.split_key.source_document_id
+    )
+    assert source.provenance["version_group_id"] == (
+        task.metadata.split_key.version_group_id
+    )
+    assert source.generator is not None
+    assert source.generator.generator_name == "memupdatebench_vnext_pilot"
+    assert source.generator.seed == core.core_index
+    assert source.generator.config_sha256 == task.metadata.generation_config_hash
+    assert source.generator.code_revision == "vnext-pilot-task-2c"
+    assert source.generator.compiler_version == task.metadata.compiler_version
+
+    resolved = task.metadata.resolved_profile
+    assert resolved["task_family"] == core.task_family.value
+    assert resolved["difficulty"] == core.difficulty.value
+    assert resolved["profile_name"] == core.difficulty.value
+    assert resolved["profile_version"] == "1.0.0"
+    assert resolved["update_depth"] == 1
+    assert resolved["update_depth_bucket"] == "1"
+    assert task.metadata.extra["semantic_core_id"] == core.core_id
+    assert task.metadata.extra["core_index"] == core.core_index
+    assert task.metadata.extra["surface_variant"] == variant
+    assert task.metadata.extra["stratification"] == {"update_depth": 1}
+
+
+def test_render_core_is_byte_deterministic() -> None:
+    core = _representative_core()
+
+    first = render_core(core, split=Split.TEST, surface_variant=0)
+    second = render_core(core, split=Split.TEST, surface_variant=0)
+
+    assert canonical_json_bytes(first) == canonical_json_bytes(second)
+
+
+@pytest.mark.parametrize("variant", [True, False, 0.0, "0", None])
+def test_render_core_rejects_non_integer_surface_variants(variant: object) -> None:
+    with pytest.raises(TypeError, match="surface_variant must be an integer"):
+        render_core(
+            _representative_core(),
+            split=Split.TEST,
+            surface_variant=variant,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("variant", [-1, 3, 4])
+def test_render_core_rejects_out_of_range_surface_variants(variant: int) -> None:
+    with pytest.raises(ValueError, match="surface_variant must be one of 0, 1, 2"):
+        render_core(_representative_core(), split=Split.TEST, surface_variant=variant)
+
+
+@pytest.mark.parametrize("split", ["test", None, True, 1])
+def test_render_core_rejects_noncanonical_splits(split: object) -> None:
+    with pytest.raises(TypeError, match="split must be a Split"):
+        render_core(
+            _representative_core(),
+            split=split,  # type: ignore[arg-type]
+            surface_variant=0,
+        )
+
+
+def test_render_core_rejects_non_semantic_core_input() -> None:
+    with pytest.raises(TypeError, match="core must be a SemanticCore"):
+        render_core({}, split=Split.TEST, surface_variant=0)  # type: ignore[arg-type]
+
+
+def test_render_core_preserves_duplicate_current_role_when_present() -> None:
+    payload = _representative_core().model_dump(mode="python")
+    payload["events"][1]["role"] = EventRole.DUPLICATE_CURRENT
+    core = SemanticCore.model_validate(payload)
+
+    task = render_core(core, split=Split.TEST, surface_variant=0)
+
+    assert task.events[1].role is EventRole.DUPLICATE_CURRENT
+    assert validate_task(task).valid
+    assert validate_gold_replay(task).valid
+
+
+def test_render_core_does_not_leak_mutable_aliases() -> None:
+    core_payload = _representative_core().model_dump(mode="python")
+    core_payload["events"][0]["metadata"] = {
+        "sequence": 0,
+        "nested": {"tags": ["stale"]},
+    }
+    core = SemanticCore.model_validate(core_payload)
+    first = render_core(core, split=Split.TEST, surface_variant=0)
+
+    first.events[0].metadata["nested"]["tags"].append("changed")
+    first.target_objects[0].entity = "friend:changed"
+    first.gold.actions[0].target_object_keys[0].entity = "friend:changed-again"
+
+    repeated = render_core(core, split=Split.TEST, surface_variant=0)
+    assert repeated.events[0].metadata["nested"]["tags"] == ["stale"]
+    assert repeated.target_objects[0].entity == "friend:alex"
+    assert repeated.gold.actions[0].target_object_keys[0].entity == "friend:alex"
+    assert core.events[0].metadata["nested"]["tags"] == ("stale",)
+    assert core.query_targets[0].entity == "friend:alex"
+
+
+def test_render_core_raises_clear_error_for_unreplayable_core() -> None:
+    payload = _representative_core().model_dump(mode="python")
+    payload["events"] = [payload["events"][1]]
+    core = SemanticCore.model_validate(payload)
+
+    with pytest.raises(ValueError, match="gold replay failed.*UPDATE requires present"):
+        render_core(core, split=Split.TEST, surface_variant=0)
+
+
+def test_render_core_raises_clear_error_for_wrong_core_expected_answer() -> None:
+    payload = _representative_core().model_dump(mode="python")
+    payload["expected_answer"] = "Dalian"
+    core = SemanticCore.model_validate(payload)
+
+    with pytest.raises(ValueError, match="expected_answer.*replayed query answer"):
+        render_core(core, split=Split.TEST, surface_variant=0)
+
+
+def test_render_core_resolves_registered_family_specific_profile_parameters() -> None:
+    target = _location_key()
+    core = SemanticCore(
+        core_id="core_1111111111111111",
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE,
+        difficulty=Difficulty.EASY,
+        core_index=1,
+        trajectory_id="trajectory_1111111111111111",
+        events=[
+            CoreEvent(
+                operation=Operation.ADD,
+                object_keys=[target],
+                value="Dalian",
+                role=EventRole.LATEST_GOLD,
+            ),
+            CoreEvent(
+                operation=Operation.NOOP,
+                object_keys=[],
+                value=None,
+                role=EventRole.NOOP_NEAR_MISS,
+            ),
+        ],
+        query_targets=[target],
+        expected_answer="Dalian",
+        profile={
+            "update_depth": 1,
+            "noop_density": 0.0,
+            "write_trap_type": "semantic_near_miss",
+        },
+        stratification={"update_depth": 1},
+    )
+
+    task = render_core(core, split=Split.TEST, surface_variant=0)
+
+    assert task.metadata.resolved_profile["write_trap_type"] == (
+        "semantic_near_miss"
+    )
+    assert task.metadata.resolved_profile["noop_density"] == 0.0
+    assert validate_task(task).valid
+    assert validate_gold_replay(task).valid
