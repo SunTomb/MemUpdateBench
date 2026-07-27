@@ -93,18 +93,27 @@ VALUES = (
 SURFACE_TEMPLATE_SETS = (
     (
         "direct",
-        "{entity}'s {attribute} is now {value}.",
-        "What is {entity}'s current {attribute}?",
+        "Remember $targets with value $value.",
+        "Change $targets to $value.",
+        "Forget $targets.",
+        "$statement No memory change is required.",
+        "What is the current value of $targets?",
     ),
     (
         "conversational",
-        "Please remember that {entity} has {attribute} set to {value}.",
-        "Can you tell me the latest {attribute} for {entity}?",
+        "Please add $targets as $value to memory.",
+        "Please revise $targets so each value is $value.",
+        "Please remove $targets from memory.",
+        "$statement Keep memory unchanged.",
+        "Can you report the latest value for $targets?",
     ),
     (
         "correction",
-        "Update the record: the {attribute} for {entity} should be {value}.",
-        "According to the updates, what is {entity}'s {attribute}?",
+        "Create a memory entry for $targets: $value.",
+        "Correct the stored value for $targets to $value.",
+        "Erase the stored entry for $targets.",
+        "$statement Do not write anything to memory.",
+        "According to the record, what value belongs to $targets?",
     ),
 )
 

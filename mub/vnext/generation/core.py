@@ -205,6 +205,13 @@ class CoreEvent(_FrozenCoreModel):
 
     @model_validator(mode="after")
     def _validate_operation_payload(self) -> Self:
+        surface_statement = self.metadata.get("surface_statement")
+        if "surface_statement" in self.metadata:
+            if type(surface_statement) is not str or not surface_statement.strip():
+                raise ValueError("surface_statement must be an exact nonblank string")
+            if self.operation != Operation.NOOP:
+                raise ValueError("surface_statement is valid only for NOOP events")
+
         if self.operation == Operation.NOOP:
             if self.object_keys or self.value is not None:
                 raise ValueError("NOOP requires no targets and a null value")

@@ -366,18 +366,30 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
     ).encode("utf-8")
 
     assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
-        "ad83314987b8cb355c9dac46c5a208f4d7a83062b1d4788af1610b110c34b738"
+        "37750117bc64fb9ae56020a918cb4b70e3b187b62e6c7eaefd651607d6cbe838"
     )
 
 
-def test_surface_catalog_has_exactly_three_immutable_variants() -> None:
+def test_surface_catalog_has_exactly_three_immutable_operation_complete_sets() -> None:
     assert len(SURFACE_TEMPLATE_SETS) == 3
     assert all(isinstance(template_set, tuple) for template_set in SURFACE_TEMPLATE_SETS)
+    assert all(len(template_set) == 6 for template_set in SURFACE_TEMPLATE_SETS)
+
     variant_ids = [template_set[0] for template_set in SURFACE_TEMPLATE_SETS]
     assert len(variant_ids) == len(set(variant_ids))
-    assert all("{entity}" in template_set[1] for template_set in SURFACE_TEMPLATE_SETS)
-    assert all("{attribute}" in template_set[1] for template_set in SURFACE_TEMPLATE_SETS)
-    assert all("{value}" in template_set[1] for template_set in SURFACE_TEMPLATE_SETS)
+    for template_set in SURFACE_TEMPLATE_SETS:
+        _, add_template, update_template, delete_template, noop_template, query_template = (
+            template_set
+        )
+        assert len({add_template, update_template, delete_template, noop_template}) == 4
+        assert "$targets" in add_template and "$value" in add_template
+        assert "$targets" in update_template and "$value" in update_template
+        assert "$targets" in delete_template and "$value" not in delete_template
+        assert "$statement" in noop_template
+        assert "$targets" in query_template
+
+    for template_index in range(1, 5):
+        assert len({template_set[template_index] for template_set in SURFACE_TEMPLATE_SETS}) == 3
 
     with pytest.raises(TypeError):
         SURFACE_TEMPLATE_SETS[0][0] = "changed"  # type: ignore[index]
@@ -616,6 +628,38 @@ def test_core_event_requires_targets_for_mutations_but_allows_targetless_noop() 
     )
     assert noop.object_keys == ()
     assert noop.value is None
+
+
+def test_core_event_validates_optional_noop_surface_statement() -> None:
+    event = CoreEvent(
+        operation=Operation.NOOP,
+        object_keys=[],
+        value=None,
+        role=EventRole.NOOP_NEAR_MISS,
+        metadata={"surface_statement": "Jordan discussed {city} near 東京."},
+    )
+    assert event.metadata["surface_statement"] == "Jordan discussed {city} near 東京."
+
+    for invalid in ("", "   ", 7, True, ["statement"]):
+        with pytest.raises(ValidationError, match="surface_statement.*nonblank.*string"):
+            CoreEvent(
+                operation=Operation.NOOP,
+                object_keys=[],
+                value=None,
+                role=EventRole.NOOP_NEAR_MISS,
+                metadata={"surface_statement": invalid},
+            )
+
+
+def test_core_event_rejects_surface_statement_on_memory_writes() -> None:
+    with pytest.raises(ValidationError, match="surface_statement.*NOOP"):
+        CoreEvent(
+            operation=Operation.ADD,
+            object_keys=[_location_key()],
+            value="Dalian",
+            role=EventRole.LATEST_GOLD,
+            metadata={"surface_statement": "This is not the write value."},
+        )
 
 
 def test_core_event_rejects_duplicate_exact_object_keys_ignoring_object_type() -> None:
@@ -942,6 +986,258 @@ def _normalized_gold_bytes(task: object) -> bytes:
         for query_identifier, answers in payload["acceptable_answers"].items()
     }
     return canonical_json_bytes(_GoldProjection(root=payload))
+
+
+def test_render_core_uses_distinct_operation_surfaces_without_conflating_absent() -> None:
+    target = _location_key()
+    statement = "The speaker discussed {weather} near 東京."
+    core = SemanticCore(
+        core_id="core_1111111111111111",
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE,
+        difficulty=Difficulty.EASY,
+        core_index=1,
+        trajectory_id="trajectory_1111111111111111",
+        events=[
+            CoreEvent(
+                operation=Operation.ADD,
+                object_keys=[target],
+                value="absent",
+                role=EventRole.STALE_SAME_SLOT,
+            ),
+            CoreEvent(
+                operation=Operation.UPDATE,
+                object_keys=[target],
+                value="present",
+                role=EventRole.LATEST_GOLD,
+            ),
+            CoreEvent(
+                operation=Operation.DELETE,
+                object_keys=[target],
+                value=None,
+                role=EventRole.DELETION,
+            ),
+            CoreEvent(
+                operation=Operation.NOOP,
+                object_keys=[],
+                value=None,
+                role=EventRole.NOOP_NEAR_MISS,
+                metadata={"surface_statement": statement},
+            ),
+        ],
+        query_targets=[target],
+        expected_answer=None,
+        profile={
+            "update_depth": 1,
+            "noop_density": 0.25,
+            "write_trap_type": "semantic_near_miss",
+        },
+        stratification={"update_depth": 1},
+    )
+
+    for variant in range(3):
+        task = render_core(core, split=Split.TEST, surface_variant=variant)
+        add_text, update_text, delete_text, noop_text = [
+            event.raw_text for event in task.events
+        ]
+        assert len({add_text, update_text, delete_text, noop_text}) == 4
+        assert '"absent"' in add_text
+        assert '"present"' in update_text
+        assert "absent" not in delete_text
+        assert statement in noop_text
+        assert "friend:alex" not in noop_text
+        assert task.gold.gold_answers[task.queries[0].query_id] is True
+
+
+def _core_with_unstated_noop(role: EventRole) -> SemanticCore:
+    target = _location_key()
+    return SemanticCore(
+        core_id="core_2222222222222222",
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE,
+        difficulty=Difficulty.EASY,
+        core_index=2,
+        trajectory_id="trajectory_2222222222222222",
+        events=[
+            CoreEvent(
+                operation=Operation.ADD,
+                object_keys=[target],
+                value="Dalian",
+                role=EventRole.LATEST_GOLD,
+            ),
+            CoreEvent(
+                operation=Operation.NOOP,
+                object_keys=[],
+                value=None,
+                role=role,
+            ),
+        ],
+        query_targets=[target],
+        expected_answer="Dalian",
+        profile={
+            "update_depth": 1,
+            "noop_density": 0.5,
+            "write_trap_type": "semantic_near_miss",
+        },
+        stratification={"update_depth": 1},
+    )
+
+
+def test_render_core_uses_role_aware_reviewed_noop_fallback_without_a_write() -> None:
+    near_miss = render_core(
+        _core_with_unstated_noop(EventRole.NOOP_NEAR_MISS),
+        split=Split.TEST,
+        surface_variant=1,
+    )
+    neutral = render_core(
+        _core_with_unstated_noop(EventRole.NEUTRAL),
+        split=Split.TEST,
+        surface_variant=1,
+    )
+
+    near_miss_text = near_miss.events[-1].raw_text
+    neutral_text = neutral.events[-1].raw_text
+    assert near_miss_text != neutral_text
+    assert "memory" in near_miss_text.lower()
+    assert "memory" in neutral_text.lower()
+    assert "friend:alex" not in near_miss_text
+    assert "friend:alex" not in neutral_text
+    assert near_miss.gold.actions[-1].operation is Operation.NOOP
+    assert neutral.gold.actions[-1].operation is Operation.NOOP
+
+
+def test_render_core_uses_ordered_atomic_four_part_references_everywhere() -> None:
+    keys = [
+        MemoryObjectKey(
+            object_type="SECRET_ALPHA",
+            namespace="default",
+            entity="friend:{alex} 東京",
+            attribute="favorite_{color}",
+            subkey=None,
+        ),
+        MemoryObjectKey(
+            object_type="SECRET_BETA",
+            namespace="work",
+            entity="friend:{alex} 東京",
+            attribute="favorite_{color}",
+            subkey="primary:{1}",
+        ),
+        MemoryObjectKey(
+            object_type="SECRET_GAMMA",
+            namespace="community",
+            entity="manager_β",
+            attribute="project_{code}",
+            subkey=None,
+        ),
+    ]
+    value = "{value} café 東京"
+    core = SemanticCore(
+        core_id="core_3333333333333333",
+        task_family=TaskFamily.INTERLEAVED_MULTI_SLOT,
+        difficulty=Difficulty.MEDIUM,
+        core_index=3,
+        trajectory_id="trajectory_3333333333333333",
+        events=[
+            CoreEvent(
+                operation=Operation.ADD,
+                object_keys=keys,
+                value=value,
+                role=EventRole.LATEST_GOLD,
+            )
+        ],
+        query_targets=keys,
+        expected_answer=[value, value, value],
+        profile={"update_depth": 1},
+        stratification={"update_depth": 1},
+    )
+    references = [
+        'object(namespace="default", entity="friend:{alex} 東京", '
+        'attribute="favorite_{color}", subkey=null)',
+        'object(namespace="work", entity="friend:{alex} 東京", '
+        'attribute="favorite_{color}", subkey="primary:{1}")',
+        'object(namespace="community", entity="manager_β", '
+        'attribute="project_{code}", subkey=null)',
+    ]
+
+    for variant in range(3):
+        task = render_core(core, split=Split.TEST, surface_variant=variant)
+        event_text = task.events[0].raw_text
+        query_text = task.queries[0].text
+        assert [event_text.index(reference) for reference in references] == sorted(
+            event_text.index(reference) for reference in references
+        )
+        assert [query_text.index(reference) for reference in references] == sorted(
+            query_text.index(reference) for reference in references
+        )
+        assert all(event_text.count(reference) == 1 for reference in references)
+        assert all(query_text.count(reference) == 1 for reference in references)
+        assert '"{value} café 東京"' in event_text
+        assert "SECRET_ALPHA" not in event_text + query_text
+        assert "SECRET_BETA" not in event_text + query_text
+        assert "SECRET_GAMMA" not in event_text + query_text
+
+
+def test_render_core_preserves_semantic_metadata_under_reserved_renderer_admin() -> None:
+    payload = _representative_core().model_dump(mode="python")
+    payload["events"][0]["metadata"] = {
+        "sequence": 0,
+        "surface_template": "semantic-template",
+        "surface_variant": "semantic-variant",
+        "semantic_note": "confirmed {verbatim}",
+    }
+    core = SemanticCore.model_validate(payload)
+    task = render_core(core, split=Split.TEST, surface_variant=2)
+    renderer_key = "__surface_renderer__"
+
+    emitted_metadata = dict(task.events[0].metadata)
+    renderer_admin = emitted_metadata.pop(renderer_key)
+    assert emitted_metadata == core.events[0].model_dump(mode="json")["metadata"]
+    assert renderer_admin == {
+        "surface_template": "correction",
+        "surface_variant": 2,
+    }
+    assert task.queries[0].metadata == {renderer_key: renderer_admin}
+
+    source_projection = {
+        "events": [
+            {
+                "operation": event.operation.value,
+                "target_object_keys": [
+                    {
+                        "namespace": key.namespace,
+                        "entity": key.entity,
+                        "attribute": key.attribute,
+                        "subkey": key.subkey,
+                    }
+                    for key in event.object_keys
+                ],
+                "value": event.model_dump(mode="json")["value"],
+                "role": event.role.value,
+                "metadata": event.model_dump(mode="json")["metadata"],
+            }
+            for event in core.events
+        ]
+    }
+    expected_hash = hashlib.sha256(
+        canonical_json_bytes(_GoldProjection(root=source_projection))
+    ).hexdigest()
+    assert task.source.normalized_hash == expected_hash
+
+
+def test_render_core_rejects_reserved_renderer_metadata_collision_deterministically() -> None:
+    payload = _representative_core().model_dump(mode="python")
+    payload["events"][0]["metadata"] = {
+        "__surface_renderer__": {"surface_variant": "semantic"}
+    }
+    core = SemanticCore.model_validate(payload)
+
+    messages = []
+    for _ in range(2):
+        with pytest.raises(
+            ValueError,
+            match="reserved renderer metadata key '__surface_renderer__'",
+        ) as exc_info:
+            render_core(core, split=Split.TEST, surface_variant=0)
+        messages.append(str(exc_info.value))
+    assert messages[0] == messages[1]
 
 
 def test_render_core_produces_valid_semantically_equivalent_surface_variants() -> None:

@@ -286,7 +286,7 @@ Commit only when execution-time permission is active; otherwise record the scope
 
 - [ ] **Step 1: Write failing determinism and semantic-invariance tests**
 
-Assert the same `GenerationContext` and semantic core produce identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing relation wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics.
+Assert the same `GenerationContext` and semantic core produce identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing reviewed operation-specific wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics. Also assert atomic ordered four-part object references, literal-safe replacement data, semantic NOOP rendering, and collision-free renderer metadata administration.
 
 ```python
 from pydantic import RootModel
@@ -381,7 +381,7 @@ Here `_normalized_gold_bytes` replaces linked event/action/query IDs and answer-
 
 - [ ] **Step 3: Add finite reviewed catalogs**
 
-`catalogs.py` contains fixed tuples for namespaces, relation-qualified entities, same-name entities, aliases, attributes, values, and three reviewed surface-template sets. A helper rejects reuse of the final value as a conflicting stale value; duplicate-current events are generated explicitly by Family D instead.
+`catalogs.py` contains fixed tuples for namespaces, relation-qualified entities, same-name entities, aliases, attributes, values, and exactly three reviewed immutable surface-template sets, each with distinct ADD, UPDATE, DELETE, NOOP, and query wording. Rendering uses ordered atomic four-part object references and keeps renderer administration under one reserved nested metadata key. A helper rejects reuse of the final value as a conflicting stale value; duplicate-current events are generated explicitly by Family D instead.
 
 - [ ] **Step 4: Implement semantic-core and rendering records**
 

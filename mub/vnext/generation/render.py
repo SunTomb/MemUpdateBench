@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from string import Template
 from typing import Any
 
 from pydantic import RootModel
@@ -16,6 +17,7 @@ from mub.vnext.contracts.enums import (
     ActionScope,
     AnswerSchema,
     EvaluationMode,
+    EventRole,
     Operation,
     QueryType,
     SourceType,
@@ -55,6 +57,30 @@ from mub.vnext.validation.task import validate_task
 _NORMALIZATION_VERSION = "vnext-pilot-semantic-v1"
 _SPLIT_POLICY_VERSION = "vnext-pilot-core-v1"
 _SPEAKERS = ("Narrator", "User", "Records clerk")
+_RENDERER_METADATA_KEY = "__surface_renderer__"
+_NOOP_ROLE_FALLBACKS = {
+    EventRole.LATEST_GOLD: "The latest-gold statement does not direct a memory change.",
+    EventRole.STALE_SAME_SLOT: (
+        "The stale same-slot statement does not direct a memory change."
+    ),
+    EventRole.DUPLICATE_CURRENT: (
+        "The statement repeats current information without changing memory."
+    ),
+    EventRole.SAME_ENTITY_OTHER_ATTRIBUTE: (
+        "The same-entity other-attribute statement does not direct a memory change."
+    ),
+    EventRole.SAME_NAME_OTHER_ENTITY: (
+        "The same-name other-entity statement does not direct a memory change."
+    ),
+    EventRole.NOOP_NEAR_MISS: (
+        "The related near-miss statement does not change any stored value."
+    ),
+    EventRole.NEUTRAL: "The statement is informational and does not change memory.",
+    EventRole.DELETION: "The deletion-related statement does not direct a deletion.",
+    EventRole.HISTORICAL_SUPPORT: (
+        "The historical-support statement does not change current memory."
+    ),
+}
 
 
 class _CanonicalPayload(RootModel[Any]):
@@ -103,48 +129,43 @@ def _plain(value: Any) -> Any:
     return thaw_json(value)
 
 
-def _display_entity(entity: str, surface_variant: int) -> str:
-    normalized = entity.replace("_", " ")
-    if ":" not in normalized:
-        return normalized
-    relation, name = normalized.split(":", 1)
-    if surface_variant == 0:
-        return f"{relation} {name}"
-    if surface_variant == 1:
-        return f"{name}, the {relation}"
-    return f"my {relation} {name}"
+def _json_text(value: Any) -> str:
+    return json.dumps(
+        _plain(value),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def _event_template_values(
+def _atomic_object_reference(key: MemoryObjectKey) -> str:
+    return (
+        f"object(namespace={_json_text(key.namespace)}, "
+        f"entity={_json_text(key.entity)}, "
+        f"attribute={_json_text(key.attribute)}, "
+        f"subkey={_json_text(key.subkey)})"
+    )
+
+
+def _atomic_object_references(keys: Sequence[MemoryObjectKey]) -> str:
+    return "; ".join(_atomic_object_reference(key) for key in keys)
+
+
+def _render_event_text(
     event: CoreEvent,
-    surface_variant: int,
-) -> tuple[str, str, str]:
-    if event.object_keys:
-        entities = " and ".join(
-            _display_entity(key.entity, surface_variant) for key in event.object_keys
-        )
-        attributes = " and ".join(
-            key.attribute.replace("_", " ") for key in event.object_keys
-        )
-    else:
-        entities = "the referenced record"
-        attributes = "setting"
-
+    operation_templates: Mapping[Operation, str],
+) -> str:
+    template = Template(operation_templates[event.operation])
     if event.operation == Operation.NOOP:
-        rendered_value = "unchanged"
-    elif event.operation == Operation.DELETE:
-        rendered_value = "absent"
-    elif isinstance(event.value, str):
-        rendered_value = event.value
-    else:
-        rendered_value = json.dumps(
-            _plain(event.value),
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    return entities, attributes, rendered_value
+        statement = event.metadata.get("surface_statement")
+        if statement is None:
+            statement = _NOOP_ROLE_FALLBACKS[event.role]
+        return template.substitute(statement=statement)
+    substitutions = {"targets": _atomic_object_references(event.object_keys)}
+    if event.operation in {Operation.ADD, Operation.UPDATE}:
+        substitutions["value"] = _json_text(event.value)
+    return template.substitute(substitutions)
 
 
 def _normalized_event_text(event: CoreEvent) -> str:
@@ -153,13 +174,7 @@ def _normalized_event_text(event: CoreEvent) -> str:
     targets = ", ".join(key.canonical_id for key in event.object_keys)
     if event.operation == Operation.DELETE:
         return f"Delete {targets}."
-    value = json.dumps(
-        _plain(event.value),
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    value = _json_text(event.value)
     return f"{event.operation.value.title()} {targets} with value {value}."
 
 
@@ -240,17 +255,10 @@ def _query_semantics(
     return query_type, answer, _answer_schema(answer)
 
 
-def _query_template_values(
-    core: SemanticCore,
-    surface_variant: int,
-) -> tuple[str, str]:
-    entities = " and ".join(
-        _display_entity(key.entity, surface_variant) for key in core.query_targets
+def _render_query_text(core: SemanticCore, query_template: str) -> str:
+    return Template(query_template).substitute(
+        targets=_atomic_object_references(core.query_targets)
     )
-    attributes = " and ".join(
-        key.attribute.replace("_", " ") for key in core.query_targets
-    )
-    return entities, attributes
 
 
 def _gold_source_event_ids(
@@ -337,9 +345,25 @@ def render_core(
     if surface_variant not in (0, 1, 2):
         raise ValueError("surface_variant must be one of 0, 1, 2")
 
-    template_name, event_template, query_template = SURFACE_TEMPLATE_SETS[
-        surface_variant
-    ]
+    (
+        template_name,
+        add_template,
+        update_template,
+        delete_template,
+        noop_template,
+        query_template,
+    ) = SURFACE_TEMPLATE_SETS[surface_variant]
+    operation_templates = {
+        Operation.ADD: add_template,
+        Operation.UPDATE: update_template,
+        Operation.DELETE: delete_template,
+        Operation.NOOP: noop_template,
+    }
+    renderer_admin = {
+        "surface_template": template_name,
+        "surface_variant": surface_variant,
+    }
+
     rendered_task_id = task_id(core.core_id, surface_variant)
     rendered_event_ids = [
         event_id(rendered_task_id, index) for index in range(len(core.events))
@@ -371,6 +395,11 @@ def render_core(
     actions: list[GoldAction] = []
     events: list[MemoryEvent] = []
     for index, core_event in enumerate(core.events):
+        if _RENDERER_METADATA_KEY in core_event.metadata:
+            raise ValueError(
+                f"render_core event {index} uses reserved renderer metadata key "
+                f"'{_RENDERER_METADATA_KEY}'"
+            )
         action = GoldAction(
             action_id=rendered_action_ids[index],
             event_id=rendered_event_ids[index],
@@ -385,21 +414,9 @@ def render_core(
             effective_at=None,
             expected_effect={},
         )
-        entity, attribute, value = _event_template_values(
-            core_event, surface_variant
-        )
-        raw_text = event_template.format(
-            entity=entity,
-            attribute=attribute,
-            value=value,
-        )
+        raw_text = _render_event_text(core_event, operation_templates)
         metadata = _plain(core_event.metadata)
-        metadata.update(
-            {
-                "surface_template": template_name,
-                "surface_variant": surface_variant,
-            }
-        )
+        metadata[_RENDERER_METADATA_KEY] = dict(renderer_admin)
         event = MemoryEvent(
             event_id=rendered_event_ids[index],
             sequence_index=index,
@@ -421,11 +438,7 @@ def render_core(
         raise ValueError(f"render_core gold replay failed: {exc}") from exc
 
     query_type, answer, answer_schema = _query_semantics(core, replay)
-    query_entity, query_attribute = _query_template_values(core, surface_variant)
-    query_text = query_template.format(
-        entity=query_entity,
-        attribute=query_attribute,
-    )
+    query_text = _render_query_text(core, query_template)
     query = MemoryQuery(
         query_id=rendered_query_id,
         query_type=query_type,
@@ -433,10 +446,7 @@ def render_core(
         target_object_keys=[_copy_key(key) for key in core.query_targets],
         answer_schema=answer_schema,
         evaluation_mode=EvaluationMode.RETRIEVED_PROMPT,
-        metadata={
-            "surface_template": template_name,
-            "surface_variant": surface_variant,
-        },
+        metadata={_RENDERER_METADATA_KEY: dict(renderer_admin)},
     )
 
     targets = _target_objects(core)
