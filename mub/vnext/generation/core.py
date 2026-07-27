@@ -68,6 +68,20 @@ class _FrozenConfigMixin:
                 object.__setattr__(self, field_name, _FrozenList(value))
         return self
 
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if update is None:
+            if deep:
+                return type(self).model_validate(self.model_dump(mode="python"))
+            return super().model_copy(deep=False)
+        data = self.model_dump(mode="python")
+        data.update(dict(update))
+        return type(self).model_validate(data)
+
 
 class _FrozenDifficultyNonnegativeCounts(
     _FrozenConfigMixin,
@@ -218,7 +232,9 @@ class _FrozenCoreModel(ContractModel):
         deep: bool = False,
     ) -> Self:
         if update is None:
-            return super().model_copy(deep=deep)
+            if deep:
+                return type(self).model_validate(self.model_dump(mode="python"))
+            return super().model_copy(deep=False)
         normalized_update = dict(update)
         for field_name in self._copy_sequence_fields:
             value = normalized_update.get(field_name)

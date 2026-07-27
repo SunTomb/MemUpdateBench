@@ -1797,11 +1797,17 @@ def test_validated_model_copy_preserves_concrete_subclass_type() -> None:
 
     event_copy = event.model_copy(update={"object_keys": event.object_keys})
     core_copy = core.model_copy(update={"events": core.events})
+    event_deep_copy = event.model_copy(deep=True)
+    core_deep_copy = core.model_copy(deep=True)
 
     assert type(event_copy) is SpecializedEvent
     assert type(core_copy) is SpecializedCore
+    assert type(event_deep_copy) is SpecializedEvent
+    assert type(core_deep_copy) is SpecializedCore
     assert event_copy.specialization == "event"
     assert core_copy.specialization == "core"
+    assert event_deep_copy.specialization == "event"
+    assert core_deep_copy.specialization == "core"
 
 
 def test_public_core_validation_remains_strict_about_sequence_input_types() -> None:
@@ -1975,6 +1981,114 @@ def test_generation_context_model_copy_revalidates_updated_config_snapshot() -> 
     with pytest.raises(ValidationError, match="frozen"):
         copied.config.seed = 3
 
+
+def test_generation_context_deep_copy_is_independent_and_canonical() -> None:
+    context = _fixed_context
+
+    copied = context.model_copy(deep=True)
+
+    assert type(copied) is type(context)
+    assert copied == context
+    assert copied is not context
+    assert copied.config is not context.config
+    assert (
+        copied.config.families.repeated_same_slot_update.update_depths
+        is not context.config.families.repeated_same_slot_update.update_depths
+    )
+    assert canonical_json_bytes(copied) == canonical_json_bytes(context)
+
+    with pytest.raises(ValidationError, match="frozen"):
+        copied.config.seed = 1
+    with pytest.raises(TypeError):
+        copied.config.families.repeated_same_slot_update.update_depths.append(99)
+
+
+def test_frozen_config_deep_copy_is_independent_validated_and_frozen() -> None:
+    config = _fixed_context.config
+
+    copied = config.model_copy(deep=True)
+
+    assert type(copied) is type(config)
+    assert copied == config
+    assert copied is not config
+    assert copied.families is not config.families
+    assert (
+        copied.families.repeated_same_slot_update.update_depths
+        is not config.families.repeated_same_slot_update.update_depths
+    )
+    assert canonical_json_bytes(copied) == canonical_json_bytes(config)
+
+    with pytest.raises(ValidationError, match="frozen"):
+        copied.seed = 1
+    with pytest.raises(TypeError):
+        copied.mechanism_slice.conditions.append(copied.mechanism_slice.conditions[0])
+
+
+def test_public_config_deep_copy_is_independent_without_freezing_public_config() -> None:
+    config = load_pilot_config(PILOT_CONFIG_PATH)
+
+    copied = config.model_copy(deep=True)
+
+    assert type(copied) is type(config)
+    assert copied == config
+    assert copied is not config
+    assert copied.families is not config.families
+    assert (
+        copied.families.repeated_same_slot_update.update_depths
+        is not config.families.repeated_same_slot_update.update_depths
+    )
+    copied.seed = config.seed + 1
+    assert copied.seed == config.seed + 1
+
+
+def test_frozen_config_copy_preserves_shallow_no_update_semantics() -> None:
+    config = _fixed_context.config
+
+    copied = config.model_copy()
+
+    assert copied == config
+    assert copied is not config
+    assert copied.families is config.families
+    assert (
+        copied.families.repeated_same_slot_update.update_depths
+        is config.families.repeated_same_slot_update.update_depths
+    )
+
+
+def test_generation_context_copy_preserves_shallow_no_update_semantics() -> None:
+    context = _fixed_context
+
+    copied = context.model_copy()
+
+    assert copied == context
+    assert copied is not context
+    assert copied.config is context.config
+
+
+def test_frozen_config_copy_rejects_invalid_and_aliased_updates() -> None:
+    config = _fixed_context.config
+
+    with pytest.raises(ValidationError, match="seed"):
+        config.model_copy(update={"seed": -1})
+    with pytest.raises(ValidationError, match="schemaVersion"):
+        config.model_copy(update={"schemaVersion": config.schema_version})
+
+
+def test_generation_context_deep_copy_preserves_concrete_subclass_type() -> None:
+    class SpecializedContext(GenerationContext):
+        specialization: str
+
+    context = SpecializedContext(
+        **_fixed_context.model_dump(mode="python"),
+        specialization="context",
+    )
+
+    copied = context.model_copy(deep=True)
+
+    assert type(copied) is SpecializedContext
+    assert copied == context
+    assert copied.specialization == "context"
+    assert copied.config is not context.config
 
 def test_generation_context_is_frozen() -> None:
     context = GenerationContext(
