@@ -15,6 +15,7 @@ from mub.vnext.contracts.common import (
 )
 from mub.vnext.contracts.enums import (
     ActionScope,
+    AnswerDisposition,
     AnswerSchema,
     EvaluationMode,
     EventRole,
@@ -24,15 +25,22 @@ from mub.vnext.contracts.enums import (
     Split,
 )
 from mub.vnext.contracts.task import (
+    CanonicalAnswer,
     GoldAction,
     GoldRecord,
     MemUpdateTask,
     MemoryEvent,
     MemoryQuery,
+    ReferenceCandidate,
     SplitKey,
+    SurfaceReference,
     TaskMetadata,
 )
-from mub.vnext.generation.catalogs import SURFACE_TEMPLATE_SETS
+from mub.vnext.generation.catalogs import (
+    REFERENCE_CONDITION_LABELS,
+    REFERENCE_QUERY_TEMPLATE_SETS,
+    SURFACE_TEMPLATE_SETS,
+)
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.identity import (
     action_id,
@@ -54,8 +62,8 @@ from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
 
 
-_NORMALIZATION_VERSION = "vnext-pilot-semantic-v1"
-_SPLIT_POLICY_VERSION = "vnext-pilot-core-v1"
+_NORMALIZATION_VERSION = "vnext-pilot-semantic-v2"
+_SPLIT_POLICY_VERSION = "vnext-pilot-core-v2"
 _SPEAKERS = ("Narrator", "User", "Records clerk")
 _RENDERER_METADATA_KEY = "__surface_renderer__"
 _NOOP_ROLE_FALLBACKS = {
@@ -93,6 +101,18 @@ def _payload_sha256(payload: object) -> str:
 
 def _copy_key(key: MemoryObjectKey) -> MemoryObjectKey:
     return MemoryObjectKey.model_validate(key.model_dump(mode="python"))
+
+
+def _copy_reference_candidate(candidate: ReferenceCandidate) -> ReferenceCandidate:
+    return ReferenceCandidate.model_validate(candidate.model_dump(mode="python"))
+
+
+def _copy_surface_reference(reference: SurfaceReference) -> SurfaceReference:
+    return SurfaceReference.model_validate(reference.model_dump(mode="python"))
+
+
+def _copy_canonical_answer(answer: CanonicalAnswer) -> CanonicalAnswer:
+    return CanonicalAnswer.model_validate(answer.model_dump(mode="python"))
 
 
 def _identity(key: MemoryObjectKey) -> str:
@@ -206,6 +226,20 @@ def _query_semantics(
     core: SemanticCore,
     replay: Any,
 ) -> tuple[QueryType, Any, AnswerSchema]:
+    if core.query_type is QueryType.UNRESOLVED_REFERENCE:
+        canonical = core.canonical_answer
+        if canonical is None:
+            raise ValueError(
+                "render_core unresolved query requires a canonical_answer"
+            )
+        if canonical.disposition is AnswerDisposition.ABSTAINED:
+            return QueryType.UNRESOLVED_REFERENCE, None, AnswerSchema.STRING
+        return (
+            QueryType.UNRESOLVED_REFERENCE,
+            _plain(canonical.value),
+            _answer_schema(canonical.value),
+        )
+
     target_ids = [key.canonical_id for key in core.query_targets]
     present = [target_id in replay.final_state for target_id in target_ids]
     expected = _plain(core.expected_answer)
@@ -282,6 +316,57 @@ def _render_query_text(core: SemanticCore, query_template: str) -> str:
     )
 
 
+def _render_reference_candidates(core: SemanticCore) -> str:
+    rendered = []
+    for index, candidate in enumerate(core.reference_candidates, start=1):
+        text = f"{index}. {_atomic_object_reference(candidate.object_key)}"
+        if candidate.evidence is not None:
+            text += f"; evidence={_json_text(candidate.evidence)}"
+        rendered.append(text)
+    return " ".join(rendered)
+
+
+def _render_surface_references(core: SemanticCore) -> str:
+    condition_labels = dict(REFERENCE_CONDITION_LABELS)
+    rendered = []
+    for index, reference in enumerate(core.surface_references, start=1):
+        condition = reference.condition_kind
+        condition_label = (
+            condition_labels.get(condition, condition.replace("_", " "))
+            if condition is not None
+            else "unspecified"
+        )
+        evidence = (
+            reference.evidence_kind.replace("_", " ")
+            if reference.evidence_kind is not None
+            else "unspecified"
+        )
+        rendered.append(
+            f"{index}. surface={_json_text(reference.surface_text)}; "
+            f"normalized={_json_text(reference.normalized_text)}; "
+            f"condition={condition_label}; evidence={evidence}."
+        )
+    return " ".join(rendered)
+
+
+def _render_unresolved_query_text(
+    core: SemanticCore,
+    surface_variant: int,
+) -> str:
+    (
+        _,
+        query_template,
+        resolution_instruction,
+        abstention_instruction,
+    ) = REFERENCE_QUERY_TEMPLATE_SETS[surface_variant]
+    return Template(query_template).substitute(
+        candidates=_render_reference_candidates(core),
+        references=_render_surface_references(core),
+        resolution_instruction=resolution_instruction,
+        abstention_instruction=abstention_instruction,
+    )
+
+
 def _gold_source_event_ids(
     core: SemanticCore,
     rendered_event_ids: list[str],
@@ -311,6 +396,12 @@ def _target_objects(core: SemanticCore) -> list[MemoryObjectKey]:
                 targets.append(_copy_key(key))
                 seen.add(identity)
     for key in core.query_targets:
+        identity = _identity(key)
+        if identity not in seen:
+            targets.append(_copy_key(key))
+            seen.add(identity)
+    for candidate in core.reference_candidates:
+        key = candidate.object_key
         identity = _identity(key)
         if identity not in seen:
             targets.append(_copy_key(key))
@@ -480,18 +571,29 @@ def render_core(
         raise ValueError(f"render_core gold replay failed: {exc}") from exc
 
     query_type, answer, answer_schema = _query_semantics(core, replay)
-    query_template = _select_query_template(
-        query_type,
-        answer_schema,
-        current_query_template,
-        deletion_templates,
-    )
-    query_text = _render_query_text(core, query_template)
+    if query_type is QueryType.UNRESOLVED_REFERENCE:
+        query_text = _render_unresolved_query_text(core, surface_variant)
+    else:
+        query_template = _select_query_template(
+            query_type,
+            answer_schema,
+            current_query_template,
+            deletion_templates,
+        )
+        query_text = _render_query_text(core, query_template)
     query = MemoryQuery(
         query_id=rendered_query_id,
         query_type=query_type,
         text=query_text,
         target_object_keys=[_copy_key(key) for key in core.query_targets],
+        reference_candidates=[
+            _copy_reference_candidate(candidate)
+            for candidate in core.reference_candidates
+        ],
+        surface_references=[
+            _copy_surface_reference(reference)
+            for reference in core.surface_references
+        ],
         answer_schema=answer_schema,
         evaluation_mode=EvaluationMode.RETRIEVED_PROMPT,
         metadata={_RENDERER_METADATA_KEY: dict(renderer_admin)},
@@ -504,6 +606,21 @@ def render_core(
     expected_absent = [
         _copy_key(key) for key in targets if key.canonical_id not in replay.final_state
     ]
+    if query_type is QueryType.UNRESOLVED_REFERENCE:
+        if core.canonical_answer is None:
+            raise ValueError(
+                "render_core unresolved query requires a canonical_answer"
+            )
+        gold_answers: dict[str, Any] = {}
+        acceptable_answers: dict[str, Any] = {}
+        canonical_answers = {
+            rendered_query_id: _copy_canonical_answer(core.canonical_answer)
+        }
+    else:
+        gold_answers = {rendered_query_id: _plain(answer)}
+        acceptable_answers = {rendered_query_id: _plain(answer)}
+        canonical_answers = {}
+
     gold = GoldRecord(
         actions=actions,
         action_sequence=list(rendered_action_ids),
@@ -514,8 +631,9 @@ def render_core(
         gold_source_event_ids=_gold_source_event_ids(
             core, rendered_event_ids
         ),
-        gold_answers={rendered_query_id: _plain(answer)},
-        acceptable_answers={rendered_query_id: _plain(answer)},
+        gold_answers=gold_answers,
+        acceptable_answers=acceptable_answers,
+        canonical_answers=canonical_answers,
     )
 
     resolved_profile = _resolve_core_profile(core, query_type)

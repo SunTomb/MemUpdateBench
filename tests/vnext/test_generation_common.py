@@ -32,6 +32,8 @@ from mub.vnext.generation import (
     CoreEvent,
     GenerationContext,
     NAMESPACES,
+    REFERENCE_CONDITION_LABELS,
+    REFERENCE_QUERY_TEMPLATE_SETS,
     RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
     SURFACE_TEMPLATE_SETS,
@@ -348,6 +350,8 @@ def test_id_helpers_reject_invalid_indices(call: object, match: str) -> None:
 def test_catalogs_are_immutable_unique_and_preserve_distinctions() -> None:
     catalogs = (
         NAMESPACES,
+        REFERENCE_CONDITION_LABELS,
+        REFERENCE_QUERY_TEMPLATE_SETS,
         RELATION_QUALIFIED_ENTITIES,
         SAME_NAME_ENTITIES,
         ALIAS_MAPPINGS,
@@ -381,6 +385,8 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
         "aliases": ALIAS_MAPPINGS,
         "attributes": CANONICAL_ATTRIBUTES,
         "namespaces": NAMESPACES,
+        "reference_condition_labels": REFERENCE_CONDITION_LABELS,
+        "reference_query_template_sets": REFERENCE_QUERY_TEMPLATE_SETS,
         "relation_qualified_entities": RELATION_QUALIFIED_ENTITIES,
         "same_name_entities": SAME_NAME_ENTITIES,
         "surface_template_sets": SURFACE_TEMPLATE_SETS,
@@ -394,7 +400,7 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
     ).encode("utf-8")
 
     assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
-        "9ed32ac41f4670193dbaee2d56a2cee3cf4dc08a5bc7b5e82b912d6e0d48fb53"
+        "1e2f97eb04e2688a6a446db5cefefeff8f638adb060c4b48d9e953175234f2c2"
     )
 
 

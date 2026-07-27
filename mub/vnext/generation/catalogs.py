@@ -90,6 +90,38 @@ VALUES = (
     "Willow House",
 )
 
+REFERENCE_CONDITION_LABELS = (
+    ("alias", "alias"),
+    ("same_name", "same-name"),
+    ("namespace_collision", "namespace collision"),
+    ("attribute_paraphrase", "attribute paraphrase"),
+)
+
+REFERENCE_QUERY_TEMPLATE_SETS = (
+    (
+        "direct",
+        "Candidate memory objects: $candidates Surface references: $references "
+        "$resolution_instruction $abstention_instruction",
+        "Resolve the reference against the candidates and return the current value for the single matching candidate.",
+        "If the reference is ambiguous or has no match, respond with ABSTAIN and do not guess a value.",
+    ),
+    (
+        "conversational",
+        "Here are the candidate memory objects: $candidates Here are the phrases to resolve: $references "
+        "$resolution_instruction $abstention_instruction",
+        "Please identify the one matching candidate and report its current value.",
+        "If more than one candidate or no candidate matches, please ABSTAIN rather than guess a value.",
+    ),
+    (
+        "correction",
+        "Check these candidate memory objects: $candidates Check these reference forms: $references "
+        "$resolution_instruction $abstention_instruction",
+        "Use the reference evidence to select exactly one candidate before returning its current value.",
+        "When the evidence leaves ambiguity or no match, output ABSTAIN; never guess a value.",
+    ),
+)
+
+
 SURFACE_TEMPLATE_SETS = (
     (
         "direct",
@@ -185,6 +217,8 @@ __all__ = [
     "ALIAS_MAPPINGS",
     "CANONICAL_ATTRIBUTES",
     "NAMESPACES",
+    "REFERENCE_CONDITION_LABELS",
+    "REFERENCE_QUERY_TEMPLATE_SETS",
     "RELATION_QUALIFIED_ENTITIES",
     "SAME_NAME_ENTITIES",
     "SURFACE_TEMPLATE_SETS",

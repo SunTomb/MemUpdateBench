@@ -18,12 +18,25 @@ from typing_extensions import Self
 from mub.vnext.contracts.common import (
     ContractModel,
     MemoryObjectKey,
+    SourceAnchor,
     StrictNonnegativeInt,
     freeze_json,
     freeze_mapping,
     thaw_json,
 )
-from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, TaskFamily
+from mub.vnext.contracts.enums import (
+    Difficulty,
+    EventRole,
+    Operation,
+    QueryType,
+    ReferenceResolutionStatus,
+    TaskFamily,
+)
+from mub.vnext.contracts.task import (
+    CanonicalAnswer,
+    ReferenceCandidate,
+    SurfaceReference,
+)
 from mub.vnext.generation.config import (
     DifficultyDensities,
     DifficultyNonnegativeCounts,
@@ -246,6 +259,111 @@ class _FrozenCoreModel(ContractModel):
         return type(self).model_validate(data)
 
 
+class _FrozenSourceAnchor(_FrozenCoreModel, SourceAnchor):
+    pass
+
+
+class _FrozenReferenceCandidate(_FrozenCoreModel, ReferenceCandidate):
+    _copy_sequence_fields = frozenset({"source_anchors"})
+
+    object_key: _FrozenMemoryObjectKey
+    source_anchors: list[_FrozenSourceAnchor] = Field(default_factory=list)
+
+    @field_validator("object_key", mode="before")
+    @classmethod
+    def _copy_object_key(cls, value: Any) -> _FrozenMemoryObjectKey:
+        payload = (
+            value.model_dump(mode="python")
+            if isinstance(value, MemoryObjectKey)
+            else value
+        )
+        return _FrozenMemoryObjectKey.model_validate(payload)
+
+    @field_validator("source_anchors", mode="before")
+    @classmethod
+    def _copy_source_anchors(cls, value: Any) -> list[_FrozenSourceAnchor]:
+        if type(value) is not list:
+            raise ValueError("source_anchors must be an exact list")
+        return [
+            _FrozenSourceAnchor.model_validate(
+                anchor.model_dump(mode="python")
+                if isinstance(anchor, SourceAnchor)
+                else anchor
+            )
+            for anchor in value
+        ]
+
+    @field_validator("source_anchors")
+    @classmethod
+    def _freeze_source_anchors(
+        cls,
+        value: list[_FrozenSourceAnchor],
+    ) -> tuple[_FrozenSourceAnchor, ...]:
+        return tuple(value)
+
+    @field_serializer("source_anchors", when_used="always")
+    def _dump_source_anchors(
+        self,
+        value: tuple[_FrozenSourceAnchor, ...],
+        info: SerializationInfo,
+    ) -> list[dict[str, Any]]:
+        return [anchor.model_dump(mode=info.mode) for anchor in value]
+
+
+class _FrozenSurfaceReference(_FrozenCoreModel, SurfaceReference):
+    _copy_sequence_fields = frozenset({"candidate_ids"})
+
+    @field_validator("candidate_ids", mode="before")
+    @classmethod
+    def _copy_candidate_ids(cls, value: Any) -> Any:
+        if type(value) is not list:
+            raise ValueError("candidate_ids must be an exact list")
+        return list(value)
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def _freeze_candidate_ids(cls, value: list[str]) -> tuple[str, ...]:
+        return tuple(value)
+
+    @field_serializer("candidate_ids", when_used="always")
+    def _dump_candidate_ids(self, value: tuple[str, ...]) -> list[str]:
+        return list(value)
+
+
+class _FrozenCanonicalAnswer(_FrozenCoreModel, CanonicalAnswer):
+    _copy_sequence_fields = frozenset({"selected_candidate_ids"})
+
+    @field_validator("selected_candidate_ids", mode="before")
+    @classmethod
+    def _copy_selected_candidate_ids(cls, value: Any) -> Any:
+        if type(value) is not list:
+            raise ValueError("selected_candidate_ids must be an exact list")
+        return list(value)
+
+    @field_validator("selected_candidate_ids")
+    @classmethod
+    def _freeze_selected_candidate_ids(cls, value: list[str]) -> tuple[str, ...]:
+        return tuple(value)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_value(cls, value: Any) -> Any:
+        return _validate_json_value(value, "canonical_answer.value")
+
+    @field_validator("value")
+    @classmethod
+    def _freeze_value(cls, value: JsonValue | None) -> JsonValue | None:
+        return freeze_json(value)
+
+    @field_serializer("selected_candidate_ids", when_used="always")
+    def _dump_selected_candidate_ids(self, value: tuple[str, ...]) -> list[str]:
+        return list(value)
+
+    @field_serializer("value", when_used="always")
+    def _dump_value(self, value: Any) -> JsonValue:
+        return thaw_json(value)
+
+
 class GenerationContext(_FrozenCoreModel):
     config: PilotConfig
     code_revision: str = Field(min_length=1, strict=True)
@@ -368,7 +486,14 @@ class CoreEvent(_FrozenCoreModel):
 
 
 class SemanticCore(_FrozenCoreModel):
-    _copy_sequence_fields = frozenset({"events", "query_targets"})
+    _copy_sequence_fields = frozenset(
+        {
+            "events",
+            "query_targets",
+            "reference_candidates",
+            "surface_references",
+        }
+    )
 
     core_id: str = Field(pattern=_CORE_ID_PATTERN, strict=True)
     task_family: TaskFamily
@@ -377,6 +502,10 @@ class SemanticCore(_FrozenCoreModel):
     trajectory_id: str = Field(pattern=_TRAJECTORY_ID_PATTERN, strict=True)
     events: list[CoreEvent] = Field(min_length=1)
     query_targets: list[MemoryObjectKey] = Field(min_length=1)
+    query_type: QueryType = QueryType.CURRENT_STATE
+    reference_candidates: list[ReferenceCandidate] = Field(default_factory=list)
+    surface_references: list[SurfaceReference] = Field(default_factory=list)
+    canonical_answer: CanonicalAnswer | None = None
     expected_answer: JsonValue | None
     profile: dict[str, JsonValue]
     stratification: dict[str, str | int | float | bool]
@@ -410,6 +539,62 @@ class SemanticCore(_FrozenCoreModel):
         value: list[MemoryObjectKey],
     ) -> tuple[MemoryObjectKey, ...]:
         return _reject_duplicate_keys(value, "query_targets")
+
+    @field_validator("reference_candidates", mode="before")
+    @classmethod
+    def _copy_reference_candidates(cls, value: Any) -> Any:
+        if type(value) is not list:
+            raise ValueError("reference_candidates must be an exact list")
+        return [
+            _FrozenReferenceCandidate.model_validate(
+                candidate.model_dump(mode="python")
+                if isinstance(candidate, ReferenceCandidate)
+                else candidate
+            )
+            for candidate in value
+        ]
+
+    @field_validator("reference_candidates")
+    @classmethod
+    def _freeze_reference_candidates(
+        cls,
+        value: list[_FrozenReferenceCandidate],
+    ) -> tuple[_FrozenReferenceCandidate, ...]:
+        return tuple(value)
+
+    @field_validator("surface_references", mode="before")
+    @classmethod
+    def _copy_surface_references(cls, value: Any) -> Any:
+        if type(value) is not list:
+            raise ValueError("surface_references must be an exact list")
+        return [
+            _FrozenSurfaceReference.model_validate(
+                reference.model_dump(mode="python")
+                if isinstance(reference, SurfaceReference)
+                else reference
+            )
+            for reference in value
+        ]
+
+    @field_validator("surface_references")
+    @classmethod
+    def _freeze_surface_references(
+        cls,
+        value: list[_FrozenSurfaceReference],
+    ) -> tuple[_FrozenSurfaceReference, ...]:
+        return tuple(value)
+
+    @field_validator("canonical_answer", mode="before")
+    @classmethod
+    def _copy_canonical_answer(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        payload = (
+            value.model_dump(mode="python")
+            if isinstance(value, CanonicalAnswer)
+            else value
+        )
+        return _FrozenCanonicalAnswer.model_validate(payload)
 
     @field_validator("expected_answer", mode="before")
     @classmethod
@@ -455,6 +640,98 @@ class SemanticCore(_FrozenCoreModel):
     ) -> Mapping[str, str | int | float | bool]:
         return freeze_mapping(value)
 
+    @model_validator(mode="after")
+    def _validate_reference_semantics(self) -> Self:
+        has_reference_payload = bool(
+            self.reference_candidates
+            or self.surface_references
+            or self.canonical_answer is not None
+        )
+        if self.query_type is not QueryType.UNRESOLVED_REFERENCE:
+            if has_reference_payload:
+                raise ValueError(
+                    "reference candidates, surface references, and canonical_answer "
+                    "are valid only for unresolved-reference queries"
+                )
+            return self
+
+        if self.expected_answer is not None:
+            raise ValueError(
+                "unresolved-reference expected_answer must be null; use canonical_answer"
+            )
+        if not self.reference_candidates:
+            raise ValueError("unresolved-reference queries require reference_candidates")
+        if not self.surface_references:
+            raise ValueError("unresolved-reference queries require surface_references")
+        if self.canonical_answer is None:
+            raise ValueError("unresolved-reference queries require canonical_answer")
+
+        candidate_ids = [
+            candidate.candidate_id for candidate in self.reference_candidates
+        ]
+        if any(not candidate_id.strip() for candidate_id in candidate_ids):
+            raise ValueError("reference candidate IDs must not be blank")
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("duplicate reference candidate IDs are not allowed")
+        candidate_identities = [
+            (
+                candidate.object_key.namespace,
+                candidate.object_key.entity,
+                candidate.object_key.attribute,
+                candidate.object_key.subkey,
+            )
+            for candidate in self.reference_candidates
+        ]
+        if len(candidate_identities) != len(set(candidate_identities)):
+            raise ValueError(
+                "duplicate reference candidate identities are not allowed"
+            )
+
+        reference_ids = [
+            reference.reference_id for reference in self.surface_references
+        ]
+        if any(not reference_id.strip() for reference_id in reference_ids):
+            raise ValueError("surface reference IDs must not be blank")
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("duplicate surface reference IDs are not allowed")
+
+        known_candidate_ids = set(candidate_ids)
+        referenced_candidate_ids: set[str] = set()
+        for reference in self.surface_references:
+            if not reference.surface_text.strip():
+                raise ValueError("surface reference text must not be blank")
+            if not reference.normalized_text.strip():
+                raise ValueError("normalized surface reference text must not be blank")
+            if any(not candidate_id.strip() for candidate_id in reference.candidate_ids):
+                raise ValueError("surface reference candidate IDs must not be blank")
+            if len(reference.candidate_ids) != len(set(reference.candidate_ids)):
+                raise ValueError(
+                    "duplicate surface reference candidate IDs are not allowed"
+                )
+            unknown = set(reference.candidate_ids) - known_candidate_ids
+            if unknown:
+                raise ValueError(
+                    "surface references link unknown candidate IDs: "
+                    f"{sorted(unknown)}"
+                )
+            referenced_candidate_ids.update(reference.candidate_ids)
+
+        canonical = self.canonical_answer
+        selected_ids = set(canonical.selected_candidate_ids)
+        if selected_ids - known_candidate_ids:
+            raise ValueError("canonical_answer selects unknown candidate IDs")
+        if selected_ids - referenced_candidate_ids:
+            raise ValueError("canonical_answer selects unreferenced candidate IDs")
+        if canonical.resolution_status is ReferenceResolutionStatus.UNIQUE:
+            if len(referenced_candidate_ids) != 1:
+                raise ValueError("UNIQUE resolution must reference exactly one candidate")
+        elif canonical.resolution_status is ReferenceResolutionStatus.AMBIGUOUS:
+            if len(referenced_candidate_ids) < 2:
+                raise ValueError("AMBIGUOUS resolution must reference multiple candidates")
+        elif referenced_candidate_ids:
+            raise ValueError("NO_MATCH resolution cannot reference candidates")
+        return self
+
     @field_serializer("events", when_used="always")
     def _dump_events(
         self,
@@ -470,6 +747,26 @@ class SemanticCore(_FrozenCoreModel):
         info: SerializationInfo,
     ) -> list[dict[str, Any]]:
         return _serialize_keys(value, info)
+
+    @field_serializer(
+        "reference_candidates",
+        "surface_references",
+        when_used="always",
+    )
+    def _dump_reference_records(
+        self,
+        value: tuple[ReferenceCandidate | SurfaceReference, ...],
+        info: SerializationInfo,
+    ) -> list[dict[str, Any]]:
+        return [record.model_dump(mode=info.mode) for record in value]
+
+    @field_serializer("canonical_answer", when_used="always")
+    def _dump_canonical_answer(
+        self,
+        value: CanonicalAnswer | None,
+        info: SerializationInfo,
+    ) -> dict[str, Any] | None:
+        return None if value is None else value.model_dump(mode=info.mode)
 
     @field_serializer(
         "expected_answer",
