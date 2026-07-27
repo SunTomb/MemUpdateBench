@@ -53,7 +53,7 @@ from mub.vnext.generation import (
 from mub.vnext.generation.render import render_core as _render_core
 
 
-PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+PILOT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs/vnext/pilot.yaml"
 PILOT_CONFIG_SHA256 = "5188ea64160319ff3368ac51ebf030c9ff2dcc8943018829f1fdea77f53b3564"
 _fixed_context = GenerationContext(
     config=load_pilot_config(PILOT_CONFIG_PATH),
@@ -167,6 +167,32 @@ print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         re.fullmatch(rf"{prefix}_[0-9a-f]{{16}}", identities[name])
         for name, prefix in expected_prefixes.items()
     )
+
+
+def test_generation_common_collects_from_non_repository_cwd(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    test_path = Path(__file__).resolve()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(test_path),
+            "-q",
+            "-k",
+            "test_stable_id_matches_literal_sha256_known_answer",
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
 
 
 def test_stable_id_rejects_non_string_mapping_keys_before_aliasing() -> None:

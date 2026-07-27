@@ -11,7 +11,7 @@ from mub.vnext.generation.config import PilotConfig, load_pilot_config
 from mub.vnext.io import canonical_json_bytes
 
 
-CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs/vnext/pilot.yaml"
 
 
 def fixed_payload() -> dict[str, Any]:

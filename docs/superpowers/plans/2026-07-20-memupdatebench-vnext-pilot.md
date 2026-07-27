@@ -302,7 +302,7 @@ from mub.vnext.generation.render import render_core
 from mub.vnext.io.canonical import canonical_json_bytes, semantic_task_hash
 
 
-PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+PILOT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs/vnext/pilot.yaml"
 _FIXED_CONTEXT = GenerationContext(
     config=load_pilot_config(PILOT_CONFIG_PATH),
     code_revision="revision-abc123",
