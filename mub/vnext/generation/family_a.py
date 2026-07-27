@@ -11,7 +11,7 @@ from mub.vnext.generation.catalogs import (
     VALUES,
     select_conflicting_values,
 )
-from mub.vnext.generation.config import PilotConfig
+from mub.vnext.generation.config import PilotConfig, RepeatedSameSlotUpdateConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
@@ -44,7 +44,7 @@ def _canonical_axis_order(config: PilotConfig) -> tuple[tuple[str, str, str], ..
     )
 
 
-def _validate_config(config: PilotConfig) -> None:
+def _validate_config(config: PilotConfig) -> RepeatedSameSlotUpdateConfig:
     if not isinstance(config, PilotConfig):
         raise TypeError("config must be a PilotConfig")
     if config.cores_per_family != 120:
@@ -56,6 +56,7 @@ def _validate_config(config: PilotConfig) -> None:
         raise ValueError("Family A update_depths must be exactly [1, 4, 16]")
     if set(family.difficulties) != set(_DIFFICULTIES):
         raise ValueError("Family A difficulties must include easy, medium, and hard")
+    return family
 
 
 def _key(namespace: str, entity: str, attribute: str) -> MemoryObjectKey:
@@ -281,17 +282,21 @@ def _build_core(
     )
 
 
-def _allocation_counts(core_count: int) -> tuple[dict[int, int], dict[Difficulty, int], dict[tuple[int, Difficulty], int]]:
-    depth_counts = {depth: 0 for depth in _DEPTHS}
-    difficulty_counts = {difficulty: 0 for difficulty in _DIFFICULTIES}
+def _allocation_counts(
+    core_count: int,
+    depths: tuple[int, ...],
+    difficulties: tuple[Difficulty, ...],
+) -> tuple[dict[int, int], dict[Difficulty, int], dict[tuple[int, Difficulty], int]]:
+    depth_counts = {depth: 0 for depth in depths}
+    difficulty_counts = {difficulty: 0 for difficulty in difficulties}
     cell_counts = {
         (depth, difficulty): 0
-        for depth in _DEPTHS
-        for difficulty in _DIFFICULTIES
+        for depth in depths
+        for difficulty in difficulties
     }
     for core_index in range(core_count):
-        depth = _DEPTHS[core_index % len(_DEPTHS)]
-        difficulty = _DIFFICULTIES[(core_index // len(_DEPTHS)) % len(_DIFFICULTIES)]
+        depth = depths[core_index % len(depths)]
+        difficulty = difficulties[(core_index // len(depths)) % len(difficulties)]
         depth_counts[depth] += 1
         difficulty_counts[difficulty] += 1
         cell_counts[(depth, difficulty)] += 1
@@ -300,13 +305,19 @@ def _allocation_counts(core_count: int) -> tuple[dict[int, int], dict[Difficulty
 
 def generate_family_a_cores(config: PilotConfig) -> list[SemanticCore]:
     """Generate the deterministic 120-core repeated same-slot Family A."""
-    _validate_config(config)
+    family = _validate_config(config)
+    depths = tuple(family.update_depths)
+    difficulties = tuple(family.difficulties)
     axes = _canonical_axis_order(config)
-    depth_counts, difficulty_counts, cell_counts = _allocation_counts(config.cores_per_family)
+    depth_counts, difficulty_counts, cell_counts = _allocation_counts(
+        config.cores_per_family,
+        depths,
+        difficulties,
+    )
     cores: list[SemanticCore] = []
     for core_index in range(config.cores_per_family):
-        depth = _DEPTHS[core_index % len(_DEPTHS)]
-        difficulty = _DIFFICULTIES[(core_index // len(_DEPTHS)) % len(_DIFFICULTIES)]
+        depth = depths[core_index % len(depths)]
+        difficulty = difficulties[(core_index // len(depths)) % len(difficulties)]
         axis_index = core_index % len(axes)
         cores.append(
             _build_core(

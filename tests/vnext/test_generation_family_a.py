@@ -54,12 +54,42 @@ def test_family_a_has_exact_balanced_depth_and_difficulty_axes(cores):
     assert [core.core_index for core in cores] == list(range(120))
 
 
-def test_family_a_records_actual_small_cell_allocation(cores):
+def test_family_a_follows_reordered_valid_config_axes(config):
+    family = config.families.repeated_same_slot_update.model_copy(
+        update={
+            "update_depths": [16, 1, 4],
+            "difficulties": [Difficulty.HARD, Difficulty.EASY, Difficulty.MEDIUM],
+        }
+    )
+    families = config.families.model_copy(update={"repeated_same_slot_update": family})
+    reordered = config.model_copy(update={"families": families})
+    cores = generate_family_a_cores(reordered)
+
+    assert [core.profile["update_depth"] for core in cores[:9]] == [16, 1, 4] * 3
+    assert [core.difficulty for core in cores[:9]] == [
+        Difficulty.HARD,
+        Difficulty.HARD,
+        Difficulty.HARD,
+        Difficulty.EASY,
+        Difficulty.EASY,
+        Difficulty.EASY,
+        Difficulty.MEDIUM,
+        Difficulty.MEDIUM,
+        Difficulty.MEDIUM,
+    ]
+    assert len(cores) == 120
+    assert {core.profile["update_depth"] for core in cores} == {1, 4, 16}
+    assert {core.difficulty for core in cores} == {
+        Difficulty.EASY,
+        Difficulty.MEDIUM,
+        Difficulty.HARD,
+    }
     actual = Counter((core.profile["update_depth"], core.difficulty) for core in cores)
     assert set(actual.values()) == {13, 14}
     for core in cores:
-        cell = (core.profile["update_depth"], core.difficulty)
-        assert core.stratification["depth_difficulty_cell_count"] == actual[cell]
+        assert core.stratification["depth_difficulty_cell_count"] == actual[
+            (core.profile["update_depth"], core.difficulty)
+        ]
 
 
 def test_family_a_target_chain_has_exact_depth_and_final_answer(cores):
