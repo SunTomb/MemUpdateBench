@@ -21,11 +21,6 @@ _FAMILY_NAME = TaskFamily.INTERLEAVED_MULTI_SLOT.value
 _DEPTHS = (1, 4, 16)
 _DIFFICULTIES = (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
 _PATTERNS = ("round_robin", "burst", "adversarial_adjacent")
-_VERSION_METADATA = {
-    Difficulty.EASY: "latest_outdated",
-    Difficulty.MEDIUM: "event_index",
-    Difficulty.HARD: "none",
-}
 
 
 def _validate_config(config: PilotConfig) -> InterleavedMultiSlotUpdateConfig:
@@ -218,7 +213,9 @@ def _non_target_trajectory(
                 "version_metadata": (
                     "latest" if version_index == len(versions) - 1 else "stale"
                 ),
-                "distractor_kind": "cross_slot",
+                "distractor_kind": (
+                    "active_non_target" if version_index == 0 else "cross_slot"
+                ),
                 "target_relation": "same_entity_other_attribute",
             },
         )
@@ -286,21 +283,72 @@ def _interleave(
     raise ValueError(f"unsupported interleaving pattern: {pattern}")
 
 
-def _allocation_counts(
-    core_count: int,
+def _balanced_group_cells(
+    group_count: int,
     depths: tuple[int, ...],
     difficulties: tuple[Difficulty, ...],
+) -> tuple[tuple[int, Difficulty], ...]:
+    cells = tuple(product(depths, difficulties))
+    repeats, remainder = divmod(group_count, len(cells))
+    assignments = list(cells) * repeats
+    cell_counts = Counter(assignments)
+    depth_counts = Counter(depth for depth, _ in assignments)
+    difficulty_counts = Counter(difficulty for _, difficulty in assignments)
+    depth_base, depth_remainder = divmod(group_count, len(depths))
+    difficulty_base, difficulty_remainder = divmod(
+        group_count,
+        len(difficulties),
+    )
+    depth_targets = {
+        depth: depth_base + (index < depth_remainder)
+        for index, depth in enumerate(depths)
+    }
+    difficulty_targets = {
+        difficulty: difficulty_base + (index < difficulty_remainder)
+        for index, difficulty in enumerate(difficulties)
+    }
+    depth_order = {depth: index for index, depth in enumerate(depths)}
+    difficulty_order = {
+        difficulty: index for index, difficulty in enumerate(difficulties)
+    }
+    for _ in range(remainder):
+        candidates = tuple(
+            cell
+            for cell in cells
+            if depth_counts[cell[0]] < depth_targets[cell[0]]
+            and difficulty_counts[cell[1]] < difficulty_targets[cell[1]]
+        )
+        if not candidates:
+            raise ValueError("unable to balance Family B allocation cells")
+        depth, difficulty = min(
+            candidates,
+            key=lambda cell: (
+                cell_counts[cell],
+                -(depth_targets[cell[0]] - depth_counts[cell[0]]),
+                -(
+                    difficulty_targets[cell[1]]
+                    - difficulty_counts[cell[1]]
+                ),
+                depth_order[cell[0]],
+                difficulty_order[cell[1]],
+            ),
+        )
+        assignments.append((depth, difficulty))
+        cell_counts[(depth, difficulty)] += 1
+        depth_counts[depth] += 1
+        difficulty_counts[difficulty] += 1
+    return tuple(assignments)
+
+
+def _allocation_counts(
+    group_cells: tuple[tuple[int, Difficulty], ...],
     patterns: tuple[str, ...],
 ) -> Counter[tuple[int, Difficulty, str]]:
-    counts: Counter[tuple[int, Difficulty, str]] = Counter()
-    for core_index in range(core_count):
-        group_index = core_index // len(patterns)
-        depth = depths[group_index % len(depths)]
-        difficulty = difficulties[
-            (group_index // len(depths)) % len(difficulties)
-        ]
-        counts[(depth, difficulty, patterns[core_index % len(patterns)])] += 1
-    return counts
+    return Counter(
+        (depth, difficulty, pattern)
+        for depth, difficulty in group_cells
+        for pattern in patterns
+    )
 
 
 def _build_core(
@@ -318,6 +366,9 @@ def _build_core(
     distractor_count: int,
     trajectories: tuple[tuple[CoreEvent, ...], ...],
     allocation_cell_count: int,
+    allocation_cell_ideal: float,
+    difficulty_allocation_count: int,
+    difficulty_allocation_ideal: float,
 ) -> SemanticCore:
     events = _interleave(trajectories, pattern)
     target = trajectories[0][0].object_keys[0]
@@ -358,8 +409,9 @@ def _build_core(
         "noop_density": 0.0,
         "cross_slot_interleaving": density,
         "context_length": num_events,
+        "context_order": "chronological",
         "query_type": "current_state",
-        "version_metadata": _VERSION_METADATA[difficulty],
+        "version_metadata": "event_index",
     }
     stratification = {
         "num_events": num_events,
@@ -377,6 +429,13 @@ def _build_core(
         "axis_product_size": axis_product_size,
         "pattern_group_index": group_index,
         "allocation_cell_count": allocation_cell_count,
+        "allocation_cell_ideal": allocation_cell_ideal,
+        "allocation_cell_deviation": allocation_cell_count - allocation_cell_ideal,
+        "difficulty_allocation_count": difficulty_allocation_count,
+        "difficulty_allocation_ideal": difficulty_allocation_ideal,
+        "difficulty_allocation_deviation": (
+            difficulty_allocation_count - difficulty_allocation_ideal
+        ),
     }
     return SemanticCore(
         core_id=identifier,
@@ -399,12 +458,27 @@ def generate_family_b_cores(config: PilotConfig) -> list[SemanticCore]:
     difficulties = tuple(family.difficulties)
     patterns = tuple(family.interleaving_patterns)
     axes = _canonical_axis_order(config)
-    allocation_counts = _allocation_counts(
+    group_count, incomplete_group = divmod(
         config.cores_per_family,
+        len(patterns),
+    )
+    if incomplete_group:
+        raise ValueError("Family B cores must form complete interleaving groups")
+    group_cells = _balanced_group_cells(
+        group_count,
         depths,
         difficulties,
-        patterns,
     )
+    allocation_counts = _allocation_counts(group_cells, patterns)
+    difficulty_allocation_counts = Counter(
+        difficulty
+        for _, difficulty in group_cells
+        for _ in patterns
+    )
+    allocation_cell_ideal = config.cores_per_family / (
+        len(depths) * len(difficulties) * len(patterns)
+    )
+    difficulty_allocation_ideal = config.cores_per_family / len(difficulties)
     cores = []
     trajectory_cache: dict[
         int,
@@ -412,10 +486,7 @@ def generate_family_b_cores(config: PilotConfig) -> list[SemanticCore]:
     ] = {}
     for core_index in range(config.cores_per_family):
         group_index = core_index // len(patterns)
-        depth = depths[group_index % len(depths)]
-        difficulty = difficulties[
-            (group_index // len(depths)) % len(difficulties)
-        ]
+        depth, difficulty = group_cells[group_index]
         pattern = patterns[core_index % len(patterns)]
         axis_index = group_index % len(axes)
         active_object_count = getattr(
@@ -460,6 +531,9 @@ def generate_family_b_cores(config: PilotConfig) -> list[SemanticCore]:
                 distractor_count,
                 trajectories,
                 allocation_counts[(depth, difficulty, pattern)],
+                allocation_cell_ideal,
+                difficulty_allocation_counts[difficulty],
+                difficulty_allocation_ideal,
             )
         )
     return cores

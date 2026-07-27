@@ -101,6 +101,97 @@ def test_family_b_has_exact_balanced_configured_axes(cores):
             core.stratification["interleaving_pattern"],
         )
         assert core.stratification["allocation_cell_count"] == cells[cell]
+        assert core.stratification["allocation_cell_ideal"] == pytest.approx(
+            120 / 27
+        )
+        assert core.stratification["allocation_cell_deviation"] == pytest.approx(
+            cells[cell] - 120 / 27
+        )
+
+
+def test_family_b_globally_balances_derived_difficulty_axes(config, cores):
+    family = config.families.interleaved_multi_slot_update
+    difficulty_counts = Counter(core.difficulty for core in cores)
+    assert difficulty_counts == {
+        Difficulty.EASY: 42,
+        Difficulty.MEDIUM: 39,
+        Difficulty.HARD: 39,
+    }
+    assert Counter(core.profile["update_depth"] for core in cores) == {
+        1: 42,
+        4: 39,
+        16: 39,
+    }
+    assert Counter(core.profile["active_object_count"] for core in cores) == {
+        family.active_object_counts.easy: 42,
+        family.active_object_counts.medium: 39,
+        family.active_object_counts.hard: 39,
+    }
+    assert Counter(core.profile["cross_slot_interleaving"] for core in cores) == {
+        family.cross_slot_distractor_density.easy: 42,
+        family.cross_slot_distractor_density.medium: 39,
+        family.cross_slot_distractor_density.hard: 39,
+    }
+    for core in cores:
+        assert core.stratification["difficulty_allocation_count"] == difficulty_counts[
+            core.difficulty
+        ]
+        assert core.stratification["difficulty_allocation_ideal"] == 40.0
+        assert core.stratification["difficulty_allocation_deviation"] == (
+            difficulty_counts[core.difficulty] - 40.0
+        )
+
+
+def test_family_b_distractor_metadata_matches_density_count(cores):
+    for core in cores:
+        target = core.query_targets[0]
+        non_target_events = [
+            event for event in core.events if target not in event.object_keys
+        ]
+        active_events = [
+            event
+            for event in non_target_events
+            if event.metadata["distractor_kind"] == "active_non_target"
+        ]
+        density_events = [
+            event
+            for event in non_target_events
+            if event.metadata["distractor_kind"] == "cross_slot"
+        ]
+        assert len(active_events) == core.profile["active_object_count"] - 1
+        assert all(event.operation is Operation.ADD for event in active_events)
+        assert len(density_events) == core.stratification[
+            "cross_slot_distractor_count"
+        ]
+        assert all(event.operation is Operation.UPDATE for event in density_events)
+        assert len(non_target_events) == len(active_events) + len(density_events)
+
+
+def test_family_b_profiles_describe_emitted_order_and_version_metadata(config, cores):
+    context = GenerationContext(config=config, code_revision="family-b-profile-test")
+    for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD):
+        for pattern in PATTERNS:
+            core = next(
+                item
+                for item in cores
+                if item.difficulty is difficulty
+                and item.stratification["interleaving_pattern"] == pattern
+            )
+            assert core.profile["context_order"] == "chronological"
+            assert core.profile["version_metadata"] == "event_index"
+            assert all(
+                "version_index" in event.metadata
+                for event in core.events
+                if event.operation is not Operation.NOOP
+            )
+            task = render_core(
+                core,
+                split=Split.TEST,
+                surface_variant=0,
+                context=context,
+            )
+            assert task.metadata.resolved_profile["context_order"] == "chronological"
+            assert task.metadata.resolved_profile["version_metadata"] == "event_index"
 
 
 def test_family_b_matched_patterns_share_target_trajectory_but_change_indices(cores):
@@ -190,7 +281,10 @@ def test_family_b_slot_trajectories_are_valid_and_roles_are_explicit(cores):
                 assert event.role in {EventRole.STALE_SAME_SLOT, EventRole.LATEST_GOLD}
             else:
                 assert event.role is EventRole.SAME_ENTITY_OTHER_ATTRIBUTE
-                assert event.metadata["distractor_kind"] == "cross_slot"
+                assert event.metadata["distractor_kind"] in {
+                    "active_non_target",
+                    "cross_slot",
+                }
                 assert event.metadata["target_relation"] == "same_entity_other_attribute"
         target_events = _target_events(core)
         assert target_events[0].operation is Operation.ADD
@@ -258,8 +352,12 @@ def test_family_b_follows_reordered_valid_config_axes(config):
         "burst",
         "round_robin",
     ] * 3
-    assert [core.profile["update_depth"] for core in cores[:9]] == [16] * 3 + [1] * 3 + [4] * 3
-    assert [core.difficulty for core in cores[:9]] == [Difficulty.HARD] * 9
+    assert [core.profile["update_depth"] for core in cores[:9]] == [16] * 9
+    assert [core.difficulty for core in cores[:9]] == (
+        [Difficulty.HARD] * 3
+        + [Difficulty.EASY] * 3
+        + [Difficulty.MEDIUM] * 3
+    )
 
 
 def test_family_b_is_deterministic_across_repeats_cwd_and_hash_seed(config, cores, tmp_path):
