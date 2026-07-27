@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from mub.vnext.contracts import ActionScope, Difficulty, EventRole, Operation, Split
 from mub.vnext.contracts.task import GoldAction
 from mub.vnext.generation import GenerationContext, load_pilot_config, render_core
+from mub.vnext.generation.catalogs import CANONICAL_ATTRIBUTES
 from mub.vnext.generation.family_b import generate_family_b_cores
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
@@ -72,18 +74,22 @@ def _active_keys(core):
     )
 
 
-def test_family_b_has_exact_balanced_configured_axes(cores):
+def _expected_marginal_counts(values):
+    return {
+        value: 42 if index == 0 else 39
+        for index, value in enumerate(values)
+    }
+
+
+def _assert_full_balance(config, cores):
+    family = config.families.interleaved_multi_slot_update
+    depths = tuple(family.update_depths)
+    difficulties = tuple(family.difficulties)
+    patterns = tuple(family.interleaving_patterns)
     assert len(cores) == 120
     assert [core.core_index for core in cores] == list(range(120))
-    assert {core.profile["update_depth"] for core in cores} == {1, 4, 16}
-    assert {core.difficulty for core in cores} == {
-        Difficulty.EASY,
-        Difficulty.MEDIUM,
-        Difficulty.HARD,
-    }
-    assert {core.stratification["interleaving_pattern"] for core in cores} == set(PATTERNS)
     assert Counter(core.stratification["interleaving_pattern"] for core in cores) == {
-        pattern: 40 for pattern in PATTERNS
+        pattern: 40 for pattern in patterns
     }
     cells = Counter(
         (
@@ -93,7 +99,25 @@ def test_family_b_has_exact_balanced_configured_axes(cores):
         )
         for core in cores
     )
+    expected_cells = set(product(depths, difficulties, patterns))
+    assert len(cells) == 27
+    assert set(cells) == expected_cells
     assert set(cells.values()) == {4, 5}
+    expected_depth_counts = _expected_marginal_counts(depths)
+    expected_difficulty_counts = _expected_marginal_counts(difficulties)
+    assert Counter(core.profile["update_depth"] for core in cores) == (
+        expected_depth_counts
+    )
+    difficulty_counts = Counter(core.difficulty for core in cores)
+    assert difficulty_counts == expected_difficulty_counts
+    assert Counter(core.profile["active_object_count"] for core in cores) == {
+        getattr(family.active_object_counts, difficulty.value): count
+        for difficulty, count in expected_difficulty_counts.items()
+    }
+    assert Counter(core.profile["cross_slot_interleaving"] for core in cores) == {
+        getattr(family.cross_slot_distractor_density, difficulty.value): count
+        for difficulty, count in expected_difficulty_counts.items()
+    }
     for core in cores:
         cell = (
             core.profile["update_depth"],
@@ -107,39 +131,94 @@ def test_family_b_has_exact_balanced_configured_axes(cores):
         assert core.stratification["allocation_cell_deviation"] == pytest.approx(
             cells[cell] - 120 / 27
         )
-
-
-def test_family_b_globally_balances_derived_difficulty_axes(config, cores):
-    family = config.families.interleaved_multi_slot_update
-    difficulty_counts = Counter(core.difficulty for core in cores)
-    assert difficulty_counts == {
-        Difficulty.EASY: 42,
-        Difficulty.MEDIUM: 39,
-        Difficulty.HARD: 39,
-    }
-    assert Counter(core.profile["update_depth"] for core in cores) == {
-        1: 42,
-        4: 39,
-        16: 39,
-    }
-    assert Counter(core.profile["active_object_count"] for core in cores) == {
-        family.active_object_counts.easy: 42,
-        family.active_object_counts.medium: 39,
-        family.active_object_counts.hard: 39,
-    }
-    assert Counter(core.profile["cross_slot_interleaving"] for core in cores) == {
-        family.cross_slot_distractor_density.easy: 42,
-        family.cross_slot_distractor_density.medium: 39,
-        family.cross_slot_distractor_density.hard: 39,
-    }
-    for core in cores:
-        assert core.stratification["difficulty_allocation_count"] == difficulty_counts[
-            core.difficulty
-        ]
+        assert core.stratification["difficulty_allocation_count"] == (
+            difficulty_counts[core.difficulty]
+        )
         assert core.stratification["difficulty_allocation_ideal"] == 40.0
         assert core.stratification["difficulty_allocation_deviation"] == (
             difficulty_counts[core.difficulty] - 40.0
         )
+
+
+def _assert_matched_pattern_trajectories(cores, patterns):
+    for start in range(0, 120, len(patterns)):
+        matched = cores[start : start + len(patterns)]
+        assert {
+            core.stratification["interleaving_pattern"] for core in matched
+        } == set(patterns)
+        trajectories = [
+            [
+                (
+                    event.operation,
+                    event.value,
+                    event.role,
+                    dict(event.metadata),
+                )
+                for event in _target_events(core)
+            ]
+            for core in matched
+        ]
+        assert all(trajectory == trajectories[0] for trajectory in trajectories)
+        assert len({tuple(_target_indices(core)) for core in matched}) == len(patterns)
+
+
+def _assert_interleaving_semantics(cores, patterns):
+    for start in range(0, 120, len(patterns)):
+        by_pattern = {
+            core.stratification["interleaving_pattern"]: core
+            for core in cores[start : start + len(patterns)]
+        }
+        burst = by_pattern["burst"]
+        assert _target_indices(burst) == list(
+            range(burst.profile["update_depth"] + 1)
+        )
+        first_indices = {}
+        round_robin = by_pattern["round_robin"]
+        for index, event in enumerate(round_robin.events):
+            for key in event.object_keys:
+                first_indices.setdefault(key.canonical_id, index)
+        assert sorted(first_indices.values()) == list(
+            range(round_robin.profile["active_object_count"])
+        )
+        assert _target_indices(round_robin)[0] == (
+            round_robin.profile["active_object_count"] - 1
+        )
+        adversarial = by_pattern["adversarial_adjacent"]
+        target_indices = _target_indices(adversarial)
+        assert target_indices[:-1] == list(
+            range(adversarial.profile["update_depth"])
+        )
+        assert target_indices[-1] == len(adversarial.events) - 1
+        assert adversarial.events[-2].object_keys[0] != adversarial.query_targets[0]
+        assert adversarial.events[-1].role is EventRole.LATEST_GOLD
+
+
+def _assert_replay_preservation(cores):
+    for core in cores:
+        target = core.query_targets[0]
+        active_ids = _active_keys(core)
+        assert len(core.query_targets) == 1
+        assert len(active_ids) == core.profile["active_object_count"]
+        assert target.canonical_id in active_ids
+        replay = _replay(core)
+        assert set(replay.final_state) == set(active_ids)
+        assert replay.final_state[target.canonical_id] == core.expected_answer
+        assert len(set(replay.final_state.values())) == len(replay.final_state)
+        expected_histories = {}
+        for event in core.events:
+            identity = event.object_keys[0].canonical_id
+            expected_histories.setdefault(identity, []).append(event.value)
+        assert {
+            identity: tuple(values)
+            for identity, values in replay.version_history.items()
+        } == {
+            identity: tuple(values)
+            for identity, values in expected_histories.items()
+        }
+
+
+def test_family_b_has_exact_balanced_configured_axes(config, cores):
+    _assert_full_balance(config, cores)
 
 
 def test_family_b_distractor_metadata_matches_density_count(cores):
@@ -194,71 +273,92 @@ def test_family_b_profiles_describe_emitted_order_and_version_metadata(config, c
             assert task.metadata.resolved_profile["version_metadata"] == "event_index"
 
 
-def test_family_b_matched_patterns_share_target_trajectory_but_change_indices(cores):
-    for start in range(0, 120, 3):
-        matched = cores[start : start + 3]
-        assert {core.stratification["interleaving_pattern"] for core in matched} == set(PATTERNS)
-        trajectories = [
-            [
-                (
-                    event.operation,
-                    event.value,
-                    event.role,
-                    dict(event.metadata),
-                )
-                for event in _target_events(core)
-            ]
-            for core in matched
+def test_family_b_per_object_versions_and_rendered_orders_are_contiguous(config, cores):
+    context = GenerationContext(config=config, code_revision="family-b-order-test")
+    for core in cores:
+        events_by_identity = {}
+        for event in core.events:
+            assert len(event.object_keys) == 1
+            identity = event.object_keys[0].canonical_id
+            events_by_identity.setdefault(identity, []).append(event)
+        for object_events in events_by_identity.values():
+            assert [event.metadata["version_index"] for event in object_events] == (
+                list(range(len(object_events)))
+            )
+            assert [event.metadata["version_metadata"] for event in object_events] == (
+                ["stale"] * (len(object_events) - 1) + ["latest"]
+            )
+
+        task = render_core(
+            core,
+            split=Split.TEST,
+            surface_variant=0,
+            context=context,
+        )
+        assert [event.sequence_index for event in task.events] == list(
+            range(len(task.events))
+        )
+        assert [event.source_anchor for event in task.events] == [
+            {"event_index": index} for index in range(len(task.events))
         ]
-        assert trajectories[0] == trajectories[1] == trajectories[2]
-        assert len({tuple(_target_indices(core)) for core in matched}) == 3
+        assert task.gold.action_sequence == [
+            action.action_id for action in task.gold.actions
+        ]
+        assert [action.event_id for action in task.gold.actions] == [
+            event.event_id for event in task.events
+        ]
+        for core_event, rendered_event, action in zip(
+            core.events,
+            task.events,
+            task.gold.actions,
+        ):
+            assert rendered_event.gold_action_ids == [action.action_id]
+            assert action.operation is core_event.operation
+            assert [key.canonical_id for key in action.target_object_keys] == [
+                key.canonical_id for key in core_event.object_keys
+            ]
+            assert action.value == core_event.value
+
+
+def test_family_b_non_target_identities_follow_reviewed_catalog(cores):
+    for core in cores:
+        target = core.query_targets[0]
+        keys_by_identity = {
+            key.canonical_id: key
+            for event in core.events
+            for key in event.object_keys
+        }
+        non_target_keys = [
+            key
+            for identity, key in keys_by_identity.items()
+            if identity != target.canonical_id
+        ]
+        reviewed_attributes = tuple(
+            attribute
+            for attribute in CANONICAL_ATTRIBUTES
+            if attribute != target.attribute
+        )
+        expected_attributes = set(
+            reviewed_attributes[: core.profile["active_object_count"] - 1]
+        )
+        assert {key.attribute for key in non_target_keys} == expected_attributes
+        assert all(key.namespace == target.namespace for key in non_target_keys)
+        assert all(key.entity == target.entity for key in non_target_keys)
+        assert all(key.attribute != target.attribute for key in non_target_keys)
+        assert all(key.attribute in CANONICAL_ATTRIBUTES for key in non_target_keys)
+        assert all(key.subkey is None for key in non_target_keys)
+
+
+def test_family_b_matched_patterns_share_target_trajectory_but_change_indices(cores):
+    _assert_matched_pattern_trajectories(cores, PATTERNS)
 
 
 def test_family_b_interleaving_pattern_semantics_are_explicit(cores):
-    for start in range(0, 120, 3):
-        by_pattern = {
-            core.stratification["interleaving_pattern"]: core
-            for core in cores[start : start + 3]
-        }
-        burst = by_pattern["burst"]
-        assert _target_indices(burst) == list(range(burst.profile["update_depth"] + 1))
-        first_indices = {}
-        round_robin = by_pattern["round_robin"]
-        for index, event in enumerate(round_robin.events):
-            for key in event.object_keys:
-                first_indices.setdefault(key.canonical_id, index)
-        assert sorted(first_indices.values()) == list(range(round_robin.profile["active_object_count"]))
-        assert _target_indices(round_robin)[0] == round_robin.profile["active_object_count"] - 1
-        adversarial = by_pattern["adversarial_adjacent"]
-        target_indices = _target_indices(adversarial)
-        assert target_indices[:-1] == list(range(adversarial.profile["update_depth"]))
-        assert target_indices[-1] == len(adversarial.events) - 1
-        assert adversarial.events[-2].object_keys[0] != adversarial.query_targets[0]
-        assert adversarial.events[-1].role is EventRole.LATEST_GOLD
+    _assert_interleaving_semantics(cores, PATTERNS)
 
 
 def test_family_b_replay_preserves_distinct_active_objects_and_values(cores):
-    for core in cores:
-        target = core.query_targets[0]
-        active_ids = _active_keys(core)
-        assert len(core.query_targets) == 1
-        assert len(active_ids) == core.profile["active_object_count"]
-        assert target.canonical_id in active_ids
-        replay = _replay(core)
-        assert set(replay.final_state) == set(active_ids)
-        assert replay.final_state[target.canonical_id] == core.expected_answer
-        assert len(set(replay.final_state.values())) == len(replay.final_state)
-        expected_histories = {}
-        for event in core.events:
-            identity = event.object_keys[0].canonical_id
-            expected_histories.setdefault(identity, []).append(event.value)
-        assert {
-            identity: tuple(values)
-            for identity, values in replay.version_history.items()
-        } == {
-            identity: tuple(values)
-            for identity, values in expected_histories.items()
-        }
+    _assert_replay_preservation(cores)
 
 
 def test_family_b_slot_trajectories_are_valid_and_roles_are_explicit(cores):
@@ -358,6 +458,11 @@ def test_family_b_follows_reordered_valid_config_axes(config):
         + [Difficulty.EASY] * 3
         + [Difficulty.MEDIUM] * 3
     )
+    patterns = tuple(family.interleaving_patterns)
+    _assert_full_balance(reordered, cores)
+    _assert_matched_pattern_trajectories(cores, patterns)
+    _assert_interleaving_semantics(cores, patterns)
+    _assert_replay_preservation(cores)
 
 
 def test_family_b_is_deterministic_across_repeats_cwd_and_hash_seed(config, cores, tmp_path):
@@ -432,3 +537,4 @@ def test_family_b_generator_is_publicly_exported():
     from mub.vnext import generation
 
     assert generation.generate_family_b_cores is generate_family_b_cores
+    assert generation.__all__.count("generate_family_b_cores") == 1
