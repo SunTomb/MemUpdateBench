@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import (
     ConfigDict,
@@ -92,6 +92,8 @@ class _FrozenCoreModel(ContractModel):
         validate_default=True,
     )
 
+    _copy_sequence_fields: ClassVar[frozenset[str]] = frozenset()
+
     def model_copy(
         self,
         *,
@@ -100,12 +102,19 @@ class _FrozenCoreModel(ContractModel):
     ) -> Self:
         if update is None:
             return super().model_copy(deep=deep)
+        normalized_update = dict(update)
+        for field_name in self._copy_sequence_fields:
+            value = normalized_update.get(field_name)
+            if isinstance(value, tuple):
+                normalized_update[field_name] = list(value)
         data = self.model_dump(mode="python")
-        data.update(update)
+        data.update(normalized_update)
         return type(self).model_validate(data)
 
 
 class CoreEvent(_FrozenCoreModel):
+    _copy_sequence_fields = frozenset({"object_keys"})
+
     operation: Operation
     object_keys: list[MemoryObjectKey]
     value: JsonValue | None
@@ -174,6 +183,7 @@ class CoreEvent(_FrozenCoreModel):
 
 
 class SemanticCore(_FrozenCoreModel):
+    _copy_sequence_fields = frozenset({"events", "query_targets"})
 
     core_id: str = Field(pattern=_CORE_ID_PATTERN, strict=True)
     task_family: TaskFamily

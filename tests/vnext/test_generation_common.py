@@ -977,14 +977,19 @@ def test_semantic_core_model_copy_revalidates_and_freezes_updates() -> None:
 
 def test_core_model_copy_preserves_normal_shallow_and_deep_copy_behavior() -> None:
     core = _representative_core()
+    event = core.events[0]
 
     shallow = core.model_copy()
     deep = core.model_copy(deep=True)
+    event_shallow = event.model_copy()
+    event_deep = event.model_copy(deep=True)
 
     assert shallow == core
     assert deep == core
     assert shallow.events is core.events
     assert deep.events is not core.events
+    assert event_shallow.object_keys is event.object_keys
+    assert event_deep.object_keys is not event.object_keys
 
 
 def _core_with_key_changes(
@@ -1091,3 +1096,116 @@ def test_render_normalized_source_hash_tracks_meaningful_semantics(
     changed_task = render_core(changed, split=Split.TEST, surface_variant=0)
 
     assert original_task.source.normalized_hash != changed_task.source.normalized_hash
+
+
+def test_model_copy_accepts_own_tuple_backed_sequence_updates() -> None:
+    core = _representative_core()
+    event = core.events[0]
+
+    event_copy = event.model_copy(update={"object_keys": event.object_keys})
+    events_copy = core.model_copy(update={"events": core.events})
+    targets_copy = core.model_copy(update={"query_targets": core.query_targets})
+
+    assert event_copy.object_keys == event.object_keys
+    assert events_copy.events == core.events
+    assert targets_copy.query_targets == core.query_targets
+    assert isinstance(event_copy.object_keys, tuple)
+    assert isinstance(events_copy.events, tuple)
+    assert isinstance(targets_copy.query_targets, tuple)
+
+
+def test_model_copy_isolates_external_tuple_and_list_sequence_updates() -> None:
+    core = _representative_core()
+    external_event_key = _location_key()
+    external_query_key = _location_key()
+    external_events = [core.events[0]]
+
+    event_copy = core.events[0].model_copy(
+        update={"object_keys": (external_event_key,)}
+    )
+    events_copy = core.model_copy(update={"events": external_events})
+    targets_copy = core.model_copy(
+        update={"query_targets": (external_query_key,)}
+    )
+
+    external_event_key.entity = "friend:changed-event"
+    external_query_key.entity = "friend:changed-query"
+    external_events.clear()
+
+    assert event_copy.object_keys[0].entity == "friend:alex"
+    assert len(events_copy.events) == 1
+    assert targets_copy.query_targets[0].entity == "friend:alex"
+    assert isinstance(event_copy.object_keys, tuple)
+    assert isinstance(events_copy.events, tuple)
+    assert isinstance(targets_copy.query_targets, tuple)
+
+
+def test_model_copy_rejects_invalid_nested_sequence_updates() -> None:
+    core = _representative_core()
+    invalid_key = {
+        "object_type": "slot",
+        "namespace": "default",
+        "entity": " ",
+        "attribute": "location",
+        "subkey": None,
+    }
+    invalid_event = {
+        "operation": Operation.UPDATE,
+        "object_keys": [_location_key()],
+        "value": None,
+        "role": EventRole.LATEST_GOLD,
+        "metadata": {},
+    }
+
+    with pytest.raises(ValidationError, match="entity"):
+        core.events[0].model_copy(update={"object_keys": (invalid_key,)})
+    with pytest.raises(ValidationError, match="UPDATE"):
+        core.model_copy(update={"events": (invalid_event,)})
+    with pytest.raises(ValidationError, match="entity"):
+        core.model_copy(update={"query_targets": (invalid_key,)})
+
+
+def test_validated_model_copy_preserves_concrete_subclass_type() -> None:
+    class SpecializedEvent(CoreEvent):
+        specialization: str
+
+    class SpecializedCore(SemanticCore):
+        specialization: str
+
+    event_data = _representative_core().events[0].model_dump(mode="python")
+    event = SpecializedEvent.model_validate(
+        {**event_data, "specialization": "event"}
+    )
+    core_data = _representative_core().model_dump(mode="python")
+    core = SpecializedCore.model_validate(
+        {**core_data, "specialization": "core"}
+    )
+
+    event_copy = event.model_copy(update={"object_keys": event.object_keys})
+    core_copy = core.model_copy(update={"events": core.events})
+
+    assert type(event_copy) is SpecializedEvent
+    assert type(core_copy) is SpecializedCore
+    assert event_copy.specialization == "event"
+    assert core_copy.specialization == "core"
+
+
+def test_public_core_validation_remains_strict_about_sequence_input_types() -> None:
+    event_data = _representative_core().events[0].model_dump(mode="python")
+    core_data = _representative_core().model_dump(mode="python")
+
+    with pytest.raises(ValidationError, match="object_keys"):
+        CoreEvent.model_validate(
+            {**event_data, "object_keys": tuple(event_data["object_keys"])}
+        )
+    with pytest.raises(ValidationError, match="events"):
+        SemanticCore.model_validate(
+            {**core_data, "events": tuple(core_data["events"])}
+        )
+    with pytest.raises(ValidationError, match="query_targets"):
+        SemanticCore.model_validate(
+            {
+                **core_data,
+                "query_targets": tuple(core_data["query_targets"]),
+            }
+        )
