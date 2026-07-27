@@ -20,10 +20,7 @@ from mub.vnext.contracts.common import (
 from mub.vnext.contracts.enums import EventRole, Operation, QueryType
 from mub.vnext.contracts.task import GoldAction, MemUpdateTask
 from mub.vnext.validation.issues import ValidationIssue, ValidationReport, build_report
-from mub.vnext.validation.task import (
-    _reference_resolution_issues,
-    acceptable_candidates,
-)
+from mub.vnext.validation.task import acceptable_candidates
 
 
 class ReplayResult(ImmutableContractModel):
@@ -445,7 +442,6 @@ def _validate_gold_replay(task: MemUpdateTask) -> ValidationReport:
 
     gold_answers = _semantic_map(issues, getattr(gold, "gold_answers", None), "gold.gold_answers", "malformed_gold_answers")
     _semantic_map(issues, getattr(gold, "acceptable_answers", None), "gold.acceptable_answers", "malformed_acceptable_answers")
-    issues.extend(_reference_resolution_issues(task))
     for query_index, query in enumerate(_list(getattr(task, "queries", None))):
         query_id = getattr(query, "query_id", None)
         query_type = _enum_value(getattr(query, "query_type", None))

@@ -252,7 +252,7 @@ def test_unresolved_reference_replay_is_not_inferred_from_final_state_or_delete(
     assert "unresolved_query_semantics" not in _codes(report)
 
 
-def test_unresolved_reference_replay_rejects_guesses_and_raw_none(make_task):
+def test_semantic_validation_reports_unresolved_defects_exactly_once(make_task):
     task = _unresolved_task(make_task)
     guessed = CanonicalAnswer.model_construct(
         disposition=AnswerDisposition.ANSWERED,
@@ -267,14 +267,14 @@ def test_unresolved_reference_replay_rejects_guesses_and_raw_none(make_task):
         canonical_answers={"query_0": guessed},
     )
 
-    codes = _codes(validate_gold_replay(_replace(task, gold=gold)))
+    codes = _codes(validate_task_semantics(_replace(task, gold=gold)))
 
-    assert "unresolved_raw_answer" in codes
-    assert "canonical_answer_status_disposition_mismatch" in codes
-    assert "guessed_ambiguous_candidate" in codes
+    assert codes.count("unresolved_raw_answer") == 1
+    assert codes.count("canonical_answer_status_disposition_mismatch") == 1
+    assert codes.count("guessed_ambiguous_candidate") == 1
 
 
-def test_gold_replay_rejects_ordinary_query_abstention(make_task):
+def test_semantic_validation_rejects_ordinary_query_abstention_once(make_task):
     task = make_task()
     abstention = CanonicalAnswer(
         disposition=AnswerDisposition.ABSTAINED,
@@ -283,9 +283,9 @@ def test_gold_replay_rejects_ordinary_query_abstention(make_task):
     )
     gold = _replace(task.gold, canonical_answers={"query_0": abstention})
 
-    assert "ordinary_query_canonical_answer" in _codes(
-        validate_gold_replay(_replace(task, gold=gold))
-    )
+    assert _codes(
+        validate_task_semantics(_replace(task, gold=gold))
+    ).count("ordinary_query_canonical_answer") == 1
 
 
 def test_gold_replay_reports_replay_errors_without_escaping(make_task):

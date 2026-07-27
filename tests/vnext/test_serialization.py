@@ -616,6 +616,34 @@ def test_unresolved_semantic_hash_preserves_candidate_and_linkage_order(make_tas
     assert semantic_task_hash(task) != semantic_task_hash(_validated_task(linkage_order))
 
 
+def test_unresolved_semantic_hash_rejects_dangling_surface_candidate_link(make_task) -> None:
+    task = _unresolved_task(make_task)
+    valid_hash = semantic_task_hash(task)
+    task.queries[0].surface_references[0].candidate_ids.append("dangling_surface")
+
+    assert len(valid_hash) == 64
+    with pytest.raises(
+        ValueError,
+        match="surface reference links unknown candidate ID 'dangling_surface'",
+    ):
+        semantic_task_hash(task)
+
+
+def test_unresolved_semantic_hash_rejects_dangling_selected_candidate_link(make_task) -> None:
+    task = _unresolved_task(make_task, "unique")
+    valid_hash = semantic_task_hash(task)
+    task.gold.canonical_answers["query_0"].selected_candidate_ids.append(
+        "dangling_selected"
+    )
+
+    assert len(valid_hash) == 64
+    with pytest.raises(
+        ValueError,
+        match="canonical answer selects unknown candidate ID 'dangling_selected'",
+    ):
+        semantic_task_hash(task)
+
+
 def test_unresolved_semantic_hash_includes_resolution_graph_and_canonical_outcome(
     make_task,
 ) -> None:

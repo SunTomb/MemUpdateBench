@@ -569,8 +569,14 @@ def _reference_resolution_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                 f"{canonical_path}.disposition",
             )
 
-        if status == ReferenceResolutionStatus.AMBIGUOUS.value and (
-            disposition == AnswerDisposition.ANSWERED.value or selected_ids or value is not None
+        if (
+            status == ReferenceResolutionStatus.AMBIGUOUS.value
+            and disposition != AnswerDisposition.ABSTAINED.value
+            and (
+                disposition == AnswerDisposition.ANSWERED.value
+                or selected_ids
+                or value is not None
+            )
         ):
             _issue(
                 issues,

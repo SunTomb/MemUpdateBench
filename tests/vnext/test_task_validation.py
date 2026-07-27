@@ -184,6 +184,26 @@ def test_unresolved_reference_structural_validation_rejects_typed_gold_mismatche
     assert "guessed_ambiguous_candidate" in codes
 
 
+def test_abstained_ambiguous_guess_is_reported_exactly_once(make_task):
+    task = _unresolved_task(make_task)
+    canonical = CanonicalAnswer.model_construct(
+        disposition=AnswerDisposition.ABSTAINED,
+        resolution_status=ReferenceResolutionStatus.AMBIGUOUS,
+        selected_candidate_ids=["candidate_friend"],
+        abstention_reason="reference is not uniquely resolvable",
+        value=None,
+    )
+    malformed = _replace(
+        task,
+        gold=_replace(
+            task.gold,
+            canonical_answers={"query_0": canonical},
+        ),
+    )
+
+    assert _codes(validate_task(malformed)).count("guessed_ambiguous_candidate") == 1
+
+
 def test_unresolved_reference_structural_validation_rejects_missing_and_ordinary_canonical_gold(
     make_task,
 ):

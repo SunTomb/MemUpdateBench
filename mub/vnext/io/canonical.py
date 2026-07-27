@@ -96,6 +96,17 @@ def _sorted_object_identities(records: list[dict[str, Any]]) -> list[dict[str, A
     return sorted(projected, key=_canonical_payload_bytes)
 
 
+def _candidate_index(
+    candidate_indices: Mapping[str, int], candidate_id: str, relationship: str
+) -> int:
+    try:
+        return candidate_indices[candidate_id]
+    except KeyError as exc:
+        raise ValueError(
+            f"{relationship} unknown candidate ID {candidate_id!r}"
+        ) from exc
+
+
 def _unresolved_reference_projection(
     query: dict[str, Any], canonical: dict[str, Any]
 ) -> dict[str, Any]:
@@ -111,7 +122,11 @@ def _unresolved_reference_projection(
                 "condition_kind": reference["condition_kind"],
                 "evidence_kind": reference["evidence_kind"],
                 "candidate_indices": [
-                    candidate_indices[candidate_id]
+                    _candidate_index(
+                        candidate_indices,
+                        candidate_id,
+                        "surface reference links",
+                    )
                     for candidate_id in reference["candidate_ids"]
                 ],
             }
@@ -126,7 +141,11 @@ def _unresolved_reference_projection(
             "disposition": canonical["disposition"],
             "resolution_status": canonical["resolution_status"],
             "selected_candidate_indices": [
-                candidate_indices[candidate_id]
+                _candidate_index(
+                    candidate_indices,
+                    candidate_id,
+                    "canonical answer selects",
+                )
                 for candidate_id in canonical["selected_candidate_ids"]
             ],
             "value": canonical["value"],
