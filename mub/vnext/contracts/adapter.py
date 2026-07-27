@@ -10,7 +10,7 @@ from mub.vnext.contracts.common import (
     StrictNonnegativeFloat,
     StrictNumericScore,
 )
-from mub.vnext.contracts.enums import Operation
+from mub.vnext.contracts.enums import AnswerDisposition, Operation
 from mub.vnext.contracts.runtime import MemoryEntryRecord, NonnegativeStrictInt
 from mub.vnext.contracts.task import MemoryEvent, MemoryQuery
 
@@ -102,6 +102,7 @@ class RetrievalResult(ContractModel):
 class AnswerResult(ContractModel):
     query_id: str
     raw_output: str
+    disposition: AnswerDisposition = AnswerDisposition.ANSWERED
     usage: dict[str, NonnegativeStrictInt] = Field(default_factory=dict)
     cost: StrictNonnegativeFloat | None = None
     latency_ms: StrictNonnegativeFloat | None = None

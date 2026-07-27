@@ -64,7 +64,7 @@ def test_version_constants_are_exported_and_pinned() -> None:
         "RUN_MANIFEST_VERSION": RUN_MANIFEST_VERSION,
         "PRIMARY_FAILURE_PRECEDENCE_VERSION": PRIMARY_FAILURE_PRECEDENCE_VERSION,
     }
-    assert set(expected_versions.values()) == {"1.0.0"}
+    assert set(expected_versions.values()) == {"2.0.0"}
     for name, value in expected_versions.items():
         assert getattr(vnext, name) == value
         assert name in vnext.__all__
@@ -189,6 +189,7 @@ def test_controlled_vocabularies_match_vnext_design() -> None:
         "transition",
         "multi_object",
         "deletion_compliance",
+        "unresolved_reference",
     ]
     assert [item.value for item in EvaluationMode] == [
         "state_direct",
@@ -205,7 +206,7 @@ def test_controlled_vocabularies_match_vnext_design() -> None:
     assert Operation.DELETE.value == "DELETE"
     assert TaskFamily.REPEATED_SAME_SLOT.value == "repeated_same_slot_update"
     assert EventRole.DUPLICATE_CURRENT.value == "duplicate_current"
-    assert SCHEMA_VERSION == "1.0.0"
+    assert SCHEMA_VERSION == "2.0.0"
     assert contracts.AnswerSchema is AnswerSchema
     assert not hasattr(contracts, "ExecutionStatus")
 

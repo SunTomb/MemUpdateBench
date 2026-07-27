@@ -97,6 +97,7 @@ RETRIEVAL_TRACE_FIELDS = [
 ANSWER_PREDICTION_FIELDS = [
     "query_id",
     "raw_output",
+    "disposition",
     "parsed_answer",
     "cited_event_ids",
     "cited_entry_ids",
@@ -293,6 +294,7 @@ def test_adapter_result_records_are_direct_design_records() -> None:
     assert answer.model_dump(mode="json") == {
         "query_id": "query_0",
         "raw_output": "Qingdao",
+        "disposition": "answered",
         "usage": {"output_tokens": 3},
         "cost": 0.01,
         "latency_ms": 4.0,

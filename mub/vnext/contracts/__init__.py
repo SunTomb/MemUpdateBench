@@ -19,6 +19,7 @@ from mub.vnext.contracts.common import (
 )
 from mub.vnext.contracts.enums import (
     ActionScope,
+    AnswerDisposition,
     AnswerSchema,
     CompletionStatus,
     Difficulty,
@@ -26,6 +27,7 @@ from mub.vnext.contracts.enums import (
     EventRole,
     Operation,
     QueryType,
+    ReferenceResolutionStatus,
     SourceType,
     Split,
     StringEnum,
@@ -54,13 +56,16 @@ from mub.vnext.contracts.score import (
     SystemScores,
 )
 from mub.vnext.contracts.task import (
+    CanonicalAnswer,
     GoldAction,
     GoldRecord,
     LegacyProvenance,
     MemUpdateTask,
     MemoryEvent,
     MemoryQuery,
+    ReferenceCandidate,
     SplitKey,
+    SurfaceReference,
     TaskMetadata,
 )
 
@@ -72,10 +77,12 @@ __all__ = [
     "AdapterInfo",
     "AnswerPrediction",
     "AnswerResult",
+    "AnswerDisposition",
     "AnswerScores",
     "AnswerSchema",
     "ArtifactRef",
     "AuditScores",
+    "CanonicalAnswer",
     "CompletionStatus",
     "ContractModel",
     "Difficulty",
@@ -99,6 +106,8 @@ __all__ = [
     "ProtocolScores",
     "QueryType",
     "RawExtension",
+    "ReferenceCandidate",
+    "ReferenceResolutionStatus",
     "ResetResult",
     "RetrievalResult",
     "RetrievalScores",
@@ -115,6 +124,7 @@ __all__ = [
     "StoreScores",
     "StringEnum",
     "SupportReason",
+    "SurfaceReference",
     "SystemScores",
     "TaskFamily",
     "TaskManifest",

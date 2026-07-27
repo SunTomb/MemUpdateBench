@@ -74,6 +74,19 @@ class QueryType(StringEnum):
     TRANSITION = "transition"
     MULTI_OBJECT = "multi_object"
     DELETION_COMPLIANCE = "deletion_compliance"
+    UNRESOLVED_REFERENCE = "unresolved_reference"
+
+
+class AnswerDisposition(StringEnum):
+    ANSWERED = "answered"
+    ABSTAINED = "abstained"
+    UNAVAILABLE = "unavailable"
+
+
+class ReferenceResolutionStatus(StringEnum):
+    UNIQUE = "unique"
+    AMBIGUOUS = "ambiguous"
+    NO_MATCH = "no_match"
 
 
 class EvaluationMode(StringEnum):
@@ -106,6 +119,7 @@ class SupportReason(StringEnum):
 
 __all__ = [
     "ActionScope",
+    "AnswerDisposition",
     "AnswerSchema",
     "CompletionStatus",
     "Difficulty",
@@ -113,6 +127,7 @@ __all__ = [
     "EventRole",
     "Operation",
     "QueryType",
+    "ReferenceResolutionStatus",
     "SourceType",
     "Split",
     "StringEnum",

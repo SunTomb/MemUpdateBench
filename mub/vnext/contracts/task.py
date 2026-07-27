@@ -9,12 +9,14 @@ from pydantic import Field, JsonValue, field_validator, model_validator
 from mub.vnext.contracts.common import ContractModel, MemoryObjectKey, SourceRecord
 from mub.vnext.contracts.enums import (
     ActionScope,
+    AnswerDisposition,
     AnswerSchema,
     Difficulty,
     EvaluationMode,
     EventRole,
     Operation,
     QueryType,
+    ReferenceResolutionStatus,
     Split,
 )
 from mub.vnext.version import SCHEMA_VERSION
@@ -96,11 +98,37 @@ class MemoryEvent(ContractModel):
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ReferenceCandidate(ContractModel):
+    object_key: MemoryObjectKey
+
+
+class SurfaceReference(ContractModel):
+    text: str
+    resolution_status: ReferenceResolutionStatus
+    candidates: list[ReferenceCandidate] = Field(default_factory=list)
+
+
+class CanonicalAnswer(ContractModel):
+    disposition: AnswerDisposition
+    value: JsonValue | None = None
+
+    @model_validator(mode="after")
+    def _validate_gold_disposition(self) -> Self:
+        if self.disposition == AnswerDisposition.UNAVAILABLE:
+            raise ValueError("UNAVAILABLE is runtime-only")
+        if self.disposition == AnswerDisposition.ANSWERED and self.value is None:
+            raise ValueError("ANSWERED canonical answers require a value")
+        if self.disposition == AnswerDisposition.ABSTAINED and self.value is not None:
+            raise ValueError("ABSTAINED canonical answers cannot carry a value")
+        return self
+
+
 class MemoryQuery(ContractModel):
     query_id: str
     query_type: QueryType
     text: str
     target_object_keys: list[MemoryObjectKey] = Field(default_factory=list)
+    surface_references: list[SurfaceReference] = Field(default_factory=list)
     answer_schema: AnswerSchema
     evaluation_mode: EvaluationMode
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
@@ -116,6 +144,7 @@ class GoldRecord(ContractModel):
     gold_source_event_ids: list[str] = Field(default_factory=list)
     gold_answers: dict[str, JsonValue] = Field(default_factory=dict)
     acceptable_answers: dict[str, JsonValue] = Field(default_factory=dict)
+    canonical_answers: dict[str, CanonicalAnswer] = Field(default_factory=dict)
 
 
 class MemUpdateTask(ContractModel):
@@ -248,12 +277,15 @@ def _reject_duplicates(values: list[str], label: str) -> None:
 
 
 __all__ = [
+    "CanonicalAnswer",
     "GoldAction",
     "GoldRecord",
     "LegacyProvenance",
     "MemUpdateTask",
     "MemoryEvent",
     "MemoryQuery",
+    "ReferenceCandidate",
     "SplitKey",
+    "SurfaceReference",
     "TaskMetadata",
 ]

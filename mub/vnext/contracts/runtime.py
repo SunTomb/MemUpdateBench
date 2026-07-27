@@ -10,7 +10,7 @@ from mub.vnext.contracts.common import (
     StrictNonnegativeFloat,
     StrictNumericScore,
 )
-from mub.vnext.contracts.enums import CompletionStatus, Operation
+from mub.vnext.contracts.enums import AnswerDisposition, CompletionStatus, Operation
 from mub.vnext.version import RUNTIME_RECORD_VERSION, SCHEMA_VERSION
 
 NonnegativeStrictInt = Annotated[int, Field(ge=0, strict=True)]
@@ -76,6 +76,7 @@ class RetrievalTrace(ContractModel):
 class AnswerPrediction(ContractModel):
     query_id: str
     raw_output: str
+    disposition: AnswerDisposition = AnswerDisposition.ANSWERED
     parsed_answer: JsonValue | None = None
     cited_event_ids: list[str] = Field(default_factory=list)
     cited_entry_ids: list[str] = Field(default_factory=list)
