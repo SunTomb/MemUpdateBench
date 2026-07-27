@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from pydantic import RootModel, ValidationError
@@ -14,7 +15,7 @@ from mub.vnext.contracts.enums import (
     Split,
     TaskFamily,
 )
-from mub.vnext.io import canonical_json_bytes, semantic_task_hash
+from mub.vnext.io import canonical_json_bytes, semantic_task_hash, sha256_model
 from mub.vnext.validation import validate_gold_replay, validate_task
 from mub.vnext.validation.replay import replay_actions
 
@@ -22,6 +23,7 @@ from mub.vnext.generation import (
     ALIAS_MAPPINGS,
     CANONICAL_ATTRIBUTES,
     CoreEvent,
+    GenerationContext,
     NAMESPACES,
     RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
@@ -31,6 +33,7 @@ from mub.vnext.generation import (
     action_id,
     core_id,
     event_id,
+    load_pilot_config,
     paraphrase_group_id,
     query_id,
     render_core as exported_render_core,
@@ -1209,3 +1212,85 @@ def test_public_core_validation_remains_strict_about_sequence_input_types() -> N
                 "query_targets": tuple(core_data["query_targets"]),
             }
         )
+
+
+PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+PILOT_CONFIG_SHA256 = "5188ea64160319ff3368ac51ebf030c9ff2dcc8943018829f1fdea77f53b3564"
+
+
+def test_generation_context_exposes_fixed_config_provenance() -> None:
+    config = load_pilot_config(PILOT_CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="revision-abc123")
+
+    assert context.seed == 20260720
+    assert context.release_id == "vnext-pilot-2026-07"
+    assert context.schema_version == "1.0.0"
+    assert context.profile_version == "1.0.0"
+    assert context.config_sha256 == sha256_model(config)
+    assert context.config_sha256 == PILOT_CONFIG_SHA256
+    assert context.compiler_version == "1.0.0"
+    assert context.generator_name == "memupdatebench_vnext_pilot"
+
+
+def test_generation_context_hash_changes_with_config() -> None:
+    config = load_pilot_config(PILOT_CONFIG_PATH)
+    changed_payload = config.model_dump(mode="python")
+    changed_payload["seed"] = config.seed + 1
+    changed_config = type(config).model_validate(changed_payload)
+
+    original = GenerationContext(config=config, code_revision="revision-abc123")
+    changed = GenerationContext(
+        config=changed_config,
+        code_revision="revision-abc123",
+    )
+
+    assert original.config_sha256 != changed.config_sha256
+
+
+def test_generation_context_requires_nonblank_revision() -> None:
+    config = load_pilot_config(PILOT_CONFIG_PATH)
+
+    with pytest.raises(ValidationError, match="code_revision"):
+        GenerationContext(config=config)  # type: ignore[call-arg]
+    for revision in ("", "   "):
+        with pytest.raises(ValidationError, match="code_revision"):
+            GenerationContext(config=config, code_revision=revision)
+
+
+def test_generation_context_is_frozen_and_model_copy_is_validated_alias_safe() -> None:
+    source_config = load_pilot_config(PILOT_CONFIG_PATH)
+    context = GenerationContext(config=source_config, code_revision="revision-abc123")
+    source_config.seed = 1
+
+    assert context.seed == 20260720
+    with pytest.raises(ValidationError, match="frozen"):
+        context.code_revision = "changed"
+    with pytest.raises(ValidationError, match="code_revision"):
+        context.model_copy(update={"code_revision": "  "})
+
+    replacement_config = load_pilot_config(PILOT_CONFIG_PATH)
+    copied = context.model_copy(
+        update={
+            "config": replacement_config,
+            "code_revision": "revision-def456",
+        }
+    )
+    replacement_config.seed = 2
+
+    assert copied.code_revision == "revision-def456"
+    assert copied.seed == 20260720
+    assert copied.config is not replacement_config
+
+
+def test_generation_context_canonical_bytes_are_deterministic() -> None:
+    first = GenerationContext(
+        config=load_pilot_config(PILOT_CONFIG_PATH),
+        code_revision="revision-abc123",
+    )
+    second = GenerationContext.model_validate(
+        dict(reversed(first.model_dump(mode="python").items()))
+    )
+
+    first_bytes = canonical_json_bytes(first)
+    assert first_bytes == canonical_json_bytes(first)
+    assert first_bytes == canonical_json_bytes(second)

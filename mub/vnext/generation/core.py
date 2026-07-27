@@ -24,6 +24,8 @@ from mub.vnext.contracts.common import (
     thaw_json,
 )
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, TaskFamily
+from mub.vnext.generation.config import PilotConfig
+from mub.vnext.io import sha256_model
 
 
 _CORE_ID_PATTERN = r"^core_[0-9a-f]{16}$"
@@ -110,6 +112,50 @@ class _FrozenCoreModel(ContractModel):
         data = self.model_dump(mode="python")
         data.update(normalized_update)
         return type(self).model_validate(data)
+
+
+class GenerationContext(_FrozenCoreModel):
+    config: PilotConfig
+    code_revision: str = Field(min_length=1, strict=True)
+    compiler_version: str = Field(default="1.0.0", strict=True)
+    generator_name: str = Field(
+        default="memupdatebench_vnext_pilot",
+        strict=True,
+    )
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _clone_config(cls, value: Any) -> Any:
+        if isinstance(value, PilotConfig):
+            return value.model_dump(mode="python")
+        return value
+
+    @field_validator("code_revision")
+    @classmethod
+    def _reject_blank_code_revision(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("code_revision must not be blank")
+        return value
+
+    @property
+    def config_sha256(self) -> str:
+        return sha256_model(self.config)
+
+    @property
+    def seed(self) -> int:
+        return self.config.seed
+
+    @property
+    def release_id(self) -> str:
+        return self.config.release_id
+
+    @property
+    def schema_version(self) -> str:
+        return self.config.schema_version
+
+    @property
+    def profile_version(self) -> str:
+        return self.config.profile_version
 
 
 class CoreEvent(_FrozenCoreModel):
@@ -296,4 +342,4 @@ class SemanticCore(_FrozenCoreModel):
         return thaw_json(value)
 
 
-__all__ = ["CoreEvent", "SemanticCore"]
+__all__ = ["CoreEvent", "GenerationContext", "SemanticCore"]
