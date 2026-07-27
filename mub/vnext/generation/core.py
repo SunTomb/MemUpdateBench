@@ -84,7 +84,7 @@ def _serialize_keys(
     return [key.model_dump(mode=info.mode) for key in keys]
 
 
-class CoreEvent(ContractModel):
+class _FrozenCoreModel(ContractModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
@@ -92,6 +92,20 @@ class CoreEvent(ContractModel):
         validate_default=True,
     )
 
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if update is None:
+            return super().model_copy(deep=deep)
+        data = self.model_dump(mode="python")
+        data.update(update)
+        return type(self).model_validate(data)
+
+
+class CoreEvent(_FrozenCoreModel):
     operation: Operation
     object_keys: list[MemoryObjectKey]
     value: JsonValue | None
@@ -159,13 +173,7 @@ class CoreEvent(ContractModel):
         return thaw_json(value)
 
 
-class SemanticCore(ContractModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-        validate_default=True,
-    )
+class SemanticCore(_FrozenCoreModel):
 
     core_id: str = Field(pattern=_CORE_ID_PATTERN, strict=True)
     task_family: TaskFamily

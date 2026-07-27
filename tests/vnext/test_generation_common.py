@@ -846,3 +846,43 @@ def test_render_core_resolves_registered_family_specific_profile_parameters() ->
     assert task.metadata.resolved_profile["noop_density"] == 0.0
     assert validate_task(task).valid
     assert validate_gold_replay(task).valid
+def test_core_event_model_copy_revalidates_and_freezes_updates() -> None:
+    event = _representative_core().events[0]
+
+    with pytest.raises(ValidationError, match="ADD"):
+        event.model_copy(update={"value": None})
+
+    source_metadata = {"nested": {"values": [1]}}
+    copied = event.model_copy(update={"metadata": source_metadata})
+    source_metadata["nested"]["values"].append(2)
+
+    assert copied.metadata["nested"]["values"] == (1,)
+    with pytest.raises(TypeError):
+        copied.metadata["new"] = True
+
+
+def test_semantic_core_model_copy_revalidates_and_freezes_updates() -> None:
+    core = _representative_core()
+
+    with pytest.raises(ValidationError, match="core_index"):
+        core.model_copy(update={"core_index": -1})
+
+    source_profile = {"update_depth": 2, "axes": {"depths": [1, 2]}}
+    copied = core.model_copy(update={"profile": source_profile})
+    source_profile["axes"]["depths"].append(4)
+
+    assert copied.profile["axes"]["depths"] == (1, 2)
+    with pytest.raises(TypeError):
+        copied.profile["new"] = True
+
+
+def test_core_model_copy_preserves_normal_shallow_and_deep_copy_behavior() -> None:
+    core = _representative_core()
+
+    shallow = core.model_copy()
+    deep = core.model_copy(deep=True)
+
+    assert shallow == core
+    assert deep == core
+    assert shallow.events is core.events
+    assert deep.events is not core.events
