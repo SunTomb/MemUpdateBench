@@ -289,21 +289,60 @@ Commit only when execution-time permission is active; otherwise record the scope
 Assert the same `GenerationContext` and semantic core produce identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing relation wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics.
 
 ```python
+from pydantic import RootModel
+
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, Split, TaskFamily
 from mub.vnext.generation.core import CoreEvent, SemanticCore
+from mub.vnext.generation.identity import core_id, trajectory_id
 from mub.vnext.generation.render import render_core
 from mub.vnext.io.canonical import canonical_json_bytes, semantic_task_hash
 
 
+class _GoldProjection(RootModel[object]):
+    pass
+
+
+def _normalized_gold_bytes(task: object) -> bytes:
+    payload = task.gold.model_dump(mode="json")
+    event_indices = {event.event_id: index for index, event in enumerate(task.events)}
+    action_indices = {
+        action_identifier: index
+        for index, action_identifier in enumerate(task.gold.action_sequence)
+    }
+    query_indices = {query.query_id: index for index, query in enumerate(task.queries)}
+
+    for action in payload["actions"]:
+        action["action_id"] = f"action[{action_indices[action['action_id']]}]"
+        action["event_id"] = f"event[{event_indices[action['event_id']]}]"
+    payload["action_sequence"] = [
+        f"action[{action_indices[action_identifier]}]"
+        for action_identifier in payload["action_sequence"]
+    ]
+    payload["gold_source_event_ids"] = [
+        f"event[{event_indices[event_identifier]}]"
+        for event_identifier in payload["gold_source_event_ids"]
+    ]
+    payload["gold_answers"] = {
+        f"query[{query_indices[query_identifier]}]": answer
+        for query_identifier, answer in payload["gold_answers"].items()
+    }
+    payload["acceptable_answers"] = {
+        f"query[{query_indices[query_identifier]}]": answers
+        for query_identifier, answers in payload["acceptable_answers"].items()
+    }
+    return canonical_json_bytes(_GoldProjection(root=payload))
+
+
 def make_test_core() -> SemanticCore:
     key = MemoryObjectKey(namespace="default", entity="friend:alex", attribute="location")
+    semantic_core_id = core_id(TaskFamily.REPEATED_SAME_SLOT.value, {"fixture": "common"})
     return SemanticCore(
-        core_id="core_common_001",
+        core_id=semantic_core_id,
         task_family=TaskFamily.REPEATED_SAME_SLOT,
         difficulty=Difficulty.EASY,
         core_index=0,
-        trajectory_id="trajectory_common_001",
+        trajectory_id=trajectory_id(semantic_core_id, 0),
         events=[
             CoreEvent(
                 operation=Operation.ADD,

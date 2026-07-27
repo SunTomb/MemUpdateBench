@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,6 +84,87 @@ def test_stable_id_is_canonical_and_repeatable() -> None:
     assert first == stable_id("semantic_core", reordered)
     assert re.fullmatch(r"semantic_core_[0-9a-f]{16}", first)
     assert stable_id("semantic_core", {**payload, "family": "B"}) != first
+
+
+def test_stable_id_matches_literal_sha256_known_answer() -> None:
+    payload = {"family": "A", "axes": {"depth": 4, "hard": True}}
+
+    assert stable_id("semantic_core", payload) == "semantic_core_73e8da764e9554d4"
+
+
+def test_identity_helpers_are_deterministic_across_processes_hash_seeds_and_cwds(
+    tmp_path: Path,
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    script = r'''
+import json
+from mub.vnext.generation import (
+    action_id,
+    core_id,
+    event_id,
+    paraphrase_group_id,
+    query_id,
+    source_id,
+    stable_id,
+    task_id,
+    trajectory_id,
+)
+
+payload = {
+    "display": "café 東京",
+    "nested": {"emoji": "\U0001f30d", "greeting": "你好"},
+}
+semantic_core = core_id("entity_attribute_grounding", payload)
+task = task_id(semantic_core, 2)
+result = {
+    "action": action_id(task, 3, 1),
+    "core": semantic_core,
+    "event": event_id(task, 3),
+    "paraphrase_group": paraphrase_group_id(semantic_core, "查询"),
+    "query": query_id(task, 0),
+    "source": source_id("个人", 5, payload),
+    "stable": stable_id("unicode_probe", payload),
+    "task": task,
+    "trajectory": trajectory_id(semantic_core, "路径"),
+}
+print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+'''
+    outputs = []
+    for index, hash_seed in enumerate(("1", "8675309")):
+        cwd = tmp_path / f"cwd-{index}"
+        cwd.mkdir()
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = hash_seed
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONPATH"] = str(project_root)
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=cwd,
+            env=env,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        outputs.append(completed.stdout)
+
+    assert outputs[0] == outputs[1]
+    identities = json.loads(outputs[0].decode("utf-8"))
+    expected_prefixes = {
+        "action": "action",
+        "core": "core",
+        "event": "event",
+        "paraphrase_group": "paraphrase_group",
+        "query": "query",
+        "source": "source",
+        "stable": "unicode_probe",
+        "task": "task",
+        "trajectory": "trajectory",
+    }
+    assert set(identities) == set(expected_prefixes)
+    assert all(
+        re.fullmatch(rf"{prefix}_[0-9a-f]{{16}}", identities[name])
+        for name, prefix in expected_prefixes.items()
+    )
 
 
 def test_stable_id_rejects_non_string_mapping_keys_before_aliasing() -> None:
@@ -260,6 +346,28 @@ def test_catalogs_are_immutable_unique_and_preserve_distinctions() -> None:
 
     with pytest.raises(TypeError):
         NAMESPACES[0] = "changed"  # type: ignore[index]
+
+
+def test_reviewed_catalog_content_matches_canonical_digest() -> None:
+    reviewed_catalog = {
+        "aliases": ALIAS_MAPPINGS,
+        "attributes": CANONICAL_ATTRIBUTES,
+        "namespaces": NAMESPACES,
+        "relation_qualified_entities": RELATION_QUALIFIED_ENTITIES,
+        "same_name_entities": SAME_NAME_ENTITIES,
+        "surface_template_sets": SURFACE_TEMPLATE_SETS,
+        "values": VALUES,
+    }
+    canonical_catalog_bytes = json.dumps(
+        reviewed_catalog,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+    assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
+        "ad83314987b8cb355c9dac46c5a208f4d7a83062b1d4788af1610b110c34b738"
+    )
 
 
 def test_surface_catalog_has_exactly_three_immutable_variants() -> None:
