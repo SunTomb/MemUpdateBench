@@ -9,6 +9,7 @@ from mub.vnext.generation.catalogs import (
     select_conflicting_values,
 )
 from mub.vnext.generation.config import PilotConfig, load_pilot_config
+from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.identity import (
     action_id,
     core_id,
@@ -24,11 +25,13 @@ from mub.vnext.generation.identity import (
 __all__ = [
     "ALIAS_MAPPINGS",
     "CANONICAL_ATTRIBUTES",
+    "CoreEvent",
     "NAMESPACES",
     "PilotConfig",
     "RELATION_QUALIFIED_ENTITIES",
     "SAME_NAME_ENTITIES",
     "SURFACE_TEMPLATE_SETS",
+    "SemanticCore",
     "VALUES",
     "action_id",
     "core_id",
