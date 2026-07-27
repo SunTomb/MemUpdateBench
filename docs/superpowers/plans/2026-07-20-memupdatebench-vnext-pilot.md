@@ -289,14 +289,24 @@ Commit only when execution-time permission is active; otherwise record the scope
 Assert the same `GenerationContext` and semantic core produce identical bytes, surface variants have distinct linked surface IDs but one semantic-core ID, and changing reviewed operation-specific wording, speaker labels, and linked IDs preserves replay state/history/answers plus normalized gold semantics. Also assert atomic ordered four-part object references, literal-safe replacement data, semantic NOOP rendering, and collision-free renderer metadata administration.
 
 ```python
+from pathlib import Path
+
 from pydantic import RootModel
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, Split, TaskFamily
-from mub.vnext.generation.core import CoreEvent, SemanticCore
+from mub.vnext.generation.config import load_pilot_config
+from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.identity import core_id, trajectory_id
 from mub.vnext.generation.render import render_core
 from mub.vnext.io.canonical import canonical_json_bytes, semantic_task_hash
+
+
+PILOT_CONFIG_PATH = Path("configs/vnext/pilot.yaml")
+_FIXED_CONTEXT = GenerationContext(
+    config=load_pilot_config(PILOT_CONFIG_PATH),
+    code_revision="revision-abc123",
+)
 
 
 class _GoldProjection(RootModel[object]):
@@ -335,7 +345,12 @@ def _normalized_gold_bytes(task: object) -> bytes:
 
 
 def make_test_core() -> SemanticCore:
-    key = MemoryObjectKey(namespace="default", entity="friend:alex", attribute="location")
+    key = MemoryObjectKey(
+        object_type="slot",
+        namespace="default",
+        entity="friend:alex",
+        attribute="location",
+    )
     semantic_core_id = core_id(TaskFamily.REPEATED_SAME_SLOT.value, {"fixture": "common"})
     return SemanticCore(
         core_id=semantic_core_id,
@@ -366,7 +381,15 @@ def make_test_core() -> SemanticCore:
 
 def test_surface_variants_share_semantics() -> None:
     core = make_test_core()
-    tasks = [render_core(core, split=Split.TEST, surface_variant=index) for index in range(3)]
+    tasks = [
+        render_core(
+            core,
+            split=Split.TEST,
+            surface_variant=index,
+            context=_FIXED_CONTEXT,
+        )
+        for index in range(3)
+    ]
     assert len({task.task_id for task in tasks}) == 3
     assert len({task.metadata.split_key.semantic_core_id for task in tasks}) == 1
     assert len({_normalized_gold_bytes(task) for task in tasks}) == 1

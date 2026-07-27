@@ -24,7 +24,21 @@ from mub.vnext.contracts.common import (
     thaw_json,
 )
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, TaskFamily
-from mub.vnext.generation.config import PilotConfig
+from mub.vnext.generation.config import (
+    DifficultyDensities,
+    DifficultyNonnegativeCounts,
+    DifficultyPositiveCounts,
+    EntityAttributeGroundingConfig,
+    InterleavedMultiSlotUpdateConfig,
+    MechanismCondition,
+    MechanismSliceConfig,
+    NoopWriteDisciplineConfig,
+    OutputConfig,
+    PilotConfig,
+    PilotFamiliesConfig,
+    RepeatedSameSlotUpdateConfig,
+    SplitConfig,
+)
 from mub.vnext.io import sha256_model
 
 
@@ -34,6 +48,104 @@ _TRAJECTORY_ID_PATTERN = r"^trajectory_[0-9a-f]{16}$"
 
 class _FrozenMemoryObjectKey(MemoryObjectKey):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class _FrozenList(list):
+    def _reject_mutation(self, *args: Any, **kwargs: Any) -> NoReturn:
+        raise TypeError("frozen config lists cannot be mutated")
+
+    __delitem__ = __setitem__ = __iadd__ = __imul__ = clear = extend = insert = pop = remove = reverse = sort = _reject_mutation
+    append = _reject_mutation
+
+
+class _FrozenConfigMixin:
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
+
+    @model_validator(mode="after")
+    def _freeze_lists(self):
+        for field_name, value in self.__dict__.items():
+            if type(value) is list:
+                object.__setattr__(self, field_name, _FrozenList(value))
+        return self
+
+
+class _FrozenDifficultyNonnegativeCounts(
+    _FrozenConfigMixin,
+    DifficultyNonnegativeCounts,
+):
+    pass
+
+
+class _FrozenDifficultyPositiveCounts(_FrozenConfigMixin, DifficultyPositiveCounts):
+    pass
+
+
+class _FrozenDifficultyDensities(_FrozenConfigMixin, DifficultyDensities):
+    pass
+
+
+class _FrozenRepeatedSameSlotUpdateConfig(
+    _FrozenConfigMixin,
+    RepeatedSameSlotUpdateConfig,
+):
+    same_name_distractors: _FrozenDifficultyNonnegativeCounts
+    same_entity_other_attribute: _FrozenDifficultyNonnegativeCounts
+    noop_near_miss: _FrozenDifficultyNonnegativeCounts
+
+
+class _FrozenInterleavedMultiSlotUpdateConfig(
+    _FrozenConfigMixin,
+    InterleavedMultiSlotUpdateConfig,
+):
+    active_object_counts: _FrozenDifficultyPositiveCounts
+    cross_slot_distractor_density: _FrozenDifficultyDensities
+
+
+class _FrozenEntityAttributeGroundingConfig(
+    _FrozenConfigMixin,
+    EntityAttributeGroundingConfig,
+):
+    pass
+
+
+class _FrozenNoopWriteDisciplineConfig(
+    _FrozenConfigMixin,
+    NoopWriteDisciplineConfig,
+):
+    pass
+
+
+class _FrozenSplitConfig(_FrozenConfigMixin, SplitConfig):
+    pass
+
+
+class _FrozenPilotFamiliesConfig(_FrozenConfigMixin, PilotFamiliesConfig):
+    repeated_same_slot_update: _FrozenRepeatedSameSlotUpdateConfig
+    interleaved_multi_slot_update: _FrozenInterleavedMultiSlotUpdateConfig
+    entity_attribute_grounding: _FrozenEntityAttributeGroundingConfig
+    noop_write_discipline: _FrozenNoopWriteDisciplineConfig
+
+
+class _FrozenMechanismCondition(_FrozenConfigMixin, MechanismCondition):
+    pass
+
+
+class _FrozenMechanismSliceConfig(_FrozenConfigMixin, MechanismSliceConfig):
+    conditions: list[_FrozenMechanismCondition]
+
+
+class _FrozenOutputConfig(_FrozenConfigMixin, OutputConfig):
+    pass
+
+
+class _FrozenPilotConfig(_FrozenConfigMixin, PilotConfig):
+    splits: _FrozenSplitConfig
+    families: _FrozenPilotFamiliesConfig
+    mechanism_slice: _FrozenMechanismSliceConfig
+    output: _FrozenOutputConfig
+
+
+_FrozenPilotConfig.model_rebuild()
 
 
 def _validate_json_value(value: Any, field_name: str) -> Any:
@@ -130,14 +242,14 @@ class GenerationContext(_FrozenCoreModel):
     @classmethod
     def _clone_config(cls, value: Any) -> Any:
         if isinstance(value, PilotConfig):
-            return value.model_dump(mode="python")
-        return value
+            value = value.model_dump(mode="python")
+        return _FrozenPilotConfig.model_validate(value)
 
-    @field_validator("code_revision")
+    @field_validator("code_revision", "compiler_version", "generator_name")
     @classmethod
-    def _reject_blank_code_revision(cls, value: str) -> str:
+    def _reject_blank_provenance(cls, value: str, info) -> str:
         if not value.strip():
-            raise ValueError("code_revision must not be blank")
+            raise ValueError(f"{info.field_name} must not be blank")
         return value
 
     @property

@@ -1856,39 +1856,114 @@ def test_generation_context_hash_changes_with_config() -> None:
     assert original.config_sha256 != changed.config_sha256
 
 
-def test_generation_context_requires_nonblank_revision() -> None:
+def test_generation_context_rejects_blank_provenance_fields_on_validate_and_copy() -> None:
     config = load_pilot_config(PILOT_CONFIG_PATH)
 
     with pytest.raises(ValidationError, match="code_revision"):
         GenerationContext(config=config)  # type: ignore[call-arg]
-    for revision in ("", "   "):
-        with pytest.raises(ValidationError, match="code_revision"):
-            GenerationContext(config=config, code_revision=revision)
+    for field_name in ("code_revision", "compiler_version", "generator_name"):
+        for value in ("", "   "):
+            payload = {
+                "config": config,
+                "code_revision": "revision-abc123",
+                field_name: value,
+            }
+            with pytest.raises(ValidationError, match=field_name):
+                GenerationContext(**payload)
+
+    context = GenerationContext(config=config, code_revision="revision-abc123")
+    for field_name in ("code_revision", "compiler_version", "generator_name"):
+        with pytest.raises(ValidationError, match=field_name):
+            context.model_copy(update={field_name: "  "})
 
 
-def test_generation_context_is_frozen_and_model_copy_is_validated_alias_safe() -> None:
+def test_generation_context_holds_an_immutable_deep_config_snapshot() -> None:
     source_config = load_pilot_config(PILOT_CONFIG_PATH)
+    source_bytes = canonical_json_bytes(source_config)
     context = GenerationContext(config=source_config, code_revision="revision-abc123")
-    source_config.seed = 1
+    original_hash = context.config_sha256
+
+    assert context.config is not source_config
+    assert canonical_json_bytes(context.config) == source_bytes
+
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.seed = 1
+    with pytest.raises(TypeError):
+        context.config.families.repeated_same_slot_update.update_depths.append(99)
+    with pytest.raises(TypeError):
+        context.config.mechanism_slice.conditions.append(
+            context.config.mechanism_slice.conditions[0]
+        )
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.mechanism_slice.conditions[0].context_order = (
+            "reverse_chronological"
+        )
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.output.staging_dir = "data/vnext/changed-staging"
 
     assert context.seed == 20260720
-    with pytest.raises(ValidationError, match="frozen"):
-        context.code_revision = "changed"
-    with pytest.raises(ValidationError, match="code_revision"):
-        context.model_copy(update={"code_revision": "  "})
+    assert context.config_sha256 == original_hash
+    assert canonical_json_bytes(context.config) == source_bytes
 
-    replacement_config = load_pilot_config(PILOT_CONFIG_PATH)
+
+def test_generation_context_snapshot_does_not_alias_source_config() -> None:
+    source_config = load_pilot_config(PILOT_CONFIG_PATH)
+    context = GenerationContext(config=source_config, code_revision="revision-abc123")
+    original_hash = context.config_sha256
+
+    source_config.seed = 1
+    source_config.families.repeated_same_slot_update.update_depths.append(99)
+    source_config.mechanism_slice.conditions[0].context_order = (
+        "reverse_chronological"
+    )
+    source_config.output.staging_dir = "data/vnext/changed-staging"
+
+    assert context.seed == 20260720
+    assert context.config.families.repeated_same_slot_update.update_depths == [
+        1,
+        4,
+        16,
+    ]
+    assert context.config.mechanism_slice.conditions[0].context_order == (
+        "chronological"
+    )
+    assert context.config.output.staging_dir == "data/vnext/.pilot-staging"
+    assert context.config_sha256 == original_hash
+
+
+def test_generation_context_model_copy_revalidates_updated_config_snapshot() -> None:
+    config = load_pilot_config(PILOT_CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="revision-abc123")
+    replacement_payload = config.model_dump(mode="python")
+    replacement_payload["seed"] = config.seed + 1
+    replacement_config = type(config).model_validate(replacement_payload)
+
     copied = context.model_copy(
         update={
             "config": replacement_config,
             "code_revision": "revision-def456",
         }
     )
+    copied_hash = copied.config_sha256
     replacement_config.seed = 2
 
     assert copied.code_revision == "revision-def456"
-    assert copied.seed == 20260720
+    assert copied.seed == 20260721
     assert copied.config is not replacement_config
+    assert copied.config_sha256 == copied_hash
+    assert copied.config_sha256 != context.config_sha256
+    with pytest.raises(ValidationError, match="frozen"):
+        copied.config.seed = 3
+
+
+def test_generation_context_is_frozen() -> None:
+    context = GenerationContext(
+        config=load_pilot_config(PILOT_CONFIG_PATH),
+        code_revision="revision-abc123",
+    )
+
+    with pytest.raises(ValidationError, match="frozen"):
+        context.code_revision = "changed"
 
 
 def test_generation_context_canonical_bytes_are_deterministic() -> None:
