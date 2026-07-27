@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from pydantic import RootModel
 
+from mub.vnext.generation.identity import _validate_strict_json
 from mub.vnext.io import canonical_json_bytes
 
 
@@ -133,13 +134,14 @@ def select_conflicting_values(
         raise TypeError("count must be an integer")
     if count < 0:
         raise ValueError("count must be nonnegative")
-    if not isinstance(current_value, str):
-        raise TypeError("current_value must be a string")
+    if type(current_value) is not str:
+        raise TypeError("current_value must be an exact string")
+    _validate_strict_json(seed_payload, "seed_payload")
 
     distinct_candidates = set()
     for value in values:
-        if not isinstance(value, str):
-            raise TypeError("values must contain only strings")
+        if type(value) is not str:
+            raise TypeError("values must contain only exact strings")
         if value != current_value:
             distinct_candidates.add(value)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from typing import Any
 
@@ -16,7 +17,47 @@ class _CanonicalPayload(RootModel[Any]):
     pass
 
 
+def _validate_strict_json(
+    value: object,
+    path: str = "$",
+    active_containers: set[int] | None = None,
+) -> None:
+    value_type = type(value)
+    if value is None or value_type in (bool, int, str):
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ValueError(f"strict JSON numbers must be finite at {path}")
+        return
+    if value_type not in (dict, list):
+        raise TypeError(
+            f"strict JSON requires exact built-in scalar/container types at {path}; "
+            f"got {value_type.__name__}"
+        )
+
+    if active_containers is None:
+        active_containers = set()
+    container_id = id(value)
+    if container_id in active_containers:
+        raise ValueError(f"strict JSON cannot contain container cycles at {path}")
+    active_containers.add(container_id)
+    try:
+        if value_type is dict:
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise TypeError(
+                        f"strict JSON mapping keys must be exact strings at {path}"
+                    )
+                _validate_strict_json(item, f"{path}.{key}", active_containers)
+        else:
+            for index, item in enumerate(value):
+                _validate_strict_json(item, f"{path}[{index}]", active_containers)
+    finally:
+        active_containers.remove(container_id)
+
+
 def _canonical_payload(payload: object) -> bytes:
+    _validate_strict_json(payload)
     return canonical_json_bytes(_CanonicalPayload(root=payload))
 
 

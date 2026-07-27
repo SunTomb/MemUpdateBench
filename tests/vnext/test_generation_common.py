@@ -55,6 +55,69 @@ def test_stable_id_is_canonical_and_repeatable() -> None:
     assert stable_id("semantic_core", {**payload, "family": "B"}) != first
 
 
+def test_stable_id_rejects_non_string_mapping_keys_before_aliasing() -> None:
+    invalid_payloads = (
+        {1: "value"},
+        {True: "value"},
+        {"nested": {1: "value"}},
+        {"nested": {False: "value"}},
+    )
+
+    for payload in invalid_payloads:
+        with pytest.raises(TypeError, match="mapping keys must be exact strings"):
+            stable_id("probe", payload)
+
+    assert stable_id("probe", {"1": "value"}) != stable_id(
+        "probe", {"true": "value"}
+    )
+
+
+class _ListSubclass(list[object]):
+    pass
+
+
+class _StringSubclass(str):
+    pass
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"nested": (1, 2)},
+        {"nested": {1, 2}},
+        {"nested": b"bytes"},
+        {"nested": _ListSubclass([1, 2])},
+        {"nested": _StringSubclass("value")},
+        _StringSubclass("value"),
+    ],
+)
+def test_stable_id_rejects_nested_non_json_types_and_subclasses(
+    payload: object,
+) -> None:
+    with pytest.raises(TypeError, match="strict JSON"):
+        stable_id("probe", payload)
+
+
+@pytest.mark.parametrize("nonfinite", [float("nan"), float("inf"), float("-inf")])
+def test_stable_id_rejects_nested_nonfinite_numbers(nonfinite: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        stable_id("probe", {"nested": [0, {"number": nonfinite}]})
+
+
+def test_stable_id_accepts_valid_nested_json_without_changing_determinism() -> None:
+    payload = {
+        "object": {"empty": [], "number": 2.5},
+        "scalars": [None, True, False, 7, -3, "text"],
+    }
+    reordered = {
+        "scalars": [None, True, False, 7, -3, "text"],
+        "object": {"number": 2.5, "empty": []},
+    }
+
+    assert stable_id("probe", payload) == stable_id("probe", reordered)
+    assert stable_id("probe", payload) == stable_id("probe", payload)
+
+
 @pytest.mark.parametrize(
     "prefix",
     ["", "Core", "core-id", "core id", "_core", "core_", "core__id", "1core"],
@@ -196,6 +259,42 @@ def test_conflicting_value_selection_excludes_current_and_is_deterministic() -> 
     assert set(selected) <= {"red", "green", "gold"}
     assert selected != select_conflicting_values(
         values, "blue", 3, {"core": "different", "event": 2}
+    )
+
+
+def test_conflicting_value_selection_rejects_invalid_seed_payloads() -> None:
+    invalid_seeds = (
+        {1: "value"},
+        {True: "value"},
+        {"nested": {1: "value"}},
+        {"nested": ("not", "json")},
+        {"nested": _ListSubclass(["not", "exact"])},
+        {"nested": float("nan")},
+    )
+
+    for seed_payload in invalid_seeds:
+        with pytest.raises(
+            (TypeError, ValueError),
+            match="seed_payload|mapping keys|strict JSON|finite",
+        ):
+            select_conflicting_values(
+                ("current", "other"),
+                "current",
+                0,
+                seed_payload,
+            )
+
+
+def test_conflicting_value_selection_accepts_valid_nested_seed_deterministically() -> None:
+    seed = {"nested": {"b": [None, True, 1.5], "a": "value"}}
+    reordered = {"nested": {"a": "value", "b": [None, True, 1.5]}}
+
+    selected = select_conflicting_values(
+        ("current", "one", "two", "three"), "current", 2, seed
+    )
+
+    assert selected == select_conflicting_values(
+        ("three", "two", "one", "current"), "current", 2, reordered
     )
 
 
