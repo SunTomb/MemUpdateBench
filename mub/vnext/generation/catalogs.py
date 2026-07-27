@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
 
 from pydantic import RootModel
 
@@ -124,12 +123,14 @@ def _selection_key(seed_payload: object, value: str) -> tuple[bytes, bytes]:
 
 
 def select_conflicting_values(
-    values: Sequence[str],
+    values: list[str] | tuple[str, ...],
     current_value: str,
     count: int,
     seed_payload: object,
 ) -> tuple[str, ...]:
     """Select distinct non-current values using canonical hash ordering."""
+    if type(values) not in {list, tuple}:
+        raise TypeError("values must be an exact list or tuple")
     if isinstance(count, bool) or not isinstance(count, int):
         raise TypeError("count must be an integer")
     if count < 0:

@@ -106,6 +106,10 @@ class _StringSubclass(str):
     pass
 
 
+class _TupleSubclass(tuple):
+    pass
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -285,6 +289,50 @@ def test_conflicting_value_selection_excludes_current_and_is_deterministic() -> 
     assert set(selected) <= {"red", "green", "gold"}
     assert selected != select_conflicting_values(
         values, "blue", 3, {"core": "different", "event": 2}
+    )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        "red",
+        {"red": "blue"},
+        {"red", "blue"},
+        range(2),
+        _ListSubclass(["red", "blue"]),
+        _TupleSubclass(("red", "blue")),
+    ],
+)
+def test_conflicting_value_selection_rejects_non_exact_list_or_tuple_inputs(
+    values: object,
+) -> None:
+    with pytest.raises(TypeError, match="values must be an exact list or tuple"):
+        select_conflicting_values(values, "current", 0, {})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [_StringSubclass("red")],
+        ("red", 1),
+        [True],
+    ],
+)
+def test_conflicting_value_selection_rejects_non_exact_string_items(
+    values: list[object] | tuple[object, ...],
+) -> None:
+    with pytest.raises(TypeError, match="only exact strings"):
+        select_conflicting_values(values, "current", 0, {})  # type: ignore[arg-type]
+
+
+def test_conflicting_value_selection_accepts_exact_lists_and_tuples() -> None:
+    seed = {"core": "abc"}
+
+    assert select_conflicting_values(["current", "other"], "current", 1, seed) == (
+        "other",
+    )
+    assert select_conflicting_values(("current", "other"), "current", 1, seed) == (
+        "other",
     )
 
 
@@ -1117,6 +1165,19 @@ def test_core_model_copy_preserves_normal_shallow_and_deep_copy_behavior() -> No
     assert event_deep.object_keys is not event.object_keys
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        _fixed_context,
+        _representative_core().events[0],
+        _representative_core(),
+    ],
+)
+def test_frozen_generation_models_disable_deprecated_copy(model: object) -> None:
+    with pytest.raises(TypeError, match=r"validated model_copy\(\)"):
+        model.copy()  # type: ignore[attr-defined]
+
+
 def _core_with_key_changes(
     core: SemanticCore,
     **changes: object,
@@ -1334,6 +1395,28 @@ def test_public_core_validation_remains_strict_about_sequence_input_types() -> N
                 "query_targets": tuple(core_data["query_targets"]),
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("model_type", "field_name"),
+    [
+        (CoreEvent, "object_keys"),
+        (SemanticCore, "events"),
+        (SemanticCore, "query_targets"),
+    ],
+)
+def test_public_core_validation_rejects_list_subclasses(
+    model_type: type[CoreEvent] | type[SemanticCore],
+    field_name: str,
+) -> None:
+    if model_type is CoreEvent:
+        payload = _representative_core().events[0].model_dump(mode="python")
+    else:
+        payload = _representative_core().model_dump(mode="python")
+    payload[field_name] = _ListSubclass(payload[field_name])
+
+    with pytest.raises(ValidationError, match=f"{field_name}.*exact list"):
+        model_type.model_validate(payload)
 
 
 def test_generation_context_exposes_fixed_config_provenance() -> None:

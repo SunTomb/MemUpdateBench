@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NoReturn
 
 from pydantic import (
     ConfigDict,
@@ -57,9 +57,9 @@ def _validate_json_value(value: Any, field_name: str) -> Any:
     raise ValueError(f"{field_name} must contain only JSON values")
 
 
-def _clone_object_keys(value: Any) -> Any:
+def _clone_object_keys(value: Any, field_name: str) -> list[_FrozenMemoryObjectKey]:
     if type(value) is not list:
-        return value
+        raise ValueError(f"{field_name} must be an exact list")
     cloned = []
     for key in value:
         payload = key.model_dump(mode="python") if isinstance(key, MemoryObjectKey) else key
@@ -95,6 +95,9 @@ class _FrozenCoreModel(ContractModel):
     )
 
     _copy_sequence_fields: ClassVar[frozenset[str]] = frozenset()
+
+    def copy(self, *args: Any, **kwargs: Any) -> NoReturn:
+        raise TypeError("copy() is disabled; use validated model_copy() instead")
 
     def model_copy(
         self,
@@ -170,7 +173,7 @@ class CoreEvent(_FrozenCoreModel):
     @field_validator("object_keys", mode="before")
     @classmethod
     def _copy_object_keys(cls, value: Any) -> Any:
-        return _clone_object_keys(value)
+        return _clone_object_keys(value, "object_keys")
 
     @field_validator("object_keys")
     @classmethod
@@ -246,7 +249,7 @@ class SemanticCore(_FrozenCoreModel):
     @classmethod
     def _copy_events(cls, value: Any) -> Any:
         if type(value) is not list:
-            return value
+            raise ValueError("events must be an exact list")
         return [
             CoreEvent.model_validate(event.model_dump(mode="python"))
             if isinstance(event, CoreEvent)
@@ -262,7 +265,7 @@ class SemanticCore(_FrozenCoreModel):
     @field_validator("query_targets", mode="before")
     @classmethod
     def _copy_query_targets(cls, value: Any) -> Any:
-        return _clone_object_keys(value)
+        return _clone_object_keys(value, "query_targets")
 
     @field_validator("query_targets")
     @classmethod
