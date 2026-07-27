@@ -234,6 +234,24 @@ def _query_semantics(
             )
         if canonical.disposition is AnswerDisposition.ABSTAINED:
             return QueryType.UNRESOLVED_REFERENCE, None, AnswerSchema.STRING
+        selected_candidate_id = canonical.selected_candidate_ids[0]
+        selected_candidate = next(
+            candidate
+            for candidate in core.reference_candidates
+            if candidate.candidate_id == selected_candidate_id
+        )
+        selected_key = selected_candidate.object_key.canonical_id
+        if selected_key not in replay.final_state:
+            raise ValueError(
+                "render_core unresolved UNIQUE selected candidate is absent "
+                "after gold replay"
+            )
+        current_value = _plain(replay.final_state[selected_key])
+        if not _same_json(canonical.value, current_value):
+            raise ValueError(
+                "render_core unresolved UNIQUE canonical answer value does not "
+                "equal the selected candidate replayed current value"
+            )
         return (
             QueryType.UNRESOLVED_REFERENCE,
             _plain(canonical.value),

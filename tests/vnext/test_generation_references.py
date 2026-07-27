@@ -293,6 +293,84 @@ def test_reference_catalogs_are_reviewed_immutable_and_condition_complete() -> N
         reference_condition_labels[0] = ("changed", "changed")  # type: ignore[index]
 
 
+def test_renderer_rejects_unique_answer_value_mismatching_selected_candidate() -> None:
+    core = _unique_core()
+    mismatched = core.model_copy(
+        update={
+            "canonical_answer": CanonicalAnswer(
+                disposition=AnswerDisposition.ANSWERED,
+                resolution_status=ReferenceResolutionStatus.UNIQUE,
+                selected_candidate_ids=["candidate_alex_book_club"],
+                abstention_reason=None,
+                value="Quito",
+            )
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="canonical answer value.*selected candidate.*current value",
+    ):
+        render_core(
+            mismatched,
+            split=Split.TEST,
+            surface_variant=0,
+            context=_CONTEXT,
+        )
+
+
+def test_renderer_rejects_unique_answer_when_selected_candidate_is_deleted() -> None:
+    core = _unique_core()
+    selected_key = core.reference_candidates[0].object_key
+    deleted = core.model_copy(
+        update={
+            "events": [
+                *core.events,
+                CoreEvent(
+                    operation=Operation.DELETE,
+                    object_keys=[selected_key],
+                    value=None,
+                    role=EventRole.DELETION,
+                ),
+            ]
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="selected candidate.*absent after gold replay",
+    ):
+        render_core(
+            deleted,
+            split=Split.TEST,
+            surface_variant=0,
+            context=_CONTEXT,
+        )
+
+
+def test_renderer_accepts_unique_answer_matching_selected_candidate_replay_value() -> None:
+    core = _unique_core()
+
+    task = render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=_CONTEXT,
+    )
+    query = task.queries[0]
+    canonical = task.gold.canonical_answers[query.query_id]
+    selected_id = canonical.selected_candidate_ids[0]
+    selected = next(
+        candidate
+        for candidate in query.reference_candidates
+        if candidate.candidate_id == selected_id
+    )
+
+    assert task.gold.final_state[selected.object_key.canonical_id] == canonical.value
+    assert validate_task(task).valid
+    assert validate_gold_replay(task).valid
+
+
 def test_renderer_maps_unique_reference_semantics_without_parallel_gold_answers() -> None:
     core = _unique_core()
     tasks = [
