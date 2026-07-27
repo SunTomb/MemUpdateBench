@@ -98,6 +98,7 @@ SURFACE_TEMPLATE_SETS = (
         "Forget $targets.",
         "$statement No memory change is required.",
         "What is the current value of $targets?",
+        "Is each of $targets present or absent in memory?",
     ),
     (
         "conversational",
@@ -106,6 +107,7 @@ SURFACE_TEMPLATE_SETS = (
         "Please remove $targets from memory.",
         "$statement Keep memory unchanged.",
         "Can you report the latest value for $targets?",
+        "Can you report whether each of $targets is present or absent in memory?",
     ),
     (
         "correction",
@@ -114,6 +116,7 @@ SURFACE_TEMPLATE_SETS = (
         "Erase the stored entry for $targets.",
         "$statement Do not write anything to memory.",
         "According to the record, what value belongs to $targets?",
+        "According to the record, is each of $targets present or absent?",
     ),
 )
 

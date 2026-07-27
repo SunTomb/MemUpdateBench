@@ -13,9 +13,11 @@ from pydantic import RootModel, ValidationError
 
 from mub.vnext.contracts.common import ContractModel, MemoryObjectKey
 from mub.vnext.contracts.enums import (
+    AnswerSchema,
     Difficulty,
     EventRole,
     Operation,
+    QueryType,
     SourceType,
     Split,
     TaskFamily,
@@ -366,19 +368,19 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
     ).encode("utf-8")
 
     assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
-        "37750117bc64fb9ae56020a918cb4b70e3b187b62e6c7eaefd651607d6cbe838"
+        "17150c7e97cc0dba48047e753a4a1c7ebcb168fe17a8cda173ea7301cadc9606"
     )
 
 
 def test_surface_catalog_has_exactly_three_immutable_operation_complete_sets() -> None:
     assert len(SURFACE_TEMPLATE_SETS) == 3
     assert all(isinstance(template_set, tuple) for template_set in SURFACE_TEMPLATE_SETS)
-    assert all(len(template_set) == 6 for template_set in SURFACE_TEMPLATE_SETS)
+    assert all(len(template_set) == 7 for template_set in SURFACE_TEMPLATE_SETS)
 
     variant_ids = [template_set[0] for template_set in SURFACE_TEMPLATE_SETS]
     assert len(variant_ids) == len(set(variant_ids))
     for template_set in SURFACE_TEMPLATE_SETS:
-        _, add_template, update_template, delete_template, noop_template, query_template = (
+        _, add_template, update_template, delete_template, noop_template, query_template, deletion_query_template = (
             template_set
         )
         assert len({add_template, update_template, delete_template, noop_template}) == 4
@@ -387,8 +389,10 @@ def test_surface_catalog_has_exactly_three_immutable_operation_complete_sets() -
         assert "$targets" in delete_template and "$value" not in delete_template
         assert "$statement" in noop_template
         assert "$targets" in query_template
+        assert "$targets" in deletion_query_template
+        assert "present" in deletion_query_template and "absent" in deletion_query_template
 
-    for template_index in range(1, 5):
+    for template_index in range(1, 6):
         assert len({template_set[template_index] for template_set in SURFACE_TEMPLATE_SETS}) == 3
 
     with pytest.raises(TypeError):
@@ -1899,3 +1903,133 @@ def test_generation_context_canonical_bytes_are_deterministic() -> None:
     first_bytes = canonical_json_bytes(first)
     assert first_bytes == canonical_json_bytes(first)
     assert first_bytes == canonical_json_bytes(second)
+
+
+def _absence_key(index: int) -> MemoryObjectKey:
+    return MemoryObjectKey(
+        object_type="slot",
+        namespace="default",
+        entity=f"friend:absence-{index}",
+        attribute="location",
+    )
+
+
+def _absence_core(
+    present: list[bool],
+    expected_answer: object,
+    *,
+    profile_query_type: str | None = None,
+    event_value: object = "Dalian",
+) -> SemanticCore:
+    keys = [_absence_key(index) for index in range(len(present))]
+    events = [
+        CoreEvent(
+            operation=Operation.ADD,
+            object_keys=keys,
+            value=event_value,
+            role=EventRole.LATEST_GOLD,
+        )
+    ]
+    absent_keys = [key for key, is_present in zip(keys, present) if not is_present]
+    if absent_keys:
+        events.append(
+            CoreEvent(
+                operation=Operation.DELETE,
+                object_keys=absent_keys,
+                value=None,
+                role=EventRole.DELETION,
+            )
+        )
+    profile = {"update_depth": 1}
+    if profile_query_type is not None:
+        profile["query_type"] = profile_query_type
+    return SemanticCore(
+        core_id=core_id("deletion_compliance", {"present": present, "expected": expected_answer}),
+        task_family=TaskFamily.REPEATED_SAME_SLOT,
+        difficulty=Difficulty.EASY,
+        core_index=7,
+        trajectory_id=trajectory_id("core_0123456789abcdef", 7),
+        events=events,
+        query_targets=keys,
+        expected_answer=expected_answer,
+        profile=profile,
+        stratification={"present_count": sum(present)},
+    )
+
+
+@pytest.mark.parametrize(
+    ("present", "expected", "answer"),
+    [
+        ([False], None, True),
+        ([False], "absent", "absent"),
+        ([False, False], [True, True], [True, True]),
+        ([False, False], {"default|friend:absence-0|location|": True, "default|friend:absence-1|location|": True}, {"default|friend:absence-0|location|": True, "default|friend:absence-1|location|": True}),
+        ([False, False], 2, 2),
+        ([True, False], False, False),
+        ([True, False], [False, True], [False, True]),
+        ([True, False], 1, 1),
+        ([True, False], "mixed", "mixed"),
+    ],
+)
+def test_render_core_derives_single_all_and_mixed_deletion_answers(
+    present: list[bool], expected: object, answer: object
+) -> None:
+    task = render_core(_absence_core(present, expected), split=Split.TEST, surface_variant=0)
+    query = task.queries[0]
+
+    assert query.query_type is QueryType.DELETION_COMPLIANCE
+    assert query.answer_schema is not AnswerSchema.STRING or answer in {"absent", "mixed"}
+    assert task.gold.gold_answers[query.query_id] == answer
+    assert task.metadata.resolved_profile["query_type"] == QueryType.DELETION_COMPLIANCE.value
+
+
+def test_render_core_preserves_all_absent_none_default_behavior() -> None:
+    task = render_core(_absence_core([False, False], None), split=Split.TEST, surface_variant=1)
+    query_id_value = task.queries[0].query_id
+
+    assert task.gold.gold_answers[query_id_value] is True
+    assert task.queries[0].answer_schema is AnswerSchema.BOOLEAN
+
+
+@pytest.mark.parametrize("present", [[True], [True, False]])
+def test_render_core_rejects_missing_expected_answer_when_any_query_target_is_present(
+    present: list[bool],
+) -> None:
+    with pytest.raises(ValueError, match="expected_answer.*required"):
+        render_core(_absence_core(present, None), split=Split.TEST, surface_variant=0)
+
+
+def test_render_core_rejects_profile_query_type_conflict() -> None:
+    core = _absence_core([False], None, profile_query_type=QueryType.CURRENT_STATE.value)
+
+    with pytest.raises(ValueError, match="profile query_type.*deletion_compliance"):
+        render_core(core, split=Split.TEST, surface_variant=0)
+
+
+def test_render_core_selects_reviewed_deletion_wording_for_all_three_surfaces() -> None:
+    core = _absence_core([False], None)
+
+    texts = [render_core(core, split=Split.TEST, surface_variant=variant).queries[0].text for variant in range(3)]
+
+    assert len(set(texts)) == 3
+    assert all("present" in text.lower() and "absent" in text.lower() for text in texts)
+    assert all("current value" not in text.lower() for text in texts)
+
+
+def test_render_core_replays_nested_structured_multi_target_values_authoritatively() -> None:
+    value = {"n": [1]}
+    core = _absence_core([True, True], [value, value], event_value=value)
+
+    task = render_core(core, split=Split.TEST, surface_variant=0)
+
+    assert task.queries[0].query_type is QueryType.MULTI_OBJECT
+    assert task.gold.gold_answers[task.queries[0].query_id] == [value, value]
+    assert validate_gold_replay(task).valid
+
+
+def test_render_core_deletion_semantics_are_byte_deterministic() -> None:
+    core = _absence_core([True, False], [False, True])
+    first = render_core(core, split=Split.TEST, surface_variant=2)
+    second = render_core(core, split=Split.TEST, surface_variant=2)
+
+    assert canonical_json_bytes(first) == canonical_json_bytes(second)

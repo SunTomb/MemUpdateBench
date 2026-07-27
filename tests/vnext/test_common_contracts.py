@@ -10,6 +10,7 @@ from mub.vnext.contracts.common import (
     MetricFieldSupport,
     SourceAnchor,
     SourceRecord,
+    thaw_json,
 )
 from mub.vnext.contracts.enums import (
     AnswerSchema,
@@ -385,3 +386,13 @@ def test_source_anchor_rejects_partial_or_reversed_character_span() -> None:
     for span in invalid_spans:
         with pytest.raises(ValidationError):
             SourceAnchor(document_id="doc1", section_id="sec1", **span)
+
+
+def test_thaw_json_recursively_thaws_exact_outer_lists() -> None:
+    frozen = common_contracts.freeze_json([{"n": [1]}])
+    thawed = thaw_json([frozen[0]])
+
+    assert thawed == [{"n": [1]}]
+    assert type(thawed) is list
+    assert type(thawed[0]) is dict
+    assert type(thawed[0]["n"]) is list

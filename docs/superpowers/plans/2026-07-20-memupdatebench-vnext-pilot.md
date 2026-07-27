@@ -381,7 +381,7 @@ Here `_normalized_gold_bytes` replaces linked event/action/query IDs and answer-
 
 - [ ] **Step 3: Add finite reviewed catalogs**
 
-`catalogs.py` contains fixed tuples for namespaces, relation-qualified entities, same-name entities, aliases, attributes, values, and exactly three reviewed immutable surface-template sets, each with distinct ADD, UPDATE, DELETE, NOOP, and query wording. Rendering uses ordered atomic four-part object references and keeps renderer administration under one reserved nested metadata key. A helper rejects reuse of the final value as a conflicting stale value; duplicate-current events are generated explicitly by Family D instead.
+`catalogs.py` contains fixed tuples for namespaces, relation-qualified entities, same-name entities, aliases, attributes, values, and exactly three reviewed immutable surface-template sets, each with distinct ADD, UPDATE, DELETE, NOOP, current-state, and deletion-compliance query wording. Rendering derives query type and answer schema from replay state/expected-answer shape, selects the matching query wording, and uses ordered atomic four-part object references while keeping renderer administration under one reserved nested metadata key. A helper rejects reuse of the final value as a conflicting stale value; duplicate-current events are generated explicitly by Family D instead.
 
 - [ ] **Step 4: Implement semantic-core and rendering records**
 

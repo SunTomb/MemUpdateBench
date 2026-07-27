@@ -211,6 +211,10 @@ def _query_semantics(
     expected = _plain(core.expected_answer)
 
     if all(present):
+        if core.expected_answer is None:
+            raise ValueError(
+                "render_core expected_answer is required when query targets are present"
+            )
         values = [_plain(replay.final_state[target_id]) for target_id in target_ids]
         if len(values) == 1:
             query_type = QueryType.CURRENT_STATE
@@ -223,36 +227,56 @@ def _query_semantics(
                 }
             else:
                 answer = values
-    elif not any(present):
+    else:
         query_type = QueryType.DELETION_COMPLIANCE
         if core.expected_answer is None:
+            if any(present):
+                raise ValueError(
+                    "render_core expected_answer is required for mixed present and absent query targets"
+                )
             answer = True
         elif isinstance(expected, bool):
             answer = all(not item for item in present)
         elif isinstance(expected, str):
-            answer = "absent"
+            answer = "absent" if not any(present) else "mixed"
         elif isinstance(expected, (int, float)) and not isinstance(expected, bool):
             answer = sum(not item for item in present)
         elif isinstance(expected, Mapping):
-            answer = {target_id: True for target_id in target_ids}
+            answer = {
+                target_id: not is_present
+                for target_id, is_present in zip(target_ids, present)
+            }
         elif isinstance(expected, Sequence) and not isinstance(
             expected, (str, bytes, bytearray)
         ):
-            answer = [True for _ in target_ids]
+            answer = [not item for item in present]
         else:
-            raise ValueError(
-                "render_core could not derive an expected absence answer"
-            )
-    else:
-        raise ValueError(
-            "render_core query targets cannot mix present and absent replay states"
-        )
+            raise ValueError("render_core could not derive an expected absence answer")
 
     if core.expected_answer is not None and not _same_json(expected, answer):
         raise ValueError(
             "render_core core expected_answer does not equal the replayed query answer"
         )
     return query_type, answer, _answer_schema(answer)
+
+
+def _select_query_template(
+    query_type: QueryType,
+    answer_schema: AnswerSchema,
+    current_template: str,
+    deletion_template: str,
+) -> str:
+    if query_type is QueryType.DELETION_COMPLIANCE:
+        if answer_schema not in {
+            AnswerSchema.BOOLEAN,
+            AnswerSchema.NUMBER,
+            AnswerSchema.STRING,
+            AnswerSchema.LIST,
+            AnswerSchema.OBJECT,
+        }:
+            raise ValueError("render_core deletion query has unsupported answer schema")
+        return deletion_template
+    return current_template
 
 
 def _render_query_text(core: SemanticCore, query_template: str) -> str:
@@ -297,9 +321,19 @@ def _target_objects(core: SemanticCore) -> list[MemoryObjectKey]:
     return targets
 
 
-def _resolve_core_profile(core: SemanticCore) -> Mapping[str, Any]:
+def _resolve_core_profile(
+    core: SemanticCore,
+    query_type: QueryType,
+) -> Mapping[str, Any]:
     base = build_generic_profile(core.difficulty, core.task_family.value)
     overrides = _plain(core.profile)
+    explicit_query_type = overrides.get("query_type")
+    if explicit_query_type is not None and explicit_query_type != query_type.value:
+        raise ValueError(
+            "render_core profile query_type conflicts with derived "
+            f"query_type {query_type.value!r}"
+        )
+    overrides["query_type"] = query_type.value
     added_keys = sorted(
         (set(overrides) - set(base.parameters))
         & REGISTERED_PROFILE_PARAMETER_KEYS
@@ -351,7 +385,8 @@ def render_core(
         update_template,
         delete_template,
         noop_template,
-        query_template,
+        current_query_template,
+        deletion_query_template,
     ) = SURFACE_TEMPLATE_SETS[surface_variant]
     operation_templates = {
         Operation.ADD: add_template,
@@ -438,6 +473,12 @@ def render_core(
         raise ValueError(f"render_core gold replay failed: {exc}") from exc
 
     query_type, answer, answer_schema = _query_semantics(core, replay)
+    query_template = _select_query_template(
+        query_type,
+        answer_schema,
+        current_query_template,
+        deletion_query_template,
+    )
     query_text = _render_query_text(core, query_template)
     query = MemoryQuery(
         query_id=rendered_query_id,
@@ -470,7 +511,7 @@ def render_core(
         acceptable_answers={rendered_query_id: _plain(answer)},
     )
 
-    resolved_profile = _resolve_core_profile(core)
+    resolved_profile = _resolve_core_profile(core, query_type)
     normalized_source_hash = _payload_sha256(
         _normalized_source_semantic_projection(core)
     )

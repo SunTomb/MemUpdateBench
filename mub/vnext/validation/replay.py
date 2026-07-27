@@ -228,7 +228,7 @@ def _resolve_query(
         if schema_value == "object":
             return True, {target: value for target, value in zip(target_ids, absent)}, ""
         if schema_value == "string":
-            return True, "absent" if all(absent) else "present", ""
+            return True, "absent" if all(absent) else "mixed", ""
         if schema_value == "number":
             return True, sum(absent), ""
         return False, None, "unsupported deletion answer schema"
