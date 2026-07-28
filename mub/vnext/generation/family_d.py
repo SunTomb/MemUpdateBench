@@ -28,7 +28,7 @@ _DENSITY_DIFFICULTY = {
     0.50: Difficulty.MEDIUM,
     0.75: Difficulty.HARD,
 }
-_EVENT_COUNT = 8
+_EVENT_COUNT = 12
 
 
 def _validate_config(config: PilotConfig) -> NoopWriteDisciplineConfig:
@@ -90,6 +90,34 @@ def _canonical_axis_order(config: PilotConfig) -> tuple[tuple[str, str, str], ..
     )
 
 
+def _balanced_attribute_order(config: PilotConfig) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            CANONICAL_ATTRIBUTES,
+            key=lambda attribute: stable_id(
+                "family_d_attribute_order",
+                {"seed": config.seed, "attribute": attribute},
+            ),
+        )
+    )
+
+
+def _target_for_example(
+    config: PilotConfig,
+    axes: tuple[tuple[str, str, str], ...],
+    core_index: int,
+    example_index: int,
+    trap_type: str,
+) -> MemoryObjectKey:
+    eligible = axes
+    if trap_type == "other_attribute_correction":
+        correction_attribute = _balanced_attribute_order(config)[
+            example_index % len(CANONICAL_ATTRIBUTES)
+        ]
+        eligible = tuple(axis for axis in axes if axis[2] != correction_attribute)
+    return _key(*eligible[core_index % len(eligible)])
+
+
 def _current_value(config: PilotConfig, target: MemoryObjectKey) -> str:
     return min(
         VALUES,
@@ -100,43 +128,71 @@ def _current_value(config: PilotConfig, target: MemoryObjectKey) -> str:
     )
 
 
-def _different_value(
+def _non_target_values(
     config: PilotConfig,
     target: MemoryObjectKey,
     key: MemoryObjectKey,
     purpose: str,
-) -> str:
+    count: int,
+) -> tuple[str, ...]:
     current_value = _current_value(config, target)
-    return min(
-        (value for value in VALUES if value != current_value),
-        key=lambda value: stable_id(
-            "family_d_non_target_value",
-            {
-                "seed": config.seed,
-                "target": _identity_payload(target),
-                "key": _identity_payload(key),
-                "purpose": purpose,
-                "value": value,
-            },
-        ),
+    ordered = tuple(
+        sorted(
+            (value for value in VALUES if value != current_value),
+            key=lambda value: stable_id(
+                "family_d_non_target_value",
+                {
+                    "seed": config.seed,
+                    "target": _identity_payload(target),
+                    "key": _identity_payload(key),
+                    "purpose": purpose,
+                    "value": value,
+                },
+            ),
+        )
     )
+    return ordered[:count]
 
 
-def _other_entity_key(target: MemoryObjectKey) -> MemoryObjectKey:
+def _other_entity_key(
+    config: PilotConfig,
+    target: MemoryObjectKey,
+    example_index: int,
+) -> MemoryObjectKey:
     group = next(group for group in SAME_NAME_ENTITIES if target.entity in group)
-    entity = next(candidate for candidate in group if candidate != target.entity)
-    return _key(target.namespace, entity, target.attribute)
-
-
-def _other_attribute_key(target: MemoryObjectKey) -> MemoryObjectKey:
-    attribute = next(
-        candidate for candidate in CANONICAL_ATTRIBUTES if candidate != target.attribute
+    alternatives = tuple(
+        sorted(
+            (entity for entity in group if entity != target.entity),
+            key=lambda entity: stable_id(
+                "family_d_other_entity",
+                {
+                    "seed": config.seed,
+                    "target": _identity_payload(target),
+                    "entity": entity,
+                },
+            ),
+        )
     )
+    return _key(
+        target.namespace,
+        alternatives[example_index % len(alternatives)],
+        target.attribute,
+    )
+
+
+def _other_attribute_key(
+    config: PilotConfig,
+    target: MemoryObjectKey,
+    example_index: int,
+) -> MemoryObjectKey:
+    ordered = _balanced_attribute_order(config)
+    attribute = ordered[example_index % len(ordered)]
+    if attribute == target.attribute:
+        attribute = next(candidate for candidate in ordered if candidate != target.attribute)
     return _key(target.namespace, target.entity, attribute)
 
 
-def _trap_event(
-    config: PilotConfig,
+def _noop_trap_event(
     trap_type: str,
     target: MemoryObjectKey,
     current_value: str,
@@ -149,6 +205,7 @@ def _trap_event(
             role=EventRole.NOOP_NEAR_MISS,
             metadata={
                 "trap_type": trap_type,
+                "lifecycle": "trap_noop",
                 "surface_statement": (
                     f"A hypothetical note mentions {target.entity}.{target.attribute}, "
                     "but it does not assert a current-state change."
@@ -156,6 +213,7 @@ def _trap_event(
             },
         )
     if trap_type == "duplicate_current":
+        # DUPLICATE_CURRENT is reserved for write actions; an observed repeat is a gold NOOP.
         return CoreEvent(
             operation=Operation.NOOP,
             object_keys=[],
@@ -163,6 +221,7 @@ def _trap_event(
             role=EventRole.NOOP_NEAR_MISS,
             metadata={
                 "trap_type": trap_type,
+                "lifecycle": "trap_noop",
                 "allow_accepted_answer_ambiguity": True,
                 "surface_statement": (
                     f"{target.entity}.{target.attribute} remains exactly {current_value}; "
@@ -170,31 +229,55 @@ def _trap_event(
                 ),
             },
         )
+    raise ValueError(f"unsupported Family D NOOP trap type: {trap_type}")
+
+
+def _correction_events(
+    config: PilotConfig,
+    trap_type: str,
+    target: MemoryObjectKey,
+    example_index: int,
+) -> tuple[MemoryObjectKey, CoreEvent, CoreEvent]:
     if trap_type == "other_entity_correction":
-        key = _other_entity_key(target)
-        return CoreEvent(
-            operation=Operation.ADD,
-            object_keys=[key],
-            value=_different_value(config, target, key, trap_type),
-            role=EventRole.SAME_NAME_OTHER_ENTITY,
-            metadata={"trap_type": trap_type},
-        )
-    if trap_type == "other_attribute_correction":
-        key = _other_attribute_key(target)
-        return CoreEvent(
-            operation=Operation.ADD,
-            object_keys=[key],
-            value=_different_value(config, target, key, trap_type),
-            role=EventRole.SAME_ENTITY_OTHER_ATTRIBUTE,
-            metadata={"trap_type": trap_type},
-        )
-    raise ValueError(f"unsupported Family D trap type: {trap_type}")
+        key = _other_entity_key(config, target, example_index)
+        role = EventRole.SAME_NAME_OTHER_ENTITY
+    elif trap_type == "other_attribute_correction":
+        key = _other_attribute_key(config, target, example_index)
+        role = EventRole.SAME_ENTITY_OTHER_ATTRIBUTE
+    else:
+        raise ValueError(f"unsupported Family D correction trap type: {trap_type}")
+    before_value, after_value = _non_target_values(
+        config,
+        target,
+        key,
+        trap_type,
+        2,
+    )
+    setup = CoreEvent(
+        operation=Operation.ADD,
+        object_keys=[key],
+        value=before_value,
+        role=role,
+        metadata={"lifecycle": "correction_before"},
+    )
+    correction = CoreEvent(
+        operation=Operation.UPDATE,
+        object_keys=[key],
+        value=after_value,
+        role=role,
+        metadata={
+            "trap_type": trap_type,
+            "lifecycle": "correction_after",
+        },
+    )
+    return key, setup, correction
 
 
 def _filler_write_events(
     config: PilotConfig,
     target: MemoryObjectKey,
     excluded_keys: tuple[MemoryObjectKey, ...],
+    example_index: int,
     count: int,
 ) -> tuple[CoreEvent, ...]:
     excluded_ids = {target.canonical_id, *(key.canonical_id for key in excluded_keys)}
@@ -214,6 +297,7 @@ def _filler_write_events(
                 {
                     "seed": config.seed,
                     "target": _identity_payload(target),
+                    "example_variant": example_index,
                     "candidate": _identity_payload(key),
                 },
             ),
@@ -224,9 +308,15 @@ def _filler_write_events(
         CoreEvent(
             operation=Operation.ADD,
             object_keys=[key],
-            value=_different_value(config, target, key, "ordinary_write"),
+            value=_non_target_values(
+                config,
+                target,
+                key,
+                "independent_current",
+                1,
+            )[0],
             role=EventRole.NEUTRAL,
-            metadata={"event_kind": "ordinary_write"},
+            metadata={"lifecycle": "independent_current"},
         )
         for key in selected
     )
@@ -243,7 +333,7 @@ def _filler_noop_events(
             value=None,
             role=EventRole.NEUTRAL,
             metadata={
-                "event_kind": "ordinary_noop",
+                "lifecycle": "independent_noop",
                 "surface_statement": (
                     f"Background note {index + 1} is related to {target.entity} but "
                     "does not direct any memory change."
@@ -254,38 +344,53 @@ def _filler_noop_events(
     )
 
 
-def _build_core(
+def _schedule_events(
     config: PilotConfig,
-    core_index: int,
     target: MemoryObjectKey,
     density: float,
     trap_type: str,
-) -> SemanticCore:
-    current_value = _current_value(config, target)
-    target_event = CoreEvent(
-        operation=Operation.ADD,
-        object_keys=[target],
-        value=current_value,
-        role=EventRole.LATEST_GOLD,
-        metadata={"event_kind": "target_initialization"},
-    )
-    trap_event = _trap_event(config, trap_type, target, current_value)
-    noop_count = int(_EVENT_COUNT * density)
-    true_write_count = _EVENT_COUNT - noop_count
-    trap_is_noop = trap_event.operation is Operation.NOOP
-    filler_write_count = true_write_count - 1 - (0 if trap_is_noop else 1)
-    filler_noop_count = noop_count - (1 if trap_is_noop else 0)
-    filler_writes = _filler_write_events(
-        config,
-        target,
-        tuple(trap_event.object_keys),
-        filler_write_count,
-    )
-    filler_noops = _filler_noop_events(target, filler_noop_count)
-    events = (target_event, trap_event, *filler_writes, *filler_noops)
-    duplicate_current_count = int(trap_type == "duplicate_current")
-    difficulty = _DENSITY_DIFFICULTY[density]
-    semantic_payload = {
+    example_index: int,
+    event_specs: tuple[tuple[str, CoreEvent, frozenset[str]], ...],
+) -> tuple[CoreEvent, ...]:
+    remaining = {tag: (event, dependencies) for tag, event, dependencies in event_specs}
+    emitted: list[str] = []
+    events: list[CoreEvent] = []
+    while remaining:
+        ready = tuple(
+            tag
+            for tag, (_, dependencies) in remaining.items()
+            if dependencies.issubset(emitted)
+        )
+        if not ready:
+            raise ValueError("Family D event dependencies contain a cycle")
+        selected = min(
+            ready,
+            key=lambda tag: stable_id(
+                "family_d_event_order",
+                {
+                    "seed": config.seed,
+                    "target": _identity_payload(target),
+                    "density": density,
+                    "trap_type": trap_type,
+                    "example_variant": example_index,
+                    "emitted": emitted,
+                    "event_tag": tag,
+                },
+            ),
+        )
+        event, _ = remaining.pop(selected)
+        emitted.append(selected)
+        events.append(event)
+    return tuple(events)
+
+
+def _semantic_payload(
+    events: tuple[CoreEvent, ...] | list[CoreEvent],
+    target: MemoryObjectKey,
+    density: float,
+    trap_type: str,
+) -> dict[str, object]:
+    return {
         "family": _FAMILY_NAME,
         "noop_density": density,
         "trap_type": trap_type,
@@ -296,21 +401,124 @@ def _build_core(
                 "object_keys": [_identity_payload(key) for key in event.object_keys],
                 "value": event.value,
                 "role": event.role.value,
-                "metadata": dict(event.metadata),
+                "lifecycle": event.metadata["lifecycle"],
             }
             for event in events
         ],
     }
+
+
+def _build_core(
+    config: PilotConfig,
+    core_index: int,
+    example_index: int,
+    target: MemoryObjectKey,
+    density: float,
+    trap_type: str,
+) -> SemanticCore:
+    current_value = _current_value(config, target)
+    target_event = CoreEvent(
+        operation=Operation.ADD,
+        object_keys=[target],
+        value=current_value,
+        role=EventRole.LATEST_GOLD,
+        metadata={"lifecycle": "target_current"},
+    )
+    requested_noop_count = int(_EVENT_COUNT * density)
+    requested_write_count = _EVENT_COUNT - requested_noop_count
+    event_specs: list[tuple[str, CoreEvent, frozenset[str]]] = [
+        ("target", target_event, frozenset())
+    ]
+    excluded_keys: tuple[MemoryObjectKey, ...] = ()
+    if trap_type in {"semantic_near_miss", "duplicate_current"}:
+        trap_event = _noop_trap_event(trap_type, target, current_value)
+        event_specs.append(("trap", trap_event, frozenset({"target"})))
+        filler_write_count = requested_write_count - 1
+        filler_noop_count = requested_noop_count - 1
+    else:
+        correction_key, setup_event, trap_event = _correction_events(
+            config,
+            trap_type,
+            target,
+            example_index,
+        )
+        excluded_keys = (correction_key,)
+        event_specs.extend(
+            (
+                ("correction_setup", setup_event, frozenset()),
+                (
+                    "trap",
+                    trap_event,
+                    frozenset({"target", "correction_setup"}),
+                ),
+            )
+        )
+        filler_write_count = requested_write_count - 3
+        filler_noop_count = requested_noop_count
+    filler_writes = _filler_write_events(
+        config,
+        target,
+        excluded_keys,
+        example_index,
+        filler_write_count,
+    )
+    filler_noops = _filler_noop_events(target, filler_noop_count)
+    event_specs.extend(
+        (f"write_{index:02d}", event, frozenset())
+        for index, event in enumerate(filler_writes)
+    )
+    event_specs.extend(
+        (f"noop_{index:02d}", event, frozenset())
+        for index, event in enumerate(filler_noops)
+    )
+    events = _schedule_events(
+        config,
+        target,
+        density,
+        trap_type,
+        example_index,
+        tuple(event_specs),
+    )
+
+    num_events = len(events)
+    noop_count = sum(event.operation is Operation.NOOP for event in events)
+    true_write_count = sum(event.operation is not Operation.NOOP for event in events)
+    num_target_updates = sum(
+        event.operation is Operation.UPDATE and target in event.object_keys
+        for event in events
+    )
+    duplicate_current_count = sum(
+        event.metadata.get("trap_type") == "duplicate_current"
+        for event in events
+    )
+    active_object_count = len(
+        {
+            key.canonical_id
+            for event in events
+            if event.operation is not Operation.NOOP
+            for key in event.object_keys
+        }
+    )
+    observed_density = noop_count / num_events
+    difficulty = _DENSITY_DIFFICULTY[density]
+    semantic_payload = _semantic_payload(events, target, density, trap_type)
     identifier = core_id(_FAMILY_NAME, semantic_payload)
+    trajectory_variant = stable_id(
+        "family_d_trajectory_variant",
+        {
+            "trap_type": trap_type,
+            "events": semantic_payload["events"],
+        },
+    )
     profile = {
         "update_depth": 1,
-        "active_object_count": true_write_count,
+        "active_object_count": active_object_count,
         "entity_ambiguity": "none",
         "attribute_ambiguity": "none",
-        "noop_density": density,
+        "noop_density": observed_density,
         "cross_slot_interleaving": 0.0,
         "stale_count": 0,
-        "context_length": _EVENT_COUNT,
+        "context_length": num_events,
         "context_order": "chronological",
         "version_metadata": "none",
         "query_type": "current_state",
@@ -319,21 +527,23 @@ def _build_core(
         "duplicate_current_condition": bool(duplicate_current_count),
     }
     stratification = {
-        "num_events": _EVENT_COUNT,
+        "num_events": num_events,
         "true_write_count": true_write_count,
-        "num_target_updates": 0,
+        "num_target_updates": num_target_updates,
         "noop_count": noop_count,
         "duplicate_current_count": duplicate_current_count,
         "trap_type": trap_type,
         "configured_noop_density": density,
-        "observed_noop_density": noop_count / _EVENT_COUNT,
+        "observed_noop_density": observed_density,
+        "trap_position": events.index(trap_event),
+        "operation_signature": ",".join(event.operation.value for event in events),
     }
     return SemanticCore(
         core_id=identifier,
         task_family=TaskFamily.NOOP_WRITE_DISCIPLINE,
         difficulty=difficulty,
         core_index=core_index,
-        trajectory_id=trajectory_id(identifier, f"family_d_{core_index:03d}"),
+        trajectory_id=trajectory_id(identifier, trajectory_variant),
         events=list(events),
         query_targets=[target],
         expected_answer=current_value,
@@ -354,11 +564,18 @@ def generate_family_d_cores(config: PilotConfig) -> list[SemanticCore]:
     for cell_index, (density, trap_type) in enumerate(cells):
         for example_index in range(examples_per_cell):
             core_index = cell_index * examples_per_cell + example_index
-            target = _key(*axes[core_index % len(axes)])
+            target = _target_for_example(
+                config,
+                axes,
+                core_index,
+                example_index,
+                trap_type,
+            )
             cores.append(
                 _build_core(
                     config,
                     core_index,
+                    example_index,
                     target,
                     density,
                     trap_type,

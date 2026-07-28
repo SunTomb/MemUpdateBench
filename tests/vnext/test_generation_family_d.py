@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,8 @@ from mub.vnext.generation import (
     load_pilot_config,
     render_core,
 )
+from mub.vnext.generation.catalogs import CANONICAL_ATTRIBUTES
+from mub.vnext.generation.core import CoreEvent
 from mub.vnext.io import semantic_task_hash
 from mub.vnext.validation import validate_task_semantics
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
@@ -36,6 +38,7 @@ TRAPS = (
     "other_entity_correction",
     "other_attribute_correction",
 )
+EVENT_COUNT = 12
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +73,14 @@ def _replay(events):
     return replay_actions(_actions(events))
 
 
-def test_family_d_has_exact_grid_balance_counts_and_densities(config, cores):
+def _trap_event(core):
+    trap_type = core.stratification["trap_type"]
+    events = [event for event in core.events if event.metadata.get("trap_type") == trap_type]
+    assert len(events) == 1
+    return events[0]
+
+
+def test_family_d_has_exact_grid_balance_and_derived_12_event_counters(config, cores):
     assert len(cores) == 120
     assert [core.core_index for core in cores] == list(range(120))
     assert Counter(
@@ -80,15 +90,30 @@ def test_family_d_has_exact_grid_balance_counts_and_densities(config, cores):
 
     for core in cores:
         density = core.stratification["configured_noop_density"]
-        noop_count = int(8 * density)
+        observed_noops = sum(event.operation is Operation.NOOP for event in core.events)
+        observed_writes = sum(event.operation is not Operation.NOOP for event in core.events)
+        observed_target_updates = sum(
+            event.operation is Operation.UPDATE
+            and core.query_targets[0] in event.object_keys
+            for event in core.events
+        )
+        observed_duplicates = sum(
+            event.metadata.get("trap_type") == "duplicate_current"
+            for event in core.events
+        )
         assert core.difficulty is DENSITY_TO_DIFFICULTY[density]
         assert core.profile["noop_density"] == density
         assert core.profile["write_trap_type"] == core.stratification["trap_type"]
-        assert core.stratification["num_events"] == len(core.events) == 8
-        assert core.stratification["noop_count"] == noop_count
-        assert core.stratification["true_write_count"] == 8 - noop_count
-        assert core.stratification["observed_noop_density"] == pytest.approx(density)
-        assert core.stratification["num_target_updates"] == 0
+        assert core.profile["context_length"] == len(core.events) == EVENT_COUNT
+        assert core.stratification["num_events"] == len(core.events)
+        assert core.stratification["noop_count"] == observed_noops == int(EVENT_COUNT * density)
+        assert core.stratification["true_write_count"] == observed_writes
+        assert core.stratification["num_target_updates"] == observed_target_updates == 0
+        assert core.stratification["duplicate_current_count"] == observed_duplicates
+        assert core.stratification["observed_noop_density"] == pytest.approx(
+            observed_noops / len(core.events)
+        )
+        assert core.stratification["observed_noop_density"] == density
         assert "num_updates" not in core.stratification
 
 
@@ -127,20 +152,46 @@ def test_family_d_target_history_grows_only_on_target_writes(cores):
         )
 
 
-def test_family_d_generation_does_not_mutate_config(config):
-    before = config.model_dump(mode="json")
-    generate_family_d_cores(config)
-    assert config.model_dump(mode="json") == before
+def test_family_d_corrections_have_real_before_after_history_and_isolate_target(cores):
+    correction_types = {"other_entity_correction", "other_attribute_correction"}
+    for core in (item for item in cores if item.stratification["trap_type"] in correction_types):
+        target = core.query_targets[0]
+        trap = _trap_event(core)
+        assert trap.operation is Operation.UPDATE
+        assert trap.metadata["lifecycle"] == "correction_after"
+        key = trap.object_keys[0]
+        setup_events = [
+            event
+            for event in core.events
+            if event.metadata.get("lifecycle") == "correction_before"
+            and event.object_keys == (key,)
+        ]
+        assert len(setup_events) == 1
+        setup = setup_events[0]
+        assert setup.operation is Operation.ADD
+        assert core.events.index(setup) < core.events.index(trap)
+        target_setup = next(
+            event for event in core.events if event.metadata.get("lifecycle") == "target_current"
+        )
+        assert core.events.index(target_setup) < core.events.index(trap)
+        assert len({setup.value, trap.value, core.expected_answer}) == 3
+        history = _replay(core.events).version_history[key.canonical_id]
+        assert tuple(history) == (setup.value, trap.value)
+        assert key.canonical_id != target.canonical_id
+        if core.stratification["trap_type"] == "other_entity_correction":
+            assert key.entity != target.entity
+            assert key.attribute == target.attribute
+        else:
+            assert key.entity == target.entity
+            assert key.attribute != target.attribute
 
 
-def test_family_d_traps_are_target_isolated_and_duplicate_is_visible(cores):
+def test_family_d_duplicate_current_is_semantic_noop_at_contract_boundary(cores):
     for core in cores:
         target = core.query_targets[0]
-        trap = core.stratification["trap_type"]
-        trap_events = [event for event in core.events if event.metadata.get("trap_type") == trap]
-        assert len(trap_events) == 1
-        event = trap_events[0]
-        if trap in {"semantic_near_miss", "duplicate_current"}:
+        trap_type = core.stratification["trap_type"]
+        event = _trap_event(core)
+        if trap_type in {"semantic_near_miss", "duplicate_current"}:
             assert event.operation is Operation.NOOP
             assert not event.object_keys
             assert event.value is None
@@ -149,7 +200,7 @@ def test_family_d_traps_are_target_isolated_and_duplicate_is_visible(cores):
             for item in core.events
             if item.metadata.get("allow_accepted_answer_ambiguity") is True
         ]
-        if trap == "duplicate_current":
+        if trap_type == "duplicate_current":
             assert ambiguity_events == [event]
             assert event.role is EventRole.NOOP_NEAR_MISS
             assert event.metadata["allow_accepted_answer_ambiguity"] is True
@@ -162,33 +213,50 @@ def test_family_d_traps_are_target_isolated_and_duplicate_is_visible(cores):
             assert not ambiguity_events
             assert "allow_accepted_answer_ambiguity" not in event.metadata
             assert core.stratification["duplicate_current_count"] == 0
-        if trap == "other_entity_correction":
-            assert event.operation is Operation.ADD
-            assert event.value != core.expected_answer
-            key = event.object_keys[0]
-            assert key.entity != target.entity
-            assert key.attribute == target.attribute
-            assert key.canonical_id != target.canonical_id
-        if trap == "other_attribute_correction":
-            assert event.operation is Operation.ADD
-            assert event.value != core.expected_answer
-            key = event.object_keys[0]
-            assert key.entity == target.entity
-            assert key.attribute != target.attribute
-            assert key.canonical_id != target.canonical_id
+
+
+def test_family_d_filler_values_exclude_target_answer(cores):
+    for core in cores:
         assert all(
             event.value != core.expected_answer
             for event in core.events
-            if event.metadata.get("event_kind") == "ordinary_write"
+            if event.metadata.get("lifecycle") == "independent_current"
         )
-        assert all(
-            target not in event.object_keys
-            for event in core.events
-            if event.metadata.get("trap_type") in {
-                "other_entity_correction",
-                "other_attribute_correction",
-            }
+
+
+def test_family_d_seeded_schedule_varies_signatures_and_trap_positions_per_cell(cores):
+    signatures = defaultdict(set)
+    trap_positions = defaultdict(set)
+    for core in cores:
+        cell = (
+            core.stratification["configured_noop_density"],
+            core.stratification["trap_type"],
         )
+        signatures[cell].add(tuple(event.operation for event in core.events))
+        trap_positions[cell].add(core.events.index(_trap_event(core)))
+    assert set(signatures) == {
+        (density, trap) for density in DENSITY_TO_DIFFICULTY for trap in TRAPS
+    }
+    assert all(len(cell_signatures) > 1 for cell_signatures in signatures.values())
+    assert all(len(positions) > 1 for positions in trap_positions.values())
+
+
+def test_family_d_other_attribute_corrections_are_balanced(cores):
+    for density in DENSITY_TO_DIFFICULTY:
+        attributes = Counter(
+            _trap_event(core).object_keys[0].attribute
+            for core in cores
+            if core.stratification["configured_noop_density"] == density
+            and core.stratification["trap_type"] == "other_attribute_correction"
+        )
+        assert set(attributes) == set(CANONICAL_ATTRIBUTES)
+        assert max(attributes.values()) - min(attributes.values()) <= 1
+
+
+def test_family_d_generation_does_not_mutate_config(config):
+    before = config.model_dump(mode="json")
+    generate_family_d_cores(config)
+    assert config.model_dump(mode="json") == before
 
 
 def test_family_d_generation_is_deterministic_and_ids_are_unique(config, cores):
@@ -200,7 +268,7 @@ def test_family_d_generation_is_deterministic_and_ids_are_unique(config, cores):
     assert len({core.trajectory_id for core in cores}) == 120
 
 
-def test_family_d_core_id_payload_excludes_coordinates_and_object_type(config, monkeypatch):
+def test_family_d_core_id_payload_excludes_admin_surface_control_and_object_type(config, monkeypatch):
     payloads = []
     original = family_d_module.core_id
 
@@ -210,7 +278,18 @@ def test_family_d_core_id_payload_excludes_coordinates_and_object_type(config, m
 
     monkeypatch.setattr(family_d_module, "core_id", capture)
     generate_family_d_cores(config)
-    forbidden = {"seed", "index", "core_index", "cell_index", "example_index", "axis_index", "object_type"}
+    forbidden = {
+        "seed",
+        "index",
+        "core_index",
+        "cell_index",
+        "example_index",
+        "axis_index",
+        "object_type",
+        "metadata",
+        "surface_statement",
+        "allow_accepted_answer_ambiguity",
+    }
 
     def keys(value):
         if isinstance(value, dict):
@@ -221,6 +300,61 @@ def test_family_d_core_id_payload_excludes_coordinates_and_object_type(config, m
 
     assert len(payloads) == 120
     assert all(not (keys(payload) & forbidden) for payload in payloads)
+    assert all(
+        {event["lifecycle"] for event in payload["events"]}
+        for payload in payloads
+    )
+
+
+def test_family_d_semantic_id_ignores_surface_and_validator_control_metadata(cores):
+    core = next(item for item in cores if item.stratification["trap_type"] == "duplicate_current")
+    payload = core.model_dump(mode="python")
+    for event in payload["events"]:
+        if event["metadata"].get("trap_type") == "duplicate_current":
+            event["metadata"]["surface_statement"] = "Administrative wording changed."
+            event["metadata"]["allow_accepted_answer_ambiguity"] = False
+            event["metadata"]["admin_coordinate"] = 999
+    modified_events = tuple(CoreEvent.model_validate(event) for event in payload["events"])
+    original_semantics = family_d_module._semantic_payload(
+        core.events,
+        core.query_targets[0],
+        core.stratification["configured_noop_density"],
+        core.stratification["trap_type"],
+    )
+    modified_semantics = family_d_module._semantic_payload(
+        modified_events,
+        core.query_targets[0],
+        core.stratification["configured_noop_density"],
+        core.stratification["trap_type"],
+    )
+    assert modified_semantics == original_semantics
+    assert family_d_module.core_id(core.task_family.value, modified_semantics) == core.core_id
+
+
+def test_family_d_trajectory_is_invariant_to_allocation_index(config, cores):
+    reference = cores[0]
+    target = reference.query_targets[0]
+    density = reference.stratification["configured_noop_density"]
+    trap_type = reference.stratification["trap_type"]
+    first = family_d_module._build_core(
+        config,
+        core_index=0,
+        example_index=4,
+        target=target,
+        density=density,
+        trap_type=trap_type,
+    )
+    relocated = family_d_module._build_core(
+        config,
+        core_index=999,
+        example_index=4,
+        target=target,
+        density=density,
+        trap_type=trap_type,
+    )
+    assert first.core_id == relocated.core_id
+    assert first.trajectory_id == relocated.trajectory_id
+    assert first.core_index != relocated.core_index
 
 
 def test_family_d_three_rendered_variants_validate_replay_and_share_hash(config, cores):
@@ -232,8 +366,8 @@ def test_family_d_three_rendered_variants_validate_replay_and_share_hash(config,
         ]
         assert len({task.task_id for task in tasks}) == 3
         assert len({task.source.source_id for task in tasks}) == 3
-        assert len({event.event_id for task in tasks for event in task.events}) == 24
-        assert len({action.action_id for task in tasks for action in task.gold.actions}) == 24
+        assert len({event.event_id for task in tasks for event in task.events}) == 36
+        assert len({action.action_id for task in tasks for action in task.gold.actions}) == 36
         assert len({query.query_id for task in tasks for query in task.queries}) == 3
         assert len({semantic_task_hash(task) for task in tasks}) == 1
         assert all(validate_task(task).valid for task in tasks)
