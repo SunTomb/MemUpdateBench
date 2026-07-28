@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import mub.vnext.generation.build as build_module
 from mub.vnext.contracts import MemUpdateTask, Split, TaskFamily
 from mub.vnext.generation import (
     CompiledPilotTasks,
+    PilotConfig,
     compile_pilot_tasks,
     generate_family_a_cores,
     generate_family_b_cores,
@@ -18,7 +20,12 @@ from mub.vnext.generation import (
     load_pilot_config,
 )
 from mub.vnext.io import canonical_json_bytes, semantic_task_hash
-from mub.vnext.validation import validate_gold_replay, validate_task
+from mub.vnext.validation import (
+    ValidationIssue,
+    build_report,
+    validate_gold_replay,
+    validate_task,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,32 +69,49 @@ def _sort_key(task: MemUpdateTask):
     )
 
 
-def test_compile_pilot_tasks_has_exact_counts_order_and_clean_validation(
+def _all_linked_ids(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
+    linked_ids = []
+    for task in tasks:
+        linked_ids.extend((task.task_id, task.source.source_id))
+        linked_ids.extend(event.event_id for event in task.events)
+        linked_ids.extend(action.action_id for action in task.gold.actions)
+        linked_ids.extend(query.query_id for query in task.queries)
+    return linked_ids
+
+
+def test_compile_pilot_tasks_has_exact_counts_order_linkage_and_validation(
     compiled,
 ) -> None:
-    assert isinstance(compiled.tasks, tuple)
-    assert len(compiled.tasks) == 1440
-    assert compiled.tasks == tuple(sorted(compiled.tasks, key=_sort_key))
-    assert Counter(task.metadata.split for task in compiled.tasks) == {
+    tasks = compiled.tasks
+    assert isinstance(tasks, tuple)
+    assert len(tasks) == 1440
+    assert tasks == tuple(sorted(tasks, key=_sort_key))
+    assert Counter(task.metadata.split for task in tasks) == {
         Split.TRAIN: 1008,
         Split.DEV: 144,
         Split.TEST: 288,
     }
-    assert Counter(task.task_family for task in compiled.tasks) == {
+    assert Counter(task.task_family for task in tasks) == {
         family: 360 for family in FAMILY_ORDER
     }
-    core_variants = Counter(
-        task.metadata.split_key.semantic_core_id for task in compiled.tasks
-    )
-    assert len(core_variants) == 480
-    assert set(core_variants.values()) == {3}
-    for task in compiled.tasks:
+
+    variants_by_core = defaultdict(set)
+    hashes_by_core = defaultdict(set)
+    for task in tasks:
+        core_id = task.metadata.split_key.semantic_core_id
+        variants_by_core[core_id].add(task.metadata.extra["surface_variant"])
+        hashes_by_core[core_id].add(semantic_task_hash(task))
         assert validate_task(task).valid
         assert validate_gold_replay(task).valid
+    assert len(variants_by_core) == 480
+    assert all(variants == {0, 1, 2} for variants in variants_by_core.values())
+    assert all(len(hashes) == 1 for hashes in hashes_by_core.values())
+    linked_ids = _all_linked_ids(tasks)
+    assert len(linked_ids) == len(set(linked_ids))
 
     rows = compiled.tasks_jsonl.splitlines(keepends=True)
     assert len(rows) == 1440
-    for task, row in zip(compiled.tasks, rows, strict=True):
+    for task, row in zip(tasks, rows, strict=True):
         assert row.endswith(b"\n") and not row.endswith(b"\r\n")
         reparsed = MemUpdateTask.model_validate_json(row[:-1])
         assert reparsed == task
@@ -109,10 +133,47 @@ def test_same_inputs_are_byte_identical_config_unchanged_and_create_no_files(
     assert repeated.tasks_jsonl == compiled.tasks_jsonl
     assert canonical_json_bytes(config) == before
     assert list(tmp_path.iterdir()) == []
-    with pytest.raises(AttributeError):
+    with pytest.raises((AttributeError, TypeError)):
         repeated.tasks = ()
     with pytest.raises(ValidationError):
         repeated.split_assignment.assignments = ()
+
+
+def test_compiled_tasks_property_returns_fresh_deep_snapshot(compiled) -> None:
+    original_jsonl = compiled.tasks_jsonl
+    first_access = compiled.tasks
+    original_task_id = first_access[0].task_id
+    original_text = first_access[0].events[0].raw_text
+
+    object.__setattr__(first_access[0], "task_id", "task_mutated")
+    first_access[0].events[0].raw_text = "mutated text"
+    second_access = compiled.tasks
+
+    assert second_access is not first_access
+    assert second_access[0] is not first_access[0]
+    assert second_access[0].task_id == original_task_id
+    assert second_access[0].events[0].raw_text == original_text
+    assert compiled.tasks_jsonl == original_jsonl
+
+
+def test_compiled_snapshot_rejects_noncanonical_framing_and_row_replacement(
+    compiled,
+) -> None:
+    with pytest.raises(ValueError, match="final LF"):
+        replace(compiled, tasks_jsonl=compiled.tasks_jsonl[:-1])
+    with pytest.raises(ValueError, match="LF-only"):
+        replace(compiled, tasks_jsonl=compiled.tasks_jsonl.replace(b"\n", b"\r\n", 1))
+    with pytest.raises(ValueError, match="UTF-8 BOM"):
+        replace(compiled, tasks_jsonl=b"\xef\xbb\xbf" + compiled.tasks_jsonl)
+    with pytest.raises(ValueError, match="blank rows"):
+        replace(compiled, tasks_jsonl=b"\n" + compiled.tasks_jsonl)
+
+    rows = compiled.tasks_jsonl.split(b"\n")
+    rows[0] = rows[1]
+    with pytest.raises(ValueError):
+        replace(compiled, tasks_jsonl=b"\n".join(rows))
+    with pytest.raises(ValueError, match="config_sha256"):
+        replace(compiled, config_sha256="0" * 64)
 
 
 def test_reversed_generator_inputs_still_produce_canonical_order(
@@ -154,6 +215,8 @@ def test_revision_changes_only_surface_artifact_provenance(
     compiled,
 ) -> None:
     changed = compile_pilot_tasks(config, code_revision="different-revision")
+    changed_tasks = changed.tasks
+    original_tasks = compiled.tasks
 
     assert changed.tasks_jsonl != compiled.tasks_jsonl
     assert changed.config_sha256 == compiled.config_sha256
@@ -161,33 +224,113 @@ def test_revision_changes_only_surface_artifact_provenance(
     assert all(
         task.source.generator is not None
         and task.source.generator.code_revision == "different-revision"
-        for task in changed.tasks
+        for task in changed_tasks
     )
-    assert [semantic_task_hash(task) for task in changed.tasks] == [
-        semantic_task_hash(task) for task in compiled.tasks
+    assert [semantic_task_hash(task) for task in changed_tasks] == [
+        semantic_task_hash(task) for task in original_tasks
     ]
 
 
-def test_invalid_render_aborts_at_first_sorted_task(
+def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
+    original_render = build_module.render_core
+
+    def repeated_variant(core, *, split, surface_variant, context):
+        return original_render(
+            core,
+            split=split,
+            surface_variant=0,
+            context=context,
+        )
+
+    monkeypatch.setattr(build_module, "render_core", repeated_variant)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    message = str(exc_info.value)
+    assert "field=surface_variant expected=1 observed=0" in message
+    assert "must have exactly surface variants [0, 1, 2]" in message
+    assert "duplicate linked ID" in message
+
+
+def test_all_validators_run_and_failures_are_stably_aggregated(
     config,
     compiled,
     monkeypatch,
 ) -> None:
-    original_render = build_module.render_core
-    first_task_id = compiled.tasks[0].task_id
+    tasks = compiled.tasks
+    first_task_id = tasks[0].task_id
+    last_task_id = tasks[-1].task_id
+    calls = Counter()
 
-    def invalid_render(*args, **kwargs):
-        task = original_render(*args, **kwargs)
+    def task_validator(task):
+        calls["task"] += 1
+        issues = []
         if task.task_id == first_task_id:
-            object.__setattr__(task, "task_id", " ")
-        return task
+            issues.append(
+                ValidationIssue(
+                    code="early_structural_failure",
+                    path="task_id",
+                    message="early task failed",
+                    severity="error",
+                )
+            )
+        return build_report(issues)
 
-    monkeypatch.setattr(build_module, "render_core", invalid_render)
+    def replay_validator(task):
+        calls["gold_replay"] += 1
+        issues = []
+        if task.task_id == last_task_id:
+            issues.append(
+                ValidationIssue(
+                    code="late_replay_failure",
+                    path="gold",
+                    message="late task failed",
+                    severity="error",
+                )
+            )
+        return build_report(issues)
+
+    monkeypatch.setattr(build_module, "validate_task", task_validator)
+    monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    assert calls == {"task": 1440, "gold_replay": 1440}
+    message = str(exc_info.value)
+    early = (
+        f"validation stage=task task={first_task_id!r} "
+        "issue=early_structural_failure@task_id: early task failed"
+    )
+    late = (
+        f"validation stage=gold_replay task={last_task_id!r} "
+        "issue=late_replay_failure@gold: late task failed"
+    )
+    assert early in message
+    assert late in message
+    assert message.index(early) < message.index(late)
+
+
+def test_noncanonical_surface_variant_count_rejected_before_render(
+    config,
+    monkeypatch,
+) -> None:
+    payload = config.model_dump(mode="python")
+    payload["surface_variants_per_core"] = 4
+    changed = PilotConfig.model_validate(payload)
+    render_calls = 0
+
+    def unexpected_render(*args, **kwargs):
+        nonlocal render_calls
+        render_calls += 1
+        raise AssertionError("render must not be called")
+
+    monkeypatch.setattr(build_module, "render_core", unexpected_render)
     with pytest.raises(
         ValueError,
-        match=r"compiled task ' ' failed task validation",
+        match="surface_variants_per_core == 3",
     ):
-        compile_pilot_tasks(config, code_revision=REVISION)
+        compile_pilot_tasks(changed, code_revision=REVISION)
+    assert render_calls == 0
 
 
 @pytest.mark.parametrize("revision", ["", " ", "\t\n"])
