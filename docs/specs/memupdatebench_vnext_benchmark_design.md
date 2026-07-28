@@ -249,7 +249,7 @@ Conditions include:
 - namespace collisions;
 - unresolved or ambiguous references.
 
-Primary metrics include wrong-entity action rate, wrong-attribute action rate, cross-object corruption, and ambiguous-event abstention.
+Primary metrics include wrong-entity action rate, wrong-attribute action rate, cross-object corruption, and `reference_resolution_accuracy`. Ambiguous and no-match references require explicit typed abstention gold; they must never be assigned a guessed value.
 
 ### 6.4 Family D: NOOP and Write Discipline
 
@@ -343,6 +343,24 @@ TaskManifest
 ```
 
 Every top-level artifact contains `schema_version`. Nested records are validated as part of their owning artifact and do not independently require a schema version.
+
+### 7.0.1 v2 reference-resolution and answer-disposition contract
+
+Family C requires a first-class unresolved-reference path rather than a sentinel answer convention. Contract v2 therefore defines:
+
+```text
+AnswerDisposition = answered | abstained | unavailable
+ReferenceResolutionStatus = unique | ambiguous | no_match
+QueryType = ... | unresolved_reference
+```
+
+`ReferenceCandidate` stores a stable candidate ID and an exact four-part `MemoryObjectKey`; `SurfaceReference` links visible entity/attribute wording to an ordered candidate-ID set; `CanonicalAnswer` stores disposition, resolution status, selected candidate IDs, abstention reason, and an optional value. Identity remains exactly `(namespace, entity, attribute, subkey)`; `object_type` is classification metadata and never distinguishes candidates.
+
+Gold may contain `ANSWERED` or `ABSTAINED`, but never `UNAVAILABLE`. Runtime `UNAVAILABLE` and `parsed_answer=None` mean missing or unavailable evidence, not intentional abstention. Ambiguous/no-match queries require explicit `ABSTAINED` gold, while a unique answered query is linked to the selected candidate's replayed current value. Ordinary absent targets, deletion results, and NOOP events do not become unresolved references.
+
+The semantic task projection includes candidate identities/order, resolution status, canonical disposition/value, and semantically exposed reference evidence. It excludes surface prose, linked IDs, query metadata, difficulty/split/compiler fields, and `object_type`. Scoring adds `reference_resolution_accuracy`; `wrong_reference_guess` marks an answer where abstention was required, and `unjustified_abstention` marks abstention where a unique answer was required. No adapter capability bit is added for abstention.
+
+The v2 task/runtime/score/manifest schemas and compiler/scorer/metric/profile identities use `2.0.0`. The published Phase 0 v1 release remains immutable historical evidence. v1 artifacts are interpreted only by v1 semantics; there is no silent migration of `None` or missing answers into v2 abstention records.
 
 ### 7.1 `SourceRecord`
 
@@ -1992,7 +2010,7 @@ The following are independently versioned:
 
 ### 28.2 Backward compatibility
 
-A new version may read older artifacts through explicit migrations. It must not silently change metric meaning under an existing field name.
+A new version may read older artifacts only through an explicit, separately tested migration. Contract v2 does not silently reinterpret v1 `None`, missing-answer, or raw answer-map records as abstention; v1 artifacts remain tied to the published v1 release semantics. Metric meaning must never change silently under an existing field name.
 
 ### 28.3 Deprecation
 

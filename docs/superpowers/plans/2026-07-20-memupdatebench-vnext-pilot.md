@@ -16,6 +16,8 @@
 
 Every acceptance item in `docs/superpowers/plans/2026-07-20-memupdatebench-vnext-phase0-contract-legacy-bridge.md` must pass. Pilot code must not introduce alternate task, runtime, score, capability, or manifest dictionaries.
 
+Family C consumes the generic v2 reference-resolution extension: `UNRESOLVED_REFERENCE`, typed candidate/surface-reference graphs, `CanonicalAnswer`, `AnswerDisposition`, and `ReferenceResolutionStatus`. `None`/missing artifacts remain unavailable rather than abstention, no abstention capability bit is added, and published v1 artifacts are not silently migrated. Family C generation may start only after v2 schemas, replay, semantic hashing, runtime normalization, scoring, and compatibility tests pass.
+
 ### Required Pilot scope
 
 - Exactly 1,440 tasks: 360 each for Families A-D.
@@ -144,8 +146,8 @@ Existing legacy generator/evaluator/store/manager files remain unchanged; adapte
 Create `configs/vnext/pilot.yaml` with the following normative content:
 
 ```yaml
-schema_version: "1.0.0"
-profile_version: "1.0.0"
+schema_version: "2.0.0"
+profile_version: "2.0.0"
 release_id: "vnext-pilot-2026-07"
 seed: 20260720
 surface_variants_per_core: 3
@@ -427,6 +429,10 @@ class SemanticCore(ContractModel):
     trajectory_id: str
     events: list[CoreEvent]
     query_targets: list[MemoryObjectKey]
+    query_type: QueryType = QueryType.CURRENT_STATE
+    reference_candidates: list[ReferenceCandidate]
+    surface_references: list[SurfaceReference]
+    canonical_answer: CanonicalAnswer | None
     expected_answer: JsonValue | None
     profile: dict[str, JsonValue]
     stratification: dict[str, str | int | float | bool]
@@ -536,7 +542,9 @@ git commit -m "feat: generate interleaved multi-slot pilot tasks"
 
 - [ ] **Step 1: Write failing grounding-condition tests**
 
-Cover the 4×3 entity/attribute condition grid. Assert same-name entities differ by relation-qualified entity identity, aliases carry an explicit alias map, namespace collisions differ by namespace, attribute paraphrases resolve to one canonical attribute, near-name attributes remain distinct, and ambiguous cases have an explicit abstention gold rather than a guessed value.
+Cover the 4×3 entity/attribute condition grid. Assert same-name entities differ by relation-qualified entity identity, aliases carry an explicit alias map, namespace collisions differ by namespace, attribute paraphrases resolve to one canonical attribute, near-name attributes remain distinct, and ambiguous cases have explicit typed `ABSTAINED` gold rather than a guessed value. Candidate identity is exactly `(namespace, entity, attribute, subkey)` and excludes `object_type`; semantic hashes include the resolution graph/status/disposition while excluding surface prose and linked IDs.
+
+For each core, populate `ReferenceCandidate` and `SurfaceReference` records directly on `SemanticCore`. Unique cases use `ReferenceResolutionStatus.UNIQUE` and an `ANSWERED` canonical value linked to replayed state. Ambiguous/no-match cases use `QueryType.UNRESOLVED_REFERENCE` with `AMBIGUOUS` or `NO_MATCH` plus `ABSTAINED`; ordinary absent/deleted/NOOP cases must not be converted into abstentions.
 
 - [ ] **Step 2: Implement the Family C core generator**
 
@@ -919,7 +927,7 @@ score_system(run, capabilities) -> SystemScores
 score_audit(run, capabilities) -> AuditScores
 ```
 
-Definitions come from the Phase 0 registry. `write_amplification` is actual mutating writes divided by required mutating gold actions; a zero-required-write task reports not-applicable rather than division by zero.
+Definitions come from the Phase 0 registry. `write_amplification` is actual mutating writes divided by required mutating gold actions; a zero-required-write task reports not-applicable rather than division by zero. Family C unresolved queries use `reference_resolution_accuracy`: explicit correct abstention scores ambiguous/no-match cases, unique cases require the linked answered value, and `UNAVAILABLE` remains missing support. `wrong_reference_guess` and `unjustified_abstention` remain separate failure flags; unresolved queries do not enter ordinary answer-metric denominators.
 
 - [ ] **Step 3: Implement score CLI**
 
@@ -1203,6 +1211,7 @@ Otherwise leave the complete validated diff uncommitted and report exact artifac
 - [ ] Family A separates target update depth, total events, distractors, NOOPs, conflicting stale, and duplicate-current records.
 - [ ] Family B preserves every non-target object and makes interleaving explicit.
 - [ ] Family C tests entity/attribute grounding without collapsing aliases or namespaces.
+- [ ] Family C ambiguity uses typed `ABSTAINED` gold and `reference_resolution_accuracy`; `None`, unavailable evidence, absent targets, deletion, and NOOP never impersonate abstention.
 - [ ] Family D proves NOOP non-mutation and distinguishes unnecessary/duplicate writes.
 - [ ] The 96-case human audit has complete terminal decisions and zero unresolved blockers.
 
