@@ -28,11 +28,19 @@ from mub.vnext.generation.identity import (
     trajectory_id,
 )
 from mub.vnext.generation.render import render_core
+from mub.vnext.generation.splits import (
+    CoreSplitAssignment,
+    SplitAssignmentResult,
+    SplitBalanceCell,
+    SplitBalanceReport,
+    assign_splits,
+)
 
 __all__ = [
     "ALIAS_MAPPINGS",
     "CANONICAL_ATTRIBUTES",
     "CoreEvent",
+    "CoreSplitAssignment",
     "GenerationContext",
     "NAMESPACES",
     "PilotConfig",
@@ -42,8 +50,12 @@ __all__ = [
     "SAME_NAME_ENTITIES",
     "SURFACE_TEMPLATE_SETS",
     "SemanticCore",
+    "SplitAssignmentResult",
+    "SplitBalanceCell",
+    "SplitBalanceReport",
     "VALUES",
     "action_id",
+    "assign_splits",
     "core_id",
     "event_id",
     "generate_family_a_cores",
