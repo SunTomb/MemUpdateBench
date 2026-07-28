@@ -57,19 +57,6 @@ _FAMILY_ORDER = {
 
 
 def _compiled_snapshot_seal(snapshot: CompiledPilotTasks) -> str:
-    if not isinstance(snapshot.split_assignment, SplitAssignmentResult):
-        raise ValueError("split_assignment must be a SplitAssignmentResult")
-    if type(snapshot.tasks_jsonl) is not bytes:
-        raise ValueError("tasks_jsonl must be exact bytes")
-    for field_name in (
-        "config_sha256",
-        "code_revision",
-        "compiler_version",
-        "generator_name",
-    ):
-        value = getattr(snapshot, field_name)
-        if type(value) is not str or not value.strip():
-            raise ValueError(f"{field_name} must be a nonblank exact string")
     digest = hashlib.sha256()
     values = (
         canonical_json_bytes(snapshot.split_assignment),
@@ -144,35 +131,13 @@ class CompiledPilotTasks:
         return _validated_snapshot_tasks(self)
 
     def verify_authenticated_snapshot(self) -> None:
-        """Reject ordinary replacement/serialization tampering.
-
-        This process-local seal is not cryptographic authentication against code
-        that intentionally introspects private module state or recomputes it.
-        """
-        try:
-            current_seal = _compiled_snapshot_seal(self)
-            if (
-                type(self._snapshot_seal) is not str
-                or self._snapshot_seal != current_seal
-            ):
-                raise ValueError("seal mismatch")
-        except (AttributeError, TypeError, ValueError):
+        if (
+            self._snapshot_seal is None
+            or self._snapshot_seal != _compiled_snapshot_seal(self)
+        ):
             raise ValueError(
                 "compiled snapshot is not an authenticated compiler output"
-            ) from None
-
-    def authenticated_clone(self) -> CompiledPilotTasks:
-        """Return a sealed copy of this unchanged authenticated snapshot."""
-        self.verify_authenticated_snapshot()
-        return type(self)(
-            split_assignment=self.split_assignment,
-            config_sha256=self.config_sha256,
-            code_revision=self.code_revision,
-            compiler_version=self.compiler_version,
-            generator_name=self.generator_name,
-            tasks_jsonl=self.tasks_jsonl,
-            _seal_token=_COMPILED_SNAPSHOT_SEAL_TOKEN,
-        )
+            )
 
     def validate_snapshot_binding(
         self,

@@ -1,33 +1,17 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Final
 
-from mub.vnext.contracts import (
-    ArtifactRef,
-    Difficulty,
-    MemUpdateTask,
-    Split,
-    TaskFamily,
-    TaskManifest,
-)
+from mub.vnext.contracts import ArtifactRef, MemUpdateTask, Split, TaskManifest
 from mub.vnext.generation.build import CompiledPilotTasks
 from mub.vnext.generation.config import PilotConfig
 from mub.vnext.generation.core import GenerationContext
-from mub.vnext.generation.splits import (
-    CoreSplitAssignment,
-    SplitAssignmentResult,
-    SplitBalanceReport,
-    _ranking_sha256_from_material,
-    _stratum_sort_key,
-    _validate_split_assignment_result,
-)
+from mub.vnext.generation.splits import SplitBalanceReport
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.validation import ValidationReport, validate_splits
-from mub.vnext.validation.split import FAMILY_STRATIFICATION_AXES
 from mub.vnext.version import COMPILER_VERSION
 
 _TASKS_PATH: Final = "tasks.jsonl"
@@ -39,12 +23,6 @@ _JSON_MEDIA_TYPE: Final = "application/json"
 _JSONL_MEDIA_TYPE: Final = "application/x-ndjson"
 _CREATED_AT: Final = "deterministic-generation-provenance"
 _STANDARD_SPLITS: Final = (Split.TRAIN, Split.DEV, Split.TEST)
-_PILOT_FAMILIES: Final = (
-    TaskFamily.REPEATED_SAME_SLOT,
-    TaskFamily.INTERLEAVED_MULTI_SLOT,
-    TaskFamily.ENTITY_ATTRIBUTE_GROUNDING,
-    TaskFamily.NOOP_WRITE_DISCIPLINE,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +58,7 @@ class InMemoryPilotArtifact:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PilotArtifactBundle:
     resolved_config: PilotConfig
     split_balance_report: SplitBalanceReport
@@ -88,8 +66,10 @@ class PilotArtifactBundle:
     validation_report: ValidationReport
     artifacts: tuple[InMemoryPilotArtifact, ...]
 
-    def __post_init__(self) -> None:
-        _validate_public_bundle(self)
+    def __init__(self, *args, **kwargs) -> None:
+        raise TypeError(
+            "PilotArtifactBundle is factory-only; use build_pilot_artifact_bundle"
+        )
 
     @property
     def tasks_jsonl(self) -> bytes:
@@ -114,6 +94,53 @@ class PilotArtifactBundle:
     @property
     def validation_report_bytes(self) -> bytes:
         return self.artifacts[4].content
+
+
+def _construct_pilot_artifact_bundle(
+    *,
+    resolved_config: PilotConfig,
+    split_balance_report: SplitBalanceReport,
+    task_manifest: TaskManifest,
+    validation_report: ValidationReport,
+    artifacts: tuple[InMemoryPilotArtifact, ...],
+    tasks: tuple[MemUpdateTask, ...],
+) -> PilotArtifactBundle:
+    bundle = object.__new__(PilotArtifactBundle)
+    object.__setattr__(bundle, "resolved_config", resolved_config)
+    object.__setattr__(bundle, "split_balance_report", split_balance_report)
+    object.__setattr__(bundle, "task_manifest", task_manifest)
+    object.__setattr__(bundle, "validation_report", validation_report)
+    object.__setattr__(bundle, "artifacts", artifacts)
+    _validate_factory_bundle(bundle, tasks)
+    return bundle
+
+
+def _validate_factory_bundle(
+    bundle: PilotArtifactBundle,
+    tasks: tuple[MemUpdateTask, ...],
+) -> None:
+    _require_bundle_contracts(bundle)
+    _validate_artifact_envelopes(bundle.artifacts)
+    typed_payloads = (
+        canonical_json_bytes(bundle.resolved_config),
+        canonical_json_bytes(bundle.split_balance_report),
+        canonical_json_bytes(bundle.task_manifest),
+        canonical_json_bytes(bundle.validation_report),
+    )
+    if tuple(item.content for item in bundle.artifacts[1:]) != typed_payloads:
+        raise ValueError("typed bundle records disagree with canonical artifact bytes")
+    if bundle.artifacts[0].record_count != len(tasks):
+        raise ValueError("task artifact record count disagrees with canonical JSONL")
+    if bundle.task_manifest.task_file_paths_and_hashes != (
+        bundle.artifacts[0].ref,
+    ):
+        raise ValueError("task manifest does not bind the exact task artifact")
+    if bundle.task_manifest.generation_configs_and_hashes != (
+        bundle.artifacts[1].ref,
+    ):
+        raise ValueError("task manifest does not bind the exact config artifact")
+    if not bundle.validation_report.valid or bundle.validation_report.issues:
+        raise ValueError("validation report must be valid with zero issues")
 
 
 def _require_bundle_contracts(bundle: PilotArtifactBundle) -> None:
@@ -157,292 +184,6 @@ def _validate_artifact_envelopes(
             raise ValueError(f"{label} hash does not match its content")
 
 
-def _task_provenance(tasks: tuple[MemUpdateTask, ...]):
-    records = set()
-    for task in tasks:
-        generator = task.source.generator
-        if generator is None:
-            raise ValueError("task artifact contains a task without generator provenance")
-        record = (
-            generator.generator_name,
-            generator.compiler_version,
-            generator.code_revision,
-            generator.config_sha256,
-            generator.seed,
-        )
-        if (
-            task.metadata.generation_config_hash != generator.config_sha256
-            or task.metadata.compiler_version != generator.compiler_version
-        ):
-            raise ValueError("task artifact generator provenance is internally inconsistent")
-        records.add(record)
-    if len(records) != 1:
-        raise ValueError("task artifact must have one exact generator provenance binding")
-    return next(iter(records))
-
-
-def _strata_material_key(
-    family: TaskFamily,
-    difficulty: Difficulty,
-    strata: tuple[tuple[str, object], ...],
-) -> bytes:
-    return json.dumps(
-        {
-            "task_family": family.value,
-            "difficulty": difficulty.value,
-            "strata": dict(strata),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-
-
-def _validate_split_balance(
-    tasks: tuple[MemUpdateTask, ...],
-    config: PilotConfig,
-    report: SplitBalanceReport,
-) -> None:
-    core_records = {}
-    variant_counts = Counter()
-    for task in tasks:
-        try:
-            family = TaskFamily(task.task_family)
-            axes = FAMILY_STRATIFICATION_AXES[task.task_family]
-            strata = tuple(
-                (axis, task.metadata.resolved_profile[axis]) for axis in axes
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("split balance cannot resolve canonical task strata") from exc
-        core_id = task.metadata.split_key.semantic_core_id
-        record = (family, task.difficulty, strata, task.metadata.split)
-        previous = core_records.setdefault(core_id, record)
-        if previous != record:
-            raise ValueError("split balance found inconsistent variants within one core")
-        variant_counts[core_id] += 1
-
-    if len(tasks) != config.total_tasks or len(core_records) != config.total_semantic_cores:
-        raise ValueError("split balance task or semantic-core total disagrees with config")
-    if any(
-        count != config.surface_variants_per_core
-        for count in variant_counts.values()
-    ):
-        raise ValueError("split balance core variant count disagrees with config")
-    family_core_counts = Counter(record[0] for record in core_records.values())
-    if any(family_core_counts[family] != config.cores_per_family for family in _PILOT_FAMILIES):
-        raise ValueError("split balance per-family core total disagrees with config")
-
-    core_counts = Counter(record[3] for record in core_records.values())
-    task_counts = Counter(task.metadata.split for task in tasks)
-    expected_core_counts = {
-        split.value: core_counts[split] for split in _STANDARD_SPLITS
-    }
-    expected_task_counts = {
-        split.value: task_counts[split] for split in _STANDARD_SPLITS
-    }
-    if report.seed != config.seed:
-        raise ValueError("split balance seed disagrees with config")
-    if dict(report.core_counts) != expected_core_counts:
-        raise ValueError("split balance core counts disagree with task artifact")
-    if dict(report.projected_task_counts) != expected_task_counts:
-        raise ValueError("split balance task counts disagree with task artifact")
-
-    observed = Counter(
-        (family, difficulty, strata, split)
-        for family, difficulty, strata, split in core_records.values()
-    )
-    totals = Counter(
-        (family, difficulty, strata)
-        for family, difficulty, strata, _ in core_records.values()
-    )
-    expected_keys = {
-        (*base, split)
-        for base in totals
-        for split in _STANDARD_SPLITS
-    }
-    reported = {}
-    reported_order = []
-    for cell in report.cells:
-        key = (
-            cell.task_family,
-            cell.difficulty,
-            tuple(cell.strata.items()),
-            cell.split,
-        )
-        if key in reported:
-            raise ValueError("split balance contains a duplicate cell")
-        reported[key] = cell
-        reported_order.append(key)
-    if set(reported) != expected_keys:
-        raise ValueError("split balance cells do not exactly cover task strata")
-
-    family_order = {family: index for index, family in enumerate(_PILOT_FAMILIES)}
-    split_order = {split: index for index, split in enumerate(_STANDARD_SPLITS)}
-    expected_order = sorted(
-        expected_keys,
-        key=lambda key: (
-            family_order[key[0]],
-            _strata_material_key(key[0], key[1], key[2]),
-            split_order[key[3]],
-        ),
-    )
-    if reported_order != expected_order:
-        raise ValueError("split balance cells are not in canonical order")
-
-    quotas = {
-        split: int(config.cores_per_family * ratio)
-        for split, ratio in {
-            Split.TRAIN: config.splits.train,
-            Split.DEV: config.splits.dev,
-            Split.TEST: config.splits.test,
-        }.items()
-    }
-    for key, cell in reported.items():
-        base = key[:3]
-        total = totals[base]
-        count = observed[key]
-        expected_count = float(
-            total * quotas[key[3]] / config.cores_per_family
-        )
-        if (
-            cell.total != total
-            or cell.observed != count
-            or cell.expected != expected_count
-            or cell.deviation != float(count - expected_count)
-        ):
-            raise ValueError("split balance cell values disagree with task artifact")
-
-    assignments = [
-        CoreSplitAssignment(
-            semantic_core_id=core_id,
-            task_family=family,
-            difficulty=difficulty,
-            strata=dict(strata),
-            split=split,
-            ranking_sha256=_ranking_sha256_from_material(
-                seed=config.seed,
-                task_family=family,
-                difficulty=difficulty,
-                strata=dict(strata),
-                semantic_core_id=core_id,
-            ),
-        )
-        for core_id, (family, difficulty, strata, split) in core_records.items()
-    ]
-    difficulty_order = {
-        difficulty: index
-        for index, difficulty in enumerate(
-            (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
-        )
-    }
-    assignments.sort(
-        key=lambda assignment: (
-            family_order[assignment.task_family],
-            difficulty_order[assignment.difficulty],
-            _stratum_sort_key(
-                assignment.task_family,
-                assignment.difficulty,
-                assignment.strata,
-            ),
-            assignment.semantic_core_id,
-        )
-    )
-    try:
-        _validate_split_assignment_result(
-            SplitAssignmentResult(
-                assignments=tuple(assignments),
-                split_balance=report,
-            )
-        )
-    except (TypeError, ValueError) as exc:
-        detail = str(exc).replace("\n", " ")[:512]
-        raise ValueError(
-            f"split assignment disagrees with deterministic ranking: {detail}"
-        ) from exc
-
-
-def _validate_public_bundle(bundle: PilotArtifactBundle) -> None:
-    _require_bundle_contracts(bundle)
-    _validate_artifact_envelopes(bundle.artifacts)
-
-    try:
-        context = GenerationContext(
-            config=bundle.resolved_config,
-            code_revision=bundle.task_manifest.code_revision,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError("bundle config or revision binding is invalid") from exc
-    resolved_config = context.config.model_copy(deep=True)
-    object.__setattr__(bundle, "resolved_config", resolved_config)
-
-    typed_payloads = (
-        canonical_json_bytes(resolved_config),
-        canonical_json_bytes(bundle.split_balance_report),
-        canonical_json_bytes(bundle.task_manifest),
-        canonical_json_bytes(bundle.validation_report),
-    )
-    if tuple(item.content for item in bundle.artifacts[1:]) != typed_payloads:
-        raise ValueError("typed bundle records disagree with canonical artifact bytes")
-
-    try:
-        tasks = CompiledPilotTasks.validated_task_set(
-            bundle.tasks_jsonl,
-            config_sha256=context.config_sha256,
-            code_revision=bundle.task_manifest.code_revision,
-            compiler_version=COMPILER_VERSION,
-            generator_name=context.generator_name,
-            seed=resolved_config.seed,
-        )
-    except (TypeError, ValueError) as exc:
-        detail = str(exc).replace("\n", " ")[:512]
-        raise ValueError(f"Pilot task set is invalid: {detail}") from exc
-    if bundle.artifacts[0].record_count != len(tasks):
-        raise ValueError("task artifact record count disagrees with canonical JSONL")
-
-    (
-        generator_name,
-        compiler_version,
-        code_revision,
-        config_sha256,
-        seed,
-    ) = _task_provenance(tasks)
-    if (
-        compiler_version != COMPILER_VERSION
-        or code_revision != bundle.task_manifest.code_revision
-        or config_sha256 != bundle.artifacts[1].ref.sha256
-        or config_sha256 != sha256_model(resolved_config)
-        or seed != resolved_config.seed
-    ):
-        raise ValueError("task artifact provenance disagrees with config or manifest")
-
-    expected_manifest = _build_manifest(
-        tasks=tasks,
-        compiler_versions={generator_name: compiler_version},
-        code_revision=code_revision,
-        config=resolved_config,
-        config_ref=bundle.artifacts[1].ref,
-        tasks_ref=bundle.artifacts[0].ref,
-    )
-    if canonical_json_bytes(bundle.task_manifest) != canonical_json_bytes(
-        expected_manifest
-    ):
-        raise ValueError("task manifest is not the exact canonical bundle manifest")
-
-    _validate_split_balance(tasks, resolved_config, bundle.split_balance_report)
-
-    recomputed = validate_splits(tasks, task_manifest=bundle.task_manifest)
-    if not recomputed.valid or recomputed.issues:
-        codes = ", ".join(issue.code for issue in recomputed.issues[:8])
-        raise ValueError(
-            "bundle failed split validation" + (f": {codes}" if codes else "")
-        )
-    if bundle.validation_report != recomputed:
-        raise ValueError("validation report does not equal recomputed split validation")
-    if not bundle.validation_report.valid or bundle.validation_report.issues:
-        raise ValueError("validation report must be valid with zero issues")
-
-
 def _artifact(
     path: str,
     content: bytes,
@@ -456,24 +197,6 @@ def _artifact(
         media_type=media_type,
         record_count=record_count,
     )
-
-
-def _validated_compiled_tasks(
-    compiled: CompiledPilotTasks,
-    context: GenerationContext,
-):
-    if type(compiled) is not CompiledPilotTasks:
-        raise TypeError("compiled must be a CompiledPilotTasks")
-    if compiled.compiler_version != COMPILER_VERSION:
-        raise ValueError(
-            "compiled snapshot compiler version does not equal the current compiler version"
-        )
-    if compiled.generator_name != context.generator_name:
-        raise ValueError("compiled snapshot generator does not equal the current generator")
-    try:
-        return compiled.validated_tasks()
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError(f"compiled snapshot is invalid: {exc}") from exc
 
 
 def _split_policy_version(tasks) -> str:
@@ -590,10 +313,12 @@ def build_pilot_artifact_bundle(
         raise TypeError("config must be a PilotConfig")
     if type(compiled) is not CompiledPilotTasks:
         raise TypeError("compiled must be a CompiledPilotTasks")
+    compiled.verify_authenticated_snapshot()
     context = GenerationContext(config=config, code_revision=compiled.code_revision)
     if context.config_sha256 != compiled.config_sha256:
         raise ValueError("config does not match compiled snapshot config binding")
-    tasks = _validated_compiled_tasks(compiled, context)
+    tasks = compiled.tasks
+    compiled.validate_snapshot_binding(tasks)
 
     resolved_config = context.config.model_copy(deep=True)
     resolved_config_bytes = canonical_json_bytes(resolved_config)
@@ -654,7 +379,7 @@ def build_pilot_artifact_bundle(
         record_count=1,
     )
 
-    return PilotArtifactBundle(
+    return _construct_pilot_artifact_bundle(
         resolved_config=resolved_config,
         split_balance_report=split_balance_report,
         task_manifest=task_manifest,
@@ -666,6 +391,7 @@ def build_pilot_artifact_bundle(
             task_manifest_artifact,
             validation_report_artifact,
         ),
+        tasks=tasks,
     )
 
 

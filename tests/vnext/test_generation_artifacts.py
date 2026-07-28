@@ -423,6 +423,48 @@ def test_noncanonical_compiled_snapshot_is_rejected(compiled, config) -> None:
         build_pilot_artifact_bundle(tampered, config)
 
 
+def test_factory_rejects_object_tampered_nonsemantic_task_metadata(
+    compiled,
+    config,
+) -> None:
+    tasks = list(compiled.tasks)
+    core_id = tasks[0].metadata.split_key.semantic_core_id
+    for index, task in enumerate(tasks):
+        if task.metadata.split_key.semantic_core_id != core_id:
+            continue
+        payload = task.model_dump(mode="python")
+        payload["metadata"]["tags"].append("hostile-nonsemantic-tag")
+        tasks[index] = MemUpdateTask.model_validate(payload)
+    hostile_jsonl = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tasks
+    )
+    original_jsonl = compiled.tasks_jsonl
+    object.__setattr__(compiled, "tasks_jsonl", hostile_jsonl)
+    try:
+        with pytest.raises(ValueError, match="authenticated|seal"):
+            build_pilot_artifact_bundle(compiled, config)
+    finally:
+        object.__setattr__(compiled, "tasks_jsonl", original_jsonl)
+
+
+def test_direct_task_set_helper_bounds_unhashable_surface_variant(compiled) -> None:
+    rows = compiled.tasks_jsonl.splitlines()
+    payload = MemUpdateTask.model_validate_json(rows[0]).model_dump(mode="python")
+    payload["metadata"]["extra"]["surface_variant"] = []
+    rows[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
+    hostile_jsonl = b"\n".join(rows) + b"\n"
+
+    with pytest.raises(ValueError, match="surface_variant|task set|compiled Pilot"):
+        CompiledPilotTasks.validated_task_set(
+            hostile_jsonl,
+            config_sha256=compiled.config_sha256,
+            code_revision=compiled.code_revision,
+            compiler_version=compiled.compiler_version,
+            generator_name=compiled.generator_name,
+            seed=compiled.split_assignment.split_balance.seed,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
