@@ -181,6 +181,47 @@ def test_compiled_snapshot_rejects_noncanonical_framing_and_row_replacement(
         replace(compiled, config_sha256="0" * 64)
 
 
+def test_public_snapshot_gate_validates_all_rows_after_gold_tamper(
+    compiled,
+    monkeypatch,
+) -> None:
+    tasks = compiled.tasks
+    tampered_core = tasks[0].metadata.split_key.semantic_core_id
+    tampered = [
+        task
+        for task in tasks
+        if task.metadata.split_key.semantic_core_id == tampered_core
+    ]
+    assert len(tampered) == 3
+    for task in tampered:
+        object.__setattr__(task.gold, "final_state", {"tampered": "state"})
+    tampered_jsonl = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tasks
+    )
+
+    calls = Counter()
+    original_task_validator = build_module.validate_task
+    original_replay_validator = build_module.validate_gold_replay
+
+    def task_validator(task):
+        calls["task"] += 1
+        return original_task_validator(task)
+
+    def replay_validator(task):
+        calls["gold_replay"] += 1
+        return original_replay_validator(task)
+
+    monkeypatch.setattr(build_module, "validate_task", task_validator)
+    monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
+    with pytest.raises(ValueError) as exc_info:
+        replace(compiled, tasks_jsonl=tampered_jsonl)
+
+    assert calls == {"task": 1440, "gold_replay": 1440}
+    message = str(exc_info.value)
+    assert "validation stage=gold_replay" in message
+    assert "final_state" in message
+
+
 def test_reversed_generator_inputs_still_produce_canonical_order(
     config,
     compiled,

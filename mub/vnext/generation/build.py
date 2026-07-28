@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any
 
 from mub.vnext.contracts import MemUpdateTask, Split, TaskFamily
@@ -41,9 +41,10 @@ class CompiledPilotTasks:
     compiler_version: str
     generator_name: str
     tasks_jsonl: bytes
+    _compile_issues: InitVar[tuple[str, ...]] = ()
 
-    def __post_init__(self) -> None:
-        _validate_compiled_snapshot(self)
+    def __post_init__(self, _compile_issues: tuple[str, ...]) -> None:
+        _validate_compiled_snapshot(self, _compile_issues)
 
     @property
     def tasks(self) -> tuple[MemUpdateTask, ...]:
@@ -89,24 +90,6 @@ def _parse_tasks_jsonl(tasks_jsonl: bytes) -> tuple[MemUpdateTask, ...]:
     return parsed
 
 
-def _verify_round_trip(
-    tasks: tuple[MemUpdateTask, ...],
-    tasks_jsonl: bytes,
-) -> None:
-    reparsed = _parse_tasks_jsonl(tasks_jsonl)
-    if len(reparsed) != len(tasks):
-        raise ValueError("canonical tasks JSONL row count changed during serialization")
-    for row_number, (task, parsed) in enumerate(
-        zip(tasks, reparsed, strict=True), start=1
-    ):
-        if parsed != task:
-            raise ValueError(
-                f"canonical tasks JSONL row {row_number} changed its task record"
-            )
-    if reparsed != tasks or _canonical_jsonl(reparsed) != tasks_jsonl:
-        raise ValueError("canonical tasks JSONL failed exact record/byte round trip")
-
-
 def _linked_ids(task: MemUpdateTask):
     yield "task", task.task_id
     yield "source", task.source.source_id
@@ -118,92 +101,16 @@ def _linked_ids(task: MemUpdateTask):
         yield "query", query.query_id
 
 
-def _validate_compiled_snapshot(snapshot: CompiledPilotTasks) -> None:
-    if not isinstance(snapshot.split_assignment, SplitAssignmentResult):
-        raise TypeError("split_assignment must be a SplitAssignmentResult")
-    if (
-        type(snapshot.config_sha256) is not str
-        or len(snapshot.config_sha256) != 64
-        or any(character not in "0123456789abcdef" for character in snapshot.config_sha256)
-    ):
-        raise ValueError("config_sha256 must be a lowercase SHA-256 digest")
-
-    for field_name in ("code_revision", "compiler_version", "generator_name"):
-        value = getattr(snapshot, field_name)
-        if type(value) is not str or not value.strip():
-            raise ValueError(f"{field_name} must be a nonblank string")
-
+def _validate_compiled_snapshot(
+    snapshot: CompiledPilotTasks,
+    compile_issues: tuple[str, ...],
+) -> None:
     tasks = _parse_tasks_jsonl(snapshot.tasks_jsonl)
-    if len(tasks) != _EXPECTED_TASK_COUNT:
-        raise ValueError("compiled snapshot must contain exactly 1440 task rows")
-    if tasks != tuple(sorted(tasks, key=_task_sort_key)):
-        raise ValueError("compiled snapshot tasks are not in canonical order")
-    if Counter(task.metadata.split for task in tasks) != Counter(
-        _EXPECTED_SPLIT_COUNTS
-    ):
-        raise ValueError("compiled snapshot task split counts are inconsistent")
-    expected_family_counts = Counter(
-        {family: _EXPECTED_FAMILY_COUNT for family in _FAMILY_ORDER}
-    )
-    if Counter(task.task_family for task in tasks) != expected_family_counts:
-        raise ValueError("compiled snapshot task family counts are inconsistent")
-
-    assignments = snapshot.split_assignment.assignments
-    assignment_by_core = {
-        assignment.semantic_core_id: assignment for assignment in assignments
-    }
-    if len(assignments) != _EXPECTED_CORE_COUNT or len(assignment_by_core) != len(
-        assignments
-    ):
-        raise ValueError("compiled snapshot must contain 480 unique split assignments")
-
-    variants_by_core: dict[str, set[Any]] = defaultdict(set)
-    hashes_by_core: dict[str, set[str]] = defaultdict(set)
-    linked_ids: set[str] = set()
-    for task in tasks:
-        core_id = task.metadata.split_key.semantic_core_id
-        assignment = assignment_by_core.get(core_id)
-        if assignment is None:
-            raise ValueError(
-                f"compiled snapshot task {task.task_id!r} has no split assignment"
-            )
-        if (
-            task.metadata.split != assignment.split
-            or task.task_family != assignment.task_family
-            or task.difficulty != assignment.difficulty
-        ):
-            raise ValueError(
-                f"compiled snapshot task {task.task_id!r} disagrees with its split assignment"
-            )
-        generator = task.source.generator
-        if (
-            task.metadata.generation_config_hash != snapshot.config_sha256
-            or task.metadata.compiler_version != snapshot.compiler_version
-            or generator is None
-            or generator.config_sha256 != snapshot.config_sha256
-            or generator.code_revision != snapshot.code_revision
-            or generator.compiler_version != snapshot.compiler_version
-            or generator.generator_name != snapshot.generator_name
-            or generator.seed != snapshot.split_assignment.split_balance.seed
-        ):
-            raise ValueError(
-                f"compiled snapshot task {task.task_id!r} disagrees with generator provenance"
-            )
-        variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
-        hashes_by_core[core_id].add(semantic_task_hash(task))
-        for _, linked_id in _linked_ids(task):
-            if linked_id in linked_ids:
-                raise ValueError(
-                    f"compiled snapshot contains duplicate linked ID {linked_id!r}"
-                )
-            linked_ids.add(linked_id)
-
-    if set(variants_by_core) != set(assignment_by_core):
-        raise ValueError("compiled snapshot core coverage disagrees with split assignments")
-    if any(variants != {0, 1, 2} for variants in variants_by_core.values()):
-        raise ValueError("compiled snapshot cores must each contain variants {0,1,2}")
-    if any(len(hashes) != 1 for hashes in hashes_by_core.values()):
-        raise ValueError("compiled snapshot core variants must share one semantic hash")
+    issues = _validation_issues(tasks)
+    issues.extend(_snapshot_consistency_issues(snapshot, tasks))
+    issues.extend(compile_issues)
+    if issues:
+        raise ValueError("compiled Pilot snapshot failed:\n" + "\n".join(issues))
 
 
 def _linkage_issues(rendered: tuple[_RenderedTask, ...]) -> list[str]:
@@ -309,6 +216,107 @@ def _validation_issues(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
                     f"validation stage={stage} task={task.task_id!r} "
                     f"issue={issue.code}@{issue.path}: {issue.message}"
                 )
+    return issues
+
+
+def _snapshot_consistency_issues(
+    snapshot: CompiledPilotTasks,
+    tasks: tuple[MemUpdateTask, ...],
+) -> list[str]:
+    issues = _artifact_issues(tasks)
+    if not isinstance(snapshot.split_assignment, SplitAssignmentResult):
+        issues.append("split_assignment must be a SplitAssignmentResult")
+        return issues
+    if (
+        type(snapshot.config_sha256) is not str
+        or len(snapshot.config_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in snapshot.config_sha256
+        )
+    ):
+        issues.append("config_sha256 must be a lowercase SHA-256 digest")
+    for field_name in ("code_revision", "compiler_version", "generator_name"):
+        value = getattr(snapshot, field_name)
+        if type(value) is not str or not value.strip():
+            issues.append(f"{field_name} must be a nonblank string")
+
+    assignments = snapshot.split_assignment.assignments
+    assignment_by_core = {
+        assignment.semantic_core_id: assignment for assignment in assignments
+    }
+    if len(assignments) != _EXPECTED_CORE_COUNT or len(assignment_by_core) != len(
+        assignments
+    ):
+        issues.append("compiled snapshot must contain 480 unique split assignments")
+
+    variants_by_core: dict[str, set[Any]] = defaultdict(set)
+    hashes_by_core: dict[str, set[str]] = defaultdict(set)
+    linked_ids: dict[str, str] = {}
+    for row_number, task in enumerate(tasks, start=1):
+        core_id = task.metadata.split_key.semantic_core_id
+        assignment = assignment_by_core.get(core_id)
+        if assignment is None:
+            issues.append(
+                f"snapshot row={row_number} task={task.task_id!r} has no split assignment"
+            )
+        else:
+            expected_fields = (
+                ("split", assignment.split, task.metadata.split),
+                ("task_family", assignment.task_family.value, task.task_family),
+                ("difficulty", assignment.difficulty, task.difficulty),
+            )
+            for field_name, expected, observed in expected_fields:
+                if expected != observed:
+                    issues.append(
+                        f"snapshot row={row_number} task={task.task_id!r} "
+                        f"field={field_name} expected={expected!r} observed={observed!r}"
+                    )
+        generator = task.source.generator
+        if (
+            task.metadata.generation_config_hash != snapshot.config_sha256
+            or task.metadata.compiler_version != snapshot.compiler_version
+            or generator is None
+            or generator.config_sha256 != snapshot.config_sha256
+            or generator.code_revision != snapshot.code_revision
+            or generator.compiler_version != snapshot.compiler_version
+            or generator.generator_name != snapshot.generator_name
+            or generator.seed != snapshot.split_assignment.split_balance.seed
+        ):
+            issues.append(
+                f"snapshot row={row_number} task={task.task_id!r} "
+                "disagrees with generator provenance"
+            )
+        variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
+        try:
+            hashes_by_core[core_id].add(semantic_task_hash(task))
+        except Exception as exc:
+            issues.append(
+                f"snapshot semantic hash row={row_number} task={task.task_id!r} "
+                f"exception={type(exc).__name__}: {exc}"
+            )
+        for id_kind, linked_id in _linked_ids(task):
+            location = f"row={row_number}:{id_kind}"
+            first_location = linked_ids.get(linked_id)
+            if first_location is not None:
+                issues.append(
+                    f"snapshot duplicate linked ID {linked_id!r}: "
+                    f"first={first_location} duplicate={location}"
+                )
+            else:
+                linked_ids[linked_id] = location
+
+    if set(variants_by_core) != set(assignment_by_core):
+        issues.append("snapshot core coverage disagrees with split assignments")
+    for core_id in sorted(variants_by_core):
+        if variants_by_core[core_id] != {0, 1, 2}:
+            issues.append(
+                f"snapshot core {core_id!r} must contain variants {{0,1,2}}"
+            )
+        if len(hashes_by_core[core_id]) != 1:
+            issues.append(
+                f"snapshot core {core_id!r} variants must share one semantic hash"
+            )
     return issues
 
 
@@ -429,22 +437,20 @@ def compile_pilot_tasks(
     )
     tasks = tuple(record.task for record in rendered)
 
-    issues = _validation_issues(tasks)
-    issues.extend(_linkage_issues(rendered))
-    issues.extend(_artifact_issues(tasks))
-    if issues:
-        raise ValueError("Pilot task compilation failed:\n" + "\n".join(issues))
-
+    compile_issues = tuple(_linkage_issues(rendered))
     tasks_jsonl = _canonical_jsonl(tasks)
-    _verify_round_trip(tasks, tasks_jsonl)
-    return CompiledPilotTasks(
+    compiled = CompiledPilotTasks(
         split_assignment=split_assignment,
         config_sha256=context.config_sha256,
         code_revision=context.code_revision,
         compiler_version=context.compiler_version,
         generator_name=context.generator_name,
         tasks_jsonl=tasks_jsonl,
+        _compile_issues=compile_issues,
     )
+    if compiled.tasks != tasks:
+        raise ValueError("canonical tasks JSONL changed records during round trip")
+    return compiled
 
 
 __all__ = ["CompiledPilotTasks", "compile_pilot_tasks"]
