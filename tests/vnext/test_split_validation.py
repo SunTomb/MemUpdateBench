@@ -928,20 +928,41 @@ def test_task_file_record_counts_are_required_and_must_sum_to_total_tasks():
     assert "task_file_record_count_mismatch" in _codes(validate_splits(tasks, task_manifest=mismatch))
 
 
-def test_manifest_task_schema_and_split_policy_versions_must_match_tasks():
+def test_impossible_constructed_manifest_versions_are_rejected_before_cross_record_checks():
     task = _task("test", Split.TEST)
     bad_schema_task = MemUpdateTask.model_construct(**{**task.__dict__, "schema_version": "9.9.9"})
-    bad_manifest = _manifest((task,)).validated_replace(task_schema_version="9.9.9", split_policy_version="9.9.9")
+    base_manifest = _manifest((task,))
+    bad_manifest = TaskManifest.model_construct(
+        **{
+            **base_manifest.__dict__,
+            "task_schema_version": "9.9.9",
+            "split_policy_version": "9.9.9",
+        }
+    )
     report = validate_splits((bad_schema_task,), task_manifest=bad_manifest)
     codes = _codes(report)
+    assert any(
+        issue.code == "malformed_task_manifest" and issue.path == "task_manifest"
+        for issue in report.issues
+    )
     assert "task_schema_version_mismatch" not in codes
-    assert "task_split_policy_version_mismatch" in codes
+    assert "task_split_policy_version_mismatch" not in codes
 
 
-def test_manifest_task_schema_version_mismatch_is_reported():
+def test_impossible_constructed_manifest_task_schema_version_is_malformed():
     task = _task("test", Split.TEST)
-    manifest = _manifest((task,)).validated_replace(task_schema_version="9.9.9")
-    assert "task_schema_version_mismatch" in _codes(validate_splits((task,), task_manifest=manifest))
+    base_manifest = _manifest((task,))
+    manifest = TaskManifest.model_construct(
+        **{**base_manifest.__dict__, "task_schema_version": "9.9.9"}
+    )
+    report = validate_splits((task,), task_manifest=manifest)
+    codes = _codes(report)
+    assert any(
+        issue.code == "malformed_task_manifest" and issue.path == "task_manifest"
+        for issue in report.issues
+    )
+    assert "task_schema_version_mismatch" not in codes
+    assert "task_split_policy_version_mismatch" not in codes
 
 
 def test_manifest_task_hash_ledger_requires_exact_task_set_and_sha256_model_hashes():
