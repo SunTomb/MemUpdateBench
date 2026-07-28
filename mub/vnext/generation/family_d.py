@@ -100,6 +100,28 @@ def _current_value(config: PilotConfig, target: MemoryObjectKey) -> str:
     )
 
 
+def _different_value(
+    config: PilotConfig,
+    target: MemoryObjectKey,
+    key: MemoryObjectKey,
+    purpose: str,
+) -> str:
+    current_value = _current_value(config, target)
+    return min(
+        (value for value in VALUES if value != current_value),
+        key=lambda value: stable_id(
+            "family_d_non_target_value",
+            {
+                "seed": config.seed,
+                "target": _identity_payload(target),
+                "key": _identity_payload(key),
+                "purpose": purpose,
+                "value": value,
+            },
+        ),
+    )
+
+
 def _other_entity_key(target: MemoryObjectKey) -> MemoryObjectKey:
     group = next(group for group in SAME_NAME_ENTITIES if target.entity in group)
     entity = next(candidate for candidate in group if candidate != target.entity)
@@ -114,6 +136,7 @@ def _other_attribute_key(target: MemoryObjectKey) -> MemoryObjectKey:
 
 
 def _trap_event(
+    config: PilotConfig,
     trap_type: str,
     target: MemoryObjectKey,
     current_value: str,
@@ -137,9 +160,10 @@ def _trap_event(
             operation=Operation.NOOP,
             object_keys=[],
             value=None,
-            role=EventRole.DUPLICATE_CURRENT,
+            role=EventRole.NOOP_NEAR_MISS,
             metadata={
                 "trap_type": trap_type,
+                "allow_accepted_answer_ambiguity": True,
                 "surface_statement": (
                     f"{target.entity}.{target.attribute} remains exactly {current_value}; "
                     "this repeats the exact current target value."
@@ -147,18 +171,20 @@ def _trap_event(
             },
         )
     if trap_type == "other_entity_correction":
+        key = _other_entity_key(target)
         return CoreEvent(
             operation=Operation.ADD,
-            object_keys=[_other_entity_key(target)],
-            value=current_value,
+            object_keys=[key],
+            value=_different_value(config, target, key, trap_type),
             role=EventRole.SAME_NAME_OTHER_ENTITY,
             metadata={"trap_type": trap_type},
         )
     if trap_type == "other_attribute_correction":
+        key = _other_attribute_key(target)
         return CoreEvent(
             operation=Operation.ADD,
-            object_keys=[_other_attribute_key(target)],
-            value=current_value,
+            object_keys=[key],
+            value=_different_value(config, target, key, trap_type),
             role=EventRole.SAME_ENTITY_OTHER_ATTRIBUTE,
             metadata={"trap_type": trap_type},
         )
@@ -198,20 +224,7 @@ def _filler_write_events(
         CoreEvent(
             operation=Operation.ADD,
             object_keys=[key],
-            value=VALUES[
-                int(
-                    stable_id(
-                        "family_d_filler_value",
-                        {
-                            "seed": config.seed,
-                            "target": _identity_payload(target),
-                            "key": _identity_payload(key),
-                        },
-                    )[-8:],
-                    16,
-                )
-                % len(VALUES)
-            ],
+            value=_different_value(config, target, key, "ordinary_write"),
             role=EventRole.NEUTRAL,
             metadata={"event_kind": "ordinary_write"},
         )
@@ -256,7 +269,7 @@ def _build_core(
         role=EventRole.LATEST_GOLD,
         metadata={"event_kind": "target_initialization"},
     )
-    trap_event = _trap_event(trap_type, target, current_value)
+    trap_event = _trap_event(config, trap_type, target, current_value)
     noop_count = int(_EVENT_COUNT * density)
     true_write_count = _EVENT_COUNT - noop_count
     trap_is_noop = trap_event.operation is Operation.NOOP

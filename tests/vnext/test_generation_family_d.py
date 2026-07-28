@@ -18,6 +18,7 @@ from mub.vnext.generation import (
     render_core,
 )
 from mub.vnext.io import semantic_task_hash
+from mub.vnext.validation import validate_task_semantics
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
 
@@ -108,6 +109,30 @@ def test_family_d_noops_never_mutate_and_counts_match_replay(cores):
             assert dict(after.version_history) == (dict(before.version_history) if before else {})
 
 
+def test_family_d_target_history_grows_only_on_target_writes(cores):
+    for core in cores:
+        target_id = core.query_targets[0].canonical_id
+        replay = _replay(core.events)
+        target_writes = [
+            event
+            for event in core.events
+            if event.operation is not Operation.NOOP
+            and any(key.canonical_id == target_id for key in event.object_keys)
+        ]
+        assert len(replay.version_history[target_id]) == len(target_writes) == 1
+        assert all(
+            target_id not in {key.canonical_id for key in event.object_keys}
+            for event in core.events
+            if event.operation is Operation.NOOP
+        )
+
+
+def test_family_d_generation_does_not_mutate_config(config):
+    before = config.model_dump(mode="json")
+    generate_family_d_cores(config)
+    assert config.model_dump(mode="json") == before
+
+
 def test_family_d_traps_are_target_isolated_and_duplicate_is_visible(cores):
     for core in cores:
         target = core.query_targets[0]
@@ -119,27 +144,43 @@ def test_family_d_traps_are_target_isolated_and_duplicate_is_visible(cores):
             assert event.operation is Operation.NOOP
             assert not event.object_keys
             assert event.value is None
+        ambiguity_events = [
+            item
+            for item in core.events
+            if item.metadata.get("allow_accepted_answer_ambiguity") is True
+        ]
         if trap == "duplicate_current":
-            assert event.role is EventRole.DUPLICATE_CURRENT
+            assert ambiguity_events == [event]
+            assert event.role is EventRole.NOOP_NEAR_MISS
+            assert event.metadata["allow_accepted_answer_ambiguity"] is True
             assert core.stratification["duplicate_current_count"] == 1
             statement = event.metadata["surface_statement"]
             assert target.entity in statement
             assert target.attribute in statement
             assert str(core.expected_answer) in statement
         else:
+            assert not ambiguity_events
+            assert "allow_accepted_answer_ambiguity" not in event.metadata
             assert core.stratification["duplicate_current_count"] == 0
         if trap == "other_entity_correction":
             assert event.operation is Operation.ADD
+            assert event.value != core.expected_answer
             key = event.object_keys[0]
             assert key.entity != target.entity
             assert key.attribute == target.attribute
             assert key.canonical_id != target.canonical_id
         if trap == "other_attribute_correction":
             assert event.operation is Operation.ADD
+            assert event.value != core.expected_answer
             key = event.object_keys[0]
             assert key.entity == target.entity
             assert key.attribute != target.attribute
             assert key.canonical_id != target.canonical_id
+        assert all(
+            event.value != core.expected_answer
+            for event in core.events
+            if event.metadata.get("event_kind") == "ordinary_write"
+        )
         assert all(
             target not in event.object_keys
             for event in core.events
@@ -190,9 +231,14 @@ def test_family_d_three_rendered_variants_validate_replay_and_share_hash(config,
             for variant in range(3)
         ]
         assert len({task.task_id for task in tasks}) == 3
+        assert len({task.source.source_id for task in tasks}) == 3
+        assert len({event.event_id for task in tasks for event in task.events}) == 24
+        assert len({action.action_id for task in tasks for action in task.gold.actions}) == 24
+        assert len({query.query_id for task in tasks for query in task.queries}) == 3
         assert len({semantic_task_hash(task) for task in tasks}) == 1
         assert all(validate_task(task).valid for task in tasks)
         assert all(validate_gold_replay(task).valid for task in tasks)
+        assert all(not validate_task_semantics(task).issues for task in tasks)
 
 
 def test_family_a_through_c_generation_smoke(config):
