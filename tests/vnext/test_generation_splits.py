@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter, defaultdict
 from itertools import combinations
 from pathlib import Path
@@ -18,7 +20,9 @@ from mub.vnext.generation import (
     load_pilot_config,
     render_core,
 )
-from mub.vnext.io import canonical_json_bytes, sha256_model
+from mub.vnext.generation.splits import _optimal_allocations
+from mub.vnext.io import canonical_json_bytes, semantic_task_hash, sha256_model
+from mub.vnext.profiles import build_generic_profile
 from mub.vnext.validation.split import FAMILY_STRATIFICATION_AXES
 
 
@@ -165,11 +169,14 @@ def test_rendered_assignments_are_leakage_safe_across_all_group_keys_and_hashes(
         assert all(values_by_split.values()), field
         _assert_pairwise_disjoint(values_by_split)
 
-    hashes_by_split = {split: set() for split in CORE_SPLIT_COUNTS}
+    exact_hashes_by_split = {split: set() for split in CORE_SPLIT_COUNTS}
+    semantic_hashes_by_split = {split: set() for split in CORE_SPLIT_COUNTS}
     for task in tasks:
-        hashes_by_split[task.metadata.split].add(sha256_model(task))
-    assert sum(map(len, hashes_by_split.values())) == len(tasks)
-    _assert_pairwise_disjoint(hashes_by_split)
+        exact_hashes_by_split[task.metadata.split].add(sha256_model(task))
+        semantic_hashes_by_split[task.metadata.split].add(semantic_task_hash(task))
+    assert sum(map(len, exact_hashes_by_split.values())) == len(tasks)
+    _assert_pairwise_disjoint(exact_hashes_by_split)
+    _assert_pairwise_disjoint(semantic_hashes_by_split)
 
 
 def test_assignment_is_byte_stable_for_reordered_input_without_mutation(config, cores):
@@ -287,3 +294,282 @@ def test_assignment_and_balance_records_are_immutable(assigned):
         assigned.split_balance.core_counts["train"] = 0
     with pytest.raises(TypeError):
         assigned.split_balance.cells[0].strata["new_axis"] = "bad"
+
+
+def _canonical_payload_bytes(payload):
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _matching_core_pair(assigned, family, predicate):
+    groups = defaultdict(list)
+    for assignment in assigned.assignments:
+        if assignment.task_family is family and predicate(assignment.strata):
+            key = (
+                assignment.difficulty,
+                _canonical_payload_bytes(dict(assignment.strata)),
+            )
+            groups[key].append(assignment.semantic_core_id)
+    return next(
+        tuple(core_ids[:2])
+        for core_ids in groups.values()
+        if len(core_ids) >= 2
+    )
+
+
+def _replace_profile_axis(core, axis, value):
+    profile = dict(core.profile)
+    profile[axis] = value
+    return core.model_copy(update={"profile": profile})
+
+
+def _balance_axis_signatures(result, assignments, axis):
+    first = assignments[0]
+    other_strata = {
+        key: value for key, value in first.strata.items() if key != axis
+    }
+    signatures = set()
+    for cell in result.split_balance.cells:
+        if (
+            cell.task_family is not first.task_family
+            or cell.difficulty is not first.difficulty
+        ):
+            continue
+        cell_other = {
+            key: value for key, value in cell.strata.items() if key != axis
+        }
+        if _canonical_payload_bytes(cell_other) == _canonical_payload_bytes(other_strata):
+            signatures.add(_canonical_payload_bytes(cell.strata[axis]))
+    return signatures
+
+
+def test_canonical_stratum_grouping_distinguishes_numeric_and_boolean_types_when_reordered(
+    config, cores, assigned
+):
+    numeric_ids = _matching_core_pair(
+        assigned,
+        TaskFamily.REPEATED_SAME_SLOT,
+        lambda strata: "cross_slot_interleaving" in strata,
+    )
+    false_ids = _matching_core_pair(
+        assigned,
+        TaskFamily.NOOP_WRITE_DISCIPLINE,
+        lambda strata: strata["duplicate_current_condition"] is False,
+    )
+    true_ids = _matching_core_pair(
+        assigned,
+        TaskFamily.NOOP_WRITE_DISCIPLINE,
+        lambda strata: strata["duplicate_current_condition"] is True,
+    )
+    replacements = {
+        numeric_ids[0]: ("cross_slot_interleaving", 0),
+        numeric_ids[1]: ("cross_slot_interleaving", 0.0),
+        false_ids[0]: ("duplicate_current_condition", False),
+        false_ids[1]: ("duplicate_current_condition", 0),
+        true_ids[0]: ("duplicate_current_condition", True),
+        true_ids[1]: ("duplicate_current_condition", 1),
+    }
+    modified = [
+        _replace_profile_axis(core, *replacements[core.core_id])
+        if core.core_id in replacements
+        else core
+        for core in cores
+    ]
+
+    forward = assign_splits(modified, config.seed)
+    reversed_result = assign_splits(list(reversed(modified)), config.seed)
+
+    assert canonical_json_bytes(forward) == canonical_json_bytes(reversed_result)
+    assignments_by_id = {
+        assignment.semantic_core_id: assignment
+        for assignment in forward.assignments
+    }
+    assert _balance_axis_signatures(
+        forward,
+        [assignments_by_id[core_id] for core_id in numeric_ids],
+        "cross_slot_interleaving",
+    ) == {b"0", b"0.0"}
+    assert _balance_axis_signatures(
+        forward,
+        [assignments_by_id[core_id] for core_id in false_ids],
+        "duplicate_current_condition",
+    ) == {b"false", b"0"}
+    assert _balance_axis_signatures(
+        forward,
+        [assignments_by_id[core_id] for core_id in true_ids],
+        "duplicate_current_condition",
+    ) == {b"true", b"1"}
+
+
+def _brute_force_optimal_allocations(cell_sizes):
+    quotas = (84, 12, 24)
+    best = None
+
+    def visit(index, remaining, allocations, cost):
+        nonlocal best
+        if index == len(cell_sizes):
+            if remaining == (0, 0, 0):
+                candidate = (cost, tuple(allocations))
+                if best is None or candidate < best:
+                    best = candidate
+            return
+        total = cell_sizes[index]
+        future_total = sum(cell_sizes[index + 1 :])
+        for train_count in range(total + 1):
+            for dev_count in range(total - train_count + 1):
+                test_count = total - train_count - dev_count
+                allocation = (train_count, dev_count, test_count)
+                next_remaining = tuple(
+                    target - observed
+                    for target, observed in zip(remaining, allocation, strict=True)
+                )
+                if any(value < 0 or value > future_total for value in next_remaining):
+                    continue
+                cell_cost = sum(
+                    abs(observed * 120 - total * quota)
+                    for observed, quota in zip(allocation, quotas, strict=True)
+                )
+                visit(
+                    index + 1,
+                    next_remaining,
+                    [*allocations, allocation],
+                    cost + cell_cost,
+                )
+
+    visit(0, quotas, [], 0)
+    assert best is not None
+    return best[1]
+
+
+@pytest.mark.parametrize("cell_sizes", [(118, 1, 1), (117, 2, 1), (116, 3, 1)])
+def test_optimal_allocations_matches_brute_force_on_adversarial_partitions(cell_sizes):
+    assert _optimal_allocations(cell_sizes) == _brute_force_optimal_allocations(cell_sizes)
+
+
+def test_optimal_allocations_uses_documented_lexicographic_tie_break():
+    assert _optimal_allocations((119, 1)) == (
+        (83, 12, 24),
+        (1, 0, 0),
+    )
+
+
+def test_ranking_sha_matches_documented_canonical_material(config, assigned):
+    assignment = assigned.assignments[137]
+    material = {
+        "seed": config.seed,
+        "task_family": assignment.task_family.value,
+        "difficulty": assignment.difficulty.value,
+        "strata": dict(assignment.strata),
+        "semantic_core_id": assignment.semantic_core_id,
+    }
+    expected = hashlib.sha256(_canonical_payload_bytes(material)).hexdigest()
+    assert assignment.ranking_sha256 == expected
+
+
+def test_each_stratum_uses_contiguous_seeded_ranking_segments(assigned):
+    grouped_assignments = defaultdict(list)
+    observed_counts = {}
+    for assignment in assigned.assignments:
+        key = (
+            assignment.task_family,
+            assignment.difficulty,
+            _canonical_payload_bytes(dict(assignment.strata)),
+        )
+        grouped_assignments[key].append(assignment)
+    for cell in assigned.split_balance.cells:
+        key = (
+            cell.task_family,
+            cell.difficulty,
+            _canonical_payload_bytes(dict(cell.strata)),
+        )
+        observed_counts[key, cell.split] = cell.observed
+
+    for key, cell_assignments in grouped_assignments.items():
+        ranked = sorted(
+            cell_assignments,
+            key=lambda assignment: (
+                assignment.ranking_sha256,
+                assignment.semantic_core_id,
+            ),
+        )
+        expected_splits = [
+            split
+            for split in (Split.TRAIN, Split.DEV, Split.TEST)
+            for _ in range(observed_counts[key, split])
+        ]
+        assert [assignment.split for assignment in ranked] == expected_splits
+
+
+def test_split_strata_equal_rendered_resolved_profiles_without_arbitrary_fallbacks(
+    cores, assigned, rendered_tasks
+):
+    cores_by_id = {core.core_id: core for core in cores}
+    rendered_by_id = {
+        task.metadata.split_key.semantic_core_id: task
+        for task in rendered_tasks
+        if task.metadata.extra["surface_variant"] == 0
+    }
+    authoritative_fallbacks = set()
+
+    for assignment in assigned.assignments:
+        core = cores_by_id[assignment.semantic_core_id]
+        resolved = rendered_by_id[assignment.semantic_core_id].metadata.resolved_profile
+        axes = FAMILY_STRATIFICATION_AXES[assignment.task_family.value]
+        for axis in axes:
+            assert _canonical_payload_bytes(assignment.strata[axis]) == (
+                _canonical_payload_bytes(resolved[axis])
+            )
+            if axis == "update_depth_bucket" or axis in core.profile:
+                continue
+            defaults = build_generic_profile(
+                core.difficulty,
+                core.task_family.value,
+            ).parameters
+            assert axis in defaults
+            assert _canonical_payload_bytes(assignment.strata[axis]) == (
+                _canonical_payload_bytes(defaults[axis])
+            )
+            authoritative_fallbacks.add((assignment.task_family, axis))
+
+    assert authoritative_fallbacks == {
+        (TaskFamily.REPEATED_SAME_SLOT, "cross_slot_interleaving")
+    }
+
+
+def test_semantic_hash_detector_catches_cross_split_surface_duplicate(config, cores):
+    context = GenerationContext(config=config, code_revision="semantic-duplicate-probe")
+    train_task = render_core(
+        cores[0],
+        split=Split.TRAIN,
+        surface_variant=0,
+        context=context,
+    )
+    test_task = render_core(
+        cores[0],
+        split=Split.TEST,
+        surface_variant=1,
+        context=context,
+    )
+    exact_hashes = {
+        Split.TRAIN: {sha256_model(train_task)},
+        Split.DEV: set(),
+        Split.TEST: {sha256_model(test_task)},
+    }
+    semantic_hashes = {
+        Split.TRAIN: {semantic_task_hash(train_task)},
+        Split.DEV: set(),
+        Split.TEST: {semantic_task_hash(test_task)},
+    }
+
+    assert train_task.task_id != test_task.task_id
+    assert train_task.metadata.split != test_task.metadata.split
+    assert sha256_model(train_task) != sha256_model(test_task)
+    assert semantic_task_hash(train_task) == semantic_task_hash(test_task)
+    _assert_pairwise_disjoint(exact_hashes)
+    with pytest.raises(AssertionError):
+        _assert_pairwise_disjoint(semantic_hashes)

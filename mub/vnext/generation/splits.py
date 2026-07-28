@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from typing import Any, Annotated
+from typing import Annotated, Any
 
 from pydantic import Field, JsonValue, field_validator
 
@@ -328,25 +328,31 @@ def assign_splits(
 
     for family in _PILOT_FAMILIES:
         grouped: dict[
-            tuple[Difficulty, tuple[tuple[str, str | int | float | bool], ...]],
+            bytes,
             list[tuple[SemanticCore, dict[str, str | int | float | bool], str]],
         ] = defaultdict(list)
+        group_metadata: dict[
+            bytes,
+            tuple[Difficulty, dict[str, str | int | float | bool]],
+        ] = {}
         for core in records:
             if core.task_family is not family:
                 continue
             strata = _resolved_strata(core)
             ranking_sha256 = _ranking_sha256(core, strata, seed)
-            key = (core.difficulty, tuple(strata.items()))
+            key = _stratum_sort_key(family, core.difficulty, strata)
             grouped[key].append((core, strata, ranking_sha256))
+            group_metadata.setdefault(key, (core.difficulty, strata))
 
-        ordered_cells = sorted(
-            grouped.items(),
-            key=lambda item: _stratum_sort_key(
-                family,
-                item[0][0],
-                dict(item[0][1]),
-            ),
-        )
+        ordered_cells = []
+        for key in sorted(grouped):
+            difficulty, strata = group_metadata[key]
+            ordered_cells.append(
+                (
+                    (difficulty, tuple(strata.items())),
+                    grouped[key],
+                )
+            )
         allocations = _optimal_allocations(
             tuple(len(cell_records) for _, cell_records in ordered_cells)
         )
