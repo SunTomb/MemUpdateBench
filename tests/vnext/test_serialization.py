@@ -153,7 +153,6 @@ def _task_with_anchors(make_task) -> MemUpdateTask:
 def _rename_surface_ids_and_text(task: MemUpdateTask) -> MemUpdateTask:
     payload = task.model_dump(mode="json")
     payload["task_id"] = "paraphrase-task-另一个"
-    payload["schema_version"] = "other-run-schema-label"
     payload["source"]["source_id"] = "surface-source-id-2"
     payload["source"]["source_uri"] = "memory://surface-source-id-2"
     payload["source"]["raw_hash"] = "9" * 64
