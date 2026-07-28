@@ -11,7 +11,7 @@ from mub.vnext.generation.family_a import generate_family_a_cores
 from mub.vnext.generation.family_b import generate_family_b_cores
 from mub.vnext.generation.family_c import generate_family_c_cores
 from mub.vnext.generation.family_d import generate_family_d_cores
-from mub.vnext.generation.render import render_core
+from mub.vnext.generation.render import _render_core_unvalidated
 from mub.vnext.generation.splits import SplitAssignmentResult, assign_splits
 from mub.vnext.io import canonical_json_bytes, semantic_task_hash
 from mub.vnext.validation import validate_gold_replay, validate_task
@@ -425,7 +425,7 @@ def compile_pilot_tasks(
             core=core,
             split=split_by_core[core.core_id],
             surface_variant=surface_variant,
-            task=render_core(
+            task=_render_core_unvalidated(
                 core,
                 split=split_by_core[core.core_id],
                 surface_variant=surface_variant,

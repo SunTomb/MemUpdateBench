@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import RootModel, ValidationError
 
+import mub.vnext.generation.render as render_module
 from mub.vnext.contracts.common import ContractModel, MemoryObjectKey
 from mub.vnext.contracts.enums import (
     AnswerSchema,
@@ -1294,6 +1295,41 @@ def test_render_core_rejects_reserved_renderer_metadata_collision_deterministica
             render_core(core, split=Split.TEST, surface_variant=0)
         messages.append(str(exc_info.value))
     assert messages[0] == messages[1]
+
+
+def test_public_render_core_keeps_structural_and_replay_gate(monkeypatch) -> None:
+    calls = {"task": 0, "gold_replay": 0}
+    original_helper = render_module._render_core_unvalidated
+    original_task_validator = render_module.validate_task
+    original_replay_validator = render_module.validate_gold_replay
+
+    def invalid_helper(*args, **kwargs):
+        task = original_helper(*args, **kwargs)
+        final_state = dict(task.gold.final_state)
+        final_state[next(iter(final_state))] = "tampered"
+        object.__setattr__(task.gold, "final_state", final_state)
+        return task
+
+    def task_validator(task):
+        calls["task"] += 1
+        return original_task_validator(task)
+
+    def replay_validator(task):
+        calls["gold_replay"] += 1
+        return original_replay_validator(task)
+
+    monkeypatch.setattr(render_module, "_render_core_unvalidated", invalid_helper)
+    monkeypatch.setattr(render_module, "validate_task", task_validator)
+    monkeypatch.setattr(render_module, "validate_gold_replay", replay_validator)
+    with pytest.raises(ValueError, match="gold replay validation failed"):
+        _render_core(
+            _representative_core(),
+            split=Split.TEST,
+            surface_variant=0,
+            context=_fixed_context,
+        )
+
+    assert calls == {"task": 1, "gold_replay": 1}
 
 
 def test_render_core_produces_valid_semantically_equivalent_surface_variants() -> None:

@@ -467,7 +467,7 @@ def _report_error(stage: str, report: Any) -> ValueError:
     return ValueError(f"render_core {stage} validation failed: {detail}")
 
 
-def render_core(
+def _render_core_unvalidated(
     core: SemanticCore,
     *,
     split: Split,
@@ -744,6 +744,22 @@ def render_core(
         ),
     )
 
+    return task
+
+
+def render_core(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext,
+) -> MemUpdateTask:
+    task = _render_core_unvalidated(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+    )
     structural_report = validate_task(task)
     if not structural_report.valid:
         raise _report_error("structural", structural_report)

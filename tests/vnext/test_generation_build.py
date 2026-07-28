@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 import mub.vnext.generation.build as build_module
+import mub.vnext.generation.render as render_module
 from mub.vnext.contracts import MemUpdateTask, Split, TaskFamily
 from mub.vnext.generation import (
     CompiledPilotTasks,
@@ -121,6 +122,38 @@ def test_compile_pilot_tasks_has_exact_counts_order_linkage_and_validation(
         reparsed = MemUpdateTask.model_validate_json(row[:-1])
         assert reparsed == task
         assert canonical_json_bytes(reparsed) + b"\n" == row
+
+
+def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
+    config,
+    compiled,
+    monkeypatch,
+) -> None:
+    calls = Counter()
+    original_render = render_module._render_core_unvalidated
+    original_task_validator = build_module.validate_task
+    original_replay_validator = build_module.validate_gold_replay
+
+    def render_spy(*args, **kwargs):
+        calls["render"] += 1
+        return original_render(*args, **kwargs)
+
+    def task_validator(task):
+        calls["task"] += 1
+        return original_task_validator(task)
+
+    def replay_validator(task):
+        calls["gold_replay"] += 1
+        return original_replay_validator(task)
+
+    monkeypatch.setattr(render_module, "_render_core_unvalidated", render_spy)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", render_spy)
+    monkeypatch.setattr(build_module, "validate_task", task_validator)
+    monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
+    repeated = compile_pilot_tasks(config, code_revision=REVISION)
+
+    assert repeated == compiled
+    assert calls == {"render": 1440, "task": 1440, "gold_replay": 1440}
 
 
 def test_same_inputs_are_byte_identical_config_unchanged_and_create_no_files(
@@ -289,7 +322,7 @@ def test_revision_changes_only_surface_artifact_provenance(
 
 
 def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
-    original_render = build_module.render_core
+    original_render = build_module._render_core_unvalidated
 
     def repeated_variant(core, *, split, surface_variant, context):
         return original_render(
@@ -299,7 +332,16 @@ def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
             context=context,
         )
 
-    monkeypatch.setattr(build_module, "render_core", repeated_variant)
+    monkeypatch.setattr(
+        render_module,
+        "_render_core_unvalidated",
+        repeated_variant,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "_render_core_unvalidated",
+        repeated_variant,
+    )
     with pytest.raises(ValueError) as exc_info:
         compile_pilot_tasks(config, code_revision=REVISION)
 
@@ -319,7 +361,7 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     last_task_id = tasks[-1].task_id
     calls = Counter()
     render_calls = 0
-    original_render = build_module.render_core
+    original_render = build_module._render_core_unvalidated
 
     def corrupted_render(core, *, split, surface_variant, context):
         nonlocal render_calls
@@ -368,7 +410,16 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
             )
         return build_report(issues)
 
-    monkeypatch.setattr(build_module, "render_core", corrupted_render)
+    monkeypatch.setattr(
+        render_module,
+        "_render_core_unvalidated",
+        corrupted_render,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "_render_core_unvalidated",
+        corrupted_render,
+    )
     monkeypatch.setattr(build_module, "validate_task", task_validator)
     monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
     with pytest.raises(ValueError) as exc_info:
@@ -411,7 +462,7 @@ def test_noncanonical_surface_variant_count_rejected_before_render(
         render_calls += 1
         raise AssertionError("render must not be called")
 
-    monkeypatch.setattr(build_module, "render_core", unexpected_render)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", unexpected_render)
     with pytest.raises(
         ValueError,
         match="surface_variants_per_core == 3",
@@ -445,7 +496,7 @@ def test_noncanonical_split_counts_rejected_before_generation(
         "generate_family_a_cores",
         unexpected_generation,
     )
-    monkeypatch.setattr(build_module, "render_core", unexpected_render)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", unexpected_render)
     with pytest.raises(ValueError, match="split task counts"):
         compile_pilot_tasks(changed, code_revision=REVISION)
     assert generation_calls == 0
