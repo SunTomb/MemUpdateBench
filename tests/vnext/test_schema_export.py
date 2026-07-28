@@ -19,6 +19,25 @@ EXPECTED_SCHEMA_FILES = {
     "task_manifest.schema.json": "TaskManifest",
     "run_manifest.schema.json": "RunManifest",
 }
+EXPECTED_VERSION_FIELDS = {
+    "mem_update_task.schema.json": ("schema_version",),
+    "task_run_record.schema.json": ("schema_version", "runtime_record_version"),
+    "score_record.schema.json": ("schema_version", "scorer_version"),
+    "task_manifest.schema.json": (
+        "schema_version",
+        "task_manifest_version",
+        "task_schema_version",
+    ),
+    "run_manifest.schema.json": (
+        "schema_version",
+        "run_manifest_version",
+        "task_schema_version",
+        "runtime_record_version",
+        "scorer_version",
+        "metric_registry_version",
+        "profile_version",
+    ),
+}
 
 
 def test_registry_contains_exactly_five_top_level_artifacts_and_is_immutable() -> None:
@@ -49,8 +68,10 @@ def test_export_schemas_is_deterministic_and_uses_serialization_schema(tmp_path:
         schema = json.loads(first_bytes)
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         assert schema["title"] == title
-        assert "schema_version" in schema["properties"]
-        assert schema["properties"]["schema_version"]["default"] == "1.0.0"
+        for field_name in EXPECTED_VERSION_FIELDS[filename]:
+            version_schema = schema["properties"][field_name]
+            assert version_schema["default"] == "2.0.0"
+            assert version_schema["const"] == "2.0.0"
 
 
 def test_reexport_replaces_only_generated_schema_files(tmp_path: Path) -> None:

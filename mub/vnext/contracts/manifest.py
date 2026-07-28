@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -34,11 +35,11 @@ ANSWER_NORMALIZATION_PROFILE = "normalized_exact_v1"
 
 
 class TaskManifest(ImmutableContractModel):
-    schema_version: str = SCHEMA_VERSION
-    task_manifest_version: str = TASK_MANIFEST_VERSION
+    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    task_manifest_version: Literal[TASK_MANIFEST_VERSION] = TASK_MANIFEST_VERSION
     data_release_id: str
     split_policy_version: str
-    task_schema_version: str = SCHEMA_VERSION
+    task_schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
     compiler_versions: FrozenStringMap
     source_manifest_paths_and_hashes: tuple[ArtifactRef, ...]
     generation_configs_and_hashes: tuple[ArtifactRef, ...]
@@ -68,18 +69,18 @@ class TaskManifest(ImmutableContractModel):
 
 
 class RunManifest(ImmutableContractModel):
-    schema_version: str = SCHEMA_VERSION
-    run_manifest_version: str = RUN_MANIFEST_VERSION
+    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    run_manifest_version: Literal[RUN_MANIFEST_VERSION] = RUN_MANIFEST_VERSION
     run_id: str
     timestamp: str
     code_revision: str
     dirty_state: StrictBool
     task_manifest: ArtifactRef
-    task_schema_version: str = SCHEMA_VERSION
-    runtime_record_version: str = RUNTIME_RECORD_VERSION
-    scorer_version: str = SCORER_VERSION
-    metric_registry_version: str = METRIC_REGISTRY_VERSION
-    profile_version: str = PROFILE_VERSION
+    task_schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    runtime_record_version: Literal[RUNTIME_RECORD_VERSION] = RUNTIME_RECORD_VERSION
+    scorer_version: Literal[SCORER_VERSION] = SCORER_VERSION
+    metric_registry_version: Literal[METRIC_REGISTRY_VERSION] = METRIC_REGISTRY_VERSION
+    profile_version: Literal[PROFILE_VERSION] = PROFILE_VERSION
     adapter_info: AdapterInfo
     adapter_capabilities: AdapterCapabilities
     capability_verification_artifact: ArtifactRef | None

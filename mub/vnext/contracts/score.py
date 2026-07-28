@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, PlainSerializer, field_serializer, field_validator, model_validator
 
@@ -131,8 +131,8 @@ METRIC_FIELD_PATHS = frozenset(
 
 
 class ScoreRecord(ImmutableContractModel):
-    schema_version: str = SCHEMA_VERSION
-    scorer_version: str = SCORER_VERSION
+    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    scorer_version: Literal[SCORER_VERSION] = SCORER_VERSION
     task_id: str
     run_id: str
     adapter_id: str

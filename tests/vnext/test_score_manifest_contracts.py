@@ -641,6 +641,42 @@ def test_version_defaults_are_canonical(make_score_record, make_run_manifest) ->
     assert config.primary_failure_precedence_version == PRIMARY_FAILURE_PRECEDENCE_VERSION
 
 
+def test_score_and_manifest_records_reject_v1_top_level_versions(
+    make_score_record, make_run_manifest
+) -> None:
+    records = (
+        (
+            ScoreRecord,
+            make_score_record().model_dump(mode="json"),
+            ("schema_version", "scorer_version"),
+        ),
+        (
+            TaskManifest,
+            make_task_manifest().model_dump(mode="json"),
+            ("schema_version", "task_manifest_version", "task_schema_version"),
+        ),
+        (
+            RunManifest,
+            make_run_manifest().model_dump(mode="json"),
+            (
+                "schema_version",
+                "run_manifest_version",
+                "task_schema_version",
+                "runtime_record_version",
+                "scorer_version",
+                "metric_registry_version",
+                "profile_version",
+            ),
+        ),
+    )
+
+    for model_type, data, version_fields in records:
+        for field_name in version_fields:
+            incompatible = {**data, field_name: "1.0.0"}
+            with pytest.raises(ValidationError, match=field_name):
+                model_type.model_validate(incompatible)
+
+
 def test_contracts_reject_extra_fields(make_score_record, make_run_manifest) -> None:
     records = [
         (ScoreRecord, make_score_record().model_dump(mode="json")),

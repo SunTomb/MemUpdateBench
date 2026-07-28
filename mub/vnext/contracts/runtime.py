@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
@@ -108,8 +108,8 @@ class ParserExtractorProvenance(ContractModel):
 
 
 class TaskRunRecord(ContractModel):
-    schema_version: str = SCHEMA_VERSION
-    runtime_record_version: str = RUNTIME_RECORD_VERSION
+    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
+    runtime_record_version: Literal[RUNTIME_RECORD_VERSION] = RUNTIME_RECORD_VERSION
     task_id: str
     adapter_id: str
     run_id: str

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from typing_extensions import Self
 
@@ -180,7 +180,7 @@ class GoldRecord(ContractModel):
 
 class MemUpdateTask(ContractModel):
     task_id: str
-    schema_version: str = SCHEMA_VERSION
+    schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
     task_family: str
     difficulty: Difficulty
     source: SourceRecord

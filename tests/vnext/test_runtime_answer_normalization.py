@@ -69,6 +69,50 @@ def test_runtime_does_not_infer_abstention_from_none_or_free_form_text() -> None
         assert prediction.format_valid is False
 
 
+def test_legacy_none_answer_payload_is_not_reinterpreted_as_abstention() -> None:
+    result = AnswerResult.model_validate(
+        {
+            "query_id": "legacy_none",
+            "raw_output": "I do not know.",
+            "value": None,
+        }
+    )
+
+    prediction = normalize_answer_result(
+        result,
+        parsed_answer=None,
+        format_valid=False,
+    )
+
+    assert result.disposition is AnswerDisposition.ANSWERED
+    assert prediction.disposition is AnswerDisposition.ANSWERED
+    assert prediction.parsed_answer is None
+    assert prediction.format_valid is False
+
+
+def test_explicit_unavailable_and_abstained_none_answers_remain_distinct() -> None:
+    abstained = normalize_answer_result(
+        AnswerResult(
+            query_id="abstained",
+            raw_output="I cannot resolve that reference.",
+            disposition=AnswerDisposition.ABSTAINED,
+        )
+    )
+    unavailable = normalize_answer_result(
+        AnswerResult(
+            query_id="unavailable",
+            raw_output="",
+            disposition=AnswerDisposition.UNAVAILABLE,
+        )
+    )
+
+    assert abstained.parsed_answer is unavailable.parsed_answer is None
+    assert abstained.disposition is AnswerDisposition.ABSTAINED
+    assert unavailable.disposition is AnswerDisposition.UNAVAILABLE
+    assert abstained.format_valid is True
+    assert unavailable.format_valid is False
+
+
 def test_runtime_propagates_parser_artifacts_without_reinterpreting_missing_rows() -> None:
     results = [
         AnswerResult(query_id="query_present", raw_output="Qingdao"),

@@ -166,6 +166,15 @@ def test_runtime_record_top_level_fields_match_design(make_task_run) -> None:
     assert run.exceptions[0]["type"] == "timeout"
 
 
+def test_task_run_record_rejects_v1_top_level_record(make_task_run) -> None:
+    data = make_task_run().model_dump(mode="json")
+
+    for field_name in ("schema_version", "runtime_record_version"):
+        incompatible = {**data, field_name: "1.0.0"}
+        with pytest.raises(ValidationError, match=field_name):
+            TaskRunRecord.model_validate(incompatible)
+
+
 def test_parsed_manager_action_uses_exact_design_fields_and_target_key(make_object_key) -> None:
     action = ParsedManagerAction(
         event_id="event_0",

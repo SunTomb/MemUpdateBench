@@ -41,6 +41,14 @@ def test_fixed_task_json_round_trip_preserves_design_fields_and_action_order(mak
     assert round_tripped.gold.acceptable_answers == {"query_0": ["Qingdao"]}
 
 
+def test_mem_update_task_rejects_v1_top_level_record(make_task) -> None:
+    data = make_task().model_dump(mode="json")
+    data["schema_version"] = "1.0.0"
+
+    with pytest.raises(ValidationError, match="schema_version"):
+        MemUpdateTask.model_validate(data)
+
+
 def test_future_task_family_string_is_accepted(make_task) -> None:
     data = make_task().model_dump(mode="json")
     data["task_family"] = "future_family_not_in_helper_enum"
