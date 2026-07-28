@@ -178,12 +178,25 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
 ) -> None:
     calls = Counter()
     original_render = render_module._render_core_unvalidated
+    original_constructor = render_module._construct_core_task
+    original_receipt = render_module._expected_render_receipt
     original_task_validator = build_module.validate_task
     original_replay_validator = build_module.validate_gold_replay
 
     def render_spy(*args, **kwargs):
         calls["render"] += 1
         return original_render(*args, **kwargs)
+
+    def constructor_spy(*args, **kwargs):
+        calls["construct"] += 1
+        return original_constructor(*args, **kwargs)
+
+    def receipt_spy(*args, **kwargs):
+        before = calls["construct"]
+        receipt = original_receipt(*args, **kwargs)
+        assert calls["construct"] == before
+        calls["receipt"] += 1
+        return receipt
 
     def task_validator(task):
         calls["task"] += 1
@@ -193,6 +206,9 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
         calls["gold_replay"] += 1
         return original_replay_validator(task)
 
+    monkeypatch.setattr(render_module, "_construct_core_task", constructor_spy)
+    monkeypatch.setattr(render_module, "_expected_render_receipt", receipt_spy)
+    monkeypatch.setattr(build_module, "_expected_render_receipt", receipt_spy)
     monkeypatch.setattr(render_module, "_render_core_unvalidated", render_spy)
     monkeypatch.setattr(build_module, "_render_core_unvalidated", render_spy)
     monkeypatch.setattr(build_module, "validate_task", task_validator)
@@ -200,7 +216,13 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
     repeated = compile_pilot_tasks(config, code_revision=REVISION)
 
     assert repeated == compiled
-    assert calls == {"render": 1440, "task": 1440, "gold_replay": 1440}
+    assert calls == {
+        "receipt": 1440,
+        "render": 1440,
+        "construct": 1440,
+        "task": 1440,
+        "gold_replay": 1440,
+    }
 
 
 def test_same_inputs_are_byte_identical_config_unchanged_and_create_no_files(
@@ -466,7 +488,14 @@ def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
 def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
     original_render = build_module._render_core_unvalidated
 
-    def repeated_variant(core, *, split, surface_variant, context):
+    def repeated_variant(
+        core,
+        *,
+        split,
+        surface_variant,
+        context,
+        receipt=None,
+    ):
         return original_render(
             core,
             split=split,
@@ -506,13 +535,21 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     render_calls = 0
     original_render = build_module._render_core_unvalidated
 
-    def corrupted_render(core, *, split, surface_variant, context):
+    def corrupted_render(
+        core,
+        *,
+        split,
+        surface_variant,
+        context,
+        receipt=None,
+    ):
         nonlocal render_calls
         task = original_render(
             core,
             split=split,
             surface_variant=surface_variant,
             context=context,
+            receipt=receipt,
         )
         if render_calls == 0:
             object.__setattr__(task, "task_family", "corrupted_family")

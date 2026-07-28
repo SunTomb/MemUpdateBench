@@ -12,6 +12,7 @@ from mub.vnext.generation.family_b import generate_family_b_cores
 from mub.vnext.generation.family_c import generate_family_c_cores
 from mub.vnext.generation.family_d import generate_family_d_cores
 from mub.vnext.generation.render import (
+    _RenderReceipt,
     _expected_render_receipt,
     _render_core_unvalidated,
     _render_receipt,
@@ -65,7 +66,7 @@ class _RenderedTask:
     split: Split
     surface_variant: int
     task: MemUpdateTask
-    expected_receipt: bytes
+    expected_receipt: _RenderReceipt
 
 
 def _task_sort_key(task: MemUpdateTask) -> tuple[int, int, str, int]:
@@ -134,7 +135,7 @@ def _linkage_issues(rendered: tuple[_RenderedTask, ...]) -> list[str]:
                 f"exception={type(exc).__name__}: {exc}"
             )
             continue
-        if observed_receipt != record.expected_receipt:
+        if observed_receipt != record.expected_receipt.canonical_bytes:
             issues.append(
                 f"stage=render_receipt code=receipt_mismatch "
                 f"core={record.core.core_id} row={row_number} "
@@ -417,6 +418,35 @@ def _validate_fixed_config(config: PilotConfig) -> None:
         )
 
 
+def _render_requested_task(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext,
+) -> _RenderedTask:
+    receipt = _expected_render_receipt(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+    )
+    task = _render_core_unvalidated(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+        receipt=receipt,
+    )
+    return _RenderedTask(
+        core=core,
+        split=split,
+        surface_variant=surface_variant,
+        task=task,
+        expected_receipt=receipt,
+    )
+
+
 def compile_pilot_tasks(
     config: PilotConfig,
     *,
@@ -458,22 +488,11 @@ def compile_pilot_tasks(
         ),
     )
     rendered = tuple(
-        _RenderedTask(
-            core=core,
+        _render_requested_task(
+            core,
             split=split_by_core[core.core_id],
             surface_variant=surface_variant,
-            task=_render_core_unvalidated(
-                core,
-                split=split_by_core[core.core_id],
-                surface_variant=surface_variant,
-                context=context,
-            ),
-            expected_receipt=_expected_render_receipt(
-                core,
-                split=split_by_core[core.core_id],
-                surface_variant=surface_variant,
-                context=context,
-            ),
+            context=context,
         )
         for core in ordered_cores
         for surface_variant in range(3)
