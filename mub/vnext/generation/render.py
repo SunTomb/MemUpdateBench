@@ -467,7 +467,7 @@ def _report_error(stage: str, report: Any) -> ValueError:
     return ValueError(f"render_core {stage} validation failed: {detail}")
 
 
-def _render_core_unvalidated(
+def _construct_core_task(
     core: SemanticCore,
     *,
     split: Split,
@@ -745,6 +745,84 @@ def _render_core_unvalidated(
     )
 
     return task
+
+
+def _render_core_unvalidated(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext,
+) -> MemUpdateTask:
+    return _construct_core_task(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+    )
+
+
+def _render_receipt(task: MemUpdateTask) -> bytes:
+    renderer_metadata = {
+        "events": [event.metadata.get(_RENDERER_METADATA_KEY) for event in task.events],
+        "queries": [query.metadata.get(_RENDERER_METADATA_KEY) for query in task.queries],
+    }
+    projection = {
+        "task_id": task.task_id,
+        "source": {
+            "source_id": task.source.source_id,
+            "source_uri": task.source.source_uri,
+            "raw_hash": task.source.raw_hash,
+            "normalized_hash": task.source.normalized_hash,
+            "normalization_version": task.source.normalization_version,
+            "source_type": task.source.source_type.value,
+            "generator": (
+                None
+                if task.source.generator is None
+                else task.source.generator.model_dump(mode="json")
+            ),
+            "provenance": _plain(task.source.provenance),
+        },
+        "event_ids": [event.event_id for event in task.events],
+        "event_gold_action_ids": [
+            list(event.gold_action_ids) for event in task.events
+        ],
+        "action_ids": [action.action_id for action in task.gold.actions],
+        "action_event_ids": [action.event_id for action in task.gold.actions],
+        "action_sequence": list(task.gold.action_sequence),
+        "query_ids": [query.query_id for query in task.queries],
+        "gold_source_event_ids": list(task.gold.gold_source_event_ids),
+        "gold_answer_query_ids": sorted(task.gold.gold_answers),
+        "acceptable_answer_query_ids": sorted(task.gold.acceptable_answers),
+        "canonical_answer_query_ids": sorted(task.gold.canonical_answers),
+        "split_key": task.metadata.split_key.model_dump(mode="json"),
+        "renderer_metadata": renderer_metadata,
+        "core_index": task.metadata.extra.get("core_index"),
+        "stratification": _plain(task.metadata.extra.get("stratification")),
+        "split": task.metadata.split.value,
+        "task_family": task.task_family,
+        "difficulty": task.difficulty.value,
+        "surface_variant": task.metadata.extra.get("surface_variant"),
+        "surface_template": task.metadata.extra.get("surface_template"),
+    }
+    return canonical_json_bytes(_CanonicalPayload(root=projection))
+
+
+def _expected_render_receipt(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext,
+) -> bytes:
+    return _render_receipt(
+        _construct_core_task(
+            core,
+            split=split,
+            surface_variant=surface_variant,
+            context=context,
+        )
+    )
 
 
 def render_core(

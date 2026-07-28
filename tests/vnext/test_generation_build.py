@@ -80,6 +80,53 @@ def _all_linked_ids(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
     return linked_ids
 
 
+def _clone_semantics_with_artifact_ids(
+    semantic_source: MemUpdateTask,
+    artifact_source: MemUpdateTask,
+) -> MemUpdateTask:
+    payload = semantic_source.model_dump(mode="python")
+    artifact = artifact_source.model_dump(mode="python")
+    payload["task_id"] = artifact["task_id"]
+    payload["difficulty"] = artifact["difficulty"]
+    semantic_source_record = payload["source"]
+    payload["source"] = artifact["source"]
+    for field_name in ("source_type", "normalized_hash", "normalization_version"):
+        payload["source"][field_name] = semantic_source_record[field_name]
+    payload["metadata"] = artifact["metadata"]
+
+    artifact_event_ids = [event["event_id"] for event in artifact["events"]]
+    semantic_event_ids = [event["event_id"] for event in payload["events"]]
+    for index, event in enumerate(payload["events"]):
+        event["event_id"] = artifact_event_ids[index]
+        event["gold_action_ids"] = artifact["events"][index]["gold_action_ids"]
+    artifact_action_ids = [
+        action["action_id"] for action in artifact["gold"]["actions"]
+    ]
+    for index, action in enumerate(payload["gold"]["actions"]):
+        action["action_id"] = artifact_action_ids[index]
+        action["event_id"] = artifact_event_ids[index]
+    payload["gold"]["action_sequence"] = artifact_action_ids
+    source_event_indices = {
+        event_id: index for index, event_id in enumerate(semantic_event_ids)
+    }
+    payload["gold"]["gold_source_event_ids"] = [
+        artifact_event_ids[source_event_indices[event_id]]
+        for event_id in payload["gold"]["gold_source_event_ids"]
+    ]
+
+    semantic_query_ids = [query["query_id"] for query in payload["queries"]]
+    artifact_query_ids = [query["query_id"] for query in artifact["queries"]]
+    for index, query in enumerate(payload["queries"]):
+        query["query_id"] = artifact_query_ids[index]
+    for field_name in ("gold_answers", "acceptable_answers", "canonical_answers"):
+        values = payload["gold"][field_name]
+        payload["gold"][field_name] = {
+            artifact_query_ids[semantic_query_ids.index(query_id)]: value
+            for query_id, value in values.items()
+        }
+    return MemUpdateTask.model_validate(payload)
+
+
 def test_compile_pilot_tasks_has_exact_counts_order_linkage_and_validation(
     compiled,
 ) -> None:
@@ -214,6 +261,71 @@ def test_compiled_snapshot_rejects_noncanonical_framing_and_row_replacement(
         replace(compiled, config_sha256="0" * 64)
 
 
+def test_snapshot_rejects_inconsistent_split_assignment_material(compiled) -> None:
+    assignments = compiled.split_assignment.assignments
+    bogus_assignment = assignments[0].validated_replace(
+        strata={"bogus_axis": "bogus"},
+        ranking_sha256="0" * 64,
+    )
+    bogus_balance = compiled.split_assignment.split_balance.validated_replace(
+        projected_task_counts={"train": 0, "dev": 0, "test": 0}
+    )
+    bogus_result = compiled.split_assignment.validated_replace(
+        assignments=(bogus_assignment, *assignments[1:]),
+        split_balance=bogus_balance,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        replace(compiled, split_assignment=bogus_result)
+
+    message = str(exc_info.value)
+    assert "stage=split_assignment code=inconsistent" in message
+    assert "ranking_sha256" in message
+    assert "strata_axes" in message
+    assert "split_balance_projected_task_counts" in message
+
+
+def test_snapshot_rejects_semantic_hash_shared_by_distinct_cores(compiled) -> None:
+    tasks = compiled.tasks
+    candidates = [
+        task
+        for task in tasks
+        if task.task_family == TaskFamily.REPEATED_SAME_SLOT.value
+        and task.metadata.extra["surface_variant"] == 0
+    ]
+    semantic_source = candidates[0]
+    artifact_source = next(
+        task
+        for task in candidates[1:]
+        if len(task.events) == len(semantic_source.events)
+        and len(task.gold.actions) == len(semantic_source.gold.actions)
+        and len(task.queries) == len(semantic_source.queries)
+    )
+    clone = _clone_semantics_with_artifact_ids(
+        semantic_source,
+        artifact_source,
+    )
+    assert clone.metadata.split_key.semantic_core_id != (
+        semantic_source.metadata.split_key.semantic_core_id
+    )
+    assert semantic_task_hash(clone) == semantic_task_hash(semantic_source)
+    assert validate_task(clone).valid
+    assert validate_gold_replay(clone).valid
+
+    tampered_tasks = list(tasks)
+    artifact_index = next(
+        index for index, task in enumerate(tasks) if task.task_id == clone.task_id
+    )
+    tampered_tasks[artifact_index] = clone
+    tampered_jsonl = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tampered_tasks
+    )
+    with pytest.raises(ValueError) as exc_info:
+        replace(compiled, tasks_jsonl=tampered_jsonl)
+
+    assert "code=cross_core_collision" in str(exc_info.value)
+
+
 def test_public_snapshot_gate_validates_all_rows_after_gold_tamper(
     compiled,
     monkeypatch,
@@ -251,7 +363,7 @@ def test_public_snapshot_gate_validates_all_rows_after_gold_tamper(
 
     assert calls == {"task": 1440, "gold_replay": 1440}
     message = str(exc_info.value)
-    assert "validation stage=gold_replay" in message
+    assert "stage=validation_gold_replay" in message
     assert "final_state" in message
 
 
@@ -321,6 +433,36 @@ def test_revision_changes_only_surface_artifact_provenance(
         replace(compiled, code_revision="different-revision")
 
 
+def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
+    config,
+    monkeypatch,
+) -> None:
+    original_render = build_module._render_core_unvalidated
+    render_calls = 0
+
+    def tampered_render(*args, **kwargs):
+        nonlocal render_calls
+        task = original_render(*args, **kwargs)
+        if render_calls == 0:
+            payload = task.model_dump(mode="python")
+            payload["task_id"] = "task_ffffffffffffffff"
+            payload["source"]["source_uri"] = "memory://arbitrary-valid-source"
+            payload["source"]["generator"]["code_revision"] = "wrong-revision"
+            task = MemUpdateTask.model_validate(payload)
+        render_calls += 1
+        return task
+
+    monkeypatch.setattr(render_module, "_render_core_unvalidated", tampered_render)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", tampered_render)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    message = str(exc_info.value)
+    assert render_calls == 1440
+    assert "stage=render_receipt code=receipt_mismatch" in message
+    assert "disagrees with generator provenance" in message
+
+
 def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
     original_render = build_module._render_core_unvalidated
 
@@ -346,9 +488,10 @@ def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
         compile_pilot_tasks(config, code_revision=REVISION)
 
     message = str(exc_info.value)
-    assert "field=surface_variant expected=1 observed=0" in message
-    assert "must have exactly surface variants [0, 1, 2]" in message
-    assert "duplicate linked ID" in message
+    assert "code=receipt_mismatch" in message
+    assert "total_evidence=" in message
+    assert "diagnostics_truncated" in message
+    assert len(message.encode("utf-8")) <= 65_536
 
 
 def test_all_validators_run_and_failures_are_stably_aggregated(
@@ -428,24 +571,68 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     assert render_calls == 1440
     assert calls == {"task": 1440, "gold_replay": 1440}
     message = str(exc_info.value)
+    first_core_id = tasks[0].metadata.split_key.semantic_core_id
+    last_core_id = tasks[-1].metadata.split_key.semantic_core_id
     early = (
-        f"validation stage=task task={first_task_id!r} "
-        "issue=early_structural_failure@task_id: early task failed"
+        f"stage=validation_task code=early_structural_failure core={first_core_id} "
+        f"task={first_task_id!r} path=task_id: early task failed"
     )
     late = (
-        f"validation stage=gold_replay task={last_task_id!r} "
-        "issue=late_replay_failure@gold: late task failed"
+        f"stage=validation_gold_replay code=late_replay_failure core={last_core_id} "
+        f"task={last_task_id!r} path=gold: late task failed"
     )
     assert early in message
     assert late in message
-    assert "field=task_family" in message
-    assert "field=split" in message
-    assert "field=surface_variant" in message
+    assert "code=receipt_mismatch" in message
     assert "family counts expected=" in message
     assert "split counts expected=" in message
-    assert "canonical order exception=KeyError" in message
-    assert message.index(early) < message.index("field=task_family")
-    assert message.index(early) < message.index(late)
+    assert "group stage=snapshot code=family_counts core=global count=1" in message
+    assert "group stage=snapshot code=split_counts core=global count=1" in message
+    assert message.index("group stage=render_receipt") < message.index(
+        "group stage=validation_gold_replay"
+    )
+    assert len(message.encode("utf-8")) <= 65_536
+
+
+def test_systematic_failures_have_bounded_grouped_diagnostics(
+    config,
+    monkeypatch,
+) -> None:
+    calls = Counter()
+
+    def task_validator(task):
+        calls["task"] += 1
+        return build_report(
+            [
+                ValidationIssue(
+                    code="systematic_failure",
+                    path="task_id",
+                    message="systematic corruption",
+                    severity="error",
+                )
+            ]
+        )
+
+    def replay_validator(task):
+        calls["gold_replay"] += 1
+        return build_report([])
+
+    monkeypatch.setattr(build_module, "validate_task", task_validator)
+    monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    message = str(exc_info.value)
+    assert calls == {"task": 1440, "gold_replay": 1440}
+    assert message.startswith(
+        "compiled Pilot snapshot failed: total_evidence=1440 groups=480"
+    )
+    assert "code=systematic_failure" in message
+    assert "count=3" in message
+    assert "diagnostics_truncated" in message
+    assert len(message.encode("utf-8")) <= 65_536
+    group_lines = [line for line in message.splitlines() if line.startswith("group ")]
+    assert group_lines == sorted(group_lines)
 
 
 def test_noncanonical_surface_variant_count_rejected_before_render(

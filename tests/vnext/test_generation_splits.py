@@ -20,7 +20,10 @@ from mub.vnext.generation import (
     load_pilot_config,
     render_core,
 )
-from mub.vnext.generation.splits import _optimal_allocations
+from mub.vnext.generation.splits import (
+    _optimal_allocations,
+    _validate_split_assignment_result,
+)
 from mub.vnext.io import canonical_json_bytes, semantic_task_hash, sha256_model
 from mub.vnext.profiles import build_generic_profile
 from mub.vnext.validation.split import FAMILY_STRATIFICATION_AXES
@@ -294,6 +297,30 @@ def test_assignment_and_balance_records_are_immutable(assigned):
         assigned.split_balance.core_counts["train"] = 0
     with pytest.raises(TypeError):
         assigned.split_balance.cells[0].strata["new_axis"] = "bad"
+
+
+def test_shared_split_result_validator_rejects_ranking_strata_and_report_tamper(
+    assigned,
+) -> None:
+    first = assigned.assignments[0].validated_replace(
+        strata={"bogus_axis": "bogus"},
+        ranking_sha256="0" * 64,
+    )
+    balance = assigned.split_balance.validated_replace(
+        core_counts={"train": 0, "dev": 0, "test": 0}
+    )
+    tampered = assigned.validated_replace(
+        assignments=(first, *assigned.assignments[1:]),
+        split_balance=balance,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        _validate_split_assignment_result(tampered)
+
+    message = str(exc_info.value)
+    assert "ranking_sha256" in message
+    assert "strata_axes" in message
+    assert "split_balance_core_counts" in message
 
 
 def _canonical_payload_bytes(payload):

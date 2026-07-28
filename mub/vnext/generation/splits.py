@@ -188,19 +188,36 @@ def _resolved_strata(core: SemanticCore) -> dict[str, str | int | float | bool]:
     return {axis: _axis_value(core, axis) for axis in axes}
 
 
+def _ranking_sha256_from_material(
+    *,
+    seed: int,
+    task_family: TaskFamily,
+    difficulty: Difficulty,
+    strata: Mapping[str, str | int | float | bool],
+    semantic_core_id: str,
+) -> str:
+    material = _RankingMaterial(
+        seed=seed,
+        task_family=task_family,
+        difficulty=difficulty,
+        strata=dict(strata),
+        semantic_core_id=semantic_core_id,
+    )
+    return hashlib.sha256(canonical_json_bytes(material)).hexdigest()
+
+
 def _ranking_sha256(
     core: SemanticCore,
     strata: Mapping[str, str | int | float | bool],
     seed: int,
 ) -> str:
-    material = _RankingMaterial(
+    return _ranking_sha256_from_material(
         seed=seed,
         task_family=core.task_family,
         difficulty=core.difficulty,
-        strata=dict(strata),
+        strata=strata,
         semantic_core_id=core.core_id,
     )
-    return hashlib.sha256(canonical_json_bytes(material)).hexdigest()
 
 
 def _stratum_sort_key(
@@ -317,6 +334,145 @@ def _validate_inputs(cores: Iterable[SemanticCore], seed: int) -> tuple[Semantic
     return records
 
 
+def _validate_split_assignment_result(result: SplitAssignmentResult) -> None:
+    if not isinstance(result, SplitAssignmentResult):
+        raise TypeError("result must be a SplitAssignmentResult")
+    assignments = result.assignments
+    seed = result.split_balance.seed
+    issues: list[str] = []
+
+    core_ids = [assignment.semantic_core_id for assignment in assignments]
+    if len(assignments) != len(_PILOT_FAMILIES) * _CORES_PER_FAMILY:
+        issues.append(f"assignment_count={len(assignments)}")
+    if len(set(core_ids)) != len(core_ids):
+        issues.append("duplicate_semantic_core_id")
+
+    expected_assignment_order = tuple(
+        sorted(
+            assignments,
+            key=lambda assignment: (
+                _FAMILY_INDEX.get(assignment.task_family, len(_FAMILY_INDEX)),
+                _DIFFICULTY_INDEX.get(
+                    assignment.difficulty, len(_DIFFICULTY_INDEX)
+                ),
+                _stratum_sort_key(
+                    assignment.task_family,
+                    assignment.difficulty,
+                    assignment.strata,
+                ),
+                assignment.semantic_core_id,
+            ),
+        )
+    )
+    if assignments != expected_assignment_order:
+        issues.append("noncanonical_assignment_order")
+
+    family_counts = Counter(assignment.task_family for assignment in assignments)
+    split_counts = Counter(assignment.split for assignment in assignments)
+    for family in _PILOT_FAMILIES:
+        if family_counts[family] != _CORES_PER_FAMILY:
+            issues.append(f"family_count:{family.value}={family_counts[family]}")
+        per_family = Counter(
+            assignment.split
+            for assignment in assignments
+            if assignment.task_family is family
+        )
+        for split in _SPLIT_ORDER:
+            if per_family[split] != _SPLIT_QUOTAS[split]:
+                issues.append(
+                    f"family_split_count:{family.value}:{split.value}="
+                    f"{per_family[split]}"
+                )
+    for split in _SPLIT_ORDER:
+        expected = _SPLIT_QUOTAS[split] * len(_PILOT_FAMILIES)
+        if split_counts[split] != expected:
+            issues.append(f"global_split_count:{split.value}={split_counts[split]}")
+
+    expected_cells: list[SplitBalanceCell] = []
+    for family in _PILOT_FAMILIES:
+        grouped: dict[bytes, list[CoreSplitAssignment]] = defaultdict(list)
+        for assignment in assignments:
+            if assignment.task_family is not family:
+                continue
+            expected_axes = FAMILY_STRATIFICATION_AXES[family.value]
+            if tuple(assignment.strata) != expected_axes:
+                issues.append(
+                    f"strata_axes:{assignment.semantic_core_id}="
+                    f"{tuple(assignment.strata)!r}"
+                )
+            expected_ranking = _ranking_sha256_from_material(
+                seed=seed,
+                task_family=assignment.task_family,
+                difficulty=assignment.difficulty,
+                strata=assignment.strata,
+                semantic_core_id=assignment.semantic_core_id,
+            )
+            if assignment.ranking_sha256 != expected_ranking:
+                issues.append(f"ranking_sha256:{assignment.semantic_core_id}")
+            grouped[
+                _stratum_sort_key(
+                    assignment.task_family,
+                    assignment.difficulty,
+                    assignment.strata,
+                )
+            ].append(assignment)
+
+        ordered_keys = sorted(grouped)
+        allocations = _optimal_allocations(
+            tuple(len(grouped[key]) for key in ordered_keys)
+        )
+        for key, allocation in zip(ordered_keys, allocations, strict=True):
+            cell = grouped[key]
+            ranked = sorted(
+                cell,
+                key=lambda assignment: (
+                    assignment.ranking_sha256,
+                    assignment.semantic_core_id,
+                ),
+            )
+            offset = 0
+            exemplar = cell[0]
+            for split, observed in zip(_SPLIT_ORDER, allocation, strict=True):
+                selected = ranked[offset : offset + observed]
+                offset += observed
+                if any(assignment.split is not split for assignment in selected):
+                    issues.append(
+                        f"noncontiguous_rank_segment:{family.value}:"
+                        f"{exemplar.difficulty.value}:{split.value}:"
+                        f"{canonical_json_bytes(_StratumMaterial(task_family=family, difficulty=exemplar.difficulty, strata=exemplar.strata)).hex()}"
+                    )
+                expected = len(ranked) * _SPLIT_QUOTAS[split] / _CORES_PER_FAMILY
+                expected_cells.append(
+                    SplitBalanceCell(
+                        task_family=family,
+                        difficulty=exemplar.difficulty,
+                        strata=dict(exemplar.strata),
+                        split=split,
+                        expected=float(expected),
+                        observed=observed,
+                        deviation=float(observed - expected),
+                        total=len(ranked),
+                    )
+                )
+
+    expected_core_counts = {
+        split.value: split_counts[split] for split in _SPLIT_ORDER
+    }
+    expected_projected_counts = {
+        split.value: split_counts[split] * _VARIANTS_PER_CORE
+        for split in _SPLIT_ORDER
+    }
+    if dict(result.split_balance.core_counts) != expected_core_counts:
+        issues.append("split_balance_core_counts")
+    if dict(result.split_balance.projected_task_counts) != expected_projected_counts:
+        issues.append("split_balance_projected_task_counts")
+    if result.split_balance.cells != tuple(expected_cells):
+        issues.append("split_balance_cells")
+    if issues:
+        ordered = list(dict.fromkeys(issues))
+        raise ValueError("inconsistent split assignment: " + "; ".join(ordered[:64]))
+
+
 def assign_splits(
     cores: Iterable[SemanticCore],
     seed: int,
@@ -418,10 +574,12 @@ def assign_splits(
         projected_task_counts=projected_task_counts,
         cells=tuple(balance_cells),
     )
-    return SplitAssignmentResult(
+    result = SplitAssignmentResult(
         assignments=tuple(assignments),
         split_balance=report,
     )
+    _validate_split_assignment_result(result)
+    return result
 
 
 __all__ = [
