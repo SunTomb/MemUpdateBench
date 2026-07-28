@@ -1304,11 +1304,16 @@ def test_public_render_core_keeps_structural_and_replay_gate(monkeypatch) -> Non
     original_replay_validator = render_module.validate_gold_replay
 
     def invalid_helper(*args, **kwargs):
-        task = original_helper(*args, **kwargs)
-        final_state = dict(task.gold.final_state)
+        envelope = original_helper(*args, **kwargs)
+        final_state = dict(envelope.task.gold.final_state)
         final_state[next(iter(final_state))] = "tampered"
-        object.__setattr__(task.gold, "final_state", final_state)
-        return task
+        object.__setattr__(envelope.task.gold, "final_state", final_state)
+        receipt = render_module._RenderReceipt(
+            request_key=envelope.receipt.request_key,
+            task_sha256=sha256_model(envelope.task),
+            diagnostic_projection=envelope.receipt.diagnostic_projection,
+        )
+        return render_module._RenderedTask(task=envelope.task, receipt=receipt)
 
     def task_validator(task):
         calls["task"] += 1

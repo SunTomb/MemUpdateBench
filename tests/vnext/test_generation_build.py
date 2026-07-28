@@ -464,15 +464,19 @@ def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
 
     def tampered_render(*args, **kwargs):
         nonlocal render_calls
-        task = original_render(*args, **kwargs)
+        envelope = original_render(*args, **kwargs)
         if render_calls == 0:
-            payload = task.model_dump(mode="python")
+            payload = envelope.task.model_dump(mode="python")
             payload["task_id"] = "task_ffffffffffffffff"
             payload["source"]["source_uri"] = "memory://arbitrary-valid-source"
             payload["source"]["generator"]["code_revision"] = "wrong-revision"
             task = MemUpdateTask.model_validate(payload)
+            envelope = render_module._RenderedTask(
+                task=task,
+                receipt=envelope.receipt,
+            )
         render_calls += 1
-        return task
+        return envelope
 
     monkeypatch.setattr(render_module, "_render_core_unvalidated", tampered_render)
     monkeypatch.setattr(build_module, "_render_core_unvalidated", tampered_render)
@@ -481,8 +485,71 @@ def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
 
     message = str(exc_info.value)
     assert render_calls == 1440
-    assert "stage=render_receipt code=receipt_mismatch" in message
+    assert "stage=render_receipt code=envelope_integrity" in message
+    assert "task_sha256 mismatch" in message
     assert "disagrees with generator provenance" in message
+
+
+def test_full_task_digest_rejects_validator_ignored_field_mutations(
+    config,
+    monkeypatch,
+) -> None:
+    original_render = build_module._render_core_unvalidated
+    render_calls = 0
+    mutated_fields = []
+
+    def tampered_render(*args, **kwargs):
+        nonlocal render_calls
+        envelope = original_render(*args, **kwargs)
+        if render_calls < 4:
+            payload = envelope.task.model_dump(mode="python")
+            if render_calls == 0:
+                payload["metadata"]["tags"].append("digest-tamper")
+                mutated_fields.append("tags")
+            elif render_calls == 1:
+                payload["source"]["license_or_privacy"] = "changed-license"
+                mutated_fields.append("license")
+            elif render_calls == 2:
+                payload["metadata"]["resolved_profile"]["update_depth"] = 999
+                mutated_fields.append("resolved_profile")
+            else:
+                payload["events"][0]["metadata"]["ignored_nested"] = {
+                    "changed": True
+                }
+                mutated_fields.append("nested_metadata")
+            task = MemUpdateTask.model_validate(payload)
+            envelope = render_module._RenderedTask(
+                task=task,
+                receipt=envelope.receipt,
+            )
+        render_calls += 1
+        return envelope
+
+    monkeypatch.setattr(render_module, "_render_core_unvalidated", tampered_render)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", tampered_render)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    message = str(exc_info.value)
+    assert render_calls == 1440
+    assert mutated_fields == [
+        "tags",
+        "license",
+        "resolved_profile",
+        "nested_metadata",
+    ]
+    assert "task_sha256 mismatch" in message
+    assert "count=1" in message
+
+
+def test_private_envelope_and_validation_skip_are_not_exported() -> None:
+    from inspect import signature
+
+    import mub.vnext.generation as generation_package
+
+    assert "_RenderedTask" not in render_module.__all__
+    assert not hasattr(generation_package, "_RenderedTask")
+    assert "skip_validation" not in signature(render_module.render_core).parameters
 
 
 def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
@@ -494,7 +561,7 @@ def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
         split,
         surface_variant,
         context,
-        receipt=None,
+        request=None,
     ):
         return original_render(
             core,
@@ -517,7 +584,7 @@ def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
         compile_pilot_tasks(config, code_revision=REVISION)
 
     message = str(exc_info.value)
-    assert "code=receipt_mismatch" in message
+    assert "code=envelope_integrity" in message
     assert "total_evidence=" in message
     assert "diagnostics_truncated" in message
     assert len(message.encode("utf-8")) <= 65_536
@@ -541,16 +608,17 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
         split,
         surface_variant,
         context,
-        receipt=None,
+        request=None,
     ):
         nonlocal render_calls
-        task = original_render(
+        envelope = original_render(
             core,
             split=split,
             surface_variant=surface_variant,
             context=context,
-            receipt=receipt,
+            request=request,
         )
+        task = envelope.task
         if render_calls == 0:
             object.__setattr__(task, "task_family", "corrupted_family")
         elif render_calls == 1:
@@ -560,7 +628,7 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
             extra["surface_variant"] = "corrupted_variant"
             object.__setattr__(task.metadata, "extra", extra)
         render_calls += 1
-        return task
+        return envelope
 
     def task_validator(task):
         calls["task"] += 1
@@ -620,7 +688,7 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     )
     assert early in message
     assert late in message
-    assert "code=receipt_mismatch" in message
+    assert "code=envelope_integrity" in message
     assert "family counts expected=" in message
     assert "split counts expected=" in message
     assert "group stage=snapshot code=family_counts core=global count=1" in message

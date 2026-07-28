@@ -12,10 +12,11 @@ from mub.vnext.generation.family_b import generate_family_b_cores
 from mub.vnext.generation.family_c import generate_family_c_cores
 from mub.vnext.generation.family_d import generate_family_d_cores
 from mub.vnext.generation.render import (
-    _RenderReceipt,
+    _RenderedTask as _RenderEnvelope,
+    _RenderRequest,
     _expected_render_receipt,
     _render_core_unvalidated,
-    _render_receipt,
+    _render_envelope_issues,
 )
 from mub.vnext.generation.splits import (
     SplitAssignmentResult,
@@ -61,12 +62,16 @@ class CompiledPilotTasks:
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderedTask:
+class _CompiledRender:
     core: SemanticCore
     split: Split
     surface_variant: int
-    task: MemUpdateTask
-    expected_receipt: _RenderReceipt
+    envelope: _RenderEnvelope
+    expected_request: _RenderRequest
+
+    @property
+    def task(self) -> MemUpdateTask:
+        return self.envelope.task
 
 
 def _task_sort_key(task: MemUpdateTask) -> tuple[int, int, str, int]:
@@ -123,23 +128,24 @@ def _validate_compiled_snapshot(
         raise ValueError(_render_bounded_diagnostics(issues))
 
 
-def _linkage_issues(rendered: tuple[_RenderedTask, ...]) -> list[str]:
+def _linkage_issues(rendered: tuple[_CompiledRender, ...]) -> list[str]:
     issues: list[str] = []
     for row_number, record in enumerate(rendered, start=1):
         try:
-            observed_receipt = _render_receipt(record.task)
-        except Exception as exc:
-            issues.append(
-                f"stage=render_receipt code=receipt_exception "
-                f"core={record.core.core_id} row={row_number} "
-                f"exception={type(exc).__name__}: {exc}"
+            integrity_issues = _render_envelope_issues(
+                record.envelope,
+                record.expected_request,
             )
-            continue
-        if observed_receipt != record.expected_receipt.canonical_bytes:
+        except Exception as exc:
+            integrity_issues = (
+                f"envelope verification exception={type(exc).__name__}: {exc}",
+            )
+        for detail in integrity_issues:
             issues.append(
-                f"stage=render_receipt code=receipt_mismatch "
+                f"stage=render_receipt code=envelope_integrity "
                 f"core={record.core.core_id} row={row_number} "
-                f"task={record.task.task_id!r} variant={record.surface_variant}"
+                f"task={record.task.task_id!r} variant={record.surface_variant} "
+                f"detail={detail}"
             )
     return issues
 
@@ -424,26 +430,26 @@ def _render_requested_task(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-) -> _RenderedTask:
-    receipt = _expected_render_receipt(
+) -> _CompiledRender:
+    request = _expected_render_receipt(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
-    task = _render_core_unvalidated(
+    envelope = _render_core_unvalidated(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
-        receipt=receipt,
+        request=request,
     )
-    return _RenderedTask(
+    return _CompiledRender(
         core=core,
         split=split,
         surface_variant=surface_variant,
-        task=task,
-        expected_receipt=receipt,
+        envelope=envelope,
+        expected_request=request,
     )
 
 

@@ -97,7 +97,7 @@ class _CanonicalPayload(RootModel[Any]):
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderReceipt:
+class _RenderRequest:
     task_id: str
     source_id: str
     event_ids: tuple[str, ...]
@@ -106,6 +106,20 @@ class _RenderReceipt:
     raw_hash: str
     normalized_hash: str
     canonical_bytes: bytes
+    request_key: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderReceipt:
+    request_key: bytes
+    task_sha256: str
+    diagnostic_projection: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderedTask:
+    task: MemUpdateTask
+    receipt: _RenderReceipt
 
 
 def _payload_sha256(payload: object) -> str:
@@ -486,7 +500,7 @@ def _construct_core_task(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-    receipt: _RenderReceipt,
+    request: _RenderRequest,
 ) -> MemUpdateTask:
     if not isinstance(core, SemanticCore):
         raise TypeError("core must be a SemanticCore")
@@ -529,11 +543,11 @@ def _construct_core_task(
         "surface_variant": surface_variant,
     }
 
-    rendered_task_id = receipt.task_id
-    rendered_event_ids = list(receipt.event_ids)
-    rendered_action_ids = list(receipt.action_ids)
-    rendered_query_id = receipt.query_id
-    rendered_source_id = receipt.source_id
+    rendered_task_id = request.task_id
+    rendered_event_ids = list(request.event_ids)
+    rendered_action_ids = list(request.action_ids)
+    rendered_query_id = request.query_id
+    rendered_source_id = request.source_id
 
     source_group = stable_id(
         "source_group", {"semantic_core_id": core.core_id}
@@ -658,8 +672,8 @@ def _construct_core_task(
     )
 
     resolved_profile = _resolve_core_profile(core, query_type)
-    normalized_source_hash = receipt.normalized_hash
-    raw_source_hash = receipt.raw_hash
+    normalized_source_hash = request.normalized_hash
+    raw_source_hash = request.raw_hash
 
     source = SourceRecord(
         source_id=rendered_source_id,
@@ -737,7 +751,7 @@ def _construct_core_task(
     return task
 
 
-def _build_render_receipt(
+def _build_render_request(
     core: SemanticCore,
     *,
     split: Split,
@@ -930,7 +944,22 @@ def _build_render_receipt(
         "surface_variant": surface_variant,
         "surface_template": template_name,
     }
-    return _RenderReceipt(
+    request_key = canonical_json_bytes(
+        _CanonicalPayload(
+            root={
+                "semantic_core_id": core.core_id,
+                "task_family": core.task_family.value,
+                "difficulty": core.difficulty.value,
+                "split": split.value,
+                "surface_variant": surface_variant,
+                "config_sha256": context.config_sha256,
+                "code_revision": context.code_revision,
+                "compiler_version": context.compiler_version,
+                "generator_name": context.generator_name,
+            }
+        )
+    )
+    return _RenderRequest(
         task_id=rendered_task_id,
         source_id=rendered_source_id,
         event_ids=rendered_event_ids,
@@ -939,6 +968,7 @@ def _build_render_receipt(
         raw_hash=raw_hash,
         normalized_hash=normalized_hash,
         canonical_bytes=canonical_json_bytes(_CanonicalPayload(root=projection)),
+        request_key=request_key,
     )
 
 
@@ -948,20 +978,28 @@ def _render_core_unvalidated(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-    receipt: _RenderReceipt | None = None,
-) -> MemUpdateTask:
-    resolved_receipt = receipt or _build_render_receipt(
+    request: _RenderRequest | None = None,
+) -> _RenderedTask:
+    resolved_request = request or _build_render_request(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
-    return _construct_core_task(
+    task = _construct_core_task(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
-        receipt=resolved_receipt,
+        request=resolved_request,
+    )
+    return _RenderedTask(
+        task=task,
+        receipt=_RenderReceipt(
+            request_key=resolved_request.request_key,
+            task_sha256=sha256_model(task),
+            diagnostic_projection=resolved_request.canonical_bytes,
+        ),
     )
 
 
@@ -1017,13 +1055,32 @@ def _expected_render_receipt(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-) -> _RenderReceipt:
-    return _build_render_receipt(
+) -> _RenderRequest:
+    return _build_render_request(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
+
+
+def _render_envelope_issues(
+    envelope: _RenderedTask,
+    expected_request: _RenderRequest,
+) -> tuple[str, ...]:
+    issues = []
+    if not isinstance(envelope, _RenderedTask):
+        return ("renderer did not return a _RenderedTask envelope",)
+    if envelope.receipt.request_key != expected_request.request_key:
+        issues.append("render receipt request key mismatch")
+    current_sha256 = sha256_model(envelope.task)
+    if envelope.receipt.task_sha256 != current_sha256:
+        issues.append("render receipt task_sha256 mismatch")
+    if envelope.receipt.diagnostic_projection != expected_request.canonical_bytes:
+        issues.append("render receipt diagnostic projection mismatch")
+    if _render_receipt(envelope.task) != expected_request.canonical_bytes:
+        issues.append("render receipt explicit projection mismatch")
+    return tuple(issues)
 
 
 def render_core(
@@ -1033,12 +1090,26 @@ def render_core(
     surface_variant: int,
     context: GenerationContext,
 ) -> MemUpdateTask:
-    task = _render_core_unvalidated(
+    expected_request = _expected_render_receipt(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
+    envelope = _render_core_unvalidated(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+        request=expected_request,
+    )
+    integrity_issues = _render_envelope_issues(envelope, expected_request)
+    if integrity_issues:
+        raise ValueError(
+            "render_core integrity validation failed: "
+            + "; ".join(integrity_issues)
+        )
+    task = envelope.task
     structural_report = validate_task(task)
     if not structural_report.valid:
         raise _report_error("structural", structural_report)
