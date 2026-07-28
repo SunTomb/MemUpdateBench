@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from decimal import Decimal
 import json
 import os
+from pathlib import Path
 import statistics
 import subprocess
 import sys
@@ -16,6 +17,12 @@ from pydantic import ValidationError
 from mub.vnext.contracts import ArtifactRef, Difficulty, Split, TaskFamily, TaskManifest
 from mub.vnext.contracts.common import FrozenDict, freeze_json, thaw_json
 from mub.vnext.contracts.task import MemUpdateTask, SplitKey, TaskMetadata
+from mub.vnext.generation import (
+    GenerationContext,
+    generate_family_d_cores,
+    load_pilot_config,
+    render_core,
+)
 from mub.vnext.io.canonical import sha256_model
 import mub.vnext.validation.split as split_validation_module
 from mub.vnext.validation.split import (
@@ -99,7 +106,7 @@ class HostileValuesFrozenDict(FrozenDict):
 FAMILY_AXIS_VALUES = {
     "alias_namespace_condition": "qualified",
     "write_trap_type": "irrelevant",
-    "duplicate_current_condition": "absent",
+    "duplicate_current_condition": False,
     "deletion_scope": "attribute",
     "relearning_condition": "none",
     "requested_version_distance": 1,
@@ -1402,6 +1409,68 @@ def test_all_a_through_h_families_require_their_registered_axes(task_family):
     report = validate_splits((task,), task_manifest=_manifest((task,)))
     assert any(
         issue.code == "missing_stratification_axis" and issue.path.endswith(f".{missing_axis}")
+        for issue in report.issues
+    )
+
+
+@pytest.mark.parametrize("duplicate_current_condition", [True, False])
+def test_family_d_duplicate_current_condition_accepts_exact_boolean_strata(duplicate_current_condition):
+    task = _task(
+        "family-d-valid",
+        Split.TEST,
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+    )
+    data = task.model_dump(mode="python")
+    data["metadata"]["resolved_profile"]["duplicate_current_condition"] = duplicate_current_condition
+    valid_task = MemUpdateTask.model_validate(data)
+
+    report = validate_splits((valid_task,), task_manifest=_manifest((valid_task,)))
+
+    assert report.valid
+    assert not any(
+        issue.code == "invalid_stratification_axis"
+        and issue.path.endswith(".duplicate_current_condition")
+        for issue in report.issues
+    )
+
+
+def test_generated_family_d_rendered_task_validates_with_boolean_stratum_and_manifest():
+    config = load_pilot_config(
+        Path(__file__).resolve().parents[2] / "configs" / "vnext" / "pilot.yaml"
+    )
+    core = generate_family_d_cores(config)[0]
+    task = render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=GenerationContext(config=config, code_revision="split-validation-test"),
+    )
+    manifest = _manifest((task,)).validated_replace(
+        split_policy_version=task.metadata.split_key.split_policy_version
+    )
+
+    report = validate_splits((task,), task_manifest=manifest)
+
+    assert type(task.metadata.resolved_profile["duplicate_current_condition"]) is bool
+    assert report.valid
+
+
+@pytest.mark.parametrize("replacement", [0, 1, "true", "false"])
+def test_family_d_duplicate_current_condition_rejects_non_boolean_strata(replacement):
+    task = _task(
+        "family-d-invalid",
+        Split.TEST,
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+    )
+    data = task.model_dump(mode="python")
+    data["metadata"]["resolved_profile"]["duplicate_current_condition"] = replacement
+    malformed = MemUpdateTask.model_validate(data)
+
+    report = validate_splits((malformed,), task_manifest=_manifest((malformed,)))
+
+    assert any(
+        issue.code == "invalid_stratification_axis"
+        and issue.path.endswith(".duplicate_current_condition")
         for issue in report.issues
     )
 

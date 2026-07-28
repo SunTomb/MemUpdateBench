@@ -1138,6 +1138,8 @@ def _valid_registered_profile_value(key: str, value: Any) -> bool:
     if key == "update_depth_bucket":
         plain = _plain_canonical_text(value)
         return plain is not None and plain in _BUCKETS
+    if key == "duplicate_current_condition":
+        return type(value) is bool
     if key in _POSITIVE_PROFILE_KEYS:
         return isinstance(value, int) and not isinstance(value, bool) and value > 0
     if key in _NONNEGATIVE_PROFILE_KEYS:
