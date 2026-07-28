@@ -37,6 +37,9 @@ _FAMILY_ORDER = {
 class CompiledPilotTasks:
     split_assignment: SplitAssignmentResult
     config_sha256: str
+    code_revision: str
+    compiler_version: str
+    generator_name: str
     tasks_jsonl: bytes
 
     def __post_init__(self) -> None:
@@ -125,6 +128,11 @@ def _validate_compiled_snapshot(snapshot: CompiledPilotTasks) -> None:
     ):
         raise ValueError("config_sha256 must be a lowercase SHA-256 digest")
 
+    for field_name in ("code_revision", "compiler_version", "generator_name"):
+        value = getattr(snapshot, field_name)
+        if type(value) is not str or not value.strip():
+            raise ValueError(f"{field_name} must be a nonblank string")
+
     tasks = _parse_tasks_jsonl(snapshot.tasks_jsonl)
     if len(tasks) != _EXPECTED_TASK_COUNT:
         raise ValueError("compiled snapshot must contain exactly 1440 task rows")
@@ -167,13 +175,19 @@ def _validate_compiled_snapshot(snapshot: CompiledPilotTasks) -> None:
             raise ValueError(
                 f"compiled snapshot task {task.task_id!r} disagrees with its split assignment"
             )
+        generator = task.source.generator
         if (
             task.metadata.generation_config_hash != snapshot.config_sha256
-            or task.source.generator is None
-            or task.source.generator.config_sha256 != snapshot.config_sha256
+            or task.metadata.compiler_version != snapshot.compiler_version
+            or generator is None
+            or generator.config_sha256 != snapshot.config_sha256
+            or generator.code_revision != snapshot.code_revision
+            or generator.compiler_version != snapshot.compiler_version
+            or generator.generator_name != snapshot.generator_name
+            or generator.seed != snapshot.split_assignment.split_balance.seed
         ):
             raise ValueError(
-                f"compiled snapshot task {task.task_id!r} disagrees with config_sha256"
+                f"compiled snapshot task {task.task_id!r} disagrees with generator provenance"
             )
         variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
         hashes_by_core[core_id].add(semantic_task_hash(task))
@@ -234,7 +248,13 @@ def _linkage_issues(rendered: tuple[_RenderedTask, ...]) -> list[str]:
                 )
 
         variants_by_core[record.core.core_id].append(observed[-1])
-        hashes_by_core[record.core.core_id].append(semantic_task_hash(task))
+        try:
+            hashes_by_core[record.core.core_id].append(semantic_task_hash(task))
+        except Exception as exc:
+            issues.append(
+                f"semantic hash row={row_number} task={task.task_id!r} "
+                f"exception={type(exc).__name__}: {exc}"
+            )
         for id_kind, linked_id in _linked_ids(task):
             location = f"row={row_number}:{id_kind}"
             first_location = linked_ids.get(linked_id)
@@ -248,7 +268,11 @@ def _linkage_issues(rendered: tuple[_RenderedTask, ...]) -> list[str]:
 
     for core_id in sorted(variants_by_core):
         variants = variants_by_core[core_id]
-        if len(variants) != 3 or set(variants) != {0, 1, 2}:
+        if (
+            len(variants) != 3
+            or len([value for value in variants if type(value) is int]) != 3
+            or sorted(variants) != [0, 1, 2]
+        ):
             issues.append(
                 f"core {core_id!r} must have exactly surface variants [0, 1, 2]; "
                 f"observed={variants!r}"
@@ -288,6 +312,49 @@ def _validation_issues(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
     return issues
 
 
+def _artifact_issues(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
+    issues: list[str] = []
+    if len(tasks) != _EXPECTED_TASK_COUNT:
+        issues.append(
+            f"task count expected={_EXPECTED_TASK_COUNT} observed={len(tasks)}"
+        )
+
+    try:
+        split_counts = Counter(task.metadata.split for task in tasks)
+    except Exception as exc:
+        issues.append(f"split count exception={type(exc).__name__}: {exc}")
+    else:
+        if split_counts != Counter(_EXPECTED_SPLIT_COUNTS):
+            issues.append(
+                f"split counts expected={_EXPECTED_SPLIT_COUNTS!r} "
+                f"observed={dict(split_counts)!r}"
+            )
+
+    expected_family_counts = Counter(
+        {family: _EXPECTED_FAMILY_COUNT for family in _FAMILY_ORDER}
+    )
+    try:
+        family_counts = Counter(task.task_family for task in tasks)
+    except Exception as exc:
+        issues.append(f"family count exception={type(exc).__name__}: {exc}")
+    else:
+        if family_counts != expected_family_counts:
+            issues.append(
+                f"family counts expected={dict(expected_family_counts)!r} "
+                f"observed={dict(family_counts)!r}"
+            )
+
+    try:
+        observed_keys = tuple(_task_sort_key(task) for task in tasks)
+        expected_keys = tuple(sorted(observed_keys))
+    except Exception as exc:
+        issues.append(f"canonical order exception={type(exc).__name__}: {exc}")
+    else:
+        if observed_keys != expected_keys:
+            issues.append("tasks are not in canonical order")
+    return issues
+
+
 def _validate_fixed_config(config: PilotConfig) -> None:
     if config.surface_variants_per_core != 3:
         raise ValueError("Pilot compilation requires surface_variants_per_core == 3")
@@ -295,6 +362,14 @@ def _validate_fixed_config(config: PilotConfig) -> None:
         raise ValueError("Pilot compilation requires total_semantic_cores == 480")
     if config.total_tasks != _EXPECTED_TASK_COUNT:
         raise ValueError("Pilot compilation requires total_tasks == 1440")
+    expected_split_tasks = {
+        split.value: count for split, count in _EXPECTED_SPLIT_COUNTS.items()
+    }
+    if config.expected_split_tasks != expected_split_tasks:
+        raise ValueError(
+            "Pilot compilation requires split task counts "
+            "{train: 1008, dev: 144, test: 288}"
+        )
 
 
 def compile_pilot_tasks(
@@ -354,31 +429,9 @@ def compile_pilot_tasks(
     )
     tasks = tuple(record.task for record in rendered)
 
-    if len(tasks) != _EXPECTED_TASK_COUNT:
-        raise ValueError(
-            "Pilot compilation requires exactly 1440 tasks; "
-            f"observed {len(tasks)}"
-        )
-    split_counts = Counter(task.metadata.split for task in tasks)
-    if split_counts != Counter(_EXPECTED_SPLIT_COUNTS):
-        raise ValueError(
-            f"Pilot task split counts must be {_EXPECTED_SPLIT_COUNTS}; "
-            f"observed {dict(split_counts)}"
-        )
-    family_counts = Counter(task.task_family for task in tasks)
-    expected_family_counts = Counter(
-        {family: _EXPECTED_FAMILY_COUNT for family in _FAMILY_ORDER}
-    )
-    if family_counts != expected_family_counts:
-        raise ValueError(
-            "Pilot task family counts must be 360 each; "
-            f"observed {dict(family_counts)}"
-        )
-    if tasks != tuple(sorted(tasks, key=_task_sort_key)):
-        raise ValueError("Pilot tasks are not in canonical order")
-
-    issues = _linkage_issues(rendered)
-    issues.extend(_validation_issues(tasks))
+    issues = _validation_issues(tasks)
+    issues.extend(_linkage_issues(rendered))
+    issues.extend(_artifact_issues(tasks))
     if issues:
         raise ValueError("Pilot task compilation failed:\n" + "\n".join(issues))
 
@@ -387,6 +440,9 @@ def compile_pilot_tasks(
     return CompiledPilotTasks(
         split_assignment=split_assignment,
         config_sha256=context.config_sha256,
+        code_revision=context.code_revision,
+        compiler_version=context.compiler_version,
+        generator_name=context.generator_name,
         tasks_jsonl=tasks_jsonl,
     )
 

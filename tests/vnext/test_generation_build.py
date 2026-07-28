@@ -101,6 +101,11 @@ def test_compile_pilot_tasks_has_exact_counts_order_linkage_and_validation(
         core_id = task.metadata.split_key.semantic_core_id
         variants_by_core[core_id].add(task.metadata.extra["surface_variant"])
         hashes_by_core[core_id].add(semantic_task_hash(task))
+        assert task.source.generator is not None
+        assert task.source.generator.config_sha256 == compiled.config_sha256
+        assert task.source.generator.code_revision == compiled.code_revision
+        assert task.source.generator.compiler_version == compiled.compiler_version
+        assert task.source.generator.generator_name == compiled.generator_name
         assert validate_task(task).valid
         assert validate_gold_replay(task).valid
     assert len(variants_by_core) == 480
@@ -172,7 +177,7 @@ def test_compiled_snapshot_rejects_noncanonical_framing_and_row_replacement(
     rows[0] = rows[1]
     with pytest.raises(ValueError):
         replace(compiled, tasks_jsonl=b"\n".join(rows))
-    with pytest.raises(ValueError, match="config_sha256"):
+    with pytest.raises(ValueError, match="generator provenance"):
         replace(compiled, config_sha256="0" * 64)
 
 
@@ -220,6 +225,9 @@ def test_revision_changes_only_surface_artifact_provenance(
 
     assert changed.tasks_jsonl != compiled.tasks_jsonl
     assert changed.config_sha256 == compiled.config_sha256
+    assert changed.code_revision == "different-revision"
+    assert changed.compiler_version == compiled.compiler_version
+    assert changed.generator_name == compiled.generator_name
     assert changed.split_assignment == compiled.split_assignment
     assert all(
         task.source.generator is not None
@@ -229,6 +237,14 @@ def test_revision_changes_only_surface_artifact_provenance(
     assert [semantic_task_hash(task) for task in changed_tasks] == [
         semantic_task_hash(task) for task in original_tasks
     ]
+
+    original_rows = compiled.tasks_jsonl.splitlines(keepends=True)
+    changed_rows = changed.tasks_jsonl.splitlines(keepends=True)
+    mixed_revision = b"".join((changed_rows[0], *original_rows[1:]))
+    with pytest.raises(ValueError, match="generator provenance"):
+        replace(compiled, tasks_jsonl=mixed_revision)
+    with pytest.raises(ValueError, match="generator provenance"):
+        replace(compiled, code_revision="different-revision")
 
 
 def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
@@ -261,6 +277,27 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     first_task_id = tasks[0].task_id
     last_task_id = tasks[-1].task_id
     calls = Counter()
+    render_calls = 0
+    original_render = build_module.render_core
+
+    def corrupted_render(core, *, split, surface_variant, context):
+        nonlocal render_calls
+        task = original_render(
+            core,
+            split=split,
+            surface_variant=surface_variant,
+            context=context,
+        )
+        if render_calls == 0:
+            object.__setattr__(task, "task_family", "corrupted_family")
+        elif render_calls == 1:
+            object.__setattr__(task.metadata, "split", Split.EVALUATION_ONLY)
+        elif render_calls == 2:
+            extra = dict(task.metadata.extra)
+            extra["surface_variant"] = "corrupted_variant"
+            object.__setattr__(task.metadata, "extra", extra)
+        render_calls += 1
+        return task
 
     def task_validator(task):
         calls["task"] += 1
@@ -290,11 +327,13 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
             )
         return build_report(issues)
 
+    monkeypatch.setattr(build_module, "render_core", corrupted_render)
     monkeypatch.setattr(build_module, "validate_task", task_validator)
     monkeypatch.setattr(build_module, "validate_gold_replay", replay_validator)
     with pytest.raises(ValueError) as exc_info:
         compile_pilot_tasks(config, code_revision=REVISION)
 
+    assert render_calls == 1440
     assert calls == {"task": 1440, "gold_replay": 1440}
     message = str(exc_info.value)
     early = (
@@ -307,6 +346,13 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
     )
     assert early in message
     assert late in message
+    assert "field=task_family" in message
+    assert "field=split" in message
+    assert "field=surface_variant" in message
+    assert "family counts expected=" in message
+    assert "split counts expected=" in message
+    assert "canonical order exception=KeyError" in message
+    assert message.index(early) < message.index("field=task_family")
     assert message.index(early) < message.index(late)
 
 
@@ -330,6 +376,38 @@ def test_noncanonical_surface_variant_count_rejected_before_render(
         match="surface_variants_per_core == 3",
     ):
         compile_pilot_tasks(changed, code_revision=REVISION)
+    assert render_calls == 0
+
+
+def test_noncanonical_split_counts_rejected_before_generation(
+    config,
+    monkeypatch,
+) -> None:
+    payload = config.model_dump(mode="python")
+    payload["splits"] = {"train": 0.6, "dev": 0.2, "test": 0.2}
+    changed = PilotConfig.model_validate(payload)
+    generation_calls = 0
+    render_calls = 0
+
+    def unexpected_generation(_config):
+        nonlocal generation_calls
+        generation_calls += 1
+        raise AssertionError("generation must not be called")
+
+    def unexpected_render(*args, **kwargs):
+        nonlocal render_calls
+        render_calls += 1
+        raise AssertionError("render must not be called")
+
+    monkeypatch.setattr(
+        build_module,
+        "generate_family_a_cores",
+        unexpected_generation,
+    )
+    monkeypatch.setattr(build_module, "render_core", unexpected_render)
+    with pytest.raises(ValueError, match="split task counts"):
+        compile_pilot_tasks(changed, code_revision=REVISION)
+    assert generation_calls == 0
     assert render_calls == 0
 
 
