@@ -403,10 +403,6 @@ def _build_core(
     ]
     semantic_payload = {
         "family": _FAMILY_NAME,
-        "seed": config.seed,
-        "core_index": core_index,
-        "cell_index": cell_index,
-        "example_index": example_index,
         "entity_condition": entity_condition,
         "attribute_condition": attribute_condition,
         "entity_mapping_id": entity_mapping_id,

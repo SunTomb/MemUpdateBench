@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import mub.vnext.generation.family_c as family_c_module
 from mub.vnext.contracts import (
     AnswerDisposition,
     CompletionStatus,
@@ -296,6 +297,74 @@ def test_unique_answers_equal_selected_candidate_replay_state(cores, config):
         assert canonical.value == replay.final_state[selected.object_key.canonical_id]
 
 
+def test_family_c_core_id_excludes_administrative_coordinates(
+    config,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        family_c_module,
+        "_entity_spec",
+        lambda *_args: (
+            "personal:friend_alex",
+            (("personal", "friend_alex"), ("personal", "friend_jordan")),
+            "exact_entity_v1:friend_alex",
+            "qualified:personal",
+            "exact_qualified_entity",
+        ),
+    )
+    monkeypatch.setattr(
+        family_c_module,
+        "_attribute_spec",
+        lambda *_args: (
+            "city",
+            "city",
+            "exact_attribute_v1:city",
+            "reviewed_match:city->city",
+            "exact_attribute",
+        ),
+    )
+    monkeypatch.setattr(
+        family_c_module,
+        "_candidate_values",
+        lambda *_args: ("Berlin", "Lisbon"),
+    )
+
+    first = family_c_module._build_core(
+        config,
+        core_index=3,
+        cell_index=0,
+        example_index=3,
+        entity_condition="distinct",
+        attribute_condition="exact",
+    )
+    second = family_c_module._build_core(
+        config,
+        core_index=103,
+        cell_index=10,
+        example_index=93,
+        entity_condition="distinct",
+        attribute_condition="exact",
+    )
+
+    assert first.core_index != second.core_index
+    assert first.stratification["cell_index"] != second.stratification["cell_index"]
+    assert first.stratification["cell_example_index"] != second.stratification[
+        "cell_example_index"
+    ]
+    assert [candidate.candidate_id for candidate in first.reference_candidates] != [
+        candidate.candidate_id for candidate in second.reference_candidates
+    ]
+    assert first.surface_references[0].reference_id != (
+        second.surface_references[0].reference_id
+    )
+    assert first.events == second.events
+    assert [candidate.object_key for candidate in first.reference_candidates] == [
+        candidate.object_key for candidate in second.reference_candidates
+    ]
+    assert first.canonical_answer.value == second.canonical_answer.value
+    assert first.core_id == second.core_id
+
+
 def test_family_c_is_deterministic_with_unique_ids_and_hashes(config, cores):
     regenerated = generate_family_c_cores(config)
     assert [core.model_dump(mode="json") for core in cores] == [
@@ -374,6 +443,27 @@ def test_family_c_semantic_hash_excludes_linked_ids_and_object_type(config, core
         is ReferenceResolutionStatus.UNIQUE
     )
     variants = (core, _renamed_reference_ids(core), _changed_object_types(core))
+    renamed_ids = variants[1]
+    changed_types = variants[2]
+    assert [candidate.candidate_id for candidate in core.reference_candidates] != [
+        candidate.candidate_id for candidate in renamed_ids.reference_candidates
+    ]
+    assert [
+        reference.reference_id for reference in core.surface_references
+    ] != [
+        reference.reference_id for reference in renamed_ids.surface_references
+    ]
+    assert {
+        candidate.object_key.object_type
+        for candidate in core.reference_candidates
+    } != {
+        candidate.object_key.object_type
+        for candidate in changed_types.reference_candidates
+    }
+    assert {core.core_id, renamed_ids.core_id, changed_types.core_id} == {
+        core.core_id
+    }
+
     tasks = [
         render_core(
             item,
