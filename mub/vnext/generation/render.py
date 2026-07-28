@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -97,29 +98,16 @@ class _CanonicalPayload(RootModel[Any]):
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderRequest:
-    task_id: str
-    source_id: str
-    event_ids: tuple[str, ...]
-    action_ids: tuple[str, ...]
-    query_id: str
-    raw_hash: str
-    normalized_hash: str
-    canonical_bytes: bytes
+class _RenderPlan:
     request_key: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _RenderReceipt:
-    request_key: bytes
+    task_bytes: bytes
     task_sha256: str
-    diagnostic_projection: bytes
 
 
 @dataclass(frozen=True, slots=True)
 class _RenderedTask:
     task: MemUpdateTask
-    receipt: _RenderReceipt
+    plan: _RenderPlan
 
 
 def _payload_sha256(payload: object) -> str:
@@ -494,14 +482,13 @@ def _report_error(stage: str, report: Any) -> ValueError:
     return ValueError(f"render_core {stage} validation failed: {detail}")
 
 
-def _construct_core_task(
+def _build_render_plan(
     core: SemanticCore,
     *,
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-    request: _RenderRequest,
-) -> MemUpdateTask:
+) -> _RenderPlan:
     if not isinstance(core, SemanticCore):
         raise TypeError("core must be a SemanticCore")
     if not isinstance(context, GenerationContext):
@@ -543,11 +530,22 @@ def _construct_core_task(
         "surface_variant": surface_variant,
     }
 
-    rendered_task_id = request.task_id
-    rendered_event_ids = list(request.event_ids)
-    rendered_action_ids = list(request.action_ids)
-    rendered_query_id = request.query_id
-    rendered_source_id = request.source_id
+    rendered_task_id = task_id(core.core_id, surface_variant)
+    rendered_event_ids = [
+        event_id(rendered_task_id, index) for index in range(len(core.events))
+    ]
+    rendered_action_ids = [
+        action_id(rendered_task_id, index, 0) for index in range(len(core.events))
+    ]
+    rendered_query_id = query_id(rendered_task_id, 0)
+    rendered_source_id = source_id(
+        "vnext_pilot",
+        core.core_index,
+        {
+            "semantic_core_id": core.core_id,
+            "surface_variant": surface_variant,
+        },
+    )
 
     source_group = stable_id(
         "source_group", {"semantic_core_id": core.core_id}
@@ -672,8 +670,21 @@ def _construct_core_task(
     )
 
     resolved_profile = _resolve_core_profile(core, query_type)
-    normalized_source_hash = request.normalized_hash
-    raw_source_hash = request.raw_hash
+    normalized_source_hash = _payload_sha256(
+        _normalized_source_semantic_projection(core)
+    )
+    raw_source_hash = _payload_sha256(
+        {
+            "events": [
+                {
+                    "raw_text": event.raw_text,
+                    "speaker": event.speaker,
+                }
+                for event in events
+            ],
+            "query_text": query.text,
+        }
+    )
 
     source = SourceRecord(
         source_id=rendered_source_id,
@@ -707,243 +718,49 @@ def _construct_core_task(
         ),
     )
 
-    task = MemUpdateTask(
-        task_id=rendered_task_id,
-        task_family=core.task_family.value,
-        difficulty=core.difficulty,
-        source=source,
-        events=events,
-        target_objects=targets,
-        queries=[query],
-        gold=gold,
-        metadata=TaskMetadata(
-            split=split,
-            split_key=SplitKey(
-                semantic_core_id=core.core_id,
-                source_group_id=source_group,
-                trajectory_id=core.trajectory_id,
-                paraphrase_group_id=paraphrase_group,
-                source_document_id=source_document,
-                version_group_id=version_group,
-                split_exception_id=None,
-                split_policy_version=_SPLIT_POLICY_VERSION,
-            ),
-            profile_name=core.difficulty,
-            resolved_profile=_plain(resolved_profile),
-            generation_config_hash=context.config_sha256,
-            compiler_version=context.compiler_version,
-            tags=[
-                "vnext_pilot",
-                core.task_family.value,
-                core.difficulty.value,
-                template_name,
-            ],
-            extra={
-                "semantic_core_id": core.core_id,
-                "core_index": core.core_index,
-                "surface_variant": surface_variant,
-                "surface_template": template_name,
-                "stratification": _plain(core.stratification),
-            },
+    metadata = TaskMetadata(
+        split=split,
+        split_key=SplitKey(
+            semantic_core_id=core.core_id,
+            source_group_id=source_group,
+            trajectory_id=core.trajectory_id,
+            paraphrase_group_id=paraphrase_group,
+            source_document_id=source_document,
+            version_group_id=version_group,
+            split_exception_id=None,
+            split_policy_version=_SPLIT_POLICY_VERSION,
         ),
-    )
-
-    return task
-
-
-def _build_render_request(
-    core: SemanticCore,
-    *,
-    split: Split,
-    surface_variant: int,
-    context: GenerationContext,
-) -> _RenderReceipt:
-    if not isinstance(core, SemanticCore):
-        raise TypeError("core must be a SemanticCore")
-    if not isinstance(context, GenerationContext):
-        raise TypeError("context must be a GenerationContext")
-    if not isinstance(split, Split):
-        raise TypeError("split must be a Split")
-    if type(surface_variant) is not int:
-        raise TypeError("surface_variant must be an integer")
-    if surface_variant not in (0, 1, 2):
-        raise ValueError("surface_variant must be one of 0, 1, 2")
-
-    (
-        template_name,
-        add_template,
-        update_template,
-        delete_template,
-        noop_template,
-        current_query_template,
-        deletion_boolean_template,
-        deletion_number_template,
-        deletion_sequence_template,
-        deletion_string_template,
-    ) = SURFACE_TEMPLATE_SETS[surface_variant]
-    operation_templates = {
-        Operation.ADD: add_template,
-        Operation.UPDATE: update_template,
-        Operation.DELETE: delete_template,
-        Operation.NOOP: noop_template,
-    }
-    deletion_templates = {
-        AnswerSchema.BOOLEAN: deletion_boolean_template,
-        AnswerSchema.NUMBER: deletion_number_template,
-        AnswerSchema.LIST: deletion_sequence_template,
-        AnswerSchema.OBJECT: deletion_sequence_template,
-        AnswerSchema.STRING: deletion_string_template,
-    }
-    rendered_task_id = task_id(core.core_id, surface_variant)
-    rendered_event_ids = tuple(
-        event_id(rendered_task_id, index) for index in range(len(core.events))
-    )
-    rendered_action_ids = tuple(
-        action_id(rendered_task_id, index, 0) for index in range(len(core.events))
-    )
-    rendered_query_id = query_id(rendered_task_id, 0)
-    rendered_source_id = source_id(
-        "vnext_pilot",
-        core.core_index,
-        {
+        profile_name=core.difficulty,
+        resolved_profile=_plain(resolved_profile),
+        generation_config_hash=context.config_sha256,
+        compiler_version=context.compiler_version,
+        tags=[
+            "vnext_pilot",
+            core.task_family.value,
+            core.difficulty.value,
+            template_name,
+        ],
+        extra={
             "semantic_core_id": core.core_id,
+            "core_index": core.core_index,
             "surface_variant": surface_variant,
+            "surface_template": template_name,
+            "stratification": _plain(core.stratification),
         },
     )
-
-    actions = [
-        GoldAction(
-            action_id=rendered_action_ids[index],
-            event_id=rendered_event_ids[index],
-            operation=core_event.operation,
-            scope=(
-                ActionScope.OBJECT
-                if core_event.operation == Operation.NOOP
-                else ActionScope.ATTRIBUTE
-            ),
-            target_object_keys=[_copy_key(key) for key in core_event.object_keys],
-            value=_plain(core_event.value),
-            effective_at=None,
-            expected_effect={},
-        )
-        for index, core_event in enumerate(core.events)
-    ]
-    try:
-        replay = replay_actions(actions)
-    except ValueError as exc:
-        raise ValueError(f"render_core gold replay failed: {exc}") from exc
-    query_type, _, answer_schema = _query_semantics(core, replay)
-    if query_type is QueryType.UNRESOLVED_REFERENCE:
-        query_text = _render_unresolved_query_text(core, surface_variant)
-    else:
-        query_template = _select_query_template(
-            query_type,
-            answer_schema,
-            current_query_template,
-            deletion_templates,
-        )
-        query_text = _render_query_text(core, query_template)
-    raw_hash = _payload_sha256(
-        {
-            "events": [
-                {
-                    "raw_text": _render_event_text(event, operation_templates),
-                    "speaker": _SPEAKERS[surface_variant],
-                }
-                for event in core.events
-            ],
-            "query_text": query_text,
-        }
-    )
-    normalized_hash = _payload_sha256(_normalized_source_semantic_projection(core))
-
-    source_group = stable_id("source_group", {"semantic_core_id": core.core_id})
-    paraphrase_group = paraphrase_group_id(core.core_id, "surface_variants")
-    source_document = stable_id(
-        "source_document", {"semantic_core_id": core.core_id}
-    )
-    version_group = stable_id(
-        "version_group", {"trajectory_id": core.trajectory_id}
-    )
-    renderer_admin = {
-        "surface_template": template_name,
-        "surface_variant": surface_variant,
-    }
-    source_provenance = {
-        "redistributable": True,
-        "license": "synthetic_redistributable",
-        "semantic_core_id": core.core_id,
-        "trajectory_id": core.trajectory_id,
-        "source_group_id": source_group,
-        "paraphrase_group_id": paraphrase_group,
-        "source_document_id": source_document,
-        "version_group_id": version_group,
-        "surface_variant": surface_variant,
-        "surface_template": template_name,
-        "release_id": context.release_id,
-        "schema_version": context.schema_version,
-        "profile_version": context.profile_version,
-    }
-    generator = {
-        "generator_name": context.generator_name,
-        "seed": context.seed,
-        "config_sha256": context.config_sha256,
-        "code_revision": context.code_revision,
-        "compiler_version": context.compiler_version,
-    }
-    split_key = {
-        "semantic_core_id": core.core_id,
-        "source_group_id": source_group,
-        "trajectory_id": core.trajectory_id,
-        "paraphrase_group_id": paraphrase_group,
-        "source_document_id": source_document,
-        "version_group_id": version_group,
-        "split_exception_id": None,
-        "split_policy_version": _SPLIT_POLICY_VERSION,
-    }
-    if query_type is QueryType.UNRESOLVED_REFERENCE:
-        gold_answer_query_ids: list[str] = []
-        acceptable_answer_query_ids: list[str] = []
-        canonical_answer_query_ids = [rendered_query_id]
-    else:
-        gold_answer_query_ids = [rendered_query_id]
-        acceptable_answer_query_ids = [rendered_query_id]
-        canonical_answer_query_ids = []
-    projection = {
+    payload = {
         "task_id": rendered_task_id,
-        "source": {
-            "source_id": rendered_source_id,
-            "source_uri": f"memory://{rendered_source_id}",
-            "raw_hash": raw_hash,
-            "normalized_hash": normalized_hash,
-            "normalization_version": _NORMALIZATION_VERSION,
-            "source_type": SourceType.SYNTHETIC.value,
-            "generator": generator,
-            "provenance": source_provenance,
-        },
-        "event_ids": list(rendered_event_ids),
-        "event_gold_action_ids": [[value] for value in rendered_action_ids],
-        "action_ids": list(rendered_action_ids),
-        "action_event_ids": list(rendered_event_ids),
-        "action_sequence": list(rendered_action_ids),
-        "query_ids": [rendered_query_id],
-        "gold_source_event_ids": _gold_source_event_ids(core, list(rendered_event_ids)),
-        "gold_answer_query_ids": gold_answer_query_ids,
-        "acceptable_answer_query_ids": acceptable_answer_query_ids,
-        "canonical_answer_query_ids": canonical_answer_query_ids,
-        "split_key": split_key,
-        "renderer_metadata": {
-            "events": [dict(renderer_admin) for _ in core.events],
-            "queries": [dict(renderer_admin)],
-        },
-        "core_index": core.core_index,
-        "stratification": _plain(core.stratification),
-        "split": split.value,
+        "schema_version": context.schema_version,
         "task_family": core.task_family.value,
         "difficulty": core.difficulty.value,
-        "surface_variant": surface_variant,
-        "surface_template": template_name,
+        "source": source.model_dump(mode="json"),
+        "events": [event.model_dump(mode="json") for event in events],
+        "target_objects": [target.model_dump(mode="json") for target in targets],
+        "queries": [query.model_dump(mode="json")],
+        "gold": gold.model_dump(mode="json"),
+        "metadata": metadata.model_dump(mode="json"),
     }
+    task_bytes = canonical_json_bytes(_CanonicalPayload(root=payload))
     request_key = canonical_json_bytes(
         _CanonicalPayload(
             root={
@@ -959,17 +776,37 @@ def _build_render_request(
             }
         )
     )
-    return _RenderRequest(
-        task_id=rendered_task_id,
-        source_id=rendered_source_id,
-        event_ids=rendered_event_ids,
-        action_ids=rendered_action_ids,
-        query_id=rendered_query_id,
-        raw_hash=raw_hash,
-        normalized_hash=normalized_hash,
-        canonical_bytes=canonical_json_bytes(_CanonicalPayload(root=projection)),
+    return _RenderPlan(
         request_key=request_key,
+        task_bytes=task_bytes,
+        task_sha256=hashlib.sha256(task_bytes).hexdigest(),
     )
+
+
+def _construct_core_task(plan: _RenderPlan) -> MemUpdateTask:
+    return MemUpdateTask.model_validate_json(plan.task_bytes)
+
+
+def _render_envelope_issues(
+    envelope: _RenderedTask,
+    expected_plan: _RenderPlan,
+) -> tuple[str, ...]:
+    issues = []
+    if not isinstance(envelope, _RenderedTask):
+        return ("renderer did not return a _RenderedTask envelope",)
+    if envelope.plan.request_key != expected_plan.request_key:
+        issues.append("render plan request key mismatch")
+    if envelope.plan.task_bytes != expected_plan.task_bytes:
+        issues.append("render plan task bytes mismatch")
+    if envelope.plan.task_sha256 != expected_plan.task_sha256:
+        issues.append("render plan task SHA-256 mismatch")
+    current_bytes = canonical_json_bytes(envelope.task)
+    if current_bytes != expected_plan.task_bytes:
+        issues.append("rendered task bytes mismatch")
+    current_sha256 = hashlib.sha256(current_bytes).hexdigest()
+    if current_sha256 != expected_plan.task_sha256:
+        issues.append("rendered task SHA-256 mismatch")
+    return tuple(issues)
 
 
 def _render_core_unvalidated(
@@ -978,109 +815,38 @@ def _render_core_unvalidated(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-    request: _RenderRequest | None = None,
+    plan: _RenderPlan | None = None,
 ) -> _RenderedTask:
-    resolved_request = request or _build_render_request(
+    resolved_plan = plan or _build_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
-    task = _construct_core_task(
-        core,
-        split=split,
-        surface_variant=surface_variant,
-        context=context,
-        request=resolved_request,
-    )
-    return _RenderedTask(
-        task=task,
-        receipt=_RenderReceipt(
-            request_key=resolved_request.request_key,
-            task_sha256=sha256_model(task),
-            diagnostic_projection=resolved_request.canonical_bytes,
-        ),
-    )
+    task = _construct_core_task(resolved_plan)
+    envelope = _RenderedTask(task=task, plan=resolved_plan)
+    integrity_issues = _render_envelope_issues(envelope, resolved_plan)
+    if integrity_issues:
+        raise ValueError(
+            "render construction integrity failed: "
+            + "; ".join(integrity_issues)
+        )
+    return envelope
 
 
-def _render_receipt(task: MemUpdateTask) -> bytes:
-    renderer_metadata = {
-        "events": [event.metadata.get(_RENDERER_METADATA_KEY) for event in task.events],
-        "queries": [query.metadata.get(_RENDERER_METADATA_KEY) for query in task.queries],
-    }
-    projection = {
-        "task_id": task.task_id,
-        "source": {
-            "source_id": task.source.source_id,
-            "source_uri": task.source.source_uri,
-            "raw_hash": task.source.raw_hash,
-            "normalized_hash": task.source.normalized_hash,
-            "normalization_version": task.source.normalization_version,
-            "source_type": task.source.source_type.value,
-            "generator": (
-                None
-                if task.source.generator is None
-                else task.source.generator.model_dump(mode="json")
-            ),
-            "provenance": _plain(task.source.provenance),
-        },
-        "event_ids": [event.event_id for event in task.events],
-        "event_gold_action_ids": [
-            list(event.gold_action_ids) for event in task.events
-        ],
-        "action_ids": [action.action_id for action in task.gold.actions],
-        "action_event_ids": [action.event_id for action in task.gold.actions],
-        "action_sequence": list(task.gold.action_sequence),
-        "query_ids": [query.query_id for query in task.queries],
-        "gold_source_event_ids": list(task.gold.gold_source_event_ids),
-        "gold_answer_query_ids": sorted(task.gold.gold_answers),
-        "acceptable_answer_query_ids": sorted(task.gold.acceptable_answers),
-        "canonical_answer_query_ids": sorted(task.gold.canonical_answers),
-        "split_key": task.metadata.split_key.model_dump(mode="json"),
-        "renderer_metadata": renderer_metadata,
-        "core_index": task.metadata.extra.get("core_index"),
-        "stratification": _plain(task.metadata.extra.get("stratification")),
-        "split": task.metadata.split.value,
-        "task_family": task.task_family,
-        "difficulty": task.difficulty.value,
-        "surface_variant": task.metadata.extra.get("surface_variant"),
-        "surface_template": task.metadata.extra.get("surface_template"),
-    }
-    return canonical_json_bytes(_CanonicalPayload(root=projection))
-
-
-def _expected_render_receipt(
+def _expected_render_plan(
     core: SemanticCore,
     *,
     split: Split,
     surface_variant: int,
     context: GenerationContext,
-) -> _RenderRequest:
-    return _build_render_request(
+) -> _RenderPlan:
+    return _build_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
     )
-
-
-def _render_envelope_issues(
-    envelope: _RenderedTask,
-    expected_request: _RenderRequest,
-) -> tuple[str, ...]:
-    issues = []
-    if not isinstance(envelope, _RenderedTask):
-        return ("renderer did not return a _RenderedTask envelope",)
-    if envelope.receipt.request_key != expected_request.request_key:
-        issues.append("render receipt request key mismatch")
-    current_sha256 = sha256_model(envelope.task)
-    if envelope.receipt.task_sha256 != current_sha256:
-        issues.append("render receipt task_sha256 mismatch")
-    if envelope.receipt.diagnostic_projection != expected_request.canonical_bytes:
-        issues.append("render receipt diagnostic projection mismatch")
-    if _render_receipt(envelope.task) != expected_request.canonical_bytes:
-        issues.append("render receipt explicit projection mismatch")
-    return tuple(issues)
 
 
 def render_core(
@@ -1090,7 +856,7 @@ def render_core(
     surface_variant: int,
     context: GenerationContext,
 ) -> MemUpdateTask:
-    expected_request = _expected_render_receipt(
+    expected_plan = _expected_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
@@ -1101,9 +867,9 @@ def render_core(
         split=split,
         surface_variant=surface_variant,
         context=context,
-        request=expected_request,
+        plan=expected_plan,
     )
-    integrity_issues = _render_envelope_issues(envelope, expected_request)
+    integrity_issues = _render_envelope_issues(envelope, expected_plan)
     if integrity_issues:
         raise ValueError(
             "render_core integrity validation failed: "

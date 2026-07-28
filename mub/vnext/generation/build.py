@@ -13,8 +13,8 @@ from mub.vnext.generation.family_c import generate_family_c_cores
 from mub.vnext.generation.family_d import generate_family_d_cores
 from mub.vnext.generation.render import (
     _RenderedTask as _RenderEnvelope,
-    _RenderRequest,
-    _expected_render_receipt,
+    _RenderPlan,
+    _expected_render_plan,
     _render_core_unvalidated,
     _render_envelope_issues,
 )
@@ -67,7 +67,7 @@ class _CompiledRender:
     split: Split
     surface_variant: int
     envelope: _RenderEnvelope
-    expected_request: _RenderRequest
+    expected_plan: _RenderPlan
 
     @property
     def task(self) -> MemUpdateTask:
@@ -134,7 +134,7 @@ def _linkage_issues(rendered: tuple[_CompiledRender, ...]) -> list[str]:
         try:
             integrity_issues = _render_envelope_issues(
                 record.envelope,
-                record.expected_request,
+                record.expected_plan,
             )
         except Exception as exc:
             integrity_issues = (
@@ -431,7 +431,7 @@ def _render_requested_task(
     surface_variant: int,
     context: GenerationContext,
 ) -> _CompiledRender:
-    request = _expected_render_receipt(
+    plan = _expected_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
@@ -442,14 +442,14 @@ def _render_requested_task(
         split=split,
         surface_variant=surface_variant,
         context=context,
-        request=request,
+        plan=plan,
     )
     return _CompiledRender(
         core=core,
         split=split,
         surface_variant=surface_variant,
         envelope=envelope,
-        expected_request=request,
+        expected_plan=plan,
     )
 
 

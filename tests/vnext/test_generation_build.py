@@ -179,7 +179,7 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
     calls = Counter()
     original_render = render_module._render_core_unvalidated
     original_constructor = render_module._construct_core_task
-    original_receipt = render_module._expected_render_receipt
+    original_plan = render_module._build_render_plan
     original_task_validator = build_module.validate_task
     original_replay_validator = build_module.validate_gold_replay
 
@@ -191,12 +191,12 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
         calls["construct"] += 1
         return original_constructor(*args, **kwargs)
 
-    def receipt_spy(*args, **kwargs):
+    def plan_spy(*args, **kwargs):
         before = calls["construct"]
-        receipt = original_receipt(*args, **kwargs)
+        plan = original_plan(*args, **kwargs)
         assert calls["construct"] == before
-        calls["receipt"] += 1
-        return receipt
+        calls["plan"] += 1
+        return plan
 
     def task_validator(task):
         calls["task"] += 1
@@ -207,8 +207,7 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
         return original_replay_validator(task)
 
     monkeypatch.setattr(render_module, "_construct_core_task", constructor_spy)
-    monkeypatch.setattr(render_module, "_expected_render_receipt", receipt_spy)
-    monkeypatch.setattr(build_module, "_expected_render_receipt", receipt_spy)
+    monkeypatch.setattr(render_module, "_build_render_plan", plan_spy)
     monkeypatch.setattr(render_module, "_render_core_unvalidated", render_spy)
     monkeypatch.setattr(build_module, "_render_core_unvalidated", render_spy)
     monkeypatch.setattr(build_module, "validate_task", task_validator)
@@ -217,7 +216,7 @@ def test_successful_compile_uses_one_unvalidated_render_and_validator_gate(
 
     assert repeated == compiled
     assert calls == {
-        "receipt": 1440,
+        "plan": 1440,
         "render": 1440,
         "construct": 1440,
         "task": 1440,
@@ -473,7 +472,7 @@ def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
             task = MemUpdateTask.model_validate(payload)
             envelope = render_module._RenderedTask(
                 task=task,
-                receipt=envelope.receipt,
+                plan=envelope.plan,
             )
         render_calls += 1
         return envelope
@@ -486,7 +485,7 @@ def test_render_receipt_rejects_valid_unique_id_and_provenance_tamper(
     message = str(exc_info.value)
     assert render_calls == 1440
     assert "stage=render_receipt code=envelope_integrity" in message
-    assert "task_sha256 mismatch" in message
+    assert "rendered task SHA-256 mismatch" in message
     assert "disagrees with generator provenance" in message
 
 
@@ -520,7 +519,7 @@ def test_full_task_digest_rejects_validator_ignored_field_mutations(
             task = MemUpdateTask.model_validate(payload)
             envelope = render_module._RenderedTask(
                 task=task,
-                receipt=envelope.receipt,
+                plan=envelope.plan,
             )
         render_calls += 1
         return envelope
@@ -538,8 +537,74 @@ def test_full_task_digest_rejects_validator_ignored_field_mutations(
         "resolved_profile",
         "nested_metadata",
     ]
-    assert "task_sha256 mismatch" in message
-    assert "count=1" in message
+    assert "rendered task SHA-256 mismatch" in message
+    assert "total_evidence=8 groups=2" in message
+
+
+def test_forged_self_attested_plan_cannot_replace_expected_plan(
+    config,
+    monkeypatch,
+) -> None:
+    import hashlib
+
+    original_render = build_module._render_core_unvalidated
+    render_calls = 0
+
+    def forged_render(*args, **kwargs):
+        nonlocal render_calls
+        envelope = original_render(*args, **kwargs)
+        if render_calls == 0:
+            payload = envelope.task.model_dump(mode="python")
+            payload["events"][0]["raw_text"] += " forged-self-attestation"
+            task = MemUpdateTask.model_validate(payload)
+            task_bytes = canonical_json_bytes(task)
+            forged_plan = render_module._RenderPlan(
+                request_key=envelope.plan.request_key,
+                task_bytes=task_bytes,
+                task_sha256=hashlib.sha256(task_bytes).hexdigest(),
+            )
+            envelope = render_module._RenderedTask(task=task, plan=forged_plan)
+        render_calls += 1
+        return envelope
+
+    monkeypatch.setattr(render_module, "_render_core_unvalidated", forged_render)
+    monkeypatch.setattr(build_module, "_render_core_unvalidated", forged_render)
+    with pytest.raises(ValueError) as exc_info:
+        compile_pilot_tasks(config, code_revision=REVISION)
+
+    message = str(exc_info.value)
+    assert render_calls == 1440
+    assert "render plan task bytes mismatch" in message
+    assert "render plan task SHA-256 mismatch" in message
+    assert "total_evidence=4 groups=1" in message
+
+
+def test_constructor_regression_cannot_self_seal_plan(
+    config,
+    monkeypatch,
+) -> None:
+    original_constructor = render_module._construct_core_task
+    constructor_calls = 0
+
+    def corrupted_constructor(plan):
+        nonlocal constructor_calls
+        constructor_calls += 1
+        task = original_constructor(plan)
+        payload = task.model_dump(mode="python")
+        payload["events"][0]["raw_text"] += " constructor-tamper"
+        return MemUpdateTask.model_validate(payload)
+
+    monkeypatch.setattr(
+        render_module,
+        "_construct_core_task",
+        corrupted_constructor,
+    )
+    with pytest.raises(
+        ValueError,
+        match="render construction integrity failed.*task bytes mismatch",
+    ):
+        compile_pilot_tasks(config, code_revision=REVISION)
+    assert constructor_calls == 1
 
 
 def test_private_envelope_and_validation_skip_are_not_exported() -> None:
@@ -548,7 +613,9 @@ def test_private_envelope_and_validation_skip_are_not_exported() -> None:
     import mub.vnext.generation as generation_package
 
     assert "_RenderedTask" not in render_module.__all__
+    assert "_RenderPlan" not in render_module.__all__
     assert not hasattr(generation_package, "_RenderedTask")
+    assert not hasattr(generation_package, "_RenderPlan")
     assert "skip_validation" not in signature(render_module.render_core).parameters
 
 
@@ -561,7 +628,7 @@ def test_repeated_variant_renderer_is_rejected(config, monkeypatch) -> None:
         split,
         surface_variant,
         context,
-        request=None,
+        plan=None,
     ):
         return original_render(
             core,
@@ -608,7 +675,7 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
         split,
         surface_variant,
         context,
-        request=None,
+        plan=None,
     ):
         nonlocal render_calls
         envelope = original_render(
@@ -616,7 +683,7 @@ def test_all_validators_run_and_failures_are_stably_aggregated(
             split=split,
             surface_variant=surface_variant,
             context=context,
-            request=request,
+            plan=plan,
         )
         task = envelope.task
         if render_calls == 0:

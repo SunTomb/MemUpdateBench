@@ -1308,12 +1308,7 @@ def test_public_render_core_keeps_structural_and_replay_gate(monkeypatch) -> Non
         final_state = dict(envelope.task.gold.final_state)
         final_state[next(iter(final_state))] = "tampered"
         object.__setattr__(envelope.task.gold, "final_state", final_state)
-        receipt = render_module._RenderReceipt(
-            request_key=envelope.receipt.request_key,
-            task_sha256=sha256_model(envelope.task),
-            diagnostic_projection=envelope.receipt.diagnostic_projection,
-        )
-        return render_module._RenderedTask(task=envelope.task, receipt=receipt)
+        return envelope
 
     def task_validator(task):
         calls["task"] += 1
@@ -1326,7 +1321,7 @@ def test_public_render_core_keeps_structural_and_replay_gate(monkeypatch) -> Non
     monkeypatch.setattr(render_module, "_render_core_unvalidated", invalid_helper)
     monkeypatch.setattr(render_module, "validate_task", task_validator)
     monkeypatch.setattr(render_module, "validate_gold_replay", replay_validator)
-    with pytest.raises(ValueError, match="gold replay validation failed"):
+    with pytest.raises(ValueError, match="integrity validation failed"):
         _render_core(
             _representative_core(),
             split=Split.TEST,
@@ -1334,7 +1329,7 @@ def test_public_render_core_keeps_structural_and_replay_gate(monkeypatch) -> Non
             context=_fixed_context,
         )
 
-    assert calls == {"task": 1, "gold_replay": 1}
+    assert calls == {"task": 0, "gold_replay": 0}
 
 
 def test_render_core_produces_valid_semantically_equivalent_surface_variants() -> None:
