@@ -40,21 +40,21 @@ Legacy phase, dataset, metric, run, checkpoint, and trajectory identities are no
 
 ### Current versions
 
-All current core constants are `1.0.0`:
+The current Pilot contract matrix is `2.0.0`:
 
 | Constant | Value |
 | --- | --- |
-| `SCHEMA_VERSION` | `1.0.0` |
-| `RUNTIME_RECORD_VERSION` | `1.0.0` |
-| `SCORER_VERSION` | `1.0.0` |
-| `METRIC_REGISTRY_VERSION` | `1.0.0` |
-| `COMPILER_VERSION` | `1.0.0` |
-| `PROFILE_VERSION` | `1.0.0` |
-| `TASK_MANIFEST_VERSION` | `1.0.0` |
-| `RUN_MANIFEST_VERSION` | `1.0.0` |
-| `PRIMARY_FAILURE_PRECEDENCE_VERSION` | `1.0.0` |
+| `SCHEMA_VERSION` | `2.0.0` |
+| `RUNTIME_RECORD_VERSION` | `2.0.0` |
+| `SCORER_VERSION` | `2.0.0` |
+| `METRIC_REGISTRY_VERSION` | `2.0.0` |
+| `COMPILER_VERSION` | `2.0.0` |
+| `PROFILE_VERSION` | `2.0.0` |
+| `TASK_MANIFEST_VERSION` | `2.0.0` |
+| `RUN_MANIFEST_VERSION` | `2.0.0` |
+| `PRIMARY_FAILURE_PRECEDENCE_VERSION` | `2.0.0` |
 
-Compatibility artifacts additionally use `LEGACY_ANALYSIS_MANIFEST_VERSION=1.0.0` and `LEGACY_CLI_COMPILER_VERSION=vnext-phase0-cli-1.0.0`. Imported EvoMemory runs use adapter version `legacy-import-v1`; their unavailable original system version is represented as `legacy-unknown`, not guessed.
+The published Phase 0 v1 release remains immutable and is not silently upgraded. Its task/runtime/score/manifest records retain v1 semantics, including that missing or `None` answers are not abstentions. Compatibility artifacts continue to use `LEGACY_ANALYSIS_MANIFEST_VERSION=1.0.0` and `LEGACY_CLI_COMPILER_VERSION=vnext-phase0-cli-1.0.0`. Imported EvoMemory runs use adapter version `legacy-import-v1`; their unavailable original system version is represented as `legacy-unknown`, not guessed.
 
 ### Canonical serialization
 
