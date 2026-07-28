@@ -1,3 +1,4 @@
+from mub.vnext.generation.build import CompiledPilotTasks, compile_pilot_tasks
 from mub.vnext.generation.catalogs import (
     ALIAS_MAPPINGS,
     CANONICAL_ATTRIBUTES,
@@ -39,6 +40,7 @@ from mub.vnext.generation.splits import (
 __all__ = [
     "ALIAS_MAPPINGS",
     "CANONICAL_ATTRIBUTES",
+    "CompiledPilotTasks",
     "CoreEvent",
     "CoreSplitAssignment",
     "GenerationContext",
@@ -56,6 +58,7 @@ __all__ = [
     "VALUES",
     "action_id",
     "assign_splits",
+    "compile_pilot_tasks",
     "core_id",
     "event_id",
     "generate_family_a_cores",
