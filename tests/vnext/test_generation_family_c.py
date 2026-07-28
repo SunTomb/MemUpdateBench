@@ -230,6 +230,49 @@ def test_family_c_identity_and_reviewed_mapping_evidence_are_explicit(cores):
             )
 
 
+def test_family_c_surface_and_namespace_evidence_agree_for_every_entity_condition(
+    cores,
+):
+    representatives = {
+        entity_condition: next(
+            core
+            for core in cores
+            if core.stratification["entity_condition"] == entity_condition
+            and core.stratification["attribute_condition"] == "exact"
+        )
+        for entity_condition in (
+            "distinct",
+            "same_name",
+            "alias",
+            "namespace_collision",
+        )
+    }
+
+    for entity_condition, core in representatives.items():
+        entity_surface = core.surface_references[0].normalized_text.split(".", 1)[0]
+        candidates = core.reference_candidates
+        first = candidates[0].object_key
+        evidence = core.stratification["namespace_evidence"]
+
+        if entity_condition == "distinct":
+            assert entity_surface == f"{first.namespace}:{first.entity}"
+            assert evidence == f"qualified:{first.namespace}"
+        elif entity_condition in {"same_name", "alias"}:
+            assert ":" not in entity_surface
+            assert len({candidate.object_key.namespace for candidate in candidates}) == 1
+            assert evidence == (
+                f"unqualified_with_shared_namespace:{first.namespace}"
+            )
+        else:
+            second = candidates[1].object_key
+            assert ":" not in entity_surface
+            assert first.entity == second.entity == entity_surface
+            assert first.namespace != second.namespace
+            assert evidence == (
+                f"unqualified:{first.entity}@{first.namespace}|{second.namespace}"
+            )
+
+
 def test_unique_answers_equal_selected_candidate_replay_state(cores, config):
     context = GenerationContext(config=config, code_revision="family-c-test")
     for core in cores:

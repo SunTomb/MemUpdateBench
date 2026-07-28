@@ -170,7 +170,7 @@ def _entity_spec(
             bare_name,
             ((namespaces[0], first), (namespaces[0], second)),
             f"same_name_group_v1:{bare_name}",
-            f"qualified:{namespaces[0]}",
+            f"unqualified_with_shared_namespace:{namespaces[0]}",
             "unqualified_same_name",
         )
 
@@ -182,7 +182,7 @@ def _entity_spec(
             alias,
             ((namespaces[0], canonical_entity), (namespaces[0], other)),
             f"reviewed_alias_v1:{alias}->{canonical_entity}",
-            f"qualified:{namespaces[0]}",
+            f"unqualified_with_shared_namespace:{namespaces[0]}",
             "reviewed_alias_map",
         )
 
