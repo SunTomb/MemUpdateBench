@@ -56,9 +56,13 @@ class CompiledPilotTasks:
     def __post_init__(self, _compile_issues: tuple[str, ...]) -> None:
         _validate_compiled_snapshot(self, _compile_issues)
 
+    @staticmethod
+    def parse_tasks_jsonl(tasks_jsonl: bytes) -> tuple[MemUpdateTask, ...]:
+        return _parse_tasks_jsonl(tasks_jsonl)
+
     @property
     def tasks(self) -> tuple[MemUpdateTask, ...]:
-        return _parse_tasks_jsonl(self.tasks_jsonl)
+        return self.parse_tasks_jsonl(self.tasks_jsonl)
 
     def validated_tasks(self) -> tuple[MemUpdateTask, ...]:
         return _validated_snapshot_tasks(self)

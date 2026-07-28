@@ -17,7 +17,7 @@ from mub.vnext.generation import (
     load_pilot_config,
 )
 from mub.vnext.io import canonical_json_bytes
-from mub.vnext.validation import validate_splits
+from mub.vnext.validation import ValidationIssue, build_report, validate_splits
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +49,25 @@ def bundle(compiled, config) -> PilotArtifactBundle:
 
 def _clone_compiled(compiled: CompiledPilotTasks) -> CompiledPilotTasks:
     return replace(compiled)
+
+
+def _replace_artifact(bundle, index, artifact, **changes):
+    artifacts = list(bundle.artifacts)
+    artifacts[index] = artifact
+    return replace(bundle, artifacts=tuple(artifacts), **changes)
+
+
+def _invalid_report():
+    return build_report(
+        (
+            ValidationIssue(
+                code="injected_split_failure",
+                message="injected failure",
+                path="tasks",
+                severity="error",
+            ),
+        )
+    )
 
 
 def test_bundle_contains_exact_canonical_counts_hashes_and_artifacts(
@@ -279,20 +298,140 @@ def test_noncanonical_compiled_snapshot_is_rejected(compiled, config) -> None:
         build_pilot_artifact_bundle(tampered, config)
 
 
+@pytest.mark.parametrize(
+    ("change", "value"),
+    [
+        ("record_count", 1439),
+        ("media_type", "application/json"),
+    ],
+)
+def test_public_bundle_rejects_tampered_task_artifact_metadata(
+    bundle, change, value
+) -> None:
+    hostile = replace(bundle.artifacts[0], **{change: value})
+
+    with pytest.raises(ValueError, match="task artifact"):
+        _replace_artifact(bundle, 0, hostile)
+
+
+def test_public_bundle_rejects_tampered_task_artifact_hash(bundle) -> None:
+    hostile = replace(bundle.artifacts[0])
+    object.__setattr__(hostile, "_sha256", "0" * 64)
+
+    with pytest.raises(ValueError, match="task artifact"):
+        _replace_artifact(bundle, 0, hostile)
+
+
+def test_public_bundle_rejects_tampered_canonical_task_bytes(bundle) -> None:
+    rows = bundle.tasks_jsonl.splitlines()
+    payload = MemUpdateTask.model_validate_json(rows[0]).model_dump(mode="python")
+    payload["metadata"]["extra"]["surface_variant"] = 9
+    rows[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
+    hostile = replace(bundle.artifacts[0], content=b"\n".join(rows) + b"\n")
+
+    with pytest.raises(ValueError, match="task artifact|task manifest|split validation"):
+        PilotArtifactBundle(
+            resolved_config=bundle.resolved_config,
+            split_balance_report=bundle.split_balance_report,
+            task_manifest=bundle.task_manifest,
+            validation_report=bundle.validation_report,
+            artifacts=(hostile, *bundle.artifacts[1:]),
+        )
+
+
+def test_public_bundle_rejects_coordinated_config_and_artifact_replacement(
+    bundle,
+) -> None:
+    hostile_config = bundle.resolved_config.model_copy(
+        update={"release_id": "hostile-release"},
+        deep=True,
+    )
+    hostile_artifact = replace(
+        bundle.artifacts[1],
+        content=canonical_json_bytes(hostile_config),
+    )
+
+    with pytest.raises(ValueError, match="config|manifest"):
+        _replace_artifact(
+            bundle,
+            1,
+            hostile_artifact,
+            resolved_config=hostile_config,
+        )
+
+
+def test_public_bundle_rejects_coordinated_manifest_and_artifact_replacement(
+    bundle,
+) -> None:
+    hostile_manifest = bundle.task_manifest.validated_replace(created_at="hostile")
+    hostile_artifact = replace(
+        bundle.artifacts[3],
+        content=canonical_json_bytes(hostile_manifest),
+    )
+
+    with pytest.raises(ValueError, match="manifest"):
+        _replace_artifact(
+            bundle,
+            3,
+            hostile_artifact,
+            task_manifest=hostile_manifest,
+        )
+
+
+def test_public_bundle_rejects_coordinated_split_balance_and_artifact_replacement(
+    bundle,
+) -> None:
+    hostile_report = bundle.split_balance_report.validated_replace(
+        seed=bundle.split_balance_report.seed + 1
+    )
+    hostile_artifact = replace(
+        bundle.artifacts[2],
+        content=canonical_json_bytes(hostile_report),
+    )
+
+    with pytest.raises(ValueError, match="split balance"):
+        _replace_artifact(
+            bundle,
+            2,
+            hostile_artifact,
+            split_balance_report=hostile_report,
+        )
+
+
+def test_public_bundle_rejects_coordinated_invalid_validation_report(bundle) -> None:
+    hostile_report = _invalid_report()
+    hostile_artifact = replace(
+        bundle.artifacts[4],
+        content=canonical_json_bytes(hostile_report),
+    )
+
+    with pytest.raises(ValueError, match="validation report|split validation"):
+        _replace_artifact(
+            bundle,
+            4,
+            hostile_artifact,
+            validation_report=hostile_report,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("resolved_config", {}),
+        ("split_balance_report", {}),
+        ("task_manifest", {}),
+        ("validation_report", {}),
+    ],
+)
+def test_public_bundle_rejects_noncontract_typed_fields(bundle, field, value) -> None:
+    with pytest.raises(TypeError, match=field):
+        replace(bundle, **{field: value})
+
+
 def test_invalid_split_validation_is_rejected(monkeypatch, compiled, config) -> None:
     import mub.vnext.generation.artifacts as artifacts_module
-    from mub.vnext.validation import ValidationIssue, build_report
 
-    invalid = build_report(
-        (
-            ValidationIssue(
-                code="injected_split_failure",
-                message="injected failure",
-                path="tasks",
-                severity="error",
-            ),
-        )
-    )
+    invalid = _invalid_report()
     monkeypatch.setattr(artifacts_module, "validate_splits", lambda *args, **kwargs: invalid)
 
     with pytest.raises(ValueError, match="split validation"):
