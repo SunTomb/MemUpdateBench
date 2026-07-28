@@ -17,7 +17,14 @@ from mub.vnext.contracts import (
 from mub.vnext.generation.build import CompiledPilotTasks
 from mub.vnext.generation.config import PilotConfig
 from mub.vnext.generation.core import GenerationContext
-from mub.vnext.generation.splits import SplitBalanceReport
+from mub.vnext.generation.splits import (
+    CoreSplitAssignment,
+    SplitAssignmentResult,
+    SplitBalanceReport,
+    _ranking_sha256_from_material,
+    _stratum_sort_key,
+    _validate_split_assignment_result,
+)
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.validation import ValidationReport, validate_splits
 from mub.vnext.validation.split import FAMILY_STRATIFICATION_AXES
@@ -306,6 +313,54 @@ def _validate_split_balance(
         ):
             raise ValueError("split balance cell values disagree with task artifact")
 
+    assignments = [
+        CoreSplitAssignment(
+            semantic_core_id=core_id,
+            task_family=family,
+            difficulty=difficulty,
+            strata=dict(strata),
+            split=split,
+            ranking_sha256=_ranking_sha256_from_material(
+                seed=config.seed,
+                task_family=family,
+                difficulty=difficulty,
+                strata=dict(strata),
+                semantic_core_id=core_id,
+            ),
+        )
+        for core_id, (family, difficulty, strata, split) in core_records.items()
+    ]
+    difficulty_order = {
+        difficulty: index
+        for index, difficulty in enumerate(
+            (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+        )
+    }
+    assignments.sort(
+        key=lambda assignment: (
+            family_order[assignment.task_family],
+            difficulty_order[assignment.difficulty],
+            _stratum_sort_key(
+                assignment.task_family,
+                assignment.difficulty,
+                assignment.strata,
+            ),
+            assignment.semantic_core_id,
+        )
+    )
+    try:
+        _validate_split_assignment_result(
+            SplitAssignmentResult(
+                assignments=tuple(assignments),
+                split_balance=report,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        detail = str(exc).replace("\n", " ")[:512]
+        raise ValueError(
+            f"split assignment disagrees with deterministic ranking: {detail}"
+        ) from exc
+
 
 def _validate_public_bundle(bundle: PilotArtifactBundle) -> None:
     _require_bundle_contracts(bundle)
@@ -331,12 +386,17 @@ def _validate_public_bundle(bundle: PilotArtifactBundle) -> None:
         raise ValueError("typed bundle records disagree with canonical artifact bytes")
 
     try:
-        tasks = CompiledPilotTasks.parse_tasks_jsonl(bundle.tasks_jsonl)
+        tasks = CompiledPilotTasks.validated_task_set(
+            bundle.tasks_jsonl,
+            config_sha256=context.config_sha256,
+            code_revision=bundle.task_manifest.code_revision,
+            compiler_version=COMPILER_VERSION,
+            generator_name=context.generator_name,
+            seed=resolved_config.seed,
+        )
     except (TypeError, ValueError) as exc:
         detail = str(exc).replace("\n", " ")[:512]
-        raise ValueError(
-            f"task artifact is not exact canonical JSONL: {detail}"
-        ) from exc
+        raise ValueError(f"Pilot task set is invalid: {detail}") from exc
     if bundle.artifacts[0].record_count != len(tasks):
         raise ValueError("task artifact record count disagrees with canonical JSONL")
 

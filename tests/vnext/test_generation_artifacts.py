@@ -11,7 +11,9 @@ import pytest
 from mub.vnext.contracts import MemUpdateTask, Split
 from mub.vnext.generation import (
     CompiledPilotTasks,
+    InMemoryPilotArtifact,
     PilotArtifactBundle,
+    SplitBalanceReport,
     build_pilot_artifact_bundle,
     compile_pilot_tasks,
     load_pilot_config,
@@ -68,6 +70,92 @@ def _invalid_report():
             ),
         )
     )
+
+
+def _parsed_bundle_tasks(bundle):
+    return [MemUpdateTask.model_validate_json(row) for row in bundle.tasks_jsonl.splitlines()]
+
+
+def _coordinated_bundle_from_tasks(
+    bundle,
+    tasks,
+    *,
+    split_balance_report=None,
+):
+    import mub.vnext.generation.artifacts as artifacts_module
+
+    tasks = tuple(tasks)
+    tasks_bytes = b"".join(canonical_json_bytes(task) + b"\n" for task in tasks)
+    tasks_artifact = InMemoryPilotArtifact(
+        path="tasks.jsonl",
+        content=tasks_bytes,
+        media_type="application/x-ndjson",
+        record_count=len(tasks),
+    )
+    config_artifact = bundle.artifacts[1]
+    split_balance_report = split_balance_report or bundle.split_balance_report
+    split_artifact = replace(
+        bundle.artifacts[2],
+        content=canonical_json_bytes(split_balance_report),
+    )
+    generator = tasks[0].source.generator
+    manifest = artifacts_module._build_manifest(
+        tasks=tasks,
+        compiler_versions={generator.generator_name: generator.compiler_version},
+        code_revision=generator.code_revision,
+        config=bundle.resolved_config,
+        config_ref=config_artifact.ref,
+        tasks_ref=tasks_artifact.ref,
+    )
+    manifest_artifact = replace(
+        bundle.artifacts[3],
+        content=canonical_json_bytes(manifest),
+    )
+    validation_report = validate_splits(tasks, task_manifest=manifest)
+    assert validation_report.valid and not validation_report.issues
+    validation_artifact = replace(
+        bundle.artifacts[4],
+        content=canonical_json_bytes(validation_report),
+    )
+    return PilotArtifactBundle(
+        resolved_config=bundle.resolved_config,
+        split_balance_report=split_balance_report,
+        task_manifest=manifest,
+        validation_report=validation_report,
+        artifacts=(
+            tasks_artifact,
+            config_artifact,
+            split_artifact,
+            manifest_artifact,
+            validation_artifact,
+        ),
+    )
+
+
+def _moved_core_split_report(report, exemplar):
+    payload = report.model_dump(mode="python")
+    payload["core_counts"]["train"] -= 1
+    payload["core_counts"]["dev"] += 1
+    payload["projected_task_counts"]["train"] -= 3
+    payload["projected_task_counts"]["dev"] += 3
+    matched = 0
+    for cell in payload["cells"]:
+        same_stratum = (
+            cell["task_family"].value == exemplar.task_family
+            and cell["difficulty"] == exemplar.difficulty
+            and all(
+                exemplar.metadata.resolved_profile[key] == value
+                for key, value in cell["strata"].items()
+            )
+        )
+        if not same_stratum or cell["split"] not in {Split.TRAIN, Split.DEV}:
+            continue
+        delta = -1 if cell["split"] is Split.TRAIN else 1
+        cell["observed"] += delta
+        cell["deviation"] += float(delta)
+        matched += 1
+    assert matched == 2
+    return SplitBalanceReport.model_validate(payload)
 
 
 def test_bundle_contains_exact_canonical_counts_hashes_and_artifacts(
@@ -329,7 +417,10 @@ def test_public_bundle_rejects_tampered_canonical_task_bytes(bundle) -> None:
     rows[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
     hostile = replace(bundle.artifacts[0], content=b"\n".join(rows) + b"\n")
 
-    with pytest.raises(ValueError, match="task artifact|task manifest|split validation"):
+    with pytest.raises(
+        ValueError,
+        match="task artifact|task manifest|task set|split validation",
+    ):
         PilotArtifactBundle(
             resolved_config=bundle.resolved_config,
             split_balance_report=bundle.split_balance_report,
@@ -351,7 +442,7 @@ def test_public_bundle_rejects_coordinated_config_and_artifact_replacement(
         content=canonical_json_bytes(hostile_config),
     )
 
-    with pytest.raises(ValueError, match="config|manifest"):
+    with pytest.raises(ValueError, match="config|manifest|task set"):
         _replace_artifact(
             bundle,
             1,
@@ -426,6 +517,119 @@ def test_public_bundle_rejects_coordinated_invalid_validation_report(bundle) -> 
 def test_public_bundle_rejects_noncontract_typed_fields(bundle, field, value) -> None:
     with pytest.raises(TypeError, match=field):
         replace(bundle, **{field: value})
+
+
+def test_public_bundle_rejects_coordinated_generator_rewrite(bundle) -> None:
+    hostile_tasks = []
+    for task in _parsed_bundle_tasks(bundle):
+        payload = task.model_dump(mode="python")
+        payload["source"]["generator"]["generator_name"] = "hostile_generator"
+        hostile_tasks.append(MemUpdateTask.model_validate(payload))
+
+    with pytest.raises(ValueError, match="generator|task set"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
+
+
+def test_public_bundle_rejects_coordinated_core_split_reassignment(bundle) -> None:
+    tasks = _parsed_bundle_tasks(bundle)
+    exemplar = next(task for task in tasks if task.metadata.split is Split.TRAIN)
+    core_id = exemplar.metadata.split_key.semantic_core_id
+    hostile_tasks = []
+    for task in tasks:
+        if task.metadata.split_key.semantic_core_id != core_id:
+            hostile_tasks.append(task)
+            continue
+        payload = task.model_dump(mode="python")
+        payload["metadata"]["split"] = Split.DEV
+        hostile_tasks.append(MemUpdateTask.model_validate(payload))
+    hostile_report = _moved_core_split_report(bundle.split_balance_report, exemplar)
+
+    with pytest.raises(ValueError, match="quota|task set|split"):
+        _coordinated_bundle_from_tasks(
+            bundle,
+            hostile_tasks,
+            split_balance_report=hostile_report,
+        )
+
+
+def test_public_bundle_rejects_quota_preserving_core_split_swap(bundle) -> None:
+    tasks = _parsed_bundle_tasks(bundle)
+    representatives = {}
+    for task in tasks:
+        representatives.setdefault(task.metadata.split_key.semantic_core_id, task)
+    groups = {}
+    for core_id, task in representatives.items():
+        key = (
+            task.task_family,
+            task.difficulty,
+            tuple(task.metadata.resolved_profile.items()),
+        )
+        groups.setdefault(key, {})[task.metadata.split] = core_id
+    pair = next(
+        split_map
+        for split_map in groups.values()
+        if Split.TRAIN in split_map and Split.DEV in split_map
+    )
+    train_core = pair[Split.TRAIN]
+    dev_core = pair[Split.DEV]
+    hostile_tasks = []
+    for task in tasks:
+        core_id = task.metadata.split_key.semantic_core_id
+        if core_id not in {train_core, dev_core}:
+            hostile_tasks.append(task)
+            continue
+        payload = task.model_dump(mode="python")
+        payload["metadata"]["split"] = (
+            Split.DEV if core_id == train_core else Split.TRAIN
+        )
+        hostile_tasks.append(MemUpdateTask.model_validate(payload))
+
+    hostile_tasks.sort(
+        key=lambda task: (
+            {Split.TRAIN: 0, Split.DEV: 1, Split.TEST: 2}[task.metadata.split],
+            {
+                "repeated_same_slot_update": 0,
+                "interleaved_multi_slot_update": 1,
+                "entity_attribute_grounding": 2,
+                "noop_write_discipline": 3,
+            }[task.task_family],
+            task.metadata.split_key.semantic_core_id,
+            task.metadata.extra["surface_variant"],
+        )
+    )
+
+    with pytest.raises(ValueError, match="assignment|ranking|task set|split"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
+
+
+def test_public_bundle_rejects_coordinated_task_reordering(bundle) -> None:
+    hostile_tasks = _parsed_bundle_tasks(bundle)
+    hostile_tasks[0], hostile_tasks[1] = hostile_tasks[1], hostile_tasks[0]
+
+    with pytest.raises(ValueError, match="canonical order|task set"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
+
+
+def test_public_bundle_rejects_missing_and_duplicate_surface_variant(bundle) -> None:
+    hostile_tasks = _parsed_bundle_tasks(bundle)
+    payload = hostile_tasks[2].model_dump(mode="python")
+    assert payload["metadata"]["extra"]["surface_variant"] == 2
+    payload["metadata"]["extra"]["surface_variant"] = 1
+    hostile_tasks[2] = MemUpdateTask.model_validate(payload)
+
+    with pytest.raises(ValueError, match="surface variant|task set"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
+
+
+def test_public_bundle_rejects_rehashed_invalid_task_semantics(bundle) -> None:
+    hostile_tasks = _parsed_bundle_tasks(bundle)
+    payload = hostile_tasks[0].model_dump(mode="python")
+    query_id = next(iter(payload["gold"]["gold_answers"]))
+    payload["gold"]["gold_answers"][query_id] = "hostile-answer"
+    hostile_tasks[0] = MemUpdateTask.model_validate(payload)
+
+    with pytest.raises(ValueError, match="validation|task set|gold"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
 def test_invalid_split_validation_is_rejected(monkeypatch, compiled, config) -> None:

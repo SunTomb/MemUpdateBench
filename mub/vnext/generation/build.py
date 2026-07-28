@@ -34,6 +34,17 @@ _EXPECTED_SPLIT_COUNTS = {
     Split.TEST: 288,
 }
 _EXPECTED_FAMILY_COUNT = 360
+_EXPECTED_CORES_PER_FAMILY = 120
+_EXPECTED_CORE_SPLIT_COUNTS = {
+    Split.TRAIN: 336,
+    Split.DEV: 48,
+    Split.TEST: 96,
+}
+_EXPECTED_FAMILY_CORE_SPLIT_COUNTS = {
+    Split.TRAIN: 84,
+    Split.DEV: 12,
+    Split.TEST: 24,
+}
 _SPLIT_ORDER = {Split.TRAIN: 0, Split.DEV: 1, Split.TEST: 2}
 _FAMILY_ORDER = {
     TaskFamily.REPEATED_SAME_SLOT.value: 0,
@@ -59,6 +70,27 @@ class CompiledPilotTasks:
     @staticmethod
     def parse_tasks_jsonl(tasks_jsonl: bytes) -> tuple[MemUpdateTask, ...]:
         return _parse_tasks_jsonl(tasks_jsonl)
+
+    @staticmethod
+    def validated_task_set(
+        tasks_jsonl: bytes,
+        *,
+        config_sha256: str,
+        code_revision: str,
+        compiler_version: str,
+        generator_name: str,
+        seed: int,
+    ) -> tuple[MemUpdateTask, ...]:
+        tasks = _parse_tasks_jsonl(tasks_jsonl)
+        _raise_task_set_issues(
+            tasks,
+            config_sha256=config_sha256,
+            code_revision=code_revision,
+            compiler_version=compiler_version,
+            generator_name=generator_name,
+            seed=seed,
+        )
+        return tasks
 
     @property
     def tasks(self) -> tuple[MemUpdateTask, ...]:
@@ -128,7 +160,19 @@ def _validated_snapshot_tasks(
     compile_issues: tuple[str, ...] = (),
 ) -> tuple[MemUpdateTask, ...]:
     tasks = _parse_tasks_jsonl(snapshot.tasks_jsonl)
-    issues = _validation_issues(tasks)
+    expected_seed = getattr(
+        getattr(snapshot.split_assignment, "split_balance", None),
+        "seed",
+        -1,
+    )
+    issues = _task_set_consistency_issues(
+        tasks,
+        config_sha256=snapshot.config_sha256,
+        code_revision=snapshot.code_revision,
+        compiler_version=snapshot.compiler_version,
+        generator_name=snapshot.generator_name,
+        seed=expected_seed,
+    )
     issues.extend(_snapshot_consistency_issues(snapshot, tasks))
     issues.extend(compile_issues)
     if issues:
@@ -239,11 +283,152 @@ def _validation_issues(tasks: tuple[MemUpdateTask, ...]) -> list[str]:
     return issues
 
 
+def _task_set_consistency_issues(
+    tasks: tuple[MemUpdateTask, ...],
+    *,
+    config_sha256: str,
+    code_revision: str,
+    compiler_version: str,
+    generator_name: str,
+    seed: int,
+) -> list[str]:
+    issues = _artifact_issues(tasks)
+    issues.extend(_validation_issues(tasks))
+    variants_by_core: dict[str, set[Any]] = defaultdict(set)
+    hashes_by_core: dict[str, set[str]] = defaultdict(set)
+    core_records: dict[str, tuple[str, Any, Split]] = {}
+    core_by_semantic_hash: dict[str, str] = {}
+    linked_ids: dict[str, str] = {}
+
+    for row_number, task in enumerate(tasks, start=1):
+        core_id = task.metadata.split_key.semantic_core_id
+        generator = task.source.generator
+        if (
+            task.metadata.generation_config_hash != config_sha256
+            or task.metadata.compiler_version != compiler_version
+            or generator is None
+            or generator.config_sha256 != config_sha256
+            or generator.code_revision != code_revision
+            or generator.compiler_version != compiler_version
+            or generator.generator_name != generator_name
+            or generator.seed != seed
+        ):
+            issues.append(
+                f"stage=task_set code=generator_provenance core={core_id} "
+                f"row={row_number} task={task.task_id!r} "
+                "disagrees with generator provenance"
+            )
+
+        core_record = (task.task_family, task.difficulty, task.metadata.split)
+        previous_record = core_records.setdefault(core_id, core_record)
+        if previous_record != core_record:
+            issues.append(
+                f"stage=task_set code=core_metadata core={core_id} "
+                "variants disagree on family, difficulty, or split"
+            )
+        variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
+        try:
+            semantic_hash = semantic_task_hash(task)
+            hashes_by_core[core_id].add(semantic_hash)
+            first_core_id = core_by_semantic_hash.setdefault(semantic_hash, core_id)
+            if first_core_id != core_id:
+                issues.append(
+                    f"stage=semantic_hash code=cross_core_collision core={core_id} "
+                    f"hash={semantic_hash} first_core={first_core_id}"
+                )
+        except Exception as exc:
+            issues.append(
+                f"stage=semantic_hash code=hash_exception core={core_id} "
+                f"row={row_number} task={task.task_id!r} "
+                f"exception={type(exc).__name__}: {exc}"
+            )
+        for id_kind, linked_id in _linked_ids(task):
+            location = f"row={row_number}:{id_kind}"
+            first_location = linked_ids.get(linked_id)
+            if first_location is not None:
+                issues.append(
+                    f"stage=task_set code=duplicate_{id_kind}_id core={core_id} "
+                    f"duplicate linked ID={linked_id!r} "
+                    f"first={first_location} duplicate={location}"
+                )
+            else:
+                linked_ids[linked_id] = location
+
+    if len(core_records) != _EXPECTED_CORE_COUNT:
+        issues.append(
+            f"stage=task_set code=core_count core=global "
+            f"expected={_EXPECTED_CORE_COUNT} observed={len(core_records)}"
+        )
+    if set(variants_by_core) != set(core_records):
+        issues.append(
+            "stage=task_set code=core_coverage core=global "
+            "variant coverage disagrees with semantic-core records"
+        )
+    for core_id in sorted(variants_by_core):
+        if variants_by_core[core_id] != {0, 1, 2}:
+            issues.append(
+                f"stage=task_set code=surface_variants core={core_id} "
+                f"observed={sorted(variants_by_core[core_id], key=repr)!r}"
+            )
+        if len(hashes_by_core[core_id]) != 1:
+            issues.append(
+                f"stage=semantic_hash code=variant_mismatch core={core_id} "
+                "variants must share one semantic hash"
+            )
+
+    core_split_counts = Counter(record[2] for record in core_records.values())
+    if core_split_counts != Counter(_EXPECTED_CORE_SPLIT_COUNTS):
+        issues.append(
+            f"stage=task_set code=core_split_quotas core=global "
+            f"expected={_EXPECTED_CORE_SPLIT_COUNTS!r} "
+            f"observed={dict(core_split_counts)!r}"
+        )
+    for family in _FAMILY_ORDER:
+        family_records = [
+            record for record in core_records.values() if record[0] == family
+        ]
+        if len(family_records) != _EXPECTED_CORES_PER_FAMILY:
+            issues.append(
+                f"stage=task_set code=family_core_count core=global "
+                f"family={family} expected={_EXPECTED_CORES_PER_FAMILY} "
+                f"observed={len(family_records)}"
+            )
+        family_splits = Counter(record[2] for record in family_records)
+        if family_splits != Counter(_EXPECTED_FAMILY_CORE_SPLIT_COUNTS):
+            issues.append(
+                f"stage=task_set code=family_split_quotas core=global "
+                f"family={family} expected={_EXPECTED_FAMILY_CORE_SPLIT_COUNTS!r} "
+                f"observed={dict(family_splits)!r}"
+            )
+    return issues
+
+
+def _raise_task_set_issues(
+    tasks: tuple[MemUpdateTask, ...],
+    *,
+    config_sha256: str,
+    code_revision: str,
+    compiler_version: str,
+    generator_name: str,
+    seed: int,
+) -> None:
+    issues = _task_set_consistency_issues(
+        tasks,
+        config_sha256=config_sha256,
+        code_revision=code_revision,
+        compiler_version=compiler_version,
+        generator_name=generator_name,
+        seed=seed,
+    )
+    if issues:
+        raise ValueError(_render_bounded_diagnostics(issues))
+
+
 def _snapshot_consistency_issues(
     snapshot: CompiledPilotTasks,
     tasks: tuple[MemUpdateTask, ...],
 ) -> list[str]:
-    issues = _artifact_issues(tasks)
+    issues: list[str] = []
     if not isinstance(snapshot.split_assignment, SplitAssignmentResult):
         issues.append("split_assignment must be a SplitAssignmentResult")
         return issues
@@ -276,91 +461,34 @@ def _snapshot_consistency_issues(
     ):
         issues.append("compiled snapshot must contain 480 unique split assignments")
 
-    variants_by_core: dict[str, set[Any]] = defaultdict(set)
-    hashes_by_core: dict[str, set[str]] = defaultdict(set)
-    core_by_semantic_hash: dict[str, str] = {}
-    linked_ids: dict[str, str] = {}
+    task_core_ids = set()
     for row_number, task in enumerate(tasks, start=1):
         core_id = task.metadata.split_key.semantic_core_id
+        task_core_ids.add(core_id)
         assignment = assignment_by_core.get(core_id)
         if assignment is None:
             issues.append(
                 f"stage=snapshot code=missing_assignment core={core_id} "
                 f"row={row_number} task={task.task_id!r} has no split assignment"
             )
-        else:
-            expected_fields = (
-                ("split", assignment.split, task.metadata.split),
-                ("task_family", assignment.task_family.value, task.task_family),
-                ("difficulty", assignment.difficulty, task.difficulty),
-            )
-            for field_name, expected, observed in expected_fields:
-                if expected != observed:
-                    issues.append(
-                        f"stage=snapshot code=field_{field_name} core={core_id} "
-                        f"row={row_number} task={task.task_id!r} "
-                        f"expected={expected!r} observed={observed!r}"
-                    )
-        generator = task.source.generator
-        if (
-            task.metadata.generation_config_hash != snapshot.config_sha256
-            or task.metadata.compiler_version != snapshot.compiler_version
-            or generator is None
-            or generator.config_sha256 != snapshot.config_sha256
-            or generator.code_revision != snapshot.code_revision
-            or generator.compiler_version != snapshot.compiler_version
-            or generator.generator_name != snapshot.generator_name
-            or generator.seed != snapshot.split_assignment.split_balance.seed
-        ):
-            issues.append(
-                f"stage=snapshot code=generator_provenance core={core_id} "
-                f"row={row_number} task={task.task_id!r} "
-                "disagrees with generator provenance"
-            )
-        variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
-        try:
-            semantic_hash = semantic_task_hash(task)
-            hashes_by_core[core_id].add(semantic_hash)
-            first_core_id = core_by_semantic_hash.setdefault(semantic_hash, core_id)
-            if first_core_id != core_id:
+            continue
+        expected_fields = (
+            ("split", assignment.split, task.metadata.split),
+            ("task_family", assignment.task_family.value, task.task_family),
+            ("difficulty", assignment.difficulty, task.difficulty),
+        )
+        for field_name, expected, observed in expected_fields:
+            if expected != observed:
                 issues.append(
-                    f"stage=semantic_hash code=cross_core_collision core={core_id} "
-                    f"hash={semantic_hash} first_core={first_core_id}"
+                    f"stage=snapshot code=field_{field_name} core={core_id} "
+                    f"row={row_number} task={task.task_id!r} "
+                    f"expected={expected!r} observed={observed!r}"
                 )
-        except Exception as exc:
-            issues.append(
-                f"stage=semantic_hash code=hash_exception core={core_id} "
-                f"row={row_number} task={task.task_id!r} "
-                f"exception={type(exc).__name__}: {exc}"
-            )
-        for id_kind, linked_id in _linked_ids(task):
-            location = f"row={row_number}:{id_kind}"
-            first_location = linked_ids.get(linked_id)
-            if first_location is not None:
-                issues.append(
-                    f"stage=snapshot code=duplicate_{id_kind}_id core={core_id} "
-                    f"duplicate linked ID={linked_id!r} "
-                    f"first={first_location} duplicate={location}"
-                )
-            else:
-                linked_ids[linked_id] = location
-
-    if set(variants_by_core) != set(assignment_by_core):
+    if task_core_ids != set(assignment_by_core):
         issues.append(
             "stage=snapshot code=core_coverage core=global "
             "snapshot core coverage disagrees with split assignments"
         )
-    for core_id in sorted(variants_by_core):
-        if variants_by_core[core_id] != {0, 1, 2}:
-            issues.append(
-                f"stage=snapshot code=surface_variants core={core_id} "
-                f"snapshot core {core_id!r} must contain variants {{0,1,2}}"
-            )
-        if len(hashes_by_core[core_id]) != 1:
-            issues.append(
-                f"stage=semantic_hash code=variant_mismatch core={core_id} "
-                f"snapshot core {core_id!r} variants must share one semantic hash"
-            )
     return issues
 
 
