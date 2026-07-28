@@ -965,6 +965,22 @@ def test_impossible_constructed_manifest_task_schema_version_is_malformed():
     assert "task_split_policy_version_mismatch" not in codes
 
 
+def test_valid_manifest_reports_constructed_task_schema_version_mismatch():
+    task = _task("test", Split.TEST)
+    bad_schema_task = MemUpdateTask.model_construct(
+        **{**task.__dict__, "schema_version": "9.9.9"}
+    )
+    report = validate_splits((bad_schema_task,), task_manifest=_manifest((task,)))
+    assert "task_schema_version_mismatch" in _codes(report)
+
+
+def test_valid_manifest_reports_task_split_policy_version_mismatch():
+    task = _task("test", Split.TEST)
+    manifest = _manifest((task,)).validated_replace(split_policy_version="9.9.9")
+    report = validate_splits((task,), task_manifest=manifest)
+    assert "task_split_policy_version_mismatch" in _codes(report)
+
+
 def test_manifest_task_hash_ledger_requires_exact_task_set_and_sha256_model_hashes():
     task = _task("test", Split.TEST)
     base = _manifest((task,))
