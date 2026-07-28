@@ -60,6 +60,9 @@ class CompiledPilotTasks:
     def tasks(self) -> tuple[MemUpdateTask, ...]:
         return _parse_tasks_jsonl(self.tasks_jsonl)
 
+    def validated_tasks(self) -> tuple[MemUpdateTask, ...]:
+        return _validated_snapshot_tasks(self)
+
 
 @dataclass(frozen=True, slots=True)
 class _CompiledRender:
@@ -116,16 +119,24 @@ def _linked_ids(task: MemUpdateTask):
         yield "query", query.query_id
 
 
-def _validate_compiled_snapshot(
+def _validated_snapshot_tasks(
     snapshot: CompiledPilotTasks,
-    compile_issues: tuple[str, ...],
-) -> None:
+    compile_issues: tuple[str, ...] = (),
+) -> tuple[MemUpdateTask, ...]:
     tasks = _parse_tasks_jsonl(snapshot.tasks_jsonl)
     issues = _validation_issues(tasks)
     issues.extend(_snapshot_consistency_issues(snapshot, tasks))
     issues.extend(compile_issues)
     if issues:
         raise ValueError(_render_bounded_diagnostics(issues))
+    return tasks
+
+
+def _validate_compiled_snapshot(
+    snapshot: CompiledPilotTasks,
+    compile_issues: tuple[str, ...],
+) -> None:
+    _validated_snapshot_tasks(snapshot, compile_issues)
 
 
 def _linkage_issues(rendered: tuple[_CompiledRender, ...]) -> list[str]:

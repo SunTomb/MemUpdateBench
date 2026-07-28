@@ -1,3 +1,8 @@
+from mub.vnext.generation.artifacts import (
+    InMemoryPilotArtifact,
+    PilotArtifactBundle,
+    build_pilot_artifact_bundle,
+)
 from mub.vnext.generation.build import CompiledPilotTasks, compile_pilot_tasks
 from mub.vnext.generation.catalogs import (
     ALIAS_MAPPINGS,
@@ -44,7 +49,9 @@ __all__ = [
     "CoreEvent",
     "CoreSplitAssignment",
     "GenerationContext",
+    "InMemoryPilotArtifact",
     "NAMESPACES",
+    "PilotArtifactBundle",
     "PilotConfig",
     "REFERENCE_CONDITION_LABELS",
     "REFERENCE_QUERY_TEMPLATE_SETS",
@@ -58,6 +65,7 @@ __all__ = [
     "VALUES",
     "action_id",
     "assign_splits",
+    "build_pilot_artifact_bundle",
     "compile_pilot_tasks",
     "core_id",
     "event_id",
