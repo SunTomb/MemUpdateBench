@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +34,21 @@ class ExplosiveSequence(Sequence):
 
     def __getitem__(self, index):
         raise RuntimeError(f"unstable-item-{self.iteration_count}-{index}")
+
+    def __iter__(self):
+        self.iteration_count += 1
+        raise RuntimeError(f"unstable-iteration-{self.iteration_count}")
+
+
+class ExplosiveMapping(Mapping):
+    def __init__(self):
+        self.iteration_count = 0
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, key):
+        raise RuntimeError(f"unstable-item-{self.iteration_count}-{key}")
 
     def __iter__(self):
         self.iteration_count += 1
@@ -106,6 +121,23 @@ def _codes(report):
 
 def _payload(task):
     return task.model_dump(mode="json")
+
+
+def _construct_replace(model, **changes):
+    data = dict(model.__dict__)
+    data.update(changes)
+    return type(model).model_construct(**data)
+
+
+def _replace_gold(task, **changes):
+    gold = _construct_replace(task.gold, **changes)
+    return _construct_replace(task, gold=gold)
+
+
+def _replace_action(task, action_index, **changes):
+    actions = list(task.gold.actions)
+    actions[action_index] = _construct_replace(actions[action_index], **changes)
+    return _replace_gold(task, actions=actions)
 
 
 def _event_with_lifecycle(payload, lifecycle):
@@ -620,6 +652,99 @@ def test_validate_family_d_task_rejects_custom_sequences_without_iteration():
     assert not first.valid
     assert sequence.iteration_count == 0
     assert "family_d_malformed_collection" in _codes(first)
+
+
+def test_validate_family_d_task_rejects_non_mapping_expected_effect(family_d_tasks):
+    task = family_d_tasks["duplicate_current"]
+    noop_event = next(
+        event
+        for event in task.events
+        if event.metadata.get("lifecycle") == "trap_noop"
+    )
+    action_id = noop_event.gold_action_ids[0]
+    action_index = next(
+        index
+        for index, action in enumerate(task.gold.actions)
+        if action.action_id == action_id
+    )
+    malformed = _replace_action(task, action_index, expected_effect=[])
+
+    report = validate_family_d_task(malformed)
+
+    assert not report.valid
+    assert "family_d_malformed_mapping" in _codes(report)
+
+
+@pytest.mark.parametrize("field", ("final_state", "version_history"))
+def test_validate_family_d_task_rejects_custom_gold_mappings_without_iteration(
+    family_d_tasks,
+    field,
+):
+    mapping = ExplosiveMapping()
+    malformed = _replace_gold(
+        family_d_tasks["duplicate_current"],
+        **{field: mapping},
+    )
+
+    first = validate_family_d_task(malformed)
+    second = validate_family_d_task(malformed)
+
+    assert first == second
+    assert not first.valid
+    assert mapping.iteration_count == 0
+    assert "family_d_malformed_mapping" in _codes(first)
+
+
+@pytest.mark.parametrize(
+    "location",
+    (
+        "gold.final_state",
+        "gold.version_history",
+        "gold.gold_answers",
+        "gold.acceptable_answers",
+        "event.metadata",
+        "action.expected_effect",
+        "query.metadata",
+        "metadata.resolved_profile",
+        "metadata.extra",
+    ),
+)
+def test_validate_family_d_task_rejects_oversized_nested_maps_before_generic_validation(
+    family_d_tasks,
+    monkeypatch,
+    location,
+):
+    generic_calls = []
+
+    def unexpected_generic_call(task):
+        generic_calls.append(task)
+        raise AssertionError("oversized nested map reached a generic validator")
+
+    monkeypatch.setattr(pilot_module, "validate_task", unexpected_generic_call)
+    monkeypatch.setattr(pilot_module, "validate_gold_replay", unexpected_generic_call)
+    task = family_d_tasks["duplicate_current"]
+    oversized = {f"key-{index}": "value" for index in range(1000)}
+    if location.startswith("gold."):
+        malformed = _replace_gold(task, **{location.split(".", 1)[1]: oversized})
+    elif location == "event.metadata":
+        events = list(task.events)
+        events[0] = _construct_replace(events[0], metadata=oversized)
+        malformed = _construct_replace(task, events=events)
+    elif location == "action.expected_effect":
+        malformed = _replace_action(task, 0, expected_effect=oversized)
+    elif location == "query.metadata":
+        queries = list(task.queries)
+        queries[0] = _construct_replace(queries[0], metadata=oversized)
+        malformed = _construct_replace(task, queries=queries)
+    else:
+        field = location.split(".", 1)[1]
+        metadata = _construct_replace(task.metadata, **{field: oversized})
+        malformed = _construct_replace(task, metadata=metadata)
+
+    report = validate_family_d_task(malformed)
+
+    assert "family_d_input_size_limit" in _codes(report)
+    assert generic_calls == []
 
 
 def test_validate_family_d_task_is_deterministic_immutable_and_does_no_disk_io(

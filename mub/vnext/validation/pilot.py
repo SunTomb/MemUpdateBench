@@ -5,6 +5,7 @@ from string import Template
 from typing import Any
 
 from mub.vnext.contracts import (
+    CanonicalAnswer,
     EventRole,
     GoldAction,
     GoldRecord,
@@ -12,7 +13,9 @@ from mub.vnext.contracts import (
     MemoryObjectKey,
     MemoryQuery,
     Operation,
+    ReferenceCandidate,
     SourceRecord,
+    SurfaceReference,
     TaskFamily,
     TaskMetadata,
 )
@@ -44,7 +47,13 @@ _COLLECTION_LIMITS = {
     "queries": 8,
     "gold.actions": 12,
     "gold.action_sequence": 12,
+    "gold.expected_present_objects": 64,
+    "gold.expected_absent_objects": 64,
+    "gold.gold_source_event_ids": 12,
+    "metadata.tags": 64,
 }
+_MAX_NESTED_ITEMS = 64
+_MAX_NESTED_NODES = 1024
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -60,7 +69,9 @@ def _items(value: Any) -> list[Any]:
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if type(value) is dict else {}
+    if type(value) is not dict:
+        raise TypeError("value must be an exact dict")
+    return value
 
 
 def _enum_value(value: Any) -> Any:
@@ -143,6 +154,104 @@ def _bounded_report(
     return build_report(ordered)
 
 
+def _inspect_json_value(
+    issues: list[ValidationIssue],
+    value: Any,
+    path: str,
+    budget: list[int],
+) -> None:
+    if budget[0] <= 0:
+        issues.append(
+            _issue(
+                "family_d_input_size_limit",
+                "nested JSON structures exceed the Family D inspection budget",
+                path,
+            )
+        )
+        return
+    budget[0] -= 1
+    if value is None or type(value) in {str, bool, int, float}:
+        return
+    if type(value) is list:
+        if len(value) > _MAX_NESTED_ITEMS:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "nested list exceeds the Family D inspection limit",
+                    path,
+                )
+            )
+            return
+        for index, item in enumerate(value):
+            _inspect_json_value(issues, item, f"{path}[{index}]", budget)
+            if budget[0] <= 0 and index + 1 < len(value):
+                issues.append(
+                    _issue(
+                        "family_d_input_size_limit",
+                        "nested JSON structures exceed the Family D inspection budget",
+                        path,
+                    )
+                )
+                return
+        return
+    if type(value) is dict:
+        _inspect_json_mapping(issues, value, path, budget)
+        return
+    issues.append(
+        _issue(
+            "family_d_malformed_json",
+            "nested JSON values must use exact built-in JSON types",
+            path,
+        )
+    )
+
+
+def _inspect_json_mapping(
+    issues: list[ValidationIssue],
+    value: Any,
+    path: str,
+    budget: list[int],
+) -> None:
+    if type(value) is not dict:
+        issues.append(
+            _issue(
+                "family_d_malformed_mapping",
+                f"{path} must be an exact dict",
+                path,
+            )
+        )
+        return
+    if len(value) > _MAX_NESTED_ITEMS:
+        issues.append(
+            _issue(
+                "family_d_input_size_limit",
+                f"{path} exceeds the Family D inspection limit",
+                path,
+            )
+        )
+        return
+    for index, (key, item) in enumerate(value.items()):
+        if type(key) is not str:
+            issues.append(
+                _issue(
+                    "family_d_malformed_mapping",
+                    f"{path} keys must be exact strings",
+                    f"{path}[{index}]",
+                )
+            )
+            continue
+        _inspect_json_value(issues, item, f"{path}.{key}", budget)
+        if budget[0] <= 0 and index + 1 < len(value):
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "nested JSON structures exceed the Family D inspection budget",
+                    path,
+                )
+            )
+            return
+
+
 def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     gold = getattr(task, "gold", None)
@@ -168,6 +277,16 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         "queries": getattr(task, "queries", None),
         "gold.actions": getattr(safe_gold, "actions", None),
         "gold.action_sequence": getattr(safe_gold, "action_sequence", None),
+        "gold.expected_present_objects": getattr(
+            safe_gold, "expected_present_objects", None
+        ),
+        "gold.expected_absent_objects": getattr(
+            safe_gold, "expected_absent_objects", None
+        ),
+        "gold.gold_source_event_ids": getattr(
+            safe_gold, "gold_source_event_ids", None
+        ),
+        "metadata.tags": getattr(metadata, "tags", None),
     }
     for path, value in collections.items():
         if value is None:
@@ -205,6 +324,16 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         ("target_objects", collections.get("target_objects") or [], MemoryObjectKey),
         ("queries", collections.get("queries") or [], MemoryQuery),
         ("gold.actions", collections.get("gold.actions") or [], GoldAction),
+        (
+            "gold.expected_present_objects",
+            collections.get("gold.expected_present_objects") or [],
+            MemoryObjectKey,
+        ),
+        (
+            "gold.expected_absent_objects",
+            collections.get("gold.expected_absent_objects") or [],
+            MemoryObjectKey,
+        ),
     )
     for path, values, expected_type in record_collections:
         for index, value in enumerate(values):
@@ -276,6 +405,149 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                         f"queries[{index}].{field_name}",
                     )
                 )
+        for candidate_index, candidate in enumerate(query.reference_candidates):
+            if type(candidate) is not ReferenceCandidate:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_record",
+                        "reference candidates must be exact records",
+                        f"queries[{index}].reference_candidates[{candidate_index}]",
+                    )
+                )
+            elif type(candidate.source_anchors) is not list:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_collection",
+                        "reference candidate source_anchors must be an exact list",
+                        f"queries[{index}].reference_candidates[{candidate_index}].source_anchors",
+                    )
+                )
+            elif len(candidate.source_anchors) > _MAX_NESTED_ITEMS:
+                issues.append(
+                    _issue(
+                        "family_d_input_size_limit",
+                        "reference candidate source_anchors exceeds the Family D inspection limit",
+                        f"queries[{index}].reference_candidates[{candidate_index}].source_anchors",
+                    )
+                )
+        for reference_index, reference in enumerate(query.surface_references):
+            if type(reference) is not SurfaceReference:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_record",
+                        "surface references must be exact records",
+                        f"queries[{index}].surface_references[{reference_index}]",
+                    )
+                )
+            elif type(reference.candidate_ids) is not list:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_collection",
+                        "surface reference candidate_ids must be an exact list",
+                        f"queries[{index}].surface_references[{reference_index}].candidate_ids",
+                    )
+                )
+            elif len(reference.candidate_ids) > _MAX_NESTED_ITEMS:
+                issues.append(
+                    _issue(
+                        "family_d_input_size_limit",
+                        "surface reference candidate_ids exceeds the Family D inspection limit",
+                        f"queries[{index}].surface_references[{reference_index}].candidate_ids",
+                    )
+                )
+
+    budget = [_MAX_NESTED_NODES]
+    json_mappings: list[tuple[str, Any]] = []
+    if type(source) is SourceRecord:
+        json_mappings.append(("source.provenance", source.provenance))
+    if type(metadata) is TaskMetadata:
+        json_mappings.extend(
+            (
+                ("metadata.resolved_profile", metadata.resolved_profile),
+                ("metadata.extra", metadata.extra),
+            )
+        )
+    if type(safe_gold) is GoldRecord:
+        json_mappings.extend(
+            (
+                ("gold.final_state", safe_gold.final_state),
+                ("gold.version_history", safe_gold.version_history),
+                ("gold.gold_answers", safe_gold.gold_answers),
+                ("gold.acceptable_answers", safe_gold.acceptable_answers),
+            )
+        )
+    json_mappings.extend(
+        (f"events[{index}].source_anchor", event.source_anchor)
+        for index, event in enumerate(collections.get("events") or [])
+    )
+    json_mappings.extend(
+        (f"events[{index}].metadata", event.metadata)
+        for index, event in enumerate(collections.get("events") or [])
+    )
+    json_mappings.extend(
+        (f"gold.actions[{index}].expected_effect", action.expected_effect)
+        for index, action in enumerate(collections.get("gold.actions") or [])
+    )
+    json_mappings.extend(
+        (f"queries[{index}].metadata", query.metadata)
+        for index, query in enumerate(collections.get("queries") or [])
+    )
+    for index, (path, value) in enumerate(json_mappings):
+        _inspect_json_mapping(issues, value, path, budget)
+        if budget[0] <= 0 and index + 1 < len(json_mappings):
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "nested JSON structures exceed the Family D inspection budget",
+                    path,
+                )
+            )
+            break
+
+    if type(safe_gold) is GoldRecord:
+        canonical_answers = safe_gold.canonical_answers
+        if type(canonical_answers) is not dict:
+            issues.append(
+                _issue(
+                    "family_d_malformed_mapping",
+                    "gold.canonical_answers must be an exact dict",
+                    "gold.canonical_answers",
+                )
+            )
+        elif len(canonical_answers) > _MAX_NESTED_ITEMS:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "gold.canonical_answers exceeds the Family D inspection limit",
+                    "gold.canonical_answers",
+                )
+            )
+        else:
+            for index, (query_id, answer) in enumerate(canonical_answers.items()):
+                if type(query_id) is not str or type(answer) is not CanonicalAnswer:
+                    issues.append(
+                        _issue(
+                            "family_d_malformed_record",
+                            "canonical answers require string keys and exact records",
+                            f"gold.canonical_answers[{index}]",
+                        )
+                    )
+                elif type(answer.selected_candidate_ids) is not list:
+                    issues.append(
+                        _issue(
+                            "family_d_malformed_collection",
+                            "canonical selected_candidate_ids must be an exact list",
+                            f"gold.canonical_answers.{query_id}.selected_candidate_ids",
+                        )
+                    )
+                elif len(answer.selected_candidate_ids) > _MAX_NESTED_ITEMS:
+                    issues.append(
+                        _issue(
+                            "family_d_input_size_limit",
+                            "canonical selected_candidate_ids exceeds the Family D inspection limit",
+                            f"gold.canonical_answers.{query_id}.selected_candidate_ids",
+                        )
+                    )
     return issues
 
 
