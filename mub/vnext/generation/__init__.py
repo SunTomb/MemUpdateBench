@@ -33,11 +33,12 @@ from mub.vnext.generation.identity import (
     task_id,
     trajectory_id,
 )
-from mub.vnext.generation.render import render_core
+from mub.vnext.generation.orchestrate import build_pilot
 from mub.vnext.generation.publish import (
     PublishedPilotBundle,
     publish_pilot_artifact_bundle,
 )
+from mub.vnext.generation.render import render_core
 from mub.vnext.generation.splits import (
     CoreSplitAssignment,
     SplitAssignmentResult,
@@ -70,6 +71,7 @@ __all__ = [
     "VALUES",
     "action_id",
     "assign_splits",
+    "build_pilot",
     "build_pilot_artifact_bundle",
     "compile_pilot_tasks",
     "core_id",
