@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter, defaultdict
-from dataclasses import InitVar, dataclass
+from dataclasses import InitVar, dataclass, field
 from typing import Any
 
 from mub.vnext.contracts import MemUpdateTask, Split, TaskFamily
@@ -26,6 +27,7 @@ from mub.vnext.generation.splits import (
 from mub.vnext.io import canonical_json_bytes, semantic_task_hash
 from mub.vnext.validation import validate_gold_replay, validate_task
 
+_COMPILED_SNAPSHOT_SEAL_TOKEN = object()
 _EXPECTED_CORE_COUNT = 480
 _EXPECTED_TASK_COUNT = 1440
 _EXPECTED_SPLIT_COUNTS = {
@@ -54,6 +56,35 @@ _FAMILY_ORDER = {
 }
 
 
+def _compiled_snapshot_seal(snapshot: CompiledPilotTasks) -> str:
+    if not isinstance(snapshot.split_assignment, SplitAssignmentResult):
+        raise ValueError("split_assignment must be a SplitAssignmentResult")
+    if type(snapshot.tasks_jsonl) is not bytes:
+        raise ValueError("tasks_jsonl must be exact bytes")
+    for field_name in (
+        "config_sha256",
+        "code_revision",
+        "compiler_version",
+        "generator_name",
+    ):
+        value = getattr(snapshot, field_name)
+        if type(value) is not str or not value.strip():
+            raise ValueError(f"{field_name} must be a nonblank exact string")
+    digest = hashlib.sha256()
+    values = (
+        canonical_json_bytes(snapshot.split_assignment),
+        snapshot.config_sha256.encode("utf-8"),
+        snapshot.code_revision.encode("utf-8"),
+        snapshot.compiler_version.encode("utf-8"),
+        snapshot.generator_name.encode("utf-8"),
+        snapshot.tasks_jsonl,
+    )
+    for value in values:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledPilotTasks:
     split_assignment: SplitAssignmentResult
@@ -63,9 +94,22 @@ class CompiledPilotTasks:
     generator_name: str
     tasks_jsonl: bytes
     _compile_issues: InitVar[tuple[str, ...]] = ()
+    _seal_token: InitVar[object | None] = None
+    _snapshot_seal: str | None = field(
+        init=False,
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
-    def __post_init__(self, _compile_issues: tuple[str, ...]) -> None:
+    def __post_init__(
+        self,
+        _compile_issues: tuple[str, ...],
+        _seal_token: object | None,
+    ) -> None:
         _validate_compiled_snapshot(self, _compile_issues)
+        if _seal_token is _COMPILED_SNAPSHOT_SEAL_TOKEN:
+            object.__setattr__(self, "_snapshot_seal", _compiled_snapshot_seal(self))
 
     @staticmethod
     def parse_tasks_jsonl(tasks_jsonl: bytes) -> tuple[MemUpdateTask, ...]:
@@ -98,6 +142,45 @@ class CompiledPilotTasks:
 
     def validated_tasks(self) -> tuple[MemUpdateTask, ...]:
         return _validated_snapshot_tasks(self)
+
+    def verify_authenticated_snapshot(self) -> None:
+        """Reject ordinary replacement/serialization tampering.
+
+        This process-local seal is not cryptographic authentication against code
+        that intentionally introspects private module state or recomputes it.
+        """
+        try:
+            current_seal = _compiled_snapshot_seal(self)
+            if (
+                type(self._snapshot_seal) is not str
+                or self._snapshot_seal != current_seal
+            ):
+                raise ValueError("seal mismatch")
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError(
+                "compiled snapshot is not an authenticated compiler output"
+            ) from None
+
+    def authenticated_clone(self) -> CompiledPilotTasks:
+        """Return a sealed copy of this unchanged authenticated snapshot."""
+        self.verify_authenticated_snapshot()
+        return type(self)(
+            split_assignment=self.split_assignment,
+            config_sha256=self.config_sha256,
+            code_revision=self.code_revision,
+            compiler_version=self.compiler_version,
+            generator_name=self.generator_name,
+            tasks_jsonl=self.tasks_jsonl,
+            _seal_token=_COMPILED_SNAPSHOT_SEAL_TOKEN,
+        )
+
+    def validate_snapshot_binding(
+        self,
+        tasks: tuple[MemUpdateTask, ...],
+    ) -> None:
+        issues = _snapshot_consistency_issues(self, tasks)
+        if issues:
+            raise ValueError(_render_bounded_diagnostics(issues))
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +409,15 @@ def _task_set_consistency_issues(
                 f"stage=task_set code=core_metadata core={core_id} "
                 "variants disagree on family, difficulty, or split"
             )
-        variants_by_core[core_id].add(task.metadata.extra.get("surface_variant"))
+        variant = task.metadata.extra.get("surface_variant")
+        if type(variant) is not int:
+            issues.append(
+                f"stage=task_set code=invalid_surface_variant core={core_id} "
+                f"row={row_number} task={task.task_id!r} "
+                "surface_variant must be an exact built-in integer"
+            )
+        else:
+            variants_by_core[core_id].add(variant)
         try:
             semantic_hash = semantic_task_hash(task)
             hashes_by_core[core_id].add(semantic_hash)
@@ -658,6 +749,7 @@ def compile_pilot_tasks(
         generator_name=context.generator_name,
         tasks_jsonl=tasks_jsonl,
         _compile_issues=compile_issues,
+        _seal_token=_COMPILED_SNAPSHOT_SEAL_TOKEN,
     )
     if compiled.tasks != tasks:
         raise ValueError("canonical tasks JSONL changed records during round trip")

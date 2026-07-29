@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import mub.vnext.generation.build as build_module
 from mub.vnext.contracts import MemUpdateTask, Split
 from mub.vnext.generation import (
     CompiledPilotTasks,
@@ -247,6 +248,42 @@ def test_repeat_construction_is_byte_identical_and_fresh(compiled, config, bundl
     assert repeated.validation_report_bytes == bundle.validation_report_bytes
 
 
+def test_factory_does_not_repeat_full_task_set_validation(
+    monkeypatch,
+    compiled,
+    config,
+) -> None:
+    calls = 0
+    original = build_module._validation_issues
+
+    def counted_validation(tasks):
+        nonlocal calls
+        calls += 1
+        return original(tasks)
+
+    monkeypatch.setattr(build_module, "_validation_issues", counted_validation)
+
+    result = build_pilot_artifact_bundle(compiled, config)
+
+    assert result.validation_report.valid is True
+    assert calls == 0
+
+
+def test_bundle_direct_construction_and_replace_are_factory_only(bundle) -> None:
+    fields = {
+        "resolved_config": bundle.resolved_config,
+        "split_balance_report": bundle.split_balance_report,
+        "task_manifest": bundle.task_manifest,
+        "validation_report": bundle.validation_report,
+        "artifacts": bundle.artifacts,
+    }
+
+    with pytest.raises(TypeError, match="factory"):
+        PilotArtifactBundle(**fields)
+    with pytest.raises(TypeError, match="factory"):
+        replace(bundle)
+
+
 def test_bundle_manifest_passes_split_validation_without_issues(bundle, compiled) -> None:
     direct_report = validate_splits(compiled.tasks, task_manifest=bundle.task_manifest)
 
@@ -361,7 +398,7 @@ def test_modified_compiled_metadata_is_rejected(
     tampered = _clone_compiled(compiled)
     object.__setattr__(tampered, field, value)
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="authenticated|seal|" + message):
         build_pilot_artifact_bundle(tampered, config)
 
 
@@ -373,7 +410,7 @@ def test_tampered_compiled_bytes_are_rejected(compiled, config) -> None:
     lines[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
     object.__setattr__(tampered, "tasks_jsonl", b"\n".join(lines) + b"\n")
 
-    with pytest.raises(ValueError, match="compiled Pilot snapshot failed"):
+    with pytest.raises(ValueError, match="authenticated|seal"):
         build_pilot_artifact_bundle(tampered, config)
 
 
@@ -382,8 +419,98 @@ def test_noncanonical_compiled_snapshot_is_rejected(compiled, config) -> None:
     first_line, rest = compiled.tasks_jsonl.split(b"\n", 1)
     object.__setattr__(tampered, "tasks_jsonl", b" " + first_line + b"\n" + rest)
 
-    with pytest.raises(ValueError, match="canonical"):
+    with pytest.raises(ValueError, match="authenticated|seal"):
         build_pilot_artifact_bundle(tampered, config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("code_revision", None),
+        ("compiler_version", []),
+        ("generator_name", {}),
+        ("config_sha256", None),
+    ],
+)
+def test_factory_bounds_malformed_authenticated_provenance(
+    compiled,
+    config,
+    field,
+    value,
+) -> None:
+    original = getattr(compiled, field)
+    object.__setattr__(compiled, field, value)
+    try:
+        with pytest.raises(ValueError, match="authenticated compiler output"):
+            build_pilot_artifact_bundle(compiled, config)
+    finally:
+        object.__setattr__(compiled, field, original)
+
+
+def test_unsealed_compiled_direct_and_replace_copies_are_rejected(
+    compiled,
+    config,
+) -> None:
+    direct = CompiledPilotTasks(
+        split_assignment=compiled.split_assignment,
+        config_sha256=compiled.config_sha256,
+        code_revision=compiled.code_revision,
+        compiler_version=compiled.compiler_version,
+        generator_name=compiled.generator_name,
+        tasks_jsonl=compiled.tasks_jsonl,
+    )
+    replaced = replace(compiled)
+
+    for unsealed in (direct, replaced):
+        with pytest.raises(ValueError, match="authenticated compiler output"):
+            build_pilot_artifact_bundle(unsealed, config)
+
+    resealed = compiled.authenticated_clone()
+    assert resealed is not compiled
+    assert resealed.verify_authenticated_snapshot() is None
+    assert build_pilot_artifact_bundle(resealed, config).tasks_jsonl == compiled.tasks_jsonl
+
+
+def test_factory_rejects_object_tampered_nonsemantic_task_metadata(
+    compiled,
+    config,
+) -> None:
+    tasks = list(compiled.tasks)
+    core_id = tasks[0].metadata.split_key.semantic_core_id
+    for index, task in enumerate(tasks):
+        if task.metadata.split_key.semantic_core_id != core_id:
+            continue
+        payload = task.model_dump(mode="python")
+        payload["metadata"]["tags"].append("hostile-nonsemantic-tag")
+        tasks[index] = MemUpdateTask.model_validate(payload)
+    hostile_jsonl = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tasks
+    )
+    original_jsonl = compiled.tasks_jsonl
+    object.__setattr__(compiled, "tasks_jsonl", hostile_jsonl)
+    try:
+        with pytest.raises(ValueError, match="authenticated|seal"):
+            build_pilot_artifact_bundle(compiled, config)
+    finally:
+        object.__setattr__(compiled, "tasks_jsonl", original_jsonl)
+
+
+def test_direct_task_set_helper_bounds_unhashable_surface_variant(compiled) -> None:
+    rows = compiled.tasks_jsonl.splitlines()
+    payload = MemUpdateTask.model_validate_json(rows[0]).model_dump(mode="python")
+    payload["metadata"]["extra"]["surface_variant"] = []
+    rows[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
+    hostile_jsonl = b"\n".join(rows) + b"\n"
+
+    with pytest.raises(ValueError, match="surface_variant|task set|compiled Pilot"):
+        CompiledPilotTasks.validated_task_set(
+            hostile_jsonl,
+            config_sha256=compiled.config_sha256,
+            code_revision=compiled.code_revision,
+            compiler_version=compiled.compiler_version,
+            generator_name=compiled.generator_name,
+            seed=compiled.split_assignment.split_balance.seed,
+        )
 
 
 @pytest.mark.parametrize(
@@ -398,7 +525,7 @@ def test_public_bundle_rejects_tampered_task_artifact_metadata(
 ) -> None:
     hostile = replace(bundle.artifacts[0], **{change: value})
 
-    with pytest.raises(ValueError, match="task artifact"):
+    with pytest.raises(TypeError, match="factory"):
         _replace_artifact(bundle, 0, hostile)
 
 
@@ -406,7 +533,7 @@ def test_public_bundle_rejects_tampered_task_artifact_hash(bundle) -> None:
     hostile = replace(bundle.artifacts[0])
     object.__setattr__(hostile, "_sha256", "0" * 64)
 
-    with pytest.raises(ValueError, match="task artifact"):
+    with pytest.raises(TypeError, match="factory"):
         _replace_artifact(bundle, 0, hostile)
 
 
@@ -417,10 +544,7 @@ def test_public_bundle_rejects_tampered_canonical_task_bytes(bundle) -> None:
     rows[0] = canonical_json_bytes(MemUpdateTask.model_validate(payload))
     hostile = replace(bundle.artifacts[0], content=b"\n".join(rows) + b"\n")
 
-    with pytest.raises(
-        ValueError,
-        match="task artifact|task manifest|task set|split validation",
-    ):
+    with pytest.raises(TypeError, match="factory"):
         PilotArtifactBundle(
             resolved_config=bundle.resolved_config,
             split_balance_report=bundle.split_balance_report,
@@ -442,7 +566,7 @@ def test_public_bundle_rejects_coordinated_config_and_artifact_replacement(
         content=canonical_json_bytes(hostile_config),
     )
 
-    with pytest.raises(ValueError, match="config|manifest|task set"):
+    with pytest.raises((TypeError, ValueError), match="factory|config|manifest|task set"):
         _replace_artifact(
             bundle,
             1,
@@ -460,7 +584,7 @@ def test_public_bundle_rejects_coordinated_manifest_and_artifact_replacement(
         content=canonical_json_bytes(hostile_manifest),
     )
 
-    with pytest.raises(ValueError, match="manifest"):
+    with pytest.raises((TypeError, ValueError), match="factory|manifest"):
         _replace_artifact(
             bundle,
             3,
@@ -480,7 +604,7 @@ def test_public_bundle_rejects_coordinated_split_balance_and_artifact_replacemen
         content=canonical_json_bytes(hostile_report),
     )
 
-    with pytest.raises(ValueError, match="split balance"):
+    with pytest.raises((TypeError, ValueError), match="factory|split balance"):
         _replace_artifact(
             bundle,
             2,
@@ -496,7 +620,7 @@ def test_public_bundle_rejects_coordinated_invalid_validation_report(bundle) -> 
         content=canonical_json_bytes(hostile_report),
     )
 
-    with pytest.raises(ValueError, match="validation report|split validation"):
+    with pytest.raises((TypeError, ValueError), match="factory|validation report|split validation"):
         _replace_artifact(
             bundle,
             4,
@@ -515,7 +639,7 @@ def test_public_bundle_rejects_coordinated_invalid_validation_report(bundle) -> 
     ],
 )
 def test_public_bundle_rejects_noncontract_typed_fields(bundle, field, value) -> None:
-    with pytest.raises(TypeError, match=field):
+    with pytest.raises(TypeError, match="factory"):
         replace(bundle, **{field: value})
 
 
@@ -526,7 +650,23 @@ def test_public_bundle_rejects_coordinated_generator_rewrite(bundle) -> None:
         payload["source"]["generator"]["generator_name"] = "hostile_generator"
         hostile_tasks.append(MemUpdateTask.model_validate(payload))
 
-    with pytest.raises(ValueError, match="generator|task set"):
+    with pytest.raises((TypeError, ValueError), match="factory|generator|task set"):
+        _coordinated_bundle_from_tasks(bundle, hostile_tasks)
+
+
+def test_bundle_rejects_coordinated_nonsemantic_metadata_rewrite(bundle) -> None:
+    tasks = _parsed_bundle_tasks(bundle)
+    core_id = tasks[0].metadata.split_key.semantic_core_id
+    hostile_tasks = []
+    for task in tasks:
+        if task.metadata.split_key.semantic_core_id != core_id:
+            hostile_tasks.append(task)
+            continue
+        payload = task.model_dump(mode="python")
+        payload["metadata"]["tags"].append("hostile-nonsemantic-tag")
+        hostile_tasks.append(MemUpdateTask.model_validate(payload))
+
+    with pytest.raises((TypeError, ValueError), match="factory|authenticated"):
         _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
@@ -544,7 +684,7 @@ def test_public_bundle_rejects_coordinated_core_split_reassignment(bundle) -> No
         hostile_tasks.append(MemUpdateTask.model_validate(payload))
     hostile_report = _moved_core_split_report(bundle.split_balance_report, exemplar)
 
-    with pytest.raises(ValueError, match="quota|task set|split"):
+    with pytest.raises((TypeError, ValueError), match="factory|quota|task set|split"):
         _coordinated_bundle_from_tasks(
             bundle,
             hostile_tasks,
@@ -598,7 +738,7 @@ def test_public_bundle_rejects_quota_preserving_core_split_swap(bundle) -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="assignment|ranking|task set|split"):
+    with pytest.raises((TypeError, ValueError), match="factory|assignment|ranking|task set|split"):
         _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
@@ -606,7 +746,7 @@ def test_public_bundle_rejects_coordinated_task_reordering(bundle) -> None:
     hostile_tasks = _parsed_bundle_tasks(bundle)
     hostile_tasks[0], hostile_tasks[1] = hostile_tasks[1], hostile_tasks[0]
 
-    with pytest.raises(ValueError, match="canonical order|task set"):
+    with pytest.raises((TypeError, ValueError), match="factory|canonical order|task set"):
         _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
@@ -617,7 +757,7 @@ def test_public_bundle_rejects_missing_and_duplicate_surface_variant(bundle) -> 
     payload["metadata"]["extra"]["surface_variant"] = 1
     hostile_tasks[2] = MemUpdateTask.model_validate(payload)
 
-    with pytest.raises(ValueError, match="surface variant|task set"):
+    with pytest.raises((TypeError, ValueError), match="factory|surface variant|task set"):
         _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
@@ -628,7 +768,7 @@ def test_public_bundle_rejects_rehashed_invalid_task_semantics(bundle) -> None:
     payload["gold"]["gold_answers"][query_id] = "hostile-answer"
     hostile_tasks[0] = MemUpdateTask.model_validate(payload)
 
-    with pytest.raises(ValueError, match="validation|task set|gold"):
+    with pytest.raises((TypeError, ValueError), match="factory|validation|task set|gold"):
         _coordinated_bundle_from_tasks(bundle, hostile_tasks)
 
 
