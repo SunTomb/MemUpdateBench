@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,29 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mub.vnext.generation import build_pilot, load_pilot_config
+
+
+_GIT_CONTEXT_ENV = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_QUARANTINE_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_SHALLOW_FILE",
+        "GIT_GRAFT_FILE",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_PREFIX",
+        "GIT_INTERNAL_SUPER_PREFIX",
+    }
+)
 
 
 class _ArgumentError(Exception):
@@ -31,6 +55,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _sanitized_git_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() not in _GIT_CONTEXT_ENV
+    }
+
+
 def _resolve_code_revision() -> str:
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -38,6 +70,7 @@ def _resolve_code_revision() -> str:
         text=True,
         check=False,
         cwd=PROJECT_ROOT,
+        env=_sanitized_git_environment(),
     )
     if completed.returncode != 0 or not isinstance(completed.stdout, str):
         raise RuntimeError("revision unavailable")

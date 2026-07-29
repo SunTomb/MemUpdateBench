@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -20,6 +21,17 @@ _ARTIFACT_NAMES = (
     "task_manifest.json",
     "validation_report.json",
 )
+_GIT_SELECTION_ENV = {
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+}
 
 
 def _published(output_dir: Path) -> PublishedPilotBundle:
@@ -61,9 +73,18 @@ def test_main_passes_exact_inputs_and_prints_canonical_safe_summary(
         raw_payload="TASK CONTENT SECRET",
     )
     calls: dict[str, object] = {}
+    for name in _GIT_SELECTION_ENV:
+        monkeypatch.setenv(name, "FOREIGN REPOSITORY SECRET")
+    monkeypatch.setenv("MUB_ENV_PRESERVED", "present")
 
     def fake_run(*args, **kwargs):
-        calls["run"] = (args, kwargs)
+        run_env = kwargs["env"]
+        assert run_env is not os.environ
+        assert run_env["MUB_ENV_PRESERVED"] == "present"
+        run_keys = {name.upper() for name in run_env}
+        assert not (_GIT_SELECTION_ENV & run_keys)
+        safe_kwargs = {**kwargs, "env": "<sanitized>"}
+        calls["run"] = (args, safe_kwargs)
         return _completed()
 
     def fake_load(path: Path):
@@ -115,6 +136,7 @@ def test_main_passes_exact_inputs_and_prints_canonical_safe_summary(
                 "text": True,
                 "check": False,
                 "cwd": cli.PROJECT_ROOT,
+                "env": "<sanitized>",
             },
         ),
         "load": config_path,
@@ -144,6 +166,51 @@ def test_revision_resolution_is_anchored_outside_project_working_directory(
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     assert cli._resolve_code_revision() == "project-revision"
+
+
+def test_revision_resolution_ignores_foreign_git_dir_with_real_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    foreign = tmp_path / "foreign-repository"
+    subprocess.run(
+        ["git", "init", "-q", str(foreign)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(foreign),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "foreign",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    project_revision = cli._resolve_code_revision()
+    foreign_revision = subprocess.run(
+        ["git", "-C", str(foreign), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert foreign_revision != project_revision
+
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    monkeypatch.chdir(foreign)
+
+    assert cli._resolve_code_revision() == project_revision
 
 
 @pytest.mark.parametrize("failure", ["nonzero", "missing", "blank"])
