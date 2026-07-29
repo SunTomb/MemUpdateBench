@@ -351,23 +351,29 @@ def test_validate_family_a_task_detects_coordinated_stale_gold_collision(family_
 
 
 @pytest.mark.parametrize(
-    ("first_value", "second_value"),
+    ("first_value", "second_value", "expected_duplicate"),
     (
-        ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}, True),
         (
             {"items": [{"a": 1, "b": 2}]},
             {"items": [{"b": 2, "a": 1}]},
+            True,
         ),
         (
             [{"a": 1, "b": 2}, [1, 2]],
             [{"b": 2, "a": 1}, [1, 2]],
+            True,
         ),
+        (True, 1, False),
+        (1, 1.0, False),
+        ([1, 2], [2, 1], False),
     ),
 )
-def test_validate_family_a_task_rejects_semantically_duplicate_stale_json_values(
+def test_validate_family_a_task_compares_stale_values_as_canonical_json(
     family_a_tasks,
     first_value,
     second_value,
+    expected_duplicate,
 ):
     task = _family_a_task(family_a_tasks, difficulty="easy", depth=4)
     payload = _payload(task)
@@ -380,7 +386,9 @@ def test_validate_family_a_task_rejects_semantically_duplicate_stale_json_values
 
     report = validate_family_a_task(corrupted)
 
-    assert "family_a_duplicate_stale_value" in _codes(report)
+    assert (
+        "family_a_duplicate_stale_value" in _codes(report)
+    ) is expected_duplicate
 
 
 def test_validate_family_a_task_detects_coordinated_distractor_gold_collision(
@@ -573,6 +581,80 @@ def test_validate_family_a_task_rejects_multiple_acceptable_current_answers(
     assert "family_a_multiple_current_answers" in _codes(report)
 
 
+@pytest.mark.parametrize("release_mutation", ("missing", "changed"))
+def test_validate_family_a_task_cannot_downgrade_semantics_via_release_provenance(
+    family_a_tasks,
+    release_mutation,
+):
+    task = _family_a_task(family_a_tasks, difficulty="easy", depth=4)
+    payload = _payload(task)
+    target_id = task.queries[0].target_object_keys[0].canonical_id
+    query_id = task.queries[0].query_id
+    final_value = payload["gold"]["gold_answers"][query_id]
+    stale_action = _action_for_event(payload, payload["events"][0])
+    stale_action["value"] = final_value
+    payload["gold"]["version_history"][target_id][0] = final_value
+    corrupted = MemUpdateTask.model_validate(payload)
+    provenance = dict(corrupted.source.provenance)
+    if release_mutation == "missing":
+        provenance.pop("release_id")
+    else:
+        provenance["release_id"] = "attacker-controlled-release"
+    source = _construct_replace(corrupted.source, provenance=provenance)
+    corrupted = _construct_replace(corrupted, source=source)
+
+    direct = validate_family_a_task(corrupted)
+    aggregate = validate_task_semantics(corrupted)
+
+    assert aggregate == direct
+    assert "family_a_release_provenance_mismatch" in _codes(direct)
+    assert "family_a_stale_value_equals_current_gold" in _codes(direct)
+
+
+def test_validate_family_d_task_rejects_multiple_acceptable_current_answers(
+    family_d_tasks,
+):
+    task = family_d_tasks["semantic_near_miss"]
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    payload["gold"]["acceptable_answers"][query_id] = [
+        payload["gold"]["gold_answers"][query_id],
+        "alternate-current-answer",
+    ]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_multiple_current_answers" in _codes(report)
+
+
+@pytest.mark.parametrize("family", ("a", "d"))
+def test_pilot_current_answer_accepts_single_candidate_list_encoding(
+    family_a_tasks,
+    family_d_tasks,
+    family,
+):
+    task = (
+        _family_a_task(family_a_tasks, difficulty="easy", depth=1)
+        if family == "a"
+        else family_d_tasks["semantic_near_miss"]
+    )
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    payload["gold"]["acceptable_answers"][query_id] = [
+        payload["gold"]["gold_answers"][query_id]
+    ]
+    encoded = MemUpdateTask.model_validate(payload)
+
+    report = (
+        validate_family_a_task(encoded)
+        if family == "a"
+        else validate_family_d_task(encoded)
+    )
+
+    assert report.valid, report.issues
+
+
 def test_validate_family_a_task_malformed_construct_matches_aggregate():
     malformed = MemUpdateTask.model_construct(
         task_family=TaskFamily.REPEATED_SAME_SLOT.value
@@ -585,6 +667,65 @@ def test_validate_family_a_task_malformed_construct_matches_aggregate():
     assert not direct.valid
     assert len(direct.issues) <= MAX_REPORT_ISSUES
     assert "family_a_malformed_record" in _codes(direct)
+
+
+@pytest.mark.parametrize("family", ("a", "d"))
+@pytest.mark.parametrize("corruption", ("normalized_hash", "synthetic_generator"))
+def test_pilot_schema_preflight_revalidates_contract_constraints_and_invariants(
+    family_a_tasks,
+    family_d_tasks,
+    family,
+    corruption,
+):
+    task = (
+        _family_a_task(family_a_tasks, difficulty="easy", depth=1)
+        if family == "a"
+        else family_d_tasks["semantic_near_miss"]
+    )
+    source = _construct_replace(
+        task.source,
+        **(
+            {"normalized_hash": "not-a-sha256"}
+            if corruption == "normalized_hash"
+            else {"generator": None}
+        ),
+    )
+    malformed = _construct_replace(task, source=source)
+
+    validator = (
+        validate_family_a_task if family == "a" else validate_family_d_task
+    )
+    first = validator(malformed)
+    second = validator(malformed)
+
+    assert first == second
+    assert len(first.issues) <= MAX_REPORT_ISSUES
+    assert f"family_{family}_contract_constraint_violation" in _codes(first)
+
+
+def test_validate_family_a_task_merges_generic_and_family_findings(
+    family_a_tasks,
+):
+    task = _family_a_task(family_a_tasks, difficulty="easy", depth=1)
+    queries = list(task.queries)
+    queries[0] = _construct_replace(
+        queries[0],
+        target_object_keys=[
+            queries[0].target_object_keys[0],
+            queries[0].target_object_keys[0],
+        ],
+    )
+    malformed = _construct_replace(task, task_id="", queries=queries)
+
+    direct = validate_family_a_task(malformed)
+    aggregate = validate_task_semantics(malformed)
+
+    assert aggregate == direct
+    assert {
+        "blank_task_id",
+        "duplicate_query_target",
+        "family_a_input_size_limit",
+    } <= _codes(direct)
 
 
 def test_validate_family_a_task_routes_hostile_family_without_override_access(
@@ -987,6 +1128,53 @@ def test_validate_family_d_task_rejects_non_target_value_equal_to_target_answer(
     report = validate_family_d_task(corrupted)
 
     assert "family_d_distractor_target_value_collision" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    ("target_value", "distractor_value", "expected_collision"),
+    (
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}, True),
+        ({"items": [True]}, {"items": [1]}, False),
+        (1, 1.0, False),
+        ([1, 2], [2, 1], False),
+    ),
+)
+def test_validate_family_d_task_compares_values_as_canonical_json(
+    family_d_tasks,
+    target_value,
+    distractor_value,
+    expected_collision,
+):
+    task = family_d_tasks["semantic_near_miss"]
+    payload = _payload(task)
+    target_event = _event_with_lifecycle(payload, "target_current")
+    target_action = _action_for_event(payload, target_event)
+    target_id = task.queries[0].target_object_keys[0].canonical_id
+    query_id = task.queries[0].query_id
+    target_action["value"] = target_value
+    payload["gold"]["final_state"][target_id] = target_value
+    payload["gold"]["version_history"][target_id] = [target_value]
+    payload["gold"]["gold_answers"][query_id] = target_value
+    payload["gold"]["acceptable_answers"][query_id] = target_value
+
+    distractor_event = _event_with_lifecycle(payload, "independent_current")
+    distractor_action = _action_for_event(payload, distractor_event)
+    typed_action = next(
+        action
+        for action in task.gold.actions
+        if action.action_id == distractor_action["action_id"]
+    )
+    distractor_id = typed_action.target_object_keys[0].canonical_id
+    distractor_action["value"] = distractor_value
+    payload["gold"]["final_state"][distractor_id] = distractor_value
+    payload["gold"]["version_history"][distractor_id] = [distractor_value]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert (
+        "family_d_distractor_target_value_collision" in _codes(report)
+    ) is expected_collision
 
 
 @pytest.mark.parametrize("mismatch", ("identity", "value"))

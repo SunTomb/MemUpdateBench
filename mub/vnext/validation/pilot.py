@@ -8,9 +8,9 @@ from string import Template
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, JsonValue, ValidationError
 
-from mub.vnext.contracts import EventRole, Operation, QueryType, SourceRecord, TaskFamily
+from mub.vnext.contracts import EventRole, Operation, QueryType, TaskFamily
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.generation.catalogs import SAME_NAME_ENTITIES, SURFACE_TEMPLATE_SETS
 from mub.vnext.generation.family_d import (
@@ -22,10 +22,9 @@ from mub.vnext.validation.issues import (
     ValidationIssue,
     ValidationReport,
     build_report,
-    merge_reports,
 )
 from mub.vnext.validation.replay import validate_distractors, validate_gold_replay
-from mub.vnext.validation.task import validate_task
+from mub.vnext.validation.task import acceptable_candidates, validate_task
 
 
 _MAX_ISSUES = 128
@@ -112,7 +111,7 @@ def _identity(key: Any) -> tuple[str, str, str, str | None] | None:
 
 
 def _same_value(left: Any, right: Any) -> bool:
-    return type(left) is type(right) and left == right
+    return _canonical_json_value(left) == _canonical_json_value(right)
 
 
 def _canonical_json_value(value: Any) -> str:
@@ -847,6 +846,56 @@ def _schema_preflight_issues(
     return issues
 
 
+def _constraint_error_path(location: tuple[Any, ...]) -> str:
+    path = "task"
+    for part in location:
+        if type(part) is int:
+            path += f"[{part}]"
+        else:
+            path += f".{part}"
+    return path
+
+
+def _contract_constraint_issues(
+    task: MemUpdateTask,
+    *,
+    family: str,
+) -> list[ValidationIssue]:
+    try:
+        payload = task.model_dump(
+            mode="python",
+            round_trip=True,
+            warnings="none",
+        )
+        MemUpdateTask.model_validate(payload)
+    except ValidationError as exc:
+        issues = []
+        for error in exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )[:_MAX_ISSUES]:
+            location = error.get("loc", ())
+            error_type = error.get("type", "contract_error")
+            issues.append(
+                _issue(
+                    f"family_{family}_contract_constraint_violation",
+                    f"full contract revalidation failed ({error_type})",
+                    _constraint_error_path(tuple(location)),
+                )
+            )
+        return issues
+    except Exception:
+        return [
+            _issue(
+                f"family_{family}_contract_constraint_violation",
+                "full contract revalidation rejected safe contract data",
+                "task",
+            )
+        ]
+    return []
+
+
 def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     issues = _schema_preflight_issues(task)
     if issues:
@@ -977,27 +1026,6 @@ def _family_a_preflight_issues(
     return issues
 
 
-def _pilot_release_status(task: MemUpdateTask) -> bool | None:
-    raw = object.__getattribute__(task, "__dict__")
-    if type(raw) is not dict:
-        return None
-    source = raw.get("source")
-    if type(source) is not SourceRecord:
-        return None
-    source_raw = object.__getattribute__(source, "__dict__")
-    if type(source_raw) is not dict:
-        return None
-    provenance = source_raw.get("provenance")
-    if type(provenance) is not dict or len(provenance) > _MAX_NESTED_ITEMS:
-        return None
-    release_id = provenance.get("release_id")
-    if release_id is None:
-        return False
-    if type(release_id) is not str:
-        return None
-    return str.__eq__(release_id, _PILOT_RELEASE_ID) is True
-
-
 def _event_records(task: MemUpdateTask) -> tuple[list[dict[str, Any]], list[Any]]:
     actions = _items(getattr(getattr(task, "gold", None), "actions", None))
     action_by_id: dict[str, Any] = {}
@@ -1035,6 +1063,49 @@ def _action_targets(action: Any) -> list[tuple[str, str, str, str | None]]:
     ]
 
 
+def _current_answer_issues(
+    task: MemUpdateTask,
+    current_value: Any,
+    *,
+    family: str,
+) -> list[ValidationIssue]:
+    queries = _items(task.queries)
+    query = queries[0] if len(queries) == 1 else None
+    query_id = getattr(query, "query_id", None)
+    gold_answers = _mapping(task.gold.gold_answers)
+    acceptable_answers = _mapping(task.gold.acceptable_answers)
+    canonical_answers = _mapping(task.gold.canonical_answers)
+    candidates: list[Any] = []
+    if type(query_id) is str and query_id in acceptable_answers:
+        candidates = acceptable_candidates(
+            acceptable_answers[query_id],
+            getattr(query, "answer_schema", None),
+            gold_answers.get(query_id),
+        )
+    valid = (
+        query is not None
+        and _enum_value(getattr(query, "query_type", None))
+        == QueryType.CURRENT_STATE.value
+        and type(query_id) is str
+        and set(gold_answers) == {query_id}
+        and set(acceptable_answers) == {query_id}
+        and not canonical_answers
+        and current_value is not None
+        and _same_value(gold_answers.get(query_id), current_value)
+        and len(candidates) == 1
+        and _same_value(candidates[0], current_value)
+    )
+    if valid:
+        return []
+    return [
+        _issue(
+            f"family_{family}_multiple_current_answers",
+            f"Family {family.upper()} answer structures must admit one current answer",
+            "gold.acceptable_answers",
+        )
+    ]
+
+
 def _same_name_other_entity(
     target: tuple[str, str, str, str | None],
     candidate: tuple[str, str, str, str | None],
@@ -1060,6 +1131,18 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     profile = _mapping(task.metadata.resolved_profile)
     difficulty = _enum_value(task.difficulty)
     expected_counts = _FAMILY_A_COUNTS.get(difficulty)
+    release_id = _mapping(task.source.provenance).get("release_id")
+    if type(release_id) is not str or str.__eq__(
+        release_id,
+        _PILOT_RELEASE_ID,
+    ) is not True:
+        issues.append(
+            _issue(
+                "family_a_release_provenance_mismatch",
+                "Family A tasks require canonical Pilot release provenance",
+                "source.provenance.release_id",
+            )
+        )
 
     queries = _items(task.queries)
     query = queries[0] if len(queries) == 1 else None
@@ -1409,26 +1492,7 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             )
         )
 
-    gold_answers = _mapping(gold.gold_answers)
-    acceptable_answers = _mapping(gold.acceptable_answers)
-    canonical_answers = _mapping(gold.canonical_answers)
-    answer_valid = (
-        type(query_id) is str
-        and set(gold_answers) == {query_id}
-        and set(acceptable_answers) == {query_id}
-        and not canonical_answers
-        and final_value is not None
-        and _same_value(gold_answers.get(query_id), final_value)
-        and _same_value(acceptable_answers.get(query_id), final_value)
-    )
-    if not answer_valid:
-        issues.append(
-            _issue(
-                "family_a_multiple_current_answers",
-                "Family A query, gold, canonical, and acceptable structures must admit one current answer",
-                "gold.acceptable_answers",
-            )
-        )
+    issues.extend(_current_answer_issues(task, final_value, family="a"))
     expected_gold_source = (
         [target_records[-1]["event"].event_id] if target_records else []
     )
@@ -2129,6 +2193,9 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             )
         )
 
+    issues.extend(
+        _current_answer_issues(task, target_current_value, family="d")
+    )
     return issues
 
 
@@ -2198,23 +2265,15 @@ def _validate_family_a_task(task: Any) -> ValidationReport:
             family="a",
         )
 
-    release_status = _pilot_release_status(task)
-    if release_status is False:
-        return merge_reports(
-            validate_task(task),
-            validate_gold_replay(task),
-            validate_distractors(task),
-        )
-
     schema_issues = _schema_preflight_issues(task, family="a")
     if schema_issues:
         return _bounded_report(schema_issues, family="a")
 
-    issues = _generic_validation_issues(task, family="a")
-    preflight_issues = _family_a_preflight_issues(task, schema_checked=True)
-    if preflight_issues:
-        return _bounded_report(preflight_issues, family="a")
-
+    issues = _contract_constraint_issues(task, family="a")
+    issues.extend(_generic_validation_issues(task, family="a"))
+    issues.extend(
+        _family_a_preflight_issues(task, schema_checked=True)
+    )
     try:
         issues.extend(_family_a_issues(task))
     except Exception:
@@ -2292,7 +2351,8 @@ def _validate_family_d_task(task: Any) -> ValidationReport:
     if preflight_issues:
         return _bounded_report(preflight_issues)
 
-    issues = _generic_validation_issues(task, family="d")
+    issues = _contract_constraint_issues(task, family="d")
+    issues.extend(_generic_validation_issues(task, family="d"))
     try:
         issues.extend(_family_d_issues(task))
     except Exception:
