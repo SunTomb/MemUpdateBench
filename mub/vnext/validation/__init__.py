@@ -22,14 +22,16 @@ from mub.vnext.validation.pilot import validate_family_d_task
 
 
 def validate_task_semantics(task) -> ValidationReport:
-    task_family = None
+    identifies_family_d = False
     if type(task) is MemUpdateTask:
         raw = object.__getattribute__(task, "__dict__")
         if type(raw) is dict:
             candidate = raw.get("task_family")
-            if type(candidate) is str:
-                task_family = candidate
-    if task_family == TaskFamily.NOOP_WRITE_DISCIPLINE.value:
+            identifies_family_d = isinstance(candidate, str) and str.__eq__(
+                candidate,
+                TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+            ) is True
+    if identifies_family_d:
         return validate_family_d_task(task)
     return merge_reports(
         validate_task(task),

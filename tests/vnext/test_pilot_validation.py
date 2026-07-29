@@ -79,6 +79,31 @@ class ExplosiveEnumLike:
         raise RuntimeError(f"unstable-enum-{self.value_access_count}")
 
 
+class HostileFamilyString(str):
+    __hash__ = str.__hash__
+
+    def __new__(cls, value):
+        instance = super().__new__(cls, value)
+        instance.override_access_count = 0
+        return instance
+
+    def _fail(self):
+        self.override_access_count += 1
+        raise RuntimeError(f"hostile-family-{self.override_access_count}")
+
+    def __eq__(self, other):
+        return self._fail()
+
+    def __ne__(self, other):
+        return self._fail()
+
+    def __str__(self):
+        return self._fail()
+
+    def strip(self, *args, **kwargs):
+        return self._fail()
+
+
 @pytest.fixture(scope="module")
 def family_d_tasks():
     config = load_pilot_config(CONFIG_PATH)
@@ -305,6 +330,23 @@ def test_validate_task_semantics_dispatches_family_d_without_duplicate_generic_i
 
     assert aggregate == direct
     assert "family_d_canonical_noop_density_mismatch" in _codes(aggregate)
+
+
+def test_validate_task_semantics_routes_hostile_family_string_without_overrides(
+    family_d_tasks,
+):
+    hostile = HostileFamilyString(TaskFamily.NOOP_WRITE_DISCIPLINE.value)
+    malformed = _construct_replace(
+        family_d_tasks["duplicate_current"],
+        task_family=hostile,
+    )
+
+    direct = validate_family_d_task(malformed)
+    aggregate = validate_task_semantics(malformed)
+
+    assert aggregate == direct
+    assert "family_d_invalid_field_type" in _codes(aggregate)
+    assert hostile.override_access_count == 0
 
 
 def test_validate_task_semantics_preserves_non_family_dispatch():
@@ -766,6 +808,61 @@ def test_validate_family_d_task_rejects_forged_enum_like_values_without_access(
     assert first == second
     assert forged.value_access_count == 0
     assert "family_d_invalid_enum_type" in _codes(first)
+
+
+def test_schema_preflight_revalidates_shared_list_across_annotations(family_d_tasks):
+    task = family_d_tasks["duplicate_current"]
+    shared = list(task.gold.expected_present_objects)
+    gold = _construct_replace(task.gold, expected_present_objects=shared)
+    metadata = _construct_replace(task.metadata, tags=shared)
+    malformed = _construct_replace(task, gold=gold, metadata=metadata)
+
+    report = validate_family_d_task(malformed)
+
+    assert any(
+        issue.code == "family_d_invalid_field_type"
+        and issue.path.startswith("task.metadata.tags[")
+        for issue in report.issues
+    )
+
+
+def test_schema_preflight_revalidates_shared_dict_across_annotations(family_d_tasks):
+    task = family_d_tasks["duplicate_current"]
+    shared = dict(task.source.provenance)
+    source = _construct_replace(task.source, provenance=shared)
+    gold = _construct_replace(task.gold, version_history=shared)
+    malformed = _construct_replace(task, source=source, gold=gold)
+
+    report = validate_family_d_task(malformed)
+
+    assert any(
+        issue.code == "family_d_malformed_collection"
+        and issue.path.startswith("task.gold.version_history.")
+        for issue in report.issues
+    )
+
+
+def test_schema_preflight_revalidates_shared_tuple_across_annotations(family_d_tasks):
+    task = family_d_tasks["duplicate_current"]
+    shared = ("not-json",)
+    provenance = dict(task.source.provenance)
+    provenance["shared"] = shared
+    source = _construct_replace(task.source, provenance=provenance)
+    events = list(task.events)
+    anchor = dict(events[0].source_anchor)
+    anchor["shared"] = shared
+    events[0] = _construct_replace(events[0], source_anchor=anchor)
+    malformed = _construct_replace(task, source=source, events=events)
+
+    report = validate_family_d_task(malformed)
+
+    malformed_paths = {
+        issue.path
+        for issue in report.issues
+        if issue.code == "family_d_malformed_json"
+    }
+    assert "task.source.provenance.shared" in malformed_paths
+    assert "task.events[0].source_anchor.shared" in malformed_paths
 
 
 @pytest.mark.parametrize(
