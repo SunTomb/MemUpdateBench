@@ -1,3 +1,4 @@
+from mub.vnext.contracts import MemUpdateTask, TaskFamily
 from mub.vnext.validation.issues import (
     ValidationIssue,
     ValidationReport,
@@ -21,6 +22,12 @@ from mub.vnext.validation.pilot import validate_family_d_task
 
 
 def validate_task_semantics(task) -> ValidationReport:
+    if (
+        type(task) is MemUpdateTask
+        and getattr(task, "task_family", None)
+        == TaskFamily.NOOP_WRITE_DISCIPLINE.value
+    ):
+        return validate_family_d_task(task)
     return merge_reports(
         validate_task(task),
         validate_gold_replay(task),

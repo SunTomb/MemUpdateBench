@@ -9,13 +9,27 @@ from types import SimpleNamespace
 import pytest
 
 import mub.vnext.validation.pilot as pilot_module
-from mub.vnext.contracts import EventRole, Operation, Split, TaskFamily
+from mub.vnext.contracts import (
+    CanonicalAnswer,
+    EventRole,
+    Operation,
+    Split,
+    TaskFamily,
+)
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.generation import (
     GenerationContext,
+    generate_family_a_cores,
     generate_family_d_cores,
     load_pilot_config,
     render_core,
+)
+from mub.vnext.validation import (
+    merge_reports,
+    validate_distractors,
+    validate_gold_replay,
+    validate_task,
+    validate_task_semantics,
 )
 from mub.vnext.validation.pilot import validate_family_d_task
 
@@ -53,6 +67,16 @@ class ExplosiveMapping(Mapping):
     def __iter__(self):
         self.iteration_count += 1
         raise RuntimeError(f"unstable-iteration-{self.iteration_count}")
+
+
+class ExplosiveEnumLike:
+    def __init__(self):
+        self.value_access_count = 0
+
+    @property
+    def value(self):
+        self.value_access_count += 1
+        raise RuntimeError(f"unstable-enum-{self.value_access_count}")
 
 
 @pytest.fixture(scope="module")
@@ -260,6 +284,46 @@ def test_validate_family_d_task_is_exported_from_validation_package():
     import mub.vnext.validation as validation
 
     assert validation.validate_family_d_task is validate_family_d_task
+
+
+def test_validate_task_semantics_dispatches_family_d_without_duplicate_generic_issues(
+    family_d_tasks,
+):
+    payload = _payload(family_d_tasks["duplicate_current"])
+    near_density = 0.2500000001
+    payload["metadata"]["extra"]["stratification"][
+        "configured_noop_density"
+    ] = near_density
+    payload["metadata"]["extra"]["stratification"][
+        "observed_noop_density"
+    ] = near_density
+    payload["metadata"]["resolved_profile"]["noop_density"] = near_density
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    direct = validate_family_d_task(corrupted)
+    aggregate = validate_task_semantics(corrupted)
+
+    assert aggregate == direct
+    assert "family_d_canonical_noop_density_mismatch" in _codes(aggregate)
+
+
+def test_validate_task_semantics_preserves_non_family_dispatch():
+    config = load_pilot_config(CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="non-family-dispatch-test")
+    task = render_core(
+        generate_family_a_cores(config)[0],
+        split=Split.TEST,
+        surface_variant=0,
+        context=context,
+    )
+
+    expected = merge_reports(
+        validate_task(task),
+        validate_gold_replay(task),
+        validate_distractors(task),
+    )
+
+    assert validate_task_semantics(task) == expected
 
 
 def test_validate_family_d_task_uses_semantic_event_order_not_action_storage_order(
@@ -638,6 +702,74 @@ def test_validate_family_d_task_handles_constructed_models_with_missing_fields()
     )
 
 
+@pytest.mark.parametrize(
+    "location",
+    (
+        "action.operation",
+        "action.scope",
+        "event.role",
+        "task.difficulty",
+        "source.source_type",
+        "metadata.split",
+        "metadata.profile_name",
+        "query.query_type",
+        "query.answer_schema",
+        "query.evaluation_mode",
+        "canonical.disposition",
+        "canonical.resolution_status",
+    ),
+)
+def test_validate_family_d_task_rejects_forged_enum_like_values_without_access(
+    family_d_tasks,
+    location,
+):
+    task = family_d_tasks["duplicate_current"]
+    forged = ExplosiveEnumLike()
+    if location.startswith("action."):
+        malformed = _replace_action(task, 0, **{location.split(".")[1]: forged})
+    elif location == "event.role":
+        events = list(task.events)
+        events[0] = _construct_replace(events[0], role=forged)
+        malformed = _construct_replace(task, events=events)
+    elif location == "task.difficulty":
+        malformed = _construct_replace(task, difficulty=forged)
+    elif location == "source.source_type":
+        source = _construct_replace(task.source, source_type=forged)
+        malformed = _construct_replace(task, source=source)
+    elif location.startswith("metadata."):
+        metadata = _construct_replace(
+            task.metadata,
+            **{location.split(".")[1]: forged},
+        )
+        malformed = _construct_replace(task, metadata=metadata)
+    elif location.startswith("query."):
+        queries = list(task.queries)
+        queries[0] = _construct_replace(
+            queries[0],
+            **{location.split(".")[1]: forged},
+        )
+        malformed = _construct_replace(task, queries=queries)
+    else:
+        field = location.split(".")[1]
+        canonical = CanonicalAnswer.model_construct(
+            disposition=forged if field == "disposition" else "abstained",
+            resolution_status=(
+                forged if field == "resolution_status" else "ambiguous"
+            ),
+            selected_candidate_ids=[],
+            abstention_reason="malformed",
+            value=None,
+        )
+        malformed = _replace_gold(task, canonical_answers={"forged": canonical})
+
+    first = validate_family_d_task(malformed)
+    second = validate_family_d_task(malformed)
+
+    assert first == second
+    assert forged.value_access_count == 0
+    assert "family_d_invalid_enum_type" in _codes(first)
+
+
 def test_validate_family_d_task_rejects_custom_sequences_without_iteration():
     sequence = ExplosiveSequence()
     malformed = MemUpdateTask.model_construct(
@@ -745,6 +877,65 @@ def test_validate_family_d_task_rejects_oversized_nested_maps_before_generic_val
 
     assert "family_d_input_size_limit" in _codes(report)
     assert generic_calls == []
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_validate_family_d_task_rejects_non_finite_nested_numbers(
+    family_d_tasks,
+    value,
+):
+    task = family_d_tasks["duplicate_current"]
+    events = list(task.events)
+    metadata = dict(events[0].metadata)
+    metadata["non_finite"] = value
+    events[0] = _construct_replace(events[0], metadata=metadata)
+    malformed = _construct_replace(task, events=events)
+
+    report = validate_family_d_task(malformed)
+
+    assert "family_d_non_finite_json_number" in _codes(report)
+
+
+@pytest.mark.parametrize("cycle_kind", ("self", "mutual"))
+def test_validate_family_d_task_rejects_nested_cycles_deterministically(
+    family_d_tasks,
+    cycle_kind,
+):
+    if cycle_kind == "self":
+        cyclic = {}
+        cyclic["self"] = cyclic
+    else:
+        cyclic = {}
+        partner = []
+        cyclic["partner"] = partner
+        partner.append(cyclic)
+    task = family_d_tasks["duplicate_current"]
+    events = list(task.events)
+    events[0] = _construct_replace(events[0], metadata=cyclic)
+    malformed = _construct_replace(task, events=events)
+
+    first = validate_family_d_task(malformed)
+    second = validate_family_d_task(malformed)
+
+    assert first == second
+    assert "family_d_cyclic_json" in _codes(first)
+
+
+def test_validate_family_d_task_rejects_excessive_nested_depth(family_d_tasks):
+    root = {}
+    cursor = root
+    for index in range(40):
+        child = {}
+        cursor[f"level-{index}"] = child
+        cursor = child
+    task = family_d_tasks["duplicate_current"]
+    events = list(task.events)
+    events[0] = _construct_replace(events[0], metadata=root)
+    malformed = _construct_replace(task, events=events)
+
+    report = validate_family_d_task(malformed)
+
+    assert "family_d_input_size_limit" in _codes(report)
 
 
 def test_validate_family_d_task_is_deterministic_immutable_and_does_no_disk_io(

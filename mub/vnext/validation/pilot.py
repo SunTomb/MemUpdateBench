@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from string import Template
 from typing import Any
 
 from mub.vnext.contracts import (
+    ActionScope,
+    AnswerDisposition,
+    AnswerSchema,
     CanonicalAnswer,
+    Difficulty,
+    EvaluationMode,
     EventRole,
     GoldAction,
     GoldRecord,
@@ -13,8 +19,12 @@ from mub.vnext.contracts import (
     MemoryObjectKey,
     MemoryQuery,
     Operation,
+    QueryType,
     ReferenceCandidate,
+    ReferenceResolutionStatus,
     SourceRecord,
+    SourceType,
+    Split,
     SurfaceReference,
     TaskFamily,
     TaskMetadata,
@@ -54,6 +64,7 @@ _COLLECTION_LIMITS = {
 }
 _MAX_NESTED_ITEMS = 64
 _MAX_NESTED_NODES = 1024
+_MAX_NESTED_DEPTH = 16
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -159,20 +170,56 @@ def _inspect_json_value(
     value: Any,
     path: str,
     budget: list[int],
+    active: set[int],
+    visited: set[int],
+    depth: int,
 ) -> None:
-    if budget[0] <= 0:
+    if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
         issues.append(
             _issue(
                 "family_d_input_size_limit",
-                "nested JSON structures exceed the Family D inspection budget",
+                "nested JSON structures exceed the Family D inspection limit",
                 path,
             )
         )
         return
     budget[0] -= 1
-    if value is None or type(value) in {str, bool, int, float}:
+    if type(value) is float:
+        if not math.isfinite(value):
+            issues.append(
+                _issue(
+                    "family_d_non_finite_json_number",
+                    "nested JSON numbers must be finite",
+                    path,
+                )
+            )
+        return
+    if value is None or type(value) in {str, bool, int}:
+        return
+    if type(value) is dict:
+        _inspect_json_mapping(
+            issues,
+            value,
+            path,
+            budget,
+            active,
+            visited,
+            depth,
+        )
         return
     if type(value) is list:
+        identity = id(value)
+        if identity in active:
+            issues.append(
+                _issue(
+                    "family_d_cyclic_json",
+                    "nested JSON collections cannot contain cycles",
+                    path,
+                )
+            )
+            return
+        if identity in visited:
+            return
         if len(value) > _MAX_NESTED_ITEMS:
             issues.append(
                 _issue(
@@ -182,20 +229,30 @@ def _inspect_json_value(
                 )
             )
             return
-        for index, item in enumerate(value):
-            _inspect_json_value(issues, item, f"{path}[{index}]", budget)
-            if budget[0] <= 0 and index + 1 < len(value):
-                issues.append(
-                    _issue(
-                        "family_d_input_size_limit",
-                        "nested JSON structures exceed the Family D inspection budget",
-                        path,
-                    )
+        active.add(identity)
+        try:
+            for index, item in enumerate(value):
+                _inspect_json_value(
+                    issues,
+                    item,
+                    f"{path}[{index}]",
+                    budget,
+                    active,
+                    visited,
+                    depth + 1,
                 )
-                return
-        return
-    if type(value) is dict:
-        _inspect_json_mapping(issues, value, path, budget)
+                if budget[0] <= 0 and index + 1 < len(value):
+                    issues.append(
+                        _issue(
+                            "family_d_input_size_limit",
+                            "nested JSON structures exceed the Family D inspection budget",
+                            path,
+                        )
+                    )
+                    return
+        finally:
+            active.remove(identity)
+            visited.add(identity)
         return
     issues.append(
         _issue(
@@ -211,7 +268,19 @@ def _inspect_json_mapping(
     value: Any,
     path: str,
     budget: list[int],
+    active: set[int],
+    visited: set[int],
+    depth: int,
 ) -> None:
+    if depth > _MAX_NESTED_DEPTH:
+        issues.append(
+            _issue(
+                "family_d_input_size_limit",
+                "nested JSON structures exceed the Family D depth limit",
+                path,
+            )
+        )
+        return
     if type(value) is not dict:
         issues.append(
             _issue(
@@ -220,6 +289,18 @@ def _inspect_json_mapping(
                 path,
             )
         )
+        return
+    identity = id(value)
+    if identity in active:
+        issues.append(
+            _issue(
+                "family_d_cyclic_json",
+                "nested JSON collections cannot contain cycles",
+                path,
+            )
+        )
+        return
+    if identity in visited:
         return
     if len(value) > _MAX_NESTED_ITEMS:
         issues.append(
@@ -230,26 +311,39 @@ def _inspect_json_mapping(
             )
         )
         return
-    for index, (key, item) in enumerate(value.items()):
-        if type(key) is not str:
-            issues.append(
-                _issue(
-                    "family_d_malformed_mapping",
-                    f"{path} keys must be exact strings",
-                    f"{path}[{index}]",
+    active.add(identity)
+    try:
+        for index, (key, item) in enumerate(value.items()):
+            if type(key) is not str:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_mapping",
+                        f"{path} keys must be exact strings",
+                        f"{path}[{index}]",
+                    )
                 )
+                continue
+            _inspect_json_value(
+                issues,
+                item,
+                f"{path}.{key}",
+                budget,
+                active,
+                visited,
+                depth + 1,
             )
-            continue
-        _inspect_json_value(issues, item, f"{path}.{key}", budget)
-        if budget[0] <= 0 and index + 1 < len(value):
-            issues.append(
-                _issue(
-                    "family_d_input_size_limit",
-                    "nested JSON structures exceed the Family D inspection budget",
-                    path,
+            if budget[0] <= 0 and index + 1 < len(value):
+                issues.append(
+                    _issue(
+                        "family_d_input_size_limit",
+                        "nested JSON structures exceed the Family D inspection budget",
+                        path,
+                    )
                 )
-            )
-            return
+                return
+    finally:
+        active.remove(identity)
+        visited.add(identity)
 
 
 def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
@@ -345,6 +439,78 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                         f"{path}[{index}]",
                     )
                 )
+    if issues:
+        return issues
+
+    enum_fields: list[tuple[str, Any, type]] = [
+        ("difficulty", getattr(task, "difficulty", None), Difficulty),
+        ("source.source_type", getattr(source, "source_type", None), SourceType),
+        ("metadata.split", getattr(metadata, "split", None), Split),
+        (
+            "metadata.profile_name",
+            getattr(metadata, "profile_name", None),
+            Difficulty,
+        ),
+    ]
+    enum_fields.extend(
+        (f"events[{index}].role", event.role, EventRole)
+        for index, event in enumerate(collections.get("events") or [])
+    )
+    for index, action in enumerate(collections.get("gold.actions") or []):
+        enum_fields.extend(
+            (
+                (f"gold.actions[{index}].operation", action.operation, Operation),
+                (f"gold.actions[{index}].scope", action.scope, ActionScope),
+            )
+        )
+    for index, query in enumerate(collections.get("queries") or []):
+        enum_fields.extend(
+            (
+                (f"queries[{index}].query_type", query.query_type, QueryType),
+                (
+                    f"queries[{index}].answer_schema",
+                    query.answer_schema,
+                    AnswerSchema,
+                ),
+                (
+                    f"queries[{index}].evaluation_mode",
+                    query.evaluation_mode,
+                    EvaluationMode,
+                ),
+            )
+        )
+    canonical_answers = getattr(safe_gold, "canonical_answers", None)
+    if type(canonical_answers) is dict:
+        for index, (query_id, answer) in enumerate(canonical_answers.items()):
+            if type(answer) is CanonicalAnswer:
+                answer_path = (
+                    f"gold.canonical_answers.{query_id}"
+                    if type(query_id) is str
+                    else f"gold.canonical_answers[{index}]"
+                )
+                enum_fields.extend(
+                    (
+                        (
+                            f"{answer_path}.disposition",
+                            answer.disposition,
+                            AnswerDisposition,
+                        ),
+                        (
+                            f"{answer_path}.resolution_status",
+                            answer.resolution_status,
+                            ReferenceResolutionStatus,
+                        ),
+                    )
+                )
+    for path, value, expected_type in enum_fields:
+        if value is not None and type(value) is not expected_type:
+            issues.append(
+                _issue(
+                    "family_d_invalid_enum_type",
+                    f"{path} must be an exact {expected_type.__name__}",
+                    path,
+                )
+            )
     if issues:
         return issues
 
@@ -457,6 +623,8 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                 )
 
     budget = [_MAX_NESTED_NODES]
+    active: set[int] = set()
+    visited: set[int] = set()
     json_mappings: list[tuple[str, Any]] = []
     if type(source) is SourceRecord:
         json_mappings.append(("source.provenance", source.provenance))
@@ -493,7 +661,15 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         for index, query in enumerate(collections.get("queries") or [])
     )
     for index, (path, value) in enumerate(json_mappings):
-        _inspect_json_mapping(issues, value, path, budget)
+        _inspect_json_mapping(
+            issues,
+            value,
+            path,
+            budget,
+            active,
+            visited,
+            0,
+        )
         if budget[0] <= 0 and index + 1 < len(json_mappings):
             issues.append(
                 _issue(
@@ -503,6 +679,17 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                 )
             )
             break
+
+    for index, action in enumerate(collections.get("gold.actions") or []):
+        _inspect_json_value(
+            issues,
+            action.value,
+            f"gold.actions[{index}].value",
+            budget,
+            active,
+            visited,
+            0,
+        )
 
     if type(safe_gold) is GoldRecord:
         canonical_answers = safe_gold.canonical_answers
@@ -547,6 +734,16 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                             "canonical selected_candidate_ids exceeds the Family D inspection limit",
                             f"gold.canonical_answers.{query_id}.selected_candidate_ids",
                         )
+                    )
+                if type(answer) is CanonicalAnswer:
+                    _inspect_json_value(
+                        issues,
+                        answer.value,
+                        f"gold.canonical_answers[{index}].value",
+                        budget,
+                        active,
+                        visited,
+                        0,
                     )
     return issues
 
