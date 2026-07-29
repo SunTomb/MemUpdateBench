@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,7 +85,7 @@ def _action_for_event(payload, event):
     )
 
 
-def _rewrite_semantic_noop_as_non_target_update(task):
+def _rewrite_semantic_noop_as_non_target_update(task, *, erase_trap_signals=False):
     payload = _payload(task)
     trap_index = next(
         index
@@ -108,6 +109,11 @@ def _rewrite_semantic_noop_as_non_target_update(task):
     non_target_id = prior_typed_action.target_object_keys[0].canonical_id
 
     trap_event["metadata"]["lifecycle"] = "independent_current"
+    if erase_trap_signals:
+        trap_event["metadata"].pop("trap_type")
+        trap_event["metadata"]["surface_statement"] = "This now directs a write."
+        trap_event["role"] = EventRole.NEUTRAL.value
+        trap_event["raw_text"] = "This now directs a write."
     trap_action = _action_for_event(payload, trap_event)
     trap_action["operation"] = Operation.UPDATE.value
     trap_action["scope"] = "attribute"
@@ -130,6 +136,40 @@ def _rewrite_semantic_noop_as_non_target_update(task):
         actions_by_id[event["gold_action_ids"][0]]["operation"]
         for event in payload["events"]
     )
+    return MemUpdateTask.model_validate(payload)
+
+
+def _append_extra_noop(task):
+    payload = _payload(task)
+    template_event = next(
+        event
+        for event in payload["events"]
+        if event["metadata"].get("lifecycle") == "independent_noop"
+    )
+    template_action = _action_for_event(payload, template_event)
+    extra_event = deepcopy(template_event)
+    extra_action = deepcopy(template_action)
+    extra_event_id = f"{template_event['event_id']}-extra"
+    extra_action_id = f"{template_action['action_id']}-extra"
+    extra_event["event_id"] = extra_event_id
+    extra_event["sequence_index"] = len(payload["events"])
+    extra_event["gold_action_ids"] = [extra_action_id]
+    extra_event["source_anchor"] = {"event_index": len(payload["events"])}
+    extra_action["action_id"] = extra_action_id
+    extra_action["event_id"] = extra_event_id
+    payload["events"].append(extra_event)
+    payload["gold"]["actions"].append(extra_action)
+    payload["gold"]["action_sequence"].append(extra_action_id)
+
+    stratification = payload["metadata"]["extra"]["stratification"]
+    stratification["num_events"] += 1
+    stratification["noop_count"] += 1
+    density = stratification["noop_count"] / stratification["num_events"]
+    stratification["configured_noop_density"] = density
+    stratification["observed_noop_density"] = density
+    stratification["operation_signature"] += ",NOOP"
+    payload["metadata"]["resolved_profile"]["noop_density"] = density
+    payload["metadata"]["resolved_profile"]["context_length"] += 1
     return MemUpdateTask.model_validate(payload)
 
 
@@ -179,6 +219,29 @@ def test_validate_family_d_task_rejects_coordinated_semantic_noop_rewrite(
     assert not report.valid
     assert "family_d_noop_state_mutation" in _codes(report)
     assert "family_d_noop_semantics_mismatch" in _codes(report)
+    assert "family_d_canonical_noop_count_mismatch" in _codes(report)
+
+
+def test_validate_family_d_task_rejects_removed_event_trap_binding(
+    family_d_tasks,
+):
+    corrupted = _rewrite_semantic_noop_as_non_target_update(
+        family_d_tasks["semantic_near_miss_with_prior_write"],
+        erase_trap_signals=True,
+    )
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_trap_metadata_mismatch" in _codes(report)
+    assert "family_d_noop_state_mutation" in _codes(report)
+
+
+def test_validate_family_d_task_enforces_canonical_event_count(family_d_tasks):
+    corrupted = _append_extra_noop(family_d_tasks["duplicate_current"])
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_canonical_event_count_mismatch" in _codes(report)
 
 
 @pytest.mark.parametrize(
@@ -241,6 +304,77 @@ def test_validate_family_d_task_distinguishes_duplicate_metadata_and_count(famil
 
     assert "family_d_duplicate_current_metadata_mismatch" in _codes(report)
     assert "family_d_duplicate_current_count_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    ("trap_type", "lifecycle"),
+    (
+        ("semantic_near_miss", "independent_current"),
+        ("other_entity_correction", "correction_after"),
+    ),
+)
+def test_validate_family_d_task_rejects_non_target_value_equal_to_target_answer(
+    family_d_tasks,
+    trap_type,
+    lifecycle,
+):
+    task = family_d_tasks[trap_type]
+    payload = _payload(task)
+    target_event = _event_with_lifecycle(payload, "target_current")
+    target_value = _action_for_event(payload, target_event)["value"]
+    distractor_event = _event_with_lifecycle(payload, lifecycle)
+    distractor_action = _action_for_event(payload, distractor_event)
+    typed_action = next(
+        action
+        for action in task.gold.actions
+        if action.action_id == distractor_action["action_id"]
+    )
+    distractor_id = typed_action.target_object_keys[0].canonical_id
+    distractor_action["value"] = target_value
+    payload["gold"]["final_state"][distractor_id] = target_value
+    if lifecycle == "correction_after":
+        payload["gold"]["version_history"][distractor_id][-1] = target_value
+    else:
+        payload["gold"]["version_history"][distractor_id] = [target_value]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_distractor_target_value_collision" in _codes(report)
+
+
+@pytest.mark.parametrize("mismatch", ("identity", "value"))
+def test_validate_family_d_task_binds_duplicate_observation_to_target_and_value(
+    family_d_tasks,
+    mismatch,
+):
+    task = family_d_tasks["duplicate_current"]
+    payload = _payload(task)
+    target = task.queries[0].target_object_keys[0]
+    target_event = _event_with_lifecycle(payload, "target_current")
+    target_value = _action_for_event(payload, target_event)["value"]
+    duplicate_event = next(
+        event
+        for event in payload["events"]
+        if event["metadata"].get("trap_type") == "duplicate_current"
+    )
+    observed_identity = (
+        "unrelated_entity.unrelated_attribute"
+        if mismatch == "identity"
+        else f"{target.entity}.{target.attribute}"
+    )
+    observed_value = "unrelated-value" if mismatch == "value" else target_value
+    statement = (
+        f"{observed_identity} remains exactly {observed_value}; "
+        "this repeats the exact current target value."
+    )
+    duplicate_event["metadata"]["surface_statement"] = statement
+    duplicate_event["raw_text"] = f"{statement} No memory change is required."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_duplicate_current_visibility_mismatch" in _codes(report)
 
 
 def test_validate_family_d_task_distinguishes_correction_lifecycle_and_target_isolation(

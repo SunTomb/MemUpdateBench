@@ -18,6 +18,7 @@ _CORRECTION_TRAPS = frozenset(
 )
 _NOOP_TRAPS = frozenset({"semantic_near_miss", "duplicate_current"})
 _TRAPS = _NOOP_TRAPS | _CORRECTION_TRAPS
+_CANONICAL_NOOPS_BY_DIFFICULTY = {"easy": 3, "medium": 6, "hard": 9}
 _NOOP_STATEMENT_MARKERS = (
     "does not assert a current-state change",
     "remains exactly",
@@ -75,6 +76,27 @@ def _statement_requires_noop(value: Any) -> bool:
     return isinstance(value, str) and any(
         marker in value.casefold() for marker in _NOOP_STATEMENT_MARKERS
     )
+
+
+def _identity_id(identity: tuple[str, str, str, str | None]) -> str:
+    return "|".join(
+        part.replace("%", "%25").replace("|", "%7C")
+        for part in (*identity[:3], identity[3] or "")
+    )
+
+
+def _observation_binds_target(
+    text: Any,
+    target: tuple[str, str, str, str | None] | None,
+    value: Any,
+) -> bool:
+    if not isinstance(text, str) or target is None or value is None:
+        return False
+    normalized = text.casefold()
+    expected_observation = (
+        f"{target[1]}.{target[2]} remains exactly {value};".casefold()
+    )
+    return expected_observation in normalized
 
 
 def _bounded_report(issues: Sequence[ValidationIssue]) -> ValidationReport:
@@ -142,6 +164,61 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     stratification = _mapping(extra.get("stratification"))
     profile = _mapping(getattr(metadata, "resolved_profile", None))
 
+    difficulty = _enum_value(getattr(task, "difficulty", None))
+    expected_noop_count = _CANONICAL_NOOPS_BY_DIFFICULTY.get(difficulty)
+    if len(records) != 12:
+        issues.append(
+            _issue(
+                "family_d_canonical_event_count_mismatch",
+                "Family D tasks require exactly 12 events",
+                "events",
+            )
+        )
+    actual_noop_count = sum(
+        len(record["actions"]) == 1
+        and _enum_value(getattr(record["actions"][0], "operation", None))
+        == Operation.NOOP.value
+        for record in records
+    )
+    if expected_noop_count is not None and actual_noop_count != expected_noop_count:
+        issues.append(
+            _issue(
+                "family_d_canonical_noop_count_mismatch",
+                f"Family D {difficulty} tasks require exactly {expected_noop_count} NOOP actions",
+                "events",
+            )
+        )
+
+    declared_trap = stratification.get("trap_type")
+    profile_trap = profile.get("write_trap_type")
+    trap_position = stratification.get("trap_position")
+    position_valid = (
+        type(trap_position) is int and 0 <= trap_position < len(records)
+    )
+    matching_traps = [
+        record for record in records if record["trap_type"] == declared_trap
+    ]
+    trap_binding_valid = (
+        declared_trap in _TRAPS
+        and profile_trap == declared_trap
+        and position_valid
+        and len(matching_traps) == 1
+        and matching_traps[0]["index"] == trap_position
+    )
+    if not trap_binding_valid:
+        issues.append(
+            _issue(
+                "family_d_trap_metadata_mismatch",
+                "Family D requires one event-level trap bound to declared type and position",
+                "metadata.extra.stratification.trap_position",
+            )
+        )
+    required_noop_indices = (
+        {trap_position}
+        if declared_trap in _NOOP_TRAPS and position_valid
+        else set()
+    )
+
     queries = _items(getattr(task, "queries", None))
     query_targets = (
         _items(getattr(queries[0], "target_object_keys", None)) if queries else []
@@ -178,13 +255,15 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         )
         trap_noop = record["trap_type"] in _NOOP_TRAPS
         role_noop = event_role == EventRole.NOOP_NEAR_MISS.value
+        designated_noop = record["index"] in required_noop_indices
         expected_noop = (
             lifecycle in _NOOP_LIFECYCLES
             or trap_noop
             or role_noop
             or statement_noop
+            or designated_noop
         )
-        if (trap_noop or role_noop) and not (
+        if (trap_noop or role_noop or designated_noop) and not (
             trap_noop
             and role_noop
             and lifecycle == "trap_noop"
@@ -265,16 +344,52 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             )
         )
 
-    declared_trap = stratification.get("trap_type")
-    profile_trap = profile.get("write_trap_type")
-    if declared_trap not in _TRAPS or profile_trap != declared_trap:
-        issues.append(
-            _issue(
-                "family_d_trap_metadata_mismatch",
-                "Family D trap_type must be recognized and agree across profile and stratification",
-                "metadata.extra.stratification.trap_type",
-            )
+    if target_current_value is not None:
+        for record in records:
+            for action in record["actions"]:
+                operation = _enum_value(getattr(action, "operation", None))
+                targets = _action_targets(action)
+                if (
+                    operation in {Operation.ADD.value, Operation.UPDATE.value}
+                    and targets
+                    and target_identity not in targets
+                    and _same_value(getattr(action, "value", None), target_current_value)
+                ):
+                    issues.append(
+                        _issue(
+                            "family_d_distractor_target_value_collision",
+                            "a non-target write equals the current target answer",
+                            f"events[{record['index']}].gold_action_ids",
+                        )
+                    )
+        canonical_target_id = (
+            _identity_id(target_identity) if target_identity is not None else None
         )
+        final_state = _mapping(getattr(gold, "final_state", None))
+        history = _mapping(getattr(gold, "version_history", None))
+        for object_id, value in final_state.items():
+            if object_id != canonical_target_id and _same_value(
+                value, target_current_value
+            ):
+                issues.append(
+                    _issue(
+                        "family_d_distractor_target_value_collision",
+                        "gold final state gives a non-target object the target answer",
+                        f"gold.final_state.{object_id}",
+                    )
+                )
+        for object_id, values in history.items():
+            if object_id == canonical_target_id:
+                continue
+            for value_index, value in enumerate(_items(values)):
+                if _same_value(value, target_current_value):
+                    issues.append(
+                        _issue(
+                            "family_d_distractor_target_value_collision",
+                            "gold history gives a non-target object the target answer",
+                            f"gold.version_history.{object_id}[{value_index}]",
+                        )
+                    )
 
     duplicate_records = [
         record for record in records if record["trap_type"] == "duplicate_current"
@@ -311,6 +426,25 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             and _enum_value(getattr(event_actions[0], "operation", None))
             == Operation.NOOP.value
         )
+        if not (
+            _observation_binds_target(
+                record["metadata"].get("surface_statement"),
+                target_identity,
+                target_current_value,
+            )
+            and _observation_binds_target(
+                getattr(event, "raw_text", None),
+                target_identity,
+                target_current_value,
+            )
+        ):
+            issues.append(
+                _issue(
+                    "family_d_duplicate_current_visibility_mismatch",
+                    "duplicate-current observation must name the target and current value",
+                    f"events[{record['index']}].raw_text",
+                )
+            )
     ambiguity_records = [
         record
         for record in records
@@ -462,10 +596,7 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     history = _mapping(getattr(gold, "version_history", None))
     final_state = _mapping(getattr(gold, "final_state", None))
     if target_identity is not None:
-        canonical_target_id = "|".join(
-            part.replace("%", "%25").replace("|", "%7C")
-            for part in (*target_identity[:3], target_identity[3] or "")
-        )
+        canonical_target_id = _identity_id(target_identity)
         target_history = _items(history.get(canonical_target_id))
     target_writes = sum(
         target_identity is not None
