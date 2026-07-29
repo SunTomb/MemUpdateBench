@@ -423,6 +423,54 @@ def test_noncanonical_compiled_snapshot_is_rejected(compiled, config) -> None:
         build_pilot_artifact_bundle(tampered, config)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("code_revision", None),
+        ("compiler_version", []),
+        ("generator_name", {}),
+        ("config_sha256", None),
+    ],
+)
+def test_factory_bounds_malformed_authenticated_provenance(
+    compiled,
+    config,
+    field,
+    value,
+) -> None:
+    original = getattr(compiled, field)
+    object.__setattr__(compiled, field, value)
+    try:
+        with pytest.raises(ValueError, match="authenticated compiler output"):
+            build_pilot_artifact_bundle(compiled, config)
+    finally:
+        object.__setattr__(compiled, field, original)
+
+
+def test_unsealed_compiled_direct_and_replace_copies_are_rejected(
+    compiled,
+    config,
+) -> None:
+    direct = CompiledPilotTasks(
+        split_assignment=compiled.split_assignment,
+        config_sha256=compiled.config_sha256,
+        code_revision=compiled.code_revision,
+        compiler_version=compiled.compiler_version,
+        generator_name=compiled.generator_name,
+        tasks_jsonl=compiled.tasks_jsonl,
+    )
+    replaced = replace(compiled)
+
+    for unsealed in (direct, replaced):
+        with pytest.raises(ValueError, match="authenticated compiler output"):
+            build_pilot_artifact_bundle(unsealed, config)
+
+    resealed = compiled.authenticated_clone()
+    assert resealed is not compiled
+    assert resealed.verify_authenticated_snapshot() is None
+    assert build_pilot_artifact_bundle(resealed, config).tasks_jsonl == compiled.tasks_jsonl
+
+
 def test_factory_rejects_object_tampered_nonsemantic_task_metadata(
     compiled,
     config,
