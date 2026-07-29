@@ -19,8 +19,7 @@ from mub.vnext.contracts.task import (
     MemoryQuery, SplitKey, TaskMetadata,
 )
 from mub.vnext.legacy.caveats import LEGACY_CAVEATS, legacy_namespace
-from mub.vnext.validation.replay import validate_distractors, validate_gold_replay
-from mub.vnext.validation.task import validate_task
+from mub.vnext.validation import validate_legacy_task_semantics
 from mub.vnext.version import COMPILER_VERSION, SCHEMA_VERSION
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -679,9 +678,12 @@ def compile_legacy_episode(episode: dict[str, Any], *, source_path: Path, source
     )
     try:
         task = MemUpdateTask(task_id=task_id, schema_version=SCHEMA_VERSION, task_family=TaskFamily.REPEATED_SAME_SLOT.value, difficulty=Difficulty.HARD, source=source, events=events, target_objects=[key], queries=[query], gold=gold, metadata=metadata)
-        _report_failure(validate_task(task), "task_validation", source_path, example_index)
-        _report_failure(validate_gold_replay(task), "gold_replay", source_path, example_index)
-        _report_failure(validate_distractors(task), "distractor_validation", source_path, example_index)
+        _report_failure(
+            validate_legacy_task_semantics(task),
+            "legacy_task_semantics",
+            source_path,
+            example_index,
+        )
         _json_bytes(task.model_dump(mode="json"))
         return task
     except ValueError:

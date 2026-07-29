@@ -4,6 +4,7 @@ import json
 import math
 import re
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any
@@ -482,6 +483,11 @@ def validate_gold_replay(task: MemUpdateTask) -> ValidationReport:
         return build_report(issues)
 
 
+class DistractorValidationPolicy(str, Enum):
+    STRICT = "strict"
+    LEGACY_AUDITED_AMBIGUITY = "legacy_audited_ambiguity"
+
+
 _DISTRACTOR_ROLES = {
     EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value,
     EventRole.SAME_NAME_OTHER_ENTITY.value,
@@ -551,12 +557,89 @@ def _canonical_noop_answer_observation(event_actions: list[Any]) -> bool:
     )
 
 
+_LEGACY_AMBIGUITY_RULE = "non_target_accepted_answer_text_overlap_v1"
+_LEGACY_AMBIGUITY_METADATA_KEYS = frozenset(
+    {
+        "allow_accepted_answer_ambiguity",
+        "compatibility_rule",
+        "legacy_event",
+        "legacy_role",
+    }
+)
+
+
+def _legacy_audited_answer_overlap(
+    task: MemUpdateTask,
+    event: Any,
+    event_actions: list[Any],
+    accepted: Any,
+) -> bool:
+    if _enum_value(getattr(event, "role", None)) != EventRole.NEUTRAL.value:
+        return False
+    metadata = _mapping(getattr(event, "metadata", None))
+    if not set(metadata).issubset(_LEGACY_AMBIGUITY_METADATA_KEYS):
+        return False
+    if (
+        metadata.get("allow_accepted_answer_ambiguity") is not True
+        or metadata.get("compatibility_rule") != _LEGACY_AMBIGUITY_RULE
+        or metadata.get("legacy_role") != EventRole.NEUTRAL.value
+    ):
+        return False
+    legacy_event = metadata.get("legacy_event")
+    if legacy_event is not None:
+        if not isinstance(legacy_event, Mapping) or not set(legacy_event).issubset(
+            {"annotation", "condition"}
+        ):
+            return False
+        if any(
+            value is not None and type(value) not in {str, bool, int, float}
+            for value in legacy_event.values()
+        ):
+            return False
+    task_metadata = getattr(task, "metadata", None)
+    extra = _mapping(getattr(task_metadata, "extra", None))
+    if _list(extra.get("compatibility_policies")) != [_LEGACY_AMBIGUITY_RULE]:
+        return False
+    if len(event_actions) != 1:
+        return False
+    action = event_actions[0]
+    referenced_ids = _list(getattr(event, "gold_action_ids", None))
+    expected_effect = _mapping(getattr(action, "expected_effect", None))
+    if (
+        referenced_ids != [getattr(action, "action_id", None)]
+        or getattr(action, "event_id", None) != getattr(event, "event_id", None)
+        or _enum_value(getattr(action, "operation", None)) != Operation.NOOP.value
+        or _enum_value(getattr(action, "scope", None)) != "object"
+        or _targets(action)
+        or getattr(action, "value", None) is not None
+        or getattr(action, "effective_at", None) is not None
+        or dict(expected_effect) != {"operation": Operation.NOOP.value}
+    ):
+        return False
+    gold = getattr(task, "gold", None)
+    if getattr(event, "event_id", None) in _list(
+        getattr(gold, "gold_source_event_ids", None)
+    ):
+        return False
+    raw_text = getattr(event, "raw_text", None)
+    normalized_text = getattr(event, "normalized_text", None)
+    return (
+        isinstance(raw_text, str)
+        and normalized_text == raw_text.strip()
+        and _text_contains_value(raw_text, accepted)
+        and _text_contains_value(normalized_text, accepted)
+    )
+
+
 def _validate_distractors(
     task: MemUpdateTask,
     *,
+    policy: DistractorValidationPolicy = DistractorValidationPolicy.STRICT,
     allow_superseded_non_target_answer_overlap: bool = False,
     allow_noop_answer_observation_overlap: bool = False,
 ) -> ValidationReport:
+    if not isinstance(policy, DistractorValidationPolicy):
+        raise TypeError("policy must be a DistractorValidationPolicy")
     issues: list[ValidationIssue] = []
     gold = getattr(task, "gold", None)
     _semantic_map(issues, getattr(gold, "final_state", None), "gold.final_state", "malformed_final_state")
@@ -715,6 +798,17 @@ def _validate_distractors(
                     if not _text_contains_value(text, accepted):
                         continue
                     if (
+                        policy
+                        is DistractorValidationPolicy.LEGACY_AUDITED_AMBIGUITY
+                        and _legacy_audited_answer_overlap(
+                            task,
+                            event,
+                            event_actions,
+                            accepted,
+                        )
+                    ):
+                        continue
+                    if (
                         allow_superseded_non_target_answer_overlap
                         and role == EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
                         and _superseded_non_target_answer_overlap(
@@ -794,12 +888,14 @@ def _validate_distractors(
 def validate_distractors(
     task: MemUpdateTask,
     *,
+    policy: DistractorValidationPolicy = DistractorValidationPolicy.STRICT,
     allow_superseded_non_target_answer_overlap: bool = False,
     allow_noop_answer_observation_overlap: bool = False,
 ) -> ValidationReport:
     try:
         return _validate_distractors(
             task,
+            policy=policy,
             allow_superseded_non_target_answer_overlap=(
                 allow_superseded_non_target_answer_overlap
             ),
@@ -819,6 +915,7 @@ def validate_distractors(
 
 
 __all__ = [
+    "DistractorValidationPolicy",
     "ReplayResult",
     "replay_actions",
     "validate_distractors",

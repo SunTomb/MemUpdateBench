@@ -27,7 +27,10 @@ from mub.vnext.legacy.results import (
     import_evomemory_results,
     is_legacy_evomemory_adapter_identity,
 )
-from mub.vnext.validation import validate_splits, validate_task_semantics
+from mub.vnext.validation import (
+    validate_legacy_task_semantics,
+    validate_splits,
+)
 from mub.vnext.version import (
     METRIC_REGISTRY_VERSION,
     PROFILE_VERSION,
@@ -181,6 +184,7 @@ def _validate_declared_summary(
 def _load_tasks_from_manifest(
     manifest: TaskManifest, manifest_path: Path
 ) -> list[MemUpdateTask]:
+    """Authenticate the legacy compiler graph before legacy semantic validation."""
     all_tasks: list[MemUpdateTask] = []
     task_paths: list[Path] = []
     for ref in manifest.task_file_paths_and_hashes:
@@ -229,7 +233,7 @@ def _load_tasks_from_manifest(
     for task in all_tasks:
         if task.schema_version != SCHEMA_VERSION:
             raise ValueError("task schema_version is not current")
-        report = validate_task_semantics(task)
+        report = validate_legacy_task_semantics(task)
         if not report.valid:
             raise ValueError("canonical task semantic validation failed")
         if any(

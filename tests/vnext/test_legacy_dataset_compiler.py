@@ -20,7 +20,11 @@ from mub.vnext.legacy import (
     load_evomemory_dataset,
 )
 from mub.vnext.legacy import dataset as dataset_module
-from mub.vnext.validation.replay import replay_actions, validate_gold_replay
+from mub.vnext.validation import (
+    validate_legacy_task_semantics,
+    validate_task_semantics,
+)
+from mub.vnext.validation.replay import replay_actions, validate_distractors, validate_gold_replay
 from mub.vnext.validation.split import validate_splits
 from mub.vnext.validation.task import validate_task
 
@@ -560,9 +564,94 @@ def test_answer_bearing_non_target_text_uses_audited_ambiguity_exception() -> No
     assert event.metadata["allow_accepted_answer_ambiguity"] is True
     assert event.metadata["compatibility_rule"] == "non_target_accepted_answer_text_overlap_v1"
     assert "non_target_accepted_answer_text_overlap_v1" in task.metadata.extra["compatibility_policies"]
+    strict_codes = {
+        issue.code for issue in validate_task_semantics(task).issues
+    }
+    assert "distractor_text_contains_accepted_answer" in strict_codes
+    assert validate_legacy_task_semantics(task).valid
     assert validate_task(task).valid
     assert validate_gold_replay(task).valid
-    assert dataset_module.validate_distractors(task).valid
+    assert not validate_distractors(task).valid
+
+
+def _audited_overlap_payload() -> dict:
+    episode = _generator_record()
+    episode["events"][0] = "User says: my friend Alex visited Suzhou last year."
+    return _compile(episode).model_dump(mode="json")
+
+
+def test_legacy_policy_rejects_structured_auxiliary_write_leak() -> None:
+    payload = _audited_overlap_payload()
+    event = payload["events"][0]
+    action = payload["gold"]["actions"][0]
+    query_key = payload["queries"][0]["target_object_keys"][0]
+    auxiliary_key = {**query_key, "attribute": "historical_visit"}
+    auxiliary = MemoryObjectKey.model_validate(auxiliary_key)
+    answer = payload["gold"]["gold_answers"][payload["queries"][0]["query_id"]]
+    payload["target_objects"].append(auxiliary_key)
+    action.update(
+        operation=Operation.ADD.value,
+        target_object_keys=[auxiliary_key],
+        value=answer,
+        expected_effect={
+            "canonical_id": auxiliary.canonical_id,
+            "operation": Operation.ADD.value,
+            "value": answer,
+        },
+    )
+    payload["gold"]["final_state"][auxiliary.canonical_id] = answer
+    payload["gold"]["version_history"][auxiliary.canonical_id] = [answer]
+    payload["gold"]["expected_present_objects"].append(auxiliary_key)
+    task = type(_compile(_generator_record())).model_validate(payload)
+
+    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    assert "distractor_text_contains_accepted_answer" in codes
+
+
+def test_legacy_policy_rejects_unmarked_gold_bearing_noop() -> None:
+    payload = _audited_overlap_payload()
+    payload["events"][0]["metadata"] = {"legacy_role": EventRole.NEUTRAL.value}
+    task = type(_compile(_generator_record())).model_validate(payload)
+
+    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    assert "distractor_text_contains_accepted_answer" in codes
+
+
+def test_legacy_policy_rejects_forged_normalized_ambiguity_text() -> None:
+    payload = _audited_overlap_payload()
+    payload["events"][0]["normalized_text"] = "Forged neutral mention of Suzhou"
+    task = type(_compile(_generator_record())).model_validate(payload)
+
+    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    assert "distractor_text_contains_accepted_answer" in codes
+
+
+def test_legacy_policy_rejects_unlinked_same_name_leak() -> None:
+    task = _compile(
+        {
+            **_generator_record(),
+            "events": [
+                "User says: my friend Alex visited Suzhou last year.",
+                *_generator_record()["events"][1:],
+            ],
+        }
+    )
+    event = task.events[0].model_copy(
+        update={
+            "role": EventRole.SAME_NAME_OTHER_ENTITY,
+            "metadata": {
+                **dict(task.events[0].metadata),
+                "legacy_role": EventRole.SAME_NAME_OTHER_ENTITY.value,
+            },
+            "gold_action_ids": (),
+        }
+    )
+    malformed = task.model_copy(update={"events": (event, *task.events[1:])})
+
+    report = validate_legacy_task_semantics(malformed)
+    codes = {issue.code for issue in report.issues}
+    assert not report.valid
+    assert "distractor_text_contains_accepted_answer" in codes
 
 
 def test_cyclic_history_uses_historical_support_not_stale() -> None:
@@ -591,7 +680,7 @@ def test_cyclic_history_uses_historical_support_not_stale() -> None:
     assert task.gold.version_history[task.target_objects[0].canonical_id] == ["Wuxi", "Suzhou", "Wuxi"]
     assert validate_task(task).valid
     assert validate_gold_replay(task).valid
-    assert dataset_module.validate_distractors(task).valid
+    assert validate_distractors(task).valid
 
 
 def test_surface_paraphrases_preserve_both_semantic_hashes() -> None:
@@ -1108,7 +1197,12 @@ def test_fixed_seed_real_p63_dev_test_corpus_compiles_all_records(tmp_path: Path
             )
             assert validate_task(task).valid
             assert validate_gold_replay(task).valid
-            assert dataset_module.validate_distractors(task).valid
+            assert validate_legacy_task_semantics(task).valid
+            strict_report = validate_distractors(task)
+            if task.metadata.extra["compatibility_policies"]:
+                assert not strict_report.valid
+            else:
+                assert strict_report.valid
             totals[(split_name, episode["k_updates"])] += 1
     assert totals == Counter({(split_name, k): 100 for split_name in ("dev", "test") for k in (1, 2, 4, 8, 16)})
 

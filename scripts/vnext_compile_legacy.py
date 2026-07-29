@@ -39,7 +39,10 @@ from mub.vnext.legacy.results import (
     authenticate_legacy_result_selection,
     import_evomemory_results,
 )
-from mub.vnext.validation import validate_splits, validate_task_semantics
+from mub.vnext.validation import (
+    validate_legacy_task_semantics,
+    validate_splits,
+)
 from mub.vnext.version import (
     SCHEMA_VERSION,
     TASK_MANIFEST_VERSION,
@@ -211,9 +214,10 @@ def _task_manifest(
 
 
 def _validate_task_stage(path: Path) -> None:
+    """Validate bytes staged by this legacy compiler under its explicit context."""
     tasks = _load_canonical_jsonl(path, MemUpdateTask, "task_id")
     for task in tasks:
-        report = validate_task_semantics(task)
+        report = validate_legacy_task_semantics(task)
         if not report.valid:
             raise ValueError(f"staged task semantic validation failed: {report.issues}")
 
@@ -342,7 +346,7 @@ def _task_manifest_for_tasks(
     if dict(summary.get("row_counts", {})) != {"tasks.jsonl": len(tasks)}:
         raise ValueError("task manifest row counts do not match supplied tasks")
     for task in tasks:
-        report = validate_task_semantics(task)
+        report = validate_legacy_task_semantics(task)
         if not report.valid:
             raise ValueError(f"compiled task semantic validation failed: {report.issues}")
         update_depth = task.metadata.resolved_profile.get("update_depth")

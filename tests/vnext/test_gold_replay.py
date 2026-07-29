@@ -428,7 +428,14 @@ def test_simple_distractor_text_leak_rejects_forged_metadata_waiver(make_task):
     event = _replace(task.events[0], raw_text="Maybe Qingdao", normalized_text="maybe qingdao", role=EventRole.NEUTRAL)
     report = validate_distractors(_replace(task, events=[event, task.events[1]]))
     assert "distractor_text_contains_accepted_answer" in _codes(report)
-    forged = _replace(event, metadata={"allow_accepted_answer_ambiguity": True})
+    forged = _replace(
+        event,
+        metadata={
+            "allow_accepted_answer_ambiguity": True,
+            "compatibility_rule": "non_target_accepted_answer_text_overlap_v1",
+            "legacy_role": EventRole.NEUTRAL.value,
+        },
+    )
     forged_codes = _codes(validate_distractors(_replace(task, events=[forged, task.events[1]])))
     assert "distractor_text_contains_accepted_answer" in forged_codes
 

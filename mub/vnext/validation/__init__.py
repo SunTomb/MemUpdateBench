@@ -6,6 +6,7 @@ from mub.vnext.validation.issues import (
     merge_reports,
 )
 from mub.vnext.validation.replay import (
+    DistractorValidationPolicy,
     ReplayResult,
     replay_actions,
     validate_distractors,
@@ -26,6 +27,23 @@ from mub.vnext.validation.pilot import (
 )
 
 
+def validate_legacy_task_semantics(task: MemUpdateTask) -> ValidationReport:
+    """Validate a task under the explicit audited legacy compatibility boundary.
+
+    Caller selection of this API is the authorization. The legacy distractor policy
+    recognizes only the compiler's exact historical neutral-NOOP ambiguity shape;
+    mutable provenance or task metadata alone never selects this context.
+    """
+    return merge_reports(
+        validate_task(task),
+        validate_gold_replay(task),
+        validate_distractors(
+            task,
+            policy=DistractorValidationPolicy.LEGACY_AUDITED_AMBIGUITY,
+        ),
+    )
+
+
 def validate_task_semantics(task: MemUpdateTask) -> ValidationReport:
     """Run historical family-agnostic structural, replay, and distractor checks.
 
@@ -40,6 +58,7 @@ def validate_task_semantics(task: MemUpdateTask) -> ValidationReport:
 
 
 __all__ = [
+    "DistractorValidationPolicy",
     "FAMILY_STRATIFICATION_AXES",
     "ReplayResult",
     "SliceDefinition",
@@ -54,6 +73,7 @@ __all__ = [
     "validate_family_b_task",
     "validate_family_d_task",
     "validate_gold_replay",
+    "validate_legacy_task_semantics",
     "validate_pilot_task",
     "validate_splits",
     "validate_task",
