@@ -4,6 +4,13 @@
 
 This directory is reserved for the **Families A–D synthetic Pilot**. Its fixed design contains **480 semantic cores** and **1,440 rendered tasks**, with **3 variants per core**. The rendered-task split is **1,008 train / 144 dev / 288 test**.
 
+| Family | Diagnostic focus | Semantic cores | Rendered tasks |
+| --- | --- | ---: | ---: |
+| A | Repeated same-slot update | 120 | 360 |
+| B | Interleaved multi-slot update | 120 | 360 |
+| C | Entity/attribute grounding | 120 | 360 |
+| D | NOOP/write discipline | 120 | 360 |
+
 The exact memory-object identity is:
 
 ```text
