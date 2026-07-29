@@ -110,7 +110,12 @@ def test_main_passes_exact_inputs_and_prints_canonical_safe_summary(
     assert calls == {
         "run": (
             (["git", "rev-parse", "HEAD"],),
-            {"capture_output": True, "text": True, "check": False},
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "cwd": cli.PROJECT_ROOT,
+            },
         ),
         "load": config_path,
         "build": (
@@ -121,6 +126,24 @@ def test_main_passes_exact_inputs_and_prints_canonical_safe_summary(
     assert [item["path"] for item in json.loads(captured.out)["artifact_refs"]] == list(
         _ARTIFACT_NAMES
     )
+
+
+def test_revision_resolution_is_anchored_outside_project_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    caller_dir = tmp_path / "caller-repository"
+    caller_dir.mkdir()
+    monkeypatch.chdir(caller_dir)
+
+    def fake_run(*args, **kwargs):
+        assert Path.cwd() == caller_dir
+        assert kwargs["cwd"] == cli.PROJECT_ROOT
+        return _completed(stdout="project-revision\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._resolve_code_revision() == "project-revision"
 
 
 @pytest.mark.parametrize("failure", ["nonzero", "missing", "blank"])

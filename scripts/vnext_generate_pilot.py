@@ -37,6 +37,7 @@ def _resolve_code_revision() -> str:
         capture_output=True,
         text=True,
         check=False,
+        cwd=PROJECT_ROOT,
     )
     if completed.returncode != 0 or not isinstance(completed.stdout, str):
         raise RuntimeError("revision unavailable")
