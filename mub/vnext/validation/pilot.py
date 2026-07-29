@@ -9,16 +9,21 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue
 
-from mub.vnext.contracts import EventRole, Operation, TaskFamily
+from mub.vnext.contracts import EventRole, Operation, QueryType, SourceRecord, TaskFamily
 from mub.vnext.contracts.task import MemUpdateTask
-from mub.vnext.generation.catalogs import SURFACE_TEMPLATE_SETS
+from mub.vnext.generation.catalogs import SAME_NAME_ENTITIES, SURFACE_TEMPLATE_SETS
 from mub.vnext.generation.family_d import (
     family_d_duplicate_current_statement,
     family_d_independent_noop_statement,
     family_d_semantic_near_miss_statement,
 )
-from mub.vnext.validation.issues import ValidationIssue, ValidationReport, build_report
-from mub.vnext.validation.replay import validate_gold_replay
+from mub.vnext.validation.issues import (
+    ValidationIssue,
+    ValidationReport,
+    build_report,
+    merge_reports,
+)
+from mub.vnext.validation.replay import validate_distractors, validate_gold_replay
 from mub.vnext.validation.task import validate_task
 
 
@@ -35,6 +40,29 @@ _NOOP_TEMPLATES = tuple(template_set[4] for template_set in SURFACE_TEMPLATE_SET
 _MAX_NESTED_ITEMS = 64
 _MAX_NESTED_DEPTH = 16
 _MAX_SCHEMA_NODES = 4096
+_PILOT_RELEASE_ID = "vnext-pilot-2026-07"
+_FAMILY_A_COUNTS = {
+    "easy": (0, 0, 0),
+    "medium": (2, 1, 2),
+    "hard": (4, 2, 4),
+}
+_FAMILY_A_AMBIGUITY = {
+    "easy": ("none", "none"),
+    "medium": ("moderate", "moderate"),
+    "hard": ("high", "high"),
+}
+_FAMILY_A_VERSION_METADATA = {
+    "easy": "latest_outdated",
+    "medium": "event_index",
+    "hard": "none",
+}
+_FAMILY_A_BASE_PROFILE = {
+    "easy": ("chronological", 0.0, "synthetic_direct"),
+    "medium": ("retrieval_score", 0.5, "mixed_template"),
+    "hard": ("reverse_chronological", 0.75, "semi_natural"),
+}
+_FAMILY_A_DEPTH_BUCKETS = {1: "1", 4: "4-7", 16: "16+"}
+_FAMILY_A_DEPTHS = frozenset(_FAMILY_A_DEPTH_BUCKETS)
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -116,6 +144,8 @@ def _raw_text_matches_noop_template(
 
 def _bounded_report(
     issues: list[ValidationIssue] | tuple[ValidationIssue, ...],
+    *,
+    family: str = "d",
 ) -> ValidationReport:
     unique = {
         (issue.code, issue.path, issue.message, issue.severity): issue for issue in issues
@@ -126,13 +156,26 @@ def _bounded_report(
         ordered = ordered[: _MAX_ISSUES - 1]
         ordered.append(
             _issue(
-                "family_d_issue_limit_reached",
+                f"family_{family}_issue_limit_reached",
                 f"validation report omitted {omitted} additional deterministic issues",
                 "task",
             )
         )
         ordered.sort(key=lambda item: (item.code, item.path, item.message, item.severity))
     return build_report(ordered)
+
+
+def _schema_issue(
+    family: str,
+    suffix: str,
+    message: str,
+    path: str,
+) -> ValidationIssue:
+    return _issue(
+        f"family_{family}_{suffix}",
+        message.replace("{family}", f"Family {family.upper()}"),
+        path,
+    )
 
 
 def _inspect_json_value(
@@ -142,12 +185,14 @@ def _inspect_json_value(
     budget: list[int],
     active: set[int],
     depth: int,
+    family: str,
 ) -> None:
     if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
         issues.append(
-            _issue(
-                "family_d_input_size_limit",
-                "nested JSON structures exceed the Family D inspection limit",
+            _schema_issue(
+                family,
+                "input_size_limit",
+                "nested JSON structures exceed the {family} inspection limit",
                 path,
             )
         )
@@ -156,8 +201,9 @@ def _inspect_json_value(
     if type(value) is float:
         if not math.isfinite(value):
             issues.append(
-                _issue(
-                    "family_d_non_finite_json_number",
+                _schema_issue(
+                    family,
+                    "non_finite_json_number",
                     "nested JSON numbers must be finite",
                     path,
                 )
@@ -173,14 +219,16 @@ def _inspect_json_value(
             budget,
             active,
             depth,
+            family,
         )
         return
     if type(value) is list:
         identity = id(value)
         if identity in active:
             issues.append(
-                _issue(
-                    "family_d_cyclic_json",
+                _schema_issue(
+                    family,
+                    "cyclic_json",
                     "nested JSON collections cannot contain cycles",
                     path,
                 )
@@ -188,9 +236,10 @@ def _inspect_json_value(
             return
         if len(value) > _MAX_NESTED_ITEMS:
             issues.append(
-                _issue(
-                    "family_d_input_size_limit",
-                    "nested list exceeds the Family D inspection limit",
+                _schema_issue(
+                    family,
+                    "input_size_limit",
+                    "nested list exceeds the {family} inspection limit",
                     path,
                 )
             )
@@ -205,12 +254,14 @@ def _inspect_json_value(
                     budget,
                     active,
                     depth + 1,
+                    family,
                 )
                 if budget[0] <= 0 and index + 1 < len(value):
                     issues.append(
-                        _issue(
-                            "family_d_input_size_limit",
-                            "nested JSON structures exceed the Family D inspection budget",
+                        _schema_issue(
+                            family,
+                            "input_size_limit",
+                            "nested JSON structures exceed the {family} inspection budget",
                             path,
                         )
                     )
@@ -219,8 +270,9 @@ def _inspect_json_value(
             active.remove(identity)
         return
     issues.append(
-        _issue(
-            "family_d_malformed_json",
+        _schema_issue(
+            family,
+            "malformed_json",
             "nested JSON values must use exact built-in JSON types",
             path,
         )
@@ -234,20 +286,23 @@ def _inspect_json_mapping(
     budget: list[int],
     active: set[int],
     depth: int,
+    family: str,
 ) -> None:
     if depth > _MAX_NESTED_DEPTH:
         issues.append(
-            _issue(
-                "family_d_input_size_limit",
-                "nested JSON structures exceed the Family D depth limit",
+            _schema_issue(
+                family,
+                "input_size_limit",
+                "nested JSON structures exceed the {family} depth limit",
                 path,
             )
         )
         return
     if type(value) is not dict:
         issues.append(
-            _issue(
-                "family_d_malformed_mapping",
+            _schema_issue(
+                family,
+                "malformed_mapping",
                 f"{path} must be an exact dict",
                 path,
             )
@@ -256,8 +311,9 @@ def _inspect_json_mapping(
     identity = id(value)
     if identity in active:
         issues.append(
-            _issue(
-                "family_d_cyclic_json",
+            _schema_issue(
+                family,
+                "cyclic_json",
                 "nested JSON collections cannot contain cycles",
                 path,
             )
@@ -265,9 +321,10 @@ def _inspect_json_mapping(
         return
     if len(value) > _MAX_NESTED_ITEMS:
         issues.append(
-            _issue(
-                "family_d_input_size_limit",
-                f"{path} exceeds the Family D inspection limit",
+            _schema_issue(
+                family,
+                "input_size_limit",
+                f"{path} exceeds the {{family}} inspection limit",
                 path,
             )
         )
@@ -277,8 +334,9 @@ def _inspect_json_mapping(
         for index, (key, item) in enumerate(value.items()):
             if type(key) is not str:
                 issues.append(
-                    _issue(
-                        "family_d_malformed_mapping",
+                    _schema_issue(
+                        family,
+                        "malformed_mapping",
                         f"{path} keys must be exact strings",
                         f"{path}[{index}]",
                     )
@@ -291,12 +349,14 @@ def _inspect_json_mapping(
                 budget,
                 active,
                 depth + 1,
+                family,
             )
             if budget[0] <= 0 and index + 1 < len(value):
                 issues.append(
-                    _issue(
-                        "family_d_input_size_limit",
-                        "nested JSON structures exceed the Family D inspection budget",
+                    _schema_issue(
+                        family,
+                        "input_size_limit",
+                        "nested JSON structures exceed the {family} inspection budget",
                         path,
                     )
                 )
@@ -349,12 +409,14 @@ def _inspect_schema_value(
     budget: list[int],
     active: set[int],
     depth: int,
+    family: str,
 ) -> None:
     if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
         issues.append(
-            _issue(
-                "family_d_input_size_limit",
-                "contract graph exceeds the Family D inspection limit",
+            _schema_issue(
+                family,
+                "input_size_limit",
+                "contract graph exceeds the {family} inspection limit",
                 path,
             )
         )
@@ -369,6 +431,7 @@ def _inspect_schema_value(
             budget,
             active,
             depth,
+            family,
         )
         return
     origin = get_origin(annotation)
@@ -377,8 +440,9 @@ def _inspect_schema_value(
         matching = [item for item in args if _annotation_outer_matches(value, item)]
         if not matching:
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     "field value does not match any declared union member",
                     path,
                 )
@@ -392,13 +456,15 @@ def _inspect_schema_value(
             budget,
             active,
             depth,
+            family,
         )
         return
     if origin is Literal:
         if not _annotation_outer_matches(value, annotation):
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     "field value does not match its declared literal",
                     path,
                 )
@@ -407,8 +473,9 @@ def _inspect_schema_value(
     if origin is list:
         if type(value) is not list:
             issues.append(
-                _issue(
-                    "family_d_malformed_collection",
+                _schema_issue(
+                    family,
+                    "malformed_collection",
                     "field must be an exact list",
                     path,
                 )
@@ -417,8 +484,9 @@ def _inspect_schema_value(
         identity = id(value)
         if identity in active:
             issues.append(
-                _issue(
-                    "family_d_cyclic_json",
+                _schema_issue(
+                    family,
+                    "cyclic_json",
                     "contract collections cannot contain cycles",
                     path,
                 )
@@ -426,9 +494,10 @@ def _inspect_schema_value(
             return
         if len(value) > _MAX_NESTED_ITEMS:
             issues.append(
-                _issue(
-                    "family_d_input_size_limit",
-                    "field list exceeds the Family D inspection limit",
+                _schema_issue(
+                    family,
+                    "input_size_limit",
+                    "field list exceeds the {family} inspection limit",
                     path,
                 )
             )
@@ -445,6 +514,7 @@ def _inspect_schema_value(
                     budget,
                     active,
                     depth + 1,
+                    family,
                 )
         finally:
             active.remove(identity)
@@ -452,8 +522,9 @@ def _inspect_schema_value(
     if origin is dict or origin is Mapping:
         if type(value) is not dict:
             issues.append(
-                _issue(
-                    "family_d_malformed_mapping",
+                _schema_issue(
+                    family,
+                    "malformed_mapping",
                     "field must be an exact dict",
                     path,
                 )
@@ -462,8 +533,9 @@ def _inspect_schema_value(
         identity = id(value)
         if identity in active:
             issues.append(
-                _issue(
-                    "family_d_cyclic_json",
+                _schema_issue(
+                    family,
+                    "cyclic_json",
                     "contract mappings cannot contain cycles",
                     path,
                 )
@@ -471,9 +543,10 @@ def _inspect_schema_value(
             return
         if len(value) > _MAX_NESTED_ITEMS:
             issues.append(
-                _issue(
-                    "family_d_input_size_limit",
-                    "field mapping exceeds the Family D inspection limit",
+                _schema_issue(
+                    family,
+                    "input_size_limit",
+                    "field mapping exceeds the {family} inspection limit",
                     path,
                 )
             )
@@ -491,6 +564,7 @@ def _inspect_schema_value(
                     budget,
                     active,
                     depth + 1,
+                    family,
                 )
                 item_path = f"{path}.{key}" if type(key) is str else key_path
                 _inspect_schema_value(
@@ -501,6 +575,7 @@ def _inspect_schema_value(
                     budget,
                     active,
                     depth + 1,
+                    family,
                 )
         finally:
             active.remove(identity)
@@ -508,8 +583,9 @@ def _inspect_schema_value(
     if origin is tuple:
         if type(value) is not tuple:
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     "field must be an exact tuple",
                     path,
                 )
@@ -517,9 +593,10 @@ def _inspect_schema_value(
             return
         if len(value) > _MAX_NESTED_ITEMS:
             issues.append(
-                _issue(
-                    "family_d_input_size_limit",
-                    "field tuple exceeds the Family D inspection limit",
+                _schema_issue(
+                    family,
+                    "input_size_limit",
+                    "field tuple exceeds the {family} inspection limit",
                     path,
                 )
             )
@@ -527,8 +604,9 @@ def _inspect_schema_value(
         variadic = len(args) == 2 and args[1] is Ellipsis
         if not variadic and args and len(value) != len(args):
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     "field tuple length does not match its declaration",
                     path,
                 )
@@ -544,13 +622,15 @@ def _inspect_schema_value(
                 budget,
                 active,
                 depth + 1,
+                family,
             )
         return
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         if type(value) is not annotation:
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     f"field must be an exact {annotation.__name__}",
                     path,
                 )
@@ -564,13 +644,15 @@ def _inspect_schema_value(
             budget,
             active,
             depth,
+            family,
         )
         return
     if isinstance(annotation, type) and issubclass(annotation, Enum):
         if type(value) is not annotation:
             issues.append(
-                _issue(
-                    "family_d_invalid_enum_type",
+                _schema_issue(
+                    family,
+                    "invalid_enum_type",
                     f"field must be an exact {annotation.__name__}",
                     path,
                 )
@@ -579,16 +661,18 @@ def _inspect_schema_value(
     if annotation is float:
         if type(value) is not float:
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     "field must be an exact float",
                     path,
                 )
             )
         elif not math.isfinite(value):
             issues.append(
-                _issue(
-                    "family_d_non_finite_json_number",
+                _schema_issue(
+                    family,
+                    "non_finite_json_number",
                     "float fields must be finite",
                     path,
                 )
@@ -597,16 +681,18 @@ def _inspect_schema_value(
     if annotation in {str, bool, int, type(None)}:
         if type(value) is not annotation:
             issues.append(
-                _issue(
-                    "family_d_invalid_field_type",
+                _schema_issue(
+                    family,
+                    "invalid_field_type",
                     f"field must be an exact {annotation.__name__}",
                     path,
                 )
             )
         return
     issues.append(
-        _issue(
-            "family_d_invalid_field_type",
+        _schema_issue(
+            family,
+            "invalid_field_type",
             "field uses an unsupported or malformed runtime annotation",
             path,
         )
@@ -621,20 +707,23 @@ def _inspect_contract_model(
     budget: list[int],
     active: set[int],
     depth: int,
+    family: str,
 ) -> None:
     if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
         issues.append(
-            _issue(
-                "family_d_input_size_limit",
-                "contract graph exceeds the Family D inspection limit",
+            _schema_issue(
+                family,
+                "input_size_limit",
+                "contract graph exceeds the {family} inspection limit",
                 path,
             )
         )
         return
     if type(model) is not expected_type:
         issues.append(
-            _issue(
-                "family_d_invalid_field_type",
+            _schema_issue(
+                family,
+                "invalid_field_type",
                 f"record must be an exact {expected_type.__name__}",
                 path,
             )
@@ -643,8 +732,9 @@ def _inspect_contract_model(
     identity = id(model)
     if identity in active:
         issues.append(
-            _issue(
-                "family_d_cyclic_json",
+            _schema_issue(
+                family,
+                "cyclic_json",
                 "contract records cannot contain cycles",
                 path,
             )
@@ -653,20 +743,32 @@ def _inspect_contract_model(
     raw = object.__getattribute__(model, "__dict__")
     if type(raw) is not dict:
         issues.append(
-            _issue(
-                "family_d_malformed_record",
+            _schema_issue(
+                family,
+                "malformed_record",
                 "contract record storage must be an exact dict",
                 path,
             )
         )
         return
     fields = expected_type.model_fields
+    if len(raw) > len(fields) + _MAX_NESTED_ITEMS:
+        issues.append(
+            _schema_issue(
+                family,
+                "input_size_limit",
+                "contract record storage exceeds the {family} inspection limit",
+                path,
+            )
+        )
+        return
     missing = [name for name in fields if name not in raw]
     extra = [key for key in raw if type(key) is not str or key not in fields]
     for name in missing:
         issues.append(
-            _issue(
-                "family_d_malformed_record",
+            _schema_issue(
+                family,
+                "malformed_record",
                 f"contract record is missing declared field {name}",
                 f"{path}.{name}",
             )
@@ -674,8 +776,9 @@ def _inspect_contract_model(
     for index, key in enumerate(extra):
         extra_path = f"{path}.{key}" if type(key) is str else f"{path}[{index}]"
         issues.append(
-            _issue(
-                "family_d_malformed_record",
+            _schema_issue(
+                family,
+                "malformed_record",
                 "contract record contains undeclared internal field",
                 extra_path,
             )
@@ -688,8 +791,9 @@ def _inspect_contract_model(
         type(pydantic_extra) is not dict or bool(pydantic_extra)
     ):
         issues.append(
-            _issue(
-                "family_d_malformed_record",
+            _schema_issue(
+                family,
+                "malformed_record",
                 "contract record contains undeclared Pydantic extras",
                 path,
             )
@@ -707,12 +811,17 @@ def _inspect_contract_model(
                 budget,
                 active,
                 depth + 1,
+                family,
             )
     finally:
         active.remove(identity)
 
 
-def _schema_preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+def _schema_preflight_issues(
+    task: MemUpdateTask,
+    *,
+    family: str = "d",
+) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     _inspect_contract_model(
         issues,
@@ -722,6 +831,7 @@ def _schema_preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         [_MAX_SCHEMA_NODES],
         set(),
         0,
+        family,
     )
     return issues
 
@@ -793,6 +903,90 @@ def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _family_a_preflight_issues(
+    task: MemUpdateTask,
+    *,
+    schema_checked: bool = False,
+) -> list[ValidationIssue]:
+    if not schema_checked:
+        schema_issues = _schema_preflight_issues(task, family="a")
+        if schema_issues:
+            return schema_issues
+
+    issues: list[ValidationIssue] = []
+    bounded_collections = (
+        ("events", task.events, 32),
+        ("queries", task.queries, 1),
+        ("gold.actions", task.gold.actions, 32),
+        ("gold.action_sequence", task.gold.action_sequence, 32),
+        ("gold.gold_source_event_ids", task.gold.gold_source_event_ids, 1),
+    )
+    for path, values, limit in bounded_collections:
+        if len(values) > limit:
+            issues.append(
+                _issue(
+                    "family_a_input_size_limit",
+                    f"{path} exceeds the Family A inspection limit",
+                    path,
+                )
+            )
+    for index, event in enumerate(task.events):
+        if len(event.gold_action_ids) > 1:
+            issues.append(
+                _issue(
+                    "family_a_input_size_limit",
+                    "event gold_action_ids exceeds the Family A cardinality limit",
+                    f"events[{index}].gold_action_ids",
+                )
+            )
+    for index, action in enumerate(task.gold.actions):
+        if len(action.target_object_keys) > 1:
+            issues.append(
+                _issue(
+                    "family_a_input_size_limit",
+                    "action target_object_keys exceeds the Family A cardinality limit",
+                    f"gold.actions[{index}].target_object_keys",
+                )
+            )
+    for index, query in enumerate(task.queries):
+        for field_name in (
+            "target_object_keys",
+            "reference_candidates",
+            "surface_references",
+        ):
+            values = object.__getattribute__(query, field_name)
+            if len(values) > 1:
+                issues.append(
+                    _issue(
+                        "family_a_input_size_limit",
+                        f"query {field_name} exceeds the Family A cardinality limit",
+                        f"queries[{index}].{field_name}",
+                    )
+                )
+    return issues
+
+
+def _pilot_release_status(task: MemUpdateTask) -> bool | None:
+    raw = object.__getattribute__(task, "__dict__")
+    if type(raw) is not dict:
+        return None
+    source = raw.get("source")
+    if type(source) is not SourceRecord:
+        return None
+    source_raw = object.__getattribute__(source, "__dict__")
+    if type(source_raw) is not dict:
+        return None
+    provenance = source_raw.get("provenance")
+    if type(provenance) is not dict or len(provenance) > _MAX_NESTED_ITEMS:
+        return None
+    release_id = provenance.get("release_id")
+    if release_id is None:
+        return False
+    if type(release_id) is not str:
+        return None
+    return str.__eq__(release_id, _PILOT_RELEASE_ID) is True
+
+
 def _event_records(task: MemUpdateTask) -> tuple[list[dict[str, Any]], list[Any]]:
     actions = _items(getattr(getattr(task, "gold", None), "actions", None))
     action_by_id: dict[str, Any] = {}
@@ -828,6 +1022,490 @@ def _action_targets(action: Any) -> list[tuple[str, str, str, str | None]]:
         for key in _items(getattr(action, "target_object_keys", None))
         if (identity := _identity(key)) is not None
     ]
+
+
+def _same_name_other_entity(
+    target: tuple[str, str, str, str | None],
+    candidate: tuple[str, str, str, str | None],
+) -> bool:
+    return (
+        candidate != target
+        and candidate[1] != target[1]
+        and candidate[2] == target[2]
+        and candidate[3] == target[3]
+        and any(
+            target[1] in group and candidate[1] in group
+            for group in SAME_NAME_ENTITIES
+        )
+    )
+
+
+def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    records, actions = _event_records(task)
+    gold = task.gold
+    extra = _mapping(task.metadata.extra)
+    stratification = _mapping(extra.get("stratification"))
+    profile = _mapping(task.metadata.resolved_profile)
+    difficulty = _enum_value(task.difficulty)
+    expected_counts = _FAMILY_A_COUNTS.get(difficulty)
+
+    queries = _items(task.queries)
+    query = queries[0] if len(queries) == 1 else None
+    query_targets = _items(getattr(query, "target_object_keys", None))
+    target_identities = [
+        identity
+        for key in query_targets
+        if (identity := _identity(key)) is not None
+    ]
+    target_identity = target_identities[0] if len(target_identities) == 1 else None
+    query_id = getattr(query, "query_id", None)
+    if (
+        query is None
+        or target_identity is None
+        or _enum_value(getattr(query, "query_type", None))
+        != QueryType.CURRENT_STATE.value
+        or _items(getattr(query, "reference_candidates", None))
+        or _items(getattr(query, "surface_references", None))
+    ):
+        issues.append(
+            _issue(
+                "family_a_query_semantics_mismatch",
+                "Family A requires one current-state query on one exact four-part identity",
+                "queries",
+            )
+        )
+
+    depth = profile.get("update_depth")
+    depth_valid = type(depth) is int and depth in _FAMILY_A_DEPTHS
+    if not depth_valid:
+        issues.append(
+            _issue(
+                "family_a_update_depth_mismatch",
+                "Family A update_depth must be the exact integer 1, 4, or 16",
+                "metadata.resolved_profile.update_depth",
+            )
+        )
+        depth = 0
+
+    same_name_count, other_attribute_count, noop_count = (
+        expected_counts if expected_counts is not None else (0, 0, 0)
+    )
+    expected_event_count = (
+        depth + 1 + same_name_count + other_attribute_count + noop_count
+    )
+    if expected_counts is None or len(records) != expected_event_count:
+        issues.append(
+            _issue(
+                "family_a_event_count_mismatch",
+                "Family A event count must equal its target chain and difficulty-derived distractors/NOOPs",
+                "events",
+            )
+        )
+
+    action_ids_in_event_order: list[Any] = []
+    for record in records:
+        event_action_ids = _items(record["event"].gold_action_ids)
+        action_ids_in_event_order.extend(event_action_ids)
+        if len(event_action_ids) != 1 or len(record["actions"]) != 1:
+            issues.append(
+                _issue(
+                    "family_a_event_action_binding_mismatch",
+                    "each Family A event must bind exactly one gold action",
+                    f"events[{record['index']}].gold_action_ids",
+                )
+            )
+    if action_ids_in_event_order != _items(gold.action_sequence):
+        issues.append(
+            _issue(
+                "family_a_event_action_order_mismatch",
+                "Family A action_sequence must follow canonical event order",
+                "gold.action_sequence",
+            )
+        )
+
+    duplicate_current = any(
+        _enum_value(record["event"].role) == EventRole.DUPLICATE_CURRENT.value
+        or record["trap_type"] == "duplicate_current"
+        or record["metadata"].get("lifecycle") == "duplicate_current"
+        or record["metadata"].get("allow_accepted_answer_ambiguity") is True
+        for record in records
+    )
+    if duplicate_current:
+        issues.append(
+            _issue(
+                "family_a_duplicate_current_forbidden",
+                "Family A cannot contain duplicate_current observations or ambiguity metadata",
+                "events",
+            )
+        )
+
+    target_records = records[: depth + 1] if depth_valid else []
+    target_values: list[Any] = []
+    target_chain_valid = (
+        depth_valid
+        and target_identity is not None
+        and len(target_records) == depth + 1
+    )
+    for position, record in enumerate(target_records):
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        operation = _enum_value(getattr(action, "operation", None))
+        targets = _action_targets(action) if action is not None else []
+        value = getattr(action, "value", None)
+        target_values.append(value)
+        is_final = position == depth
+        expected_operation = Operation.ADD.value if position == 0 else Operation.UPDATE.value
+        expected_role = (
+            EventRole.LATEST_GOLD.value
+            if is_final
+            else EventRole.STALE_SAME_SLOT.value
+        )
+        expected_version = "latest" if is_final else "stale"
+        metadata = record["metadata"]
+        if (
+            operation != expected_operation
+            or targets != ([target_identity] if target_identity is not None else [])
+            or value is None
+            or _enum_value(record["event"].role) != expected_role
+            or not _strict_int_equal(metadata.get("version_index"), position)
+            or metadata.get("version_metadata") != expected_version
+        ):
+            target_chain_valid = False
+    if not target_chain_valid:
+        issues.append(
+            _issue(
+                "family_a_target_chain_corruption",
+                "Family A target chain must be one ADD followed by exactly update_depth UPDATEs on one identity with canonical roles",
+                "events",
+            )
+        )
+
+    final_value = target_values[-1] if target_values else None
+    stale_values = target_values[:-1]
+    stale_distinct = all(
+        not _same_value(value, final_value) for value in stale_values
+    ) and len({(type(value), repr(value)) for value in stale_values}) == len(stale_values)
+    if final_value is not None and not stale_distinct:
+        issues.append(
+            _issue(
+                "family_a_stale_value_equals_current_gold",
+                "every stale same-slot value must be distinct and unequal to the current gold",
+                "events",
+            )
+        )
+
+    same_name_start = depth + 1
+    other_attribute_start = same_name_start + same_name_count
+    noop_start = other_attribute_start + other_attribute_count
+    distractor_records = records[same_name_start:noop_start]
+    distractor_values: list[Any] = []
+    distractor_identities: list[tuple[str, str, str, str | None]] = []
+    distractor_valid = len(distractor_records) == same_name_count + other_attribute_count
+    for offset, record in enumerate(distractor_records):
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        targets = _action_targets(action) if action is not None else []
+        identity = targets[0] if len(targets) == 1 else None
+        value = getattr(action, "value", None)
+        same_name_slot = offset < same_name_count
+        expected_role = (
+            EventRole.SAME_NAME_OTHER_ENTITY.value
+            if same_name_slot
+            else EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+        )
+        geometry_valid = False
+        if target_identity is not None and identity is not None:
+            if same_name_slot:
+                geometry_valid = _same_name_other_entity(target_identity, identity)
+            else:
+                geometry_valid = (
+                    identity != target_identity
+                    and identity[0] == target_identity[0]
+                    and identity[1] == target_identity[1]
+                    and identity[2] != target_identity[2]
+                    and identity[3] == target_identity[3]
+                )
+        if (
+            action is None
+            or _enum_value(getattr(action, "operation", None)) != Operation.ADD.value
+            or _enum_value(record["event"].role) != expected_role
+            or not geometry_valid
+            or value is None
+        ):
+            distractor_valid = False
+        if identity is not None:
+            distractor_identities.append(identity)
+        distractor_values.append(value)
+        if final_value is not None and _same_value(value, final_value):
+            issues.append(
+                _issue(
+                    "family_a_distractor_current_gold_collision",
+                    "a Family A distractor independently establishes the current target gold",
+                    f"events[{record['index']}].gold_action_ids",
+                )
+            )
+    if (
+        not distractor_valid
+        or len(set(distractor_identities)) != len(distractor_identities)
+        or (target_identity is not None and target_identity in distractor_identities)
+    ):
+        issues.append(
+            _issue(
+                "family_a_distractor_geometry_corruption",
+                "Family A distractors must be distinct ADD-only objects with their declared role geometry",
+                "events",
+            )
+        )
+
+    surface_variant = extra.get("surface_variant")
+    noop_records = records[noop_start:expected_event_count]
+    noop_valid = len(noop_records) == noop_count
+    for offset, record in enumerate(noop_records):
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        statement = (
+            f"Near miss {offset + 1}: the record mentions "
+            f"{target_identity[1]} without changing memory."
+            if target_identity is not None
+            else None
+        )
+        if (
+            action is None
+            or _enum_value(getattr(action, "operation", None)) != Operation.NOOP.value
+            or _action_targets(action)
+            or getattr(action, "value", None) is not None
+            or bool(_mapping(getattr(action, "expected_effect", None)))
+            or _enum_value(record["event"].role) != EventRole.NOOP_NEAR_MISS.value
+            or record["metadata"].get("surface_statement") != statement
+            or not _strict_int_equal(record["metadata"].get("near_miss_index"), offset)
+            or not _raw_text_matches_noop_template(
+                statement,
+                record["event"].raw_text,
+                surface_variant,
+            )
+            or "lifecycle" in record["metadata"]
+            or "trap_type" in record["metadata"]
+        ):
+            noop_valid = False
+    if not noop_valid:
+        issues.append(
+            _issue(
+                "family_a_noop_semantics_mismatch",
+                "Family A near misses are canonical visible NOOPs and cannot be rewritten as writes",
+                "events",
+            )
+        )
+
+    expected_identities = (
+        ([target_identity] if target_identity is not None else [])
+        + distractor_identities
+    )
+    declared_identities = [
+        identity
+        for key in _items(task.target_objects)
+        if (identity := _identity(key)) is not None
+    ]
+    expected_present = [
+        identity
+        for key in _items(gold.expected_present_objects)
+        if (identity := _identity(key)) is not None
+    ]
+    if (
+        len(declared_identities) != len(expected_identities)
+        or set(declared_identities) != set(expected_identities)
+        or len(expected_present) != len(expected_identities)
+        or set(expected_present) != set(expected_identities)
+        or bool(_items(gold.expected_absent_objects))
+    ):
+        issues.append(
+            _issue(
+                "family_a_target_identity_mismatch",
+                "declared and expected-present objects must equal the canonical active identities",
+                "target_objects",
+            )
+        )
+
+    expected_final_state: dict[str, Any] = {}
+    expected_history: dict[str, list[Any]] = {}
+    if target_identity is not None and target_values:
+        target_id = _identity_id(target_identity)
+        expected_final_state[target_id] = final_value
+        expected_history[target_id] = target_values
+    for identity, value in zip(distractor_identities, distractor_values):
+        object_id = _identity_id(identity)
+        expected_final_state[object_id] = value
+        expected_history[object_id] = [value]
+    final_state = _mapping(gold.final_state)
+    history = _mapping(gold.version_history)
+    state_history_valid = _same_value(final_state, expected_final_state) and _same_value(
+        history, expected_history
+    )
+    target_id = _identity_id(target_identity) if target_identity is not None else None
+    target_history = _items(history.get(target_id)) if target_id is not None else []
+    if final_value is not None and any(
+        _same_value(value, final_value) for value in target_history[:-1]
+    ):
+        issues.append(
+            _issue(
+                "family_a_stale_value_equals_current_gold",
+                "stale target history cannot retain stale labeling while equaling current gold",
+                "gold.version_history",
+            )
+        )
+    for object_id, value in final_state.items():
+        if object_id != target_id and final_value is not None and _same_value(value, final_value):
+            issues.append(
+                _issue(
+                    "family_a_distractor_current_gold_collision",
+                    "non-target final state cannot equal the current target gold",
+                    f"gold.final_state.{object_id}",
+                )
+            )
+    for object_id, values in history.items():
+        if object_id == target_id:
+            continue
+        for value_index, value in enumerate(_items(values)):
+            if final_value is not None and _same_value(value, final_value):
+                issues.append(
+                    _issue(
+                        "family_a_distractor_current_gold_collision",
+                        "non-target history cannot equal the current target gold",
+                        f"gold.version_history.{object_id}[{value_index}]",
+                    )
+                )
+    if not state_history_valid:
+        issues.append(
+            _issue(
+                "family_a_gold_state_history_mismatch",
+                "Family A final state and version history must exactly match canonical writes",
+                "gold",
+            )
+        )
+
+    gold_answers = _mapping(gold.gold_answers)
+    acceptable_answers = _mapping(gold.acceptable_answers)
+    canonical_answers = _mapping(gold.canonical_answers)
+    answer_valid = (
+        type(query_id) is str
+        and set(gold_answers) == {query_id}
+        and set(acceptable_answers) == {query_id}
+        and not canonical_answers
+        and final_value is not None
+        and _same_value(gold_answers.get(query_id), final_value)
+        and _same_value(acceptable_answers.get(query_id), final_value)
+    )
+    if not answer_valid:
+        issues.append(
+            _issue(
+                "family_a_multiple_current_answers",
+                "Family A query, gold, canonical, and acceptable structures must admit one current answer",
+                "gold.acceptable_answers",
+            )
+        )
+    expected_gold_source = (
+        [target_records[-1]["event"].event_id] if target_records else []
+    )
+    if _items(gold.gold_source_event_ids) != expected_gold_source:
+        issues.append(
+            _issue(
+                "family_a_query_semantics_mismatch",
+                "gold_source_event_ids must identify only the final target update",
+                "gold.gold_source_event_ids",
+            )
+        )
+
+    actual_target_updates = sum(
+        _enum_value(getattr(action, "operation", None)) == Operation.UPDATE.value
+        and target_identity is not None
+        and _action_targets(action) == [target_identity]
+        for action in actions
+    )
+    actual_noops = sum(
+        _enum_value(getattr(action, "operation", None)) == Operation.NOOP.value
+        for action in actions
+    )
+    actual_stale = max(0, len(target_values) - 1)
+    active_count = len(set(expected_identities))
+    density = actual_noops / len(records) if records else None
+    entity_ambiguity, attribute_ambiguity = _FAMILY_A_AMBIGUITY.get(
+        difficulty, (None, None)
+    )
+    expected_version_metadata = _FAMILY_A_VERSION_METADATA.get(difficulty)
+    expected_context_order, expected_interleaving, expected_naturalness = (
+        _FAMILY_A_BASE_PROFILE.get(difficulty, (None, None, None))
+    )
+    core_index = extra.get("core_index")
+    expected_difficulty_allocation = 42 if difficulty == "easy" else 39
+    expected_cell_allocation = 14 if difficulty == "easy" else 13
+    integer_values = (
+        stratification.get("num_events"),
+        stratification.get("num_target_updates"),
+        stratification.get("same_name_distractor_count"),
+        stratification.get("same_entity_other_attribute_count"),
+        stratification.get("noop_count"),
+        stratification.get("stale_same_slot_count"),
+        stratification.get("stale_count"),
+        stratification.get("axis_product_index"),
+        stratification.get("axis_product_size"),
+        stratification.get("depth_allocation_count"),
+        stratification.get("difficulty_allocation_count"),
+        stratification.get("depth_difficulty_cell_count"),
+        profile.get("context_length"),
+        profile.get("active_object_count"),
+        profile.get("stale_count"),
+        extra.get("core_index"),
+    )
+    counters_valid = all(type(value) is int for value in integer_values)
+    counters_valid = counters_valid and all(
+        (
+            _strict_int_equal(stratification.get("num_events"), len(records)),
+            _strict_int_equal(stratification.get("num_target_updates"), actual_target_updates),
+            _strict_int_equal(stratification.get("same_name_distractor_count"), len(records[same_name_start:other_attribute_start])),
+            _strict_int_equal(stratification.get("same_entity_other_attribute_count"), len(records[other_attribute_start:noop_start])),
+            _strict_int_equal(stratification.get("noop_count"), actual_noops),
+            _strict_int_equal(stratification.get("stale_same_slot_count"), actual_stale),
+            _strict_int_equal(stratification.get("stale_count"), actual_stale),
+            _strict_int_equal(profile.get("context_length"), len(records)),
+            _strict_int_equal(profile.get("active_object_count"), active_count),
+            _strict_int_equal(profile.get("stale_count"), actual_stale),
+            type(density) is float
+            and type(profile.get("noop_density")) is float
+            and profile.get("noop_density") == density,
+            type(core_index) is int
+            and 0 <= core_index < 120
+            and _strict_int_equal(stratification.get("axis_product_index"), core_index),
+            _strict_int_equal(stratification.get("axis_product_size"), 384),
+            _strict_int_equal(stratification.get("depth_allocation_count"), 40),
+            _strict_int_equal(stratification.get("difficulty_allocation_count"), expected_difficulty_allocation),
+            _strict_int_equal(stratification.get("depth_difficulty_cell_count"), expected_cell_allocation),
+        )
+    )
+    profile_valid = (
+        profile.get("difficulty") == difficulty
+        and profile.get("profile_name") == difficulty
+        and profile.get("task_family") == TaskFamily.REPEATED_SAME_SLOT.value
+        and profile.get("update_depth_bucket") == _FAMILY_A_DEPTH_BUCKETS.get(depth)
+        and profile.get("entity_ambiguity") == entity_ambiguity
+        and profile.get("attribute_ambiguity") == attribute_ambiguity
+        and profile.get("query_type") == QueryType.CURRENT_STATE.value
+        and profile.get("version_metadata") == expected_version_metadata
+        and profile.get("context_order") == expected_context_order
+        and type(profile.get("cross_slot_interleaving")) is float
+        and profile.get("cross_slot_interleaving") == expected_interleaving
+        and profile.get("source_naturalness") == expected_naturalness
+        and type(surface_variant) is int
+        and 0 <= surface_variant < len(SURFACE_TEMPLATE_SETS)
+        and extra.get("surface_template")
+        == SURFACE_TEMPLATE_SETS[surface_variant][0]
+    )
+    if not counters_valid or not profile_valid:
+        issues.append(
+            _issue(
+                "family_a_counter_profile_mismatch",
+                "Family A counters, allocation fields, density, ambiguity, and profile metadata must match observed canonical semantics",
+                "metadata",
+            )
+        )
+
+    return issues
 
 
 def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
@@ -960,6 +1638,7 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
 
     semantic_statement = None
     duplicate_statement = None
+    independent_count = 0
     independent_statements: set[str] = set()
     if target_identity is not None:
         semantic_statement = family_d_semantic_near_miss_statement(
@@ -986,6 +1665,26 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         if statement is not None
     }
     surface_variant = extra.get("surface_variant")
+    independent_noop_records = [
+        record for record in records if record["lifecycle"] == "independent_noop"
+    ]
+    observed_independent_statements = [
+        record["metadata"].get("surface_statement")
+        for record in independent_noop_records
+    ]
+    if (
+        len(independent_noop_records) != independent_count
+        or len(set(observed_independent_statements))
+        != len(observed_independent_statements)
+        or set(observed_independent_statements) != independent_statements
+    ):
+        issues.append(
+            _issue(
+                "family_d_noop_visibility_mismatch",
+                "independent NOOP observations must bind one-to-one to canonical note numbers",
+                "events",
+            )
+        )
 
     for record in records:
         lifecycle = record["lifecycle"]
@@ -1404,6 +2103,119 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _generic_validation_issues(
+    task: MemUpdateTask,
+    *,
+    family: str,
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for validator in (validate_task, validate_gold_replay, validate_distractors):
+        try:
+            issues.extend(validator(task).issues)
+        except Exception:
+            issues.append(
+                _issue(
+                    f"family_{family}_malformed_task",
+                    "existing validator rejected malformed task structure",
+                    "task",
+                )
+            )
+    return issues
+
+
+def _validate_family_a_task(task: Any) -> ValidationReport:
+    if type(task) is not MemUpdateTask:
+        return _bounded_report(
+            [
+                _issue(
+                    "family_a_invalid_task_type",
+                    "Family A validation requires an exact MemUpdateTask instance",
+                    "task",
+                )
+            ],
+            family="a",
+        )
+    try:
+        raw = object.__getattribute__(task, "__dict__")
+    except (AttributeError, TypeError):
+        raw = None
+    task_family = raw.get("task_family") if type(raw) is dict else None
+    identifies_family_a = isinstance(task_family, str) and str.__eq__(
+        task_family,
+        TaskFamily.REPEATED_SAME_SLOT.value,
+    ) is True
+    if not identifies_family_a and (
+        type(task_family) is not str or not str.strip(task_family)
+    ):
+        return _bounded_report(
+            [
+                _issue(
+                    "family_a_malformed_task",
+                    "MemUpdateTask.task_family must be a nonblank exact string",
+                    "task_family",
+                )
+            ],
+            family="a",
+        )
+    if not identifies_family_a:
+        return _bounded_report(
+            [
+                _issue(
+                    "family_a_inapplicable_task_family",
+                    "Family A validation is inapplicable to this task family",
+                    "task_family",
+                )
+            ],
+            family="a",
+        )
+
+    release_status = _pilot_release_status(task)
+    if release_status is False:
+        return merge_reports(
+            validate_task(task),
+            validate_gold_replay(task),
+            validate_distractors(task),
+        )
+
+    schema_issues = _schema_preflight_issues(task, family="a")
+    if schema_issues:
+        return _bounded_report(schema_issues, family="a")
+
+    issues = _generic_validation_issues(task, family="a")
+    preflight_issues = _family_a_preflight_issues(task, schema_checked=True)
+    if preflight_issues:
+        return _bounded_report(preflight_issues, family="a")
+
+    try:
+        issues.extend(_family_a_issues(task))
+    except Exception:
+        issues.append(
+            _issue(
+                "family_a_malformed_task",
+                "Family A semantic inspection rejected malformed task structure",
+                "task",
+            )
+        )
+    return _bounded_report(issues, family="a")
+
+
+def validate_family_a_task(task: Any) -> ValidationReport:
+    """Validate one Family A task without mutation, external I/O, or exception leaks."""
+    try:
+        return _validate_family_a_task(task)
+    except Exception:
+        return _bounded_report(
+            [
+                _issue(
+                    "family_a_malformed_task",
+                    "Family A validation rejected malformed task structure",
+                    "task",
+                )
+            ],
+            family="a",
+        )
+
+
 def _validate_family_d_task(task: Any) -> ValidationReport:
     if type(task) is not MemUpdateTask:
         return _bounded_report(
@@ -1451,18 +2263,7 @@ def _validate_family_d_task(task: Any) -> ValidationReport:
     if preflight_issues:
         return _bounded_report(preflight_issues)
 
-    issues: list[ValidationIssue] = []
-    for validator in (validate_task, validate_gold_replay):
-        try:
-            issues.extend(validator(task).issues)
-        except Exception:
-            issues.append(
-                _issue(
-                    "family_d_malformed_task",
-                    "existing validator rejected malformed task structure",
-                    "task",
-                )
-            )
+    issues = _generic_validation_issues(task, family="d")
     try:
         issues.extend(_family_d_issues(task))
     except Exception:
@@ -1492,4 +2293,4 @@ def validate_family_d_task(task: Any) -> ValidationReport:
         )
 
 
-__all__ = ["validate_family_d_task"]
+__all__ = ["validate_family_a_task", "validate_family_d_task"]

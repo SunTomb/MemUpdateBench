@@ -31,7 +31,7 @@ from mub.vnext.validation import (
     validate_task,
     validate_task_semantics,
 )
-from mub.vnext.validation.pilot import validate_family_d_task
+from mub.vnext.validation.pilot import validate_family_d_task, validate_family_a_task
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -164,8 +164,29 @@ def family_d_tasks():
     return tasks
 
 
+@pytest.fixture(scope="module")
+def family_a_tasks():
+    config = load_pilot_config(CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="family-a-validation-test")
+    return [
+        render_core(core, split=Split.TEST, surface_variant=variant, context=context)
+        for core in generate_family_a_cores(config)
+        for variant in range(3)
+    ]
+
+
 def _codes(report):
     return {issue.code for issue in report.issues}
+
+
+def _family_a_task(family_a_tasks, *, difficulty, depth, surface_variant=0):
+    return next(
+        task
+        for task in family_a_tasks
+        if task.difficulty.value == difficulty
+        and task.metadata.resolved_profile["update_depth"] == depth
+        and task.metadata.extra["surface_variant"] == surface_variant
+    )
 
 
 def _payload(task):
@@ -290,6 +311,329 @@ def _append_extra_noop(task):
     payload["metadata"]["resolved_profile"]["noop_density"] = density
     payload["metadata"]["resolved_profile"]["context_length"] += 1
     return MemUpdateTask.model_validate(payload)
+
+
+@pytest.mark.parametrize("task_index", (0, 1, 2))
+def test_validate_family_a_task_accepts_generated_samples_and_aggregate_dispatches(
+    family_a_tasks, task_index
+):
+    task = family_a_tasks[task_index]
+    direct = validate_family_a_task(task)
+    aggregate = validate_task_semantics(task)
+    assert direct.valid
+    assert direct.issues == ()
+    assert aggregate == direct
+
+
+def test_validate_family_a_task_accepts_all_generated_tasks(family_a_tasks):
+    for task in family_a_tasks:
+        direct = validate_family_a_task(task)
+        aggregate = validate_task_semantics(task)
+        assert direct.valid, (task.task_id, direct.issues)
+        assert aggregate == direct
+
+
+def test_validate_family_a_task_detects_coordinated_stale_gold_collision(family_a_tasks):
+    task = _family_a_task(family_a_tasks, difficulty="easy", depth=4)
+    payload = _payload(task)
+    target_id = task.queries[0].target_object_keys[0].canonical_id
+    query_id = task.queries[0].query_id
+    final_value = payload["gold"]["gold_answers"][query_id]
+    stale_event = payload["events"][0]
+    stale_action = _action_for_event(payload, stale_event)
+    stale_action["value"] = final_value
+    payload["gold"]["version_history"][target_id][0] = final_value
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_stale_value_equals_current_gold" in _codes(report)
+
+
+def test_validate_family_a_task_detects_coordinated_distractor_gold_collision(
+    family_a_tasks,
+):
+    task = _family_a_task(family_a_tasks, difficulty="medium", depth=1)
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    final_value = payload["gold"]["gold_answers"][query_id]
+    event = next(
+        event
+        for event in payload["events"]
+        if event["role"] == EventRole.SAME_NAME_OTHER_ENTITY.value
+    )
+    action = _action_for_event(payload, event)
+    typed_action = next(
+        item for item in task.gold.actions if item.action_id == action["action_id"]
+    )
+    distractor_id = typed_action.target_object_keys[0].canonical_id
+    action["value"] = final_value
+    payload["gold"]["final_state"][distractor_id] = final_value
+    payload["gold"]["version_history"][distractor_id] = [final_value]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_distractor_current_gold_collision" in _codes(report)
+
+
+@pytest.mark.parametrize("corruption", ("operation", "role", "key", "count"))
+def test_validate_family_a_task_rejects_corrupted_target_chain(
+    family_a_tasks,
+    corruption,
+):
+    task = _family_a_task(family_a_tasks, difficulty="medium", depth=4)
+    payload = _payload(task)
+    event = payload["events"][1]
+    action = _action_for_event(payload, event)
+    if corruption == "operation":
+        action["operation"] = Operation.ADD.value
+    elif corruption == "role":
+        event["role"] = EventRole.LATEST_GOLD.value
+    elif corruption == "key":
+        distractor = next(
+            candidate
+            for candidate in payload["gold"]["actions"]
+            if candidate["target_object_keys"]
+            and candidate["target_object_keys"] != action["target_object_keys"]
+        )
+        action["target_object_keys"] = distractor["target_object_keys"]
+    else:
+        payload["metadata"]["resolved_profile"]["update_depth"] = 1
+        payload["metadata"]["resolved_profile"]["update_depth_bucket"] = "1"
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_target_chain_corruption" in _codes(report)
+
+
+def test_validate_family_a_task_rejects_coordinated_near_miss_write(family_a_tasks):
+    task = _family_a_task(family_a_tasks, difficulty="medium", depth=1)
+    payload = _payload(task)
+    noop_event = next(
+        event for event in payload["events"] if event["role"] == EventRole.NOOP_NEAR_MISS.value
+    )
+    noop_action = _action_for_event(payload, noop_event)
+    distractor_action = next(
+        action
+        for action in payload["gold"]["actions"]
+        if action["operation"] == Operation.ADD.value
+        and action["target_object_keys"]
+        != payload["queries"][0]["target_object_keys"]
+    )
+    distractor_key = distractor_action["target_object_keys"]
+    typed_key = next(
+        action.target_object_keys[0]
+        for action in task.gold.actions
+        if action.action_id == distractor_action["action_id"]
+    )
+    value = "coordinated-near-miss-write"
+    noop_action["operation"] = Operation.UPDATE.value
+    noop_action["scope"] = "attribute"
+    noop_action["target_object_keys"] = distractor_key
+    noop_action["value"] = value
+    payload["gold"]["final_state"][typed_key.canonical_id] = value
+    payload["gold"]["version_history"][typed_key.canonical_id].append(value)
+    stratification = payload["metadata"]["extra"]["stratification"]
+    stratification["noop_count"] -= 1
+    density = stratification["noop_count"] / stratification["num_events"]
+    payload["metadata"]["resolved_profile"]["noop_density"] = density
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_noop_semantics_mismatch" in _codes(report)
+
+
+def test_validate_family_a_task_rejects_distractor_geometry_collision(family_a_tasks):
+    task = _family_a_task(family_a_tasks, difficulty="medium", depth=1)
+    payload = _payload(task)
+    event = next(
+        event
+        for event in payload["events"]
+        if event["role"] == EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+    )
+    action = _action_for_event(payload, event)
+    action["target_object_keys"] = payload["queries"][0]["target_object_keys"]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_distractor_geometry_corruption" in _codes(report)
+
+
+@pytest.mark.parametrize("field", ("final_state", "version_history"))
+def test_validate_family_a_task_rejects_corrupted_gold_state_history(
+    family_a_tasks,
+    field,
+):
+    task = _family_a_task(family_a_tasks, difficulty="hard", depth=16)
+    payload = _payload(task)
+    target_id = task.queries[0].target_object_keys[0].canonical_id
+    if field == "final_state":
+        payload["gold"][field][target_id] = "corrupted-final-state"
+    else:
+        payload["gold"][field][target_id][0] = "corrupted-history"
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_gold_state_history_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "value"),
+    (
+        ("stratification", "num_events", 99),
+        ("stratification", "stale_count", 99),
+        ("profile", "active_object_count", 99),
+        ("profile", "noop_density", 0.123),
+        ("profile", "version_metadata", "rewritten"),
+    ),
+)
+def test_validate_family_a_task_rejects_counter_and_profile_rewrites(
+    family_a_tasks,
+    container,
+    field,
+    value,
+):
+    payload = _payload(_family_a_task(family_a_tasks, difficulty="hard", depth=4))
+    target = (
+        payload["metadata"]["extra"]["stratification"]
+        if container == "stratification"
+        else payload["metadata"]["resolved_profile"]
+    )
+    target[field] = value
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_counter_profile_mismatch" in _codes(report)
+
+
+def test_validate_family_a_task_forbids_duplicate_current_injection(family_a_tasks):
+    payload = _payload(_family_a_task(family_a_tasks, difficulty="medium", depth=1))
+    payload["events"][-1]["role"] = EventRole.DUPLICATE_CURRENT.value
+    payload["events"][-1]["metadata"]["allow_accepted_answer_ambiguity"] = True
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_duplicate_current_forbidden" in _codes(report)
+
+
+def test_validate_family_a_task_rejects_multiple_acceptable_current_answers(
+    family_a_tasks,
+):
+    task = _family_a_task(family_a_tasks, difficulty="easy", depth=1)
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    payload["gold"]["acceptable_answers"][query_id] = [
+        payload["gold"]["gold_answers"][query_id],
+        "alternate-current-answer",
+    ]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_multiple_current_answers" in _codes(report)
+
+
+def test_validate_family_a_task_malformed_construct_matches_aggregate():
+    malformed = MemUpdateTask.model_construct(
+        task_family=TaskFamily.REPEATED_SAME_SLOT.value
+    )
+
+    direct = validate_family_a_task(malformed)
+    aggregate = validate_task_semantics(malformed)
+
+    assert direct == aggregate
+    assert not direct.valid
+    assert len(direct.issues) <= MAX_REPORT_ISSUES
+    assert "family_a_malformed_record" in _codes(direct)
+
+
+def test_validate_family_a_task_routes_hostile_family_without_override_access(
+    family_a_tasks,
+):
+    hostile = HostileFamilyString(TaskFamily.REPEATED_SAME_SLOT.value)
+    malformed = _construct_replace(family_a_tasks[0], task_family=hostile)
+
+    direct = validate_family_a_task(malformed)
+    aggregate = validate_task_semantics(malformed)
+
+    assert direct == aggregate
+    assert "family_a_invalid_field_type" in _codes(direct)
+    assert hostile.override_access_count == 0
+
+
+def test_validate_family_a_task_is_public_and_other_families_are_inapplicable(
+    family_a_tasks,
+    family_d_tasks,
+):
+    import mub.vnext.validation as validation
+
+    assert validation.validate_family_a_task is validate_family_a_task
+    report = validate_family_a_task(family_d_tasks["semantic_near_miss"])
+    assert _codes(report) == {"family_a_inapplicable_task_family"}
+
+
+def test_validate_family_a_task_preserves_distractor_answer_leak_checks(family_a_tasks):
+    task = _family_a_task(family_a_tasks, difficulty="medium", depth=1)
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    answer = payload["gold"]["gold_answers"][query_id]
+    event = next(
+        event
+        for event in payload["events"]
+        if event["role"] == EventRole.SAME_NAME_OTHER_ENTITY.value
+    )
+    event["raw_text"] += f" The current answer is {answer}."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    direct = validate_family_a_task(corrupted)
+    aggregate = validate_task_semantics(corrupted)
+
+    assert aggregate == direct
+    assert "distractor_text_contains_accepted_answer" in _codes(direct)
+
+
+def test_validate_family_d_task_preserves_distractor_answer_leak_checks(family_d_tasks):
+    task = family_d_tasks["semantic_near_miss"]
+    payload = _payload(task)
+    query_id = task.queries[0].query_id
+    answer = payload["gold"]["gold_answers"][query_id]
+    event = _event_with_lifecycle(payload, "independent_current")
+    event["raw_text"] += f" The current answer is {answer}."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    direct = validate_family_d_task(corrupted)
+    aggregate = validate_task_semantics(corrupted)
+
+    assert aggregate == direct
+    assert "distractor_text_contains_accepted_answer" in _codes(direct)
+
+
+def test_validate_family_d_task_rejects_duplicate_independent_noop_observation(
+    family_d_tasks,
+):
+    payload = _payload(family_d_tasks["density_0.75"])
+    noops = [
+        event
+        for event in payload["events"]
+        if event["metadata"].get("lifecycle") == "independent_noop"
+    ]
+    assert len(noops) >= 2
+    noops[1]["metadata"]["surface_statement"] = noops[0]["metadata"][
+        "surface_statement"
+    ]
+    noops[1]["raw_text"] = noops[0]["raw_text"]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_noop_visibility_mismatch" in _codes(report)
 
 
 @pytest.mark.parametrize("surface_variant", (0, 1, 2))

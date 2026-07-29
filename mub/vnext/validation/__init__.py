@@ -18,19 +18,26 @@ from mub.vnext.validation.split import (
     validate_splits,
 )
 from mub.vnext.validation.task import validate_task
-from mub.vnext.validation.pilot import validate_family_d_task
+from mub.vnext.validation.pilot import validate_family_a_task, validate_family_d_task
 
 
 def validate_task_semantics(task) -> ValidationReport:
+    identifies_family_a = False
     identifies_family_d = False
     if type(task) is MemUpdateTask:
         raw = object.__getattribute__(task, "__dict__")
         if type(raw) is dict:
             candidate = raw.get("task_family")
+            identifies_family_a = isinstance(candidate, str) and str.__eq__(
+                candidate,
+                TaskFamily.REPEATED_SAME_SLOT.value,
+            ) is True
             identifies_family_d = isinstance(candidate, str) and str.__eq__(
                 candidate,
                 TaskFamily.NOOP_WRITE_DISCIPLINE.value,
             ) is True
+    if identifies_family_a:
+        return validate_family_a_task(task)
     if identifies_family_d:
         return validate_family_d_task(task)
     return merge_reports(
@@ -51,6 +58,7 @@ __all__ = [
     "merge_reports",
     "replay_actions",
     "validate_distractors",
+    "validate_family_a_task",
     "validate_family_d_task",
     "validate_gold_replay",
     "validate_splits",
