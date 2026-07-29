@@ -168,6 +168,28 @@ def test_validate_family_d_task_rejects_malformed_and_marks_other_families_inapp
     assert _codes(inapplicable_report) == {"family_d_inapplicable_task_family"}
 
 
+def test_validate_family_d_task_handles_constructed_models_with_missing_fields():
+    missing_family = MemUpdateTask.model_construct()
+    first = validate_family_d_task(missing_family)
+    second = validate_family_d_task(missing_family)
+
+    assert not first.valid
+    assert first == second
+    assert len(first.issues) <= MAX_REPORT_ISSUES
+    assert "family_d_malformed_task" in _codes(first)
+
+    missing_paths = MemUpdateTask.model_construct(
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE.value
+    )
+    paths_report = validate_family_d_task(missing_paths)
+
+    assert not paths_report.valid
+    assert len(paths_report.issues) <= MAX_REPORT_ISSUES
+    assert {"malformed_gold_actions", "malformed_resolved_profile"} <= _codes(
+        paths_report
+    )
+
+
 def test_validate_family_d_task_is_deterministic_immutable_and_does_no_disk_io(
     family_d_tasks,
     monkeypatch,

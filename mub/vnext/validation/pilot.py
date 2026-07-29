@@ -460,8 +460,7 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
-def validate_family_d_task(task: Any) -> ValidationReport:
-    """Validate one Family D task without mutating it or performing external I/O."""
+def _validate_family_d_task(task: Any) -> ValidationReport:
     if type(task) is not MemUpdateTask:
         return _bounded_report(
             [
@@ -472,7 +471,18 @@ def validate_family_d_task(task: Any) -> ValidationReport:
                 )
             ]
         )
-    if task.task_family != TaskFamily.NOOP_WRITE_DISCIPLINE.value:
+    task_family = getattr(task, "task_family", None)
+    if not isinstance(task_family, str) or not task_family.strip():
+        return _bounded_report(
+            [
+                _issue(
+                    "family_d_malformed_task",
+                    "MemUpdateTask.task_family must be a nonblank string",
+                    "task_family",
+                )
+            ]
+        )
+    if task_family != TaskFamily.NOOP_WRITE_DISCIPLINE.value:
         return _bounded_report(
             [
                 _issue(
@@ -506,6 +516,22 @@ def validate_family_d_task(task: Any) -> ValidationReport:
             )
         )
     return _bounded_report(issues)
+
+
+def validate_family_d_task(task: Any) -> ValidationReport:
+    """Validate one Family D task without mutation, external I/O, or exception leaks."""
+    try:
+        return _validate_family_d_task(task)
+    except Exception as exc:
+        return _bounded_report(
+            [
+                _issue(
+                    "family_d_malformed_task",
+                    f"could not inspect malformed Family D task: {type(exc).__name__}",
+                    "task",
+                )
+            ]
+        )
 
 
 __all__ = ["validate_family_d_task"]
