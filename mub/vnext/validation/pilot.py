@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from enum import Enum
@@ -112,6 +113,16 @@ def _identity(key: Any) -> tuple[str, str, str, str | None] | None:
 
 def _same_value(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
+
+
+def _canonical_json_value(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _strict_int_equal(value: Any, expected: int) -> bool:
@@ -1182,14 +1193,32 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
 
     final_value = target_values[-1] if target_values else None
     stale_values = target_values[:-1]
-    stale_distinct = all(
-        not _same_value(value, final_value) for value in stale_values
-    ) and len({(type(value), repr(value)) for value in stale_values}) == len(stale_values)
-    if final_value is not None and not stale_distinct:
+    canonical_stale_values = [
+        _canonical_json_value(value) for value in stale_values
+    ]
+    canonical_final_value = (
+        _canonical_json_value(final_value) if final_value is not None else None
+    )
+    stale_equals_final = (
+        canonical_final_value is not None
+        and canonical_final_value in canonical_stale_values
+    )
+    duplicate_stale = len(set(canonical_stale_values)) != len(
+        canonical_stale_values
+    )
+    if stale_equals_final:
         issues.append(
             _issue(
                 "family_a_stale_value_equals_current_gold",
-                "every stale same-slot value must be distinct and unequal to the current gold",
+                "every stale same-slot value must be unequal to the current gold",
+                "events",
+            )
+        )
+    if duplicate_stale:
+        issues.append(
+            _issue(
+                "family_a_duplicate_stale_value",
+                "every stale same-slot value must be semantically distinct",
                 "events",
             )
         )

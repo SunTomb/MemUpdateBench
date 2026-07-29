@@ -350,6 +350,39 @@ def test_validate_family_a_task_detects_coordinated_stale_gold_collision(family_
     assert "family_a_stale_value_equals_current_gold" in _codes(report)
 
 
+@pytest.mark.parametrize(
+    ("first_value", "second_value"),
+    (
+        ({"a": 1, "b": 2}, {"b": 2, "a": 1}),
+        (
+            {"items": [{"a": 1, "b": 2}]},
+            {"items": [{"b": 2, "a": 1}]},
+        ),
+        (
+            [{"a": 1, "b": 2}, [1, 2]],
+            [{"b": 2, "a": 1}, [1, 2]],
+        ),
+    ),
+)
+def test_validate_family_a_task_rejects_semantically_duplicate_stale_json_values(
+    family_a_tasks,
+    first_value,
+    second_value,
+):
+    task = _family_a_task(family_a_tasks, difficulty="easy", depth=4)
+    payload = _payload(task)
+    target_id = task.queries[0].target_object_keys[0].canonical_id
+    for index, value in enumerate((first_value, second_value)):
+        action = _action_for_event(payload, payload["events"][index])
+        action["value"] = value
+        payload["gold"]["version_history"][target_id][index] = value
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_a_task(corrupted)
+
+    assert "family_a_duplicate_stale_value" in _codes(report)
+
+
 def test_validate_family_a_task_detects_coordinated_distractor_gold_collision(
     family_a_tasks,
 ):
