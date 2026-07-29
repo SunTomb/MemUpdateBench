@@ -697,9 +697,7 @@ def test_validate_family_d_task_handles_constructed_models_with_missing_fields()
 
     assert not paths_report.valid
     assert len(paths_report.issues) <= MAX_REPORT_ISSUES
-    assert {"malformed_gold_actions", "malformed_resolved_profile"} <= _codes(
-        paths_report
-    )
+    assert "family_d_malformed_record" in _codes(paths_report)
 
 
 @pytest.mark.parametrize(
@@ -768,6 +766,91 @@ def test_validate_family_d_task_rejects_forged_enum_like_values_without_access(
     assert first == second
     assert forged.value_access_count == 0
     assert "family_d_invalid_enum_type" in _codes(first)
+
+
+@pytest.mark.parametrize(
+    "location",
+    (
+        "source.generator",
+        "metadata.legacy_provenance",
+        "metadata.split_key",
+        "metadata.tags",
+        "event.timestamp",
+        "event.speaker",
+        "action.effective_at",
+        "query.text",
+    ),
+)
+def test_validate_family_d_task_schema_preflight_rejects_forged_typed_fields(
+    family_d_tasks,
+    location,
+):
+    task = family_d_tasks["duplicate_current"]
+    malformed_value = (
+        [float("nan")]
+        if location == "metadata.tags"
+        else float("nan")
+        if location
+        in {"event.timestamp", "event.speaker", "action.effective_at", "query.text"}
+        else object()
+    )
+    if location.startswith("source."):
+        source = _construct_replace(
+            task.source,
+            **{location.split(".")[1]: malformed_value},
+        )
+        malformed = _construct_replace(task, source=source)
+    elif location.startswith("metadata."):
+        metadata = _construct_replace(
+            task.metadata,
+            **{location.split(".")[1]: malformed_value},
+        )
+        malformed = _construct_replace(task, metadata=metadata)
+    elif location.startswith("event."):
+        events = list(task.events)
+        events[0] = _construct_replace(
+            events[0],
+            **{location.split(".")[1]: malformed_value},
+        )
+        malformed = _construct_replace(task, events=events)
+    elif location.startswith("action."):
+        malformed = _replace_action(
+            task,
+            0,
+            **{location.split(".")[1]: malformed_value},
+        )
+    else:
+        queries = list(task.queries)
+        queries[0] = _construct_replace(
+            queries[0],
+            **{location.split(".")[1]: malformed_value},
+        )
+        malformed = _construct_replace(task, queries=queries)
+
+    first = validate_family_d_task(malformed)
+    second = validate_family_d_task(malformed)
+
+    assert first == second
+    assert "family_d_invalid_field_type" in _codes(first)
+
+
+@pytest.mark.parametrize("corruption", ("missing", "extra"))
+def test_validate_family_d_task_schema_preflight_checks_raw_model_fields(
+    family_d_tasks,
+    corruption,
+):
+    task = family_d_tasks["duplicate_current"]
+    data = dict(task.__dict__)
+    if corruption == "missing":
+        data.pop("task_id")
+        malformed = MemUpdateTask.model_construct(**data)
+    else:
+        malformed = MemUpdateTask.model_construct(**data)
+        malformed.__dict__["attacker_extra"] = object()
+
+    report = validate_family_d_task(malformed)
+
+    assert "family_d_malformed_record" in _codes(report)
 
 
 def test_validate_family_d_task_rejects_custom_sequences_without_iteration():

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from enum import Enum
 from string import Template
-from typing import Any
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
+
+from pydantic import BaseModel, JsonValue
 
 from mub.vnext.contracts import (
     ActionScope,
@@ -65,6 +69,7 @@ _COLLECTION_LIMITS = {
 _MAX_NESTED_ITEMS = 64
 _MAX_NESTED_NODES = 1024
 _MAX_NESTED_DEPTH = 16
+_MAX_SCHEMA_NODES = 4096
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -346,8 +351,451 @@ def _inspect_json_mapping(
         visited.add(identity)
 
 
-def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+def _unwrap_annotation(annotation: Any) -> Any:
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return annotation
+
+
+def _is_json_annotation(annotation: Any) -> bool:
+    return annotation is JsonValue or (
+        type(annotation).__name__ == "TypeAliasType"
+        and getattr(annotation, "__name__", None) == "JsonValue"
+    )
+
+
+def _annotation_outer_matches(value: Any, annotation: Any) -> bool:
+    annotation = _unwrap_annotation(annotation)
+    if annotation is Any or _is_json_annotation(annotation):
+        return type(value) in {dict, list, str, bool, int, float, type(None)}
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in {Union, UnionType}:
+        return any(_annotation_outer_matches(value, item) for item in args)
+    if origin is Literal:
+        return any(type(value) is type(item) and value == item for item in args)
+    if origin is list:
+        return type(value) is list
+    if origin is dict or origin is Mapping:
+        return type(value) is dict
+    if origin is tuple:
+        return type(value) is tuple
+    if annotation is type(None):
+        return value is None
+    if isinstance(annotation, type):
+        return type(value) is annotation
+    return False
+
+
+def _inspect_schema_value(
+    issues: list[ValidationIssue],
+    value: Any,
+    annotation: Any,
+    path: str,
+    budget: list[int],
+    active: set[int],
+    visited: set[int],
+    depth: int,
+) -> None:
+    if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
+        issues.append(
+            _issue(
+                "family_d_input_size_limit",
+                "contract graph exceeds the Family D inspection limit",
+                path,
+            )
+        )
+        return
+    budget[0] -= 1
+    annotation = _unwrap_annotation(annotation)
+    if annotation is Any or _is_json_annotation(annotation):
+        _inspect_json_value(
+            issues,
+            value,
+            path,
+            budget,
+            active,
+            visited,
+            depth,
+        )
+        return
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in {Union, UnionType}:
+        matching = [item for item in args if _annotation_outer_matches(value, item)]
+        if not matching:
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    "field value does not match any declared union member",
+                    path,
+                )
+            )
+            return
+        _inspect_schema_value(
+            issues,
+            value,
+            matching[0],
+            path,
+            budget,
+            active,
+            visited,
+            depth,
+        )
+        return
+    if origin is Literal:
+        if not _annotation_outer_matches(value, annotation):
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    "field value does not match its declared literal",
+                    path,
+                )
+            )
+        return
+    if origin is list:
+        if type(value) is not list:
+            issues.append(
+                _issue(
+                    "family_d_malformed_collection",
+                    "field must be an exact list",
+                    path,
+                )
+            )
+            return
+        identity = id(value)
+        if identity in active:
+            issues.append(
+                _issue(
+                    "family_d_cyclic_json",
+                    "contract collections cannot contain cycles",
+                    path,
+                )
+            )
+            return
+        if identity in visited:
+            return
+        if len(value) > _MAX_NESTED_ITEMS:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "field list exceeds the Family D inspection limit",
+                    path,
+                )
+            )
+            return
+        item_annotation = args[0] if args else Any
+        active.add(identity)
+        try:
+            for index, item in enumerate(value):
+                _inspect_schema_value(
+                    issues,
+                    item,
+                    item_annotation,
+                    f"{path}[{index}]",
+                    budget,
+                    active,
+                    visited,
+                    depth + 1,
+                )
+        finally:
+            active.remove(identity)
+            visited.add(identity)
+        return
+    if origin is dict or origin is Mapping:
+        if type(value) is not dict:
+            issues.append(
+                _issue(
+                    "family_d_malformed_mapping",
+                    "field must be an exact dict",
+                    path,
+                )
+            )
+            return
+        identity = id(value)
+        if identity in active:
+            issues.append(
+                _issue(
+                    "family_d_cyclic_json",
+                    "contract mappings cannot contain cycles",
+                    path,
+                )
+            )
+            return
+        if identity in visited:
+            return
+        if len(value) > _MAX_NESTED_ITEMS:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "field mapping exceeds the Family D inspection limit",
+                    path,
+                )
+            )
+            return
+        key_annotation, value_annotation = args if len(args) == 2 else (Any, Any)
+        active.add(identity)
+        try:
+            for index, (key, item) in enumerate(value.items()):
+                key_path = f"{path}[{index}]"
+                _inspect_schema_value(
+                    issues,
+                    key,
+                    key_annotation,
+                    key_path,
+                    budget,
+                    active,
+                    visited,
+                    depth + 1,
+                )
+                item_path = f"{path}.{key}" if type(key) is str else key_path
+                _inspect_schema_value(
+                    issues,
+                    item,
+                    value_annotation,
+                    item_path,
+                    budget,
+                    active,
+                    visited,
+                    depth + 1,
+                )
+        finally:
+            active.remove(identity)
+            visited.add(identity)
+        return
+    if origin is tuple:
+        if type(value) is not tuple:
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    "field must be an exact tuple",
+                    path,
+                )
+            )
+            return
+        if len(value) > _MAX_NESTED_ITEMS:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "field tuple exceeds the Family D inspection limit",
+                    path,
+                )
+            )
+            return
+        variadic = len(args) == 2 and args[1] is Ellipsis
+        if not variadic and args and len(value) != len(args):
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    "field tuple length does not match its declaration",
+                    path,
+                )
+            )
+            return
+        for index, item in enumerate(value):
+            item_annotation = args[0] if variadic else args[index]
+            _inspect_schema_value(
+                issues,
+                item,
+                item_annotation,
+                f"{path}[{index}]",
+                budget,
+                active,
+                visited,
+                depth + 1,
+            )
+        return
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if type(value) is not annotation:
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    f"field must be an exact {annotation.__name__}",
+                    path,
+                )
+            )
+            return
+        _inspect_contract_model(
+            issues,
+            value,
+            annotation,
+            path,
+            budget,
+            active,
+            visited,
+            depth,
+        )
+        return
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        if type(value) is not annotation:
+            issues.append(
+                _issue(
+                    "family_d_invalid_enum_type",
+                    f"field must be an exact {annotation.__name__}",
+                    path,
+                )
+            )
+        return
+    if annotation is float:
+        if type(value) is not float:
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    "field must be an exact float",
+                    path,
+                )
+            )
+        elif not math.isfinite(value):
+            issues.append(
+                _issue(
+                    "family_d_non_finite_json_number",
+                    "float fields must be finite",
+                    path,
+                )
+            )
+        return
+    if annotation in {str, bool, int, type(None)}:
+        if type(value) is not annotation:
+            issues.append(
+                _issue(
+                    "family_d_invalid_field_type",
+                    f"field must be an exact {annotation.__name__}",
+                    path,
+                )
+            )
+        return
+    issues.append(
+        _issue(
+            "family_d_invalid_field_type",
+            "field uses an unsupported or malformed runtime annotation",
+            path,
+        )
+    )
+
+
+def _inspect_contract_model(
+    issues: list[ValidationIssue],
+    model: BaseModel,
+    expected_type: type[BaseModel],
+    path: str,
+    budget: list[int],
+    active: set[int],
+    visited: set[int],
+    depth: int,
+) -> None:
+    if depth > _MAX_NESTED_DEPTH or budget[0] <= 0:
+        issues.append(
+            _issue(
+                "family_d_input_size_limit",
+                "contract graph exceeds the Family D inspection limit",
+                path,
+            )
+        )
+        return
+    if type(model) is not expected_type:
+        issues.append(
+            _issue(
+                "family_d_invalid_field_type",
+                f"record must be an exact {expected_type.__name__}",
+                path,
+            )
+        )
+        return
+    identity = id(model)
+    if identity in active:
+        issues.append(
+            _issue(
+                "family_d_cyclic_json",
+                "contract records cannot contain cycles",
+                path,
+            )
+        )
+        return
+    if identity in visited:
+        return
+    raw = object.__getattribute__(model, "__dict__")
+    if type(raw) is not dict:
+        issues.append(
+            _issue(
+                "family_d_malformed_record",
+                "contract record storage must be an exact dict",
+                path,
+            )
+        )
+        return
+    fields = expected_type.model_fields
+    missing = [name for name in fields if name not in raw]
+    extra = [key for key in raw if type(key) is not str or key not in fields]
+    for name in missing:
+        issues.append(
+            _issue(
+                "family_d_malformed_record",
+                f"contract record is missing declared field {name}",
+                f"{path}.{name}",
+            )
+        )
+    for index, key in enumerate(extra):
+        extra_path = f"{path}.{key}" if type(key) is str else f"{path}[{index}]"
+        issues.append(
+            _issue(
+                "family_d_malformed_record",
+                "contract record contains undeclared internal field",
+                extra_path,
+            )
+        )
+    try:
+        pydantic_extra = object.__getattribute__(model, "__pydantic_extra__")
+    except AttributeError:
+        pydantic_extra = None
+    if pydantic_extra is not None and (
+        type(pydantic_extra) is not dict or bool(pydantic_extra)
+    ):
+        issues.append(
+            _issue(
+                "family_d_malformed_record",
+                "contract record contains undeclared Pydantic extras",
+                path,
+            )
+        )
+    active.add(identity)
+    try:
+        for name, field in fields.items():
+            if name not in raw:
+                continue
+            _inspect_schema_value(
+                issues,
+                raw[name],
+                field.annotation,
+                f"{path}.{name}",
+                budget,
+                active,
+                visited,
+                depth + 1,
+            )
+    finally:
+        active.remove(identity)
+        visited.add(identity)
+
+
+def _schema_preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    _inspect_contract_model(
+        issues,
+        task,
+        MemUpdateTask,
+        "task",
+        [_MAX_SCHEMA_NODES],
+        set(),
+        set(),
+        0,
+    )
+    return issues
+
+
+def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues = _schema_preflight_issues(task)
+    if issues:
+        return issues
     gold = getattr(task, "gold", None)
     source = getattr(task, "source", None)
     metadata = getattr(task, "metadata", None)
