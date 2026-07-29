@@ -72,6 +72,31 @@ def _identity_payload(key: MemoryObjectKey) -> dict[str, str | None]:
     }
 
 
+def family_d_semantic_near_miss_statement(entity: str, attribute: str) -> str:
+    return (
+        f"A hypothetical note mentions {entity}.{attribute}, "
+        "but it does not assert a current-state change."
+    )
+
+
+def family_d_duplicate_current_statement(
+    entity: str,
+    attribute: str,
+    current_value: str,
+) -> str:
+    return (
+        f"{entity}.{attribute} remains exactly {current_value}; "
+        "this repeats the exact current target value."
+    )
+
+
+def family_d_independent_noop_statement(entity: str, note_number: int) -> str:
+    return (
+        f"Background note {note_number} is related to {entity} but "
+        "does not direct any memory change."
+    )
+
+
 def _canonical_axis_order(config: PilotConfig) -> tuple[tuple[str, str, str], ...]:
     axes = tuple(product(NAMESPACES, RELATION_QUALIFIED_ENTITIES, CANONICAL_ATTRIBUTES))
     return tuple(
@@ -206,9 +231,9 @@ def _noop_trap_event(
             metadata={
                 "trap_type": trap_type,
                 "lifecycle": "trap_noop",
-                "surface_statement": (
-                    f"A hypothetical note mentions {target.entity}.{target.attribute}, "
-                    "but it does not assert a current-state change."
+                "surface_statement": family_d_semantic_near_miss_statement(
+                    target.entity,
+                    target.attribute,
                 ),
             },
         )
@@ -223,9 +248,10 @@ def _noop_trap_event(
                 "trap_type": trap_type,
                 "lifecycle": "trap_noop",
                 "allow_accepted_answer_ambiguity": True,
-                "surface_statement": (
-                    f"{target.entity}.{target.attribute} remains exactly {current_value}; "
-                    "this repeats the exact current target value."
+                "surface_statement": family_d_duplicate_current_statement(
+                    target.entity,
+                    target.attribute,
+                    current_value,
                 ),
             },
         )
@@ -334,9 +360,9 @@ def _filler_noop_events(
             role=EventRole.NEUTRAL,
             metadata={
                 "lifecycle": "independent_noop",
-                "surface_statement": (
-                    f"Background note {index + 1} is related to {target.entity} but "
-                    "does not direct any memory change."
+                "surface_statement": family_d_independent_noop_statement(
+                    target.entity,
+                    index + 1,
                 ),
             },
         )
@@ -584,4 +610,9 @@ def generate_family_d_cores(config: PilotConfig) -> list[SemanticCore]:
     return cores
 
 
-__all__ = ["generate_family_d_cores"]
+__all__ = [
+    "family_d_duplicate_current_statement",
+    "family_d_independent_noop_statement",
+    "family_d_semantic_near_miss_statement",
+    "generate_family_d_cores",
+]

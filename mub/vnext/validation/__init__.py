@@ -17,6 +17,7 @@ from mub.vnext.validation.split import (
     validate_splits,
 )
 from mub.vnext.validation.task import validate_task
+from mub.vnext.validation.pilot import validate_family_d_task
 
 
 def validate_task_semantics(task) -> ValidationReport:
@@ -38,6 +39,7 @@ __all__ = [
     "merge_reports",
     "replay_actions",
     "validate_distractors",
+    "validate_family_d_task",
     "validate_gold_replay",
     "validate_splits",
     "validate_task",

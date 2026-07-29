@@ -1,10 +1,28 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from string import Template
 from typing import Any
 
-from mub.vnext.contracts import EventRole, Operation, TaskFamily
+from mub.vnext.contracts import (
+    EventRole,
+    GoldAction,
+    GoldRecord,
+    MemoryEvent,
+    MemoryObjectKey,
+    MemoryQuery,
+    Operation,
+    SourceRecord,
+    TaskFamily,
+    TaskMetadata,
+)
 from mub.vnext.contracts.task import MemUpdateTask
+from mub.vnext.generation.catalogs import SURFACE_TEMPLATE_SETS
+from mub.vnext.generation.family_d import (
+    family_d_duplicate_current_statement,
+    family_d_independent_noop_statement,
+    family_d_semantic_near_miss_statement,
+)
 from mub.vnext.validation.issues import ValidationIssue, ValidationReport, build_report
 from mub.vnext.validation.replay import validate_gold_replay
 from mub.vnext.validation.task import validate_task
@@ -19,17 +37,14 @@ _NOOP_TRAPS = frozenset({"semantic_near_miss", "duplicate_current"})
 _TRAPS = _NOOP_TRAPS | _CORRECTION_TRAPS
 _CANONICAL_NOOPS_BY_DIFFICULTY = {"easy": 3, "medium": 6, "hard": 9}
 _CANONICAL_DENSITY_BY_DIFFICULTY = {"easy": 0.25, "medium": 0.50, "hard": 0.75}
-_NOOP_STATEMENT_MARKERS = (
-    "does not assert a current-state change",
-    "remains exactly",
-    "repeats the exact current target value",
-    "does not direct any memory change",
-)
-_DUPLICATE_CURRENT_RAW_SUFFIXES = (
-    "No memory change is required.",
-    "Keep memory unchanged.",
-    "Do not write anything to memory.",
-)
+_NOOP_TEMPLATES = tuple(template_set[4] for template_set in SURFACE_TEMPLATE_SETS)
+_COLLECTION_LIMITS = {
+    "events": 12,
+    "target_objects": 64,
+    "queries": 8,
+    "gold.actions": 12,
+    "gold.action_sequence": 12,
+}
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -37,13 +52,15 @@ def _issue(code: str, message: str, path: str) -> ValidationIssue:
 
 
 def _items(value: Any) -> list[Any]:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+    if type(value) is list:
+        return list(value)
+    if type(value) is tuple:
         return list(value)
     return []
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+    return value if type(value) is dict else {}
 
 
 def _enum_value(value: Any) -> Any:
@@ -77,10 +94,8 @@ def _same_value(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
 
 
-def _statement_requires_noop(value: Any) -> bool:
-    return isinstance(value, str) and any(
-        marker in value.casefold() for marker in _NOOP_STATEMENT_MARKERS
-    )
+def _strict_int_equal(value: Any, expected: int) -> bool:
+    return type(value) is int and value == expected
 
 
 def _identity_id(identity: tuple[str, str, str, str | None]) -> str:
@@ -90,27 +105,26 @@ def _identity_id(identity: tuple[str, str, str, str | None]) -> str:
     )
 
 
-def _duplicate_observation_is_canonical(
+def _raw_text_matches_noop_template(
     statement: Any,
     raw_text: Any,
-    target: tuple[str, str, str, str | None] | None,
-    value: Any,
+    surface_variant: Any,
 ) -> bool:
     if not isinstance(statement, str) or not isinstance(raw_text, str):
         return False
-    if target is None or value is None:
+    if type(surface_variant) is not int or not 0 <= surface_variant < len(
+        _NOOP_TEMPLATES
+    ):
         return False
-    canonical_statement = (
-        f"{target[1]}.{target[2]} remains exactly {value}; "
-        "this repeats the exact current target value."
+    expected = Template(_NOOP_TEMPLATES[surface_variant]).substitute(
+        statement=statement
     )
-    return statement == canonical_statement and raw_text in {
-        f"{canonical_statement} {suffix}"
-        for suffix in _DUPLICATE_CURRENT_RAW_SUFFIXES
-    }
+    return raw_text == expected
 
 
-def _bounded_report(issues: Sequence[ValidationIssue]) -> ValidationReport:
+def _bounded_report(
+    issues: list[ValidationIssue] | tuple[ValidationIssue, ...],
+) -> ValidationReport:
     unique = {
         (issue.code, issue.path, issue.message, issue.severity): issue for issue in issues
     }
@@ -127,6 +141,142 @@ def _bounded_report(issues: Sequence[ValidationIssue]) -> ValidationReport:
         )
         ordered.sort(key=lambda item: (item.code, item.path, item.message, item.severity))
     return build_report(ordered)
+
+
+def _preflight_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    gold = getattr(task, "gold", None)
+    source = getattr(task, "source", None)
+    metadata = getattr(task, "metadata", None)
+    for path, value, expected_type in (
+        ("source", source, SourceRecord),
+        ("gold", gold, GoldRecord),
+        ("metadata", metadata, TaskMetadata),
+    ):
+        if value is not None and type(value) is not expected_type:
+            issues.append(
+                _issue(
+                    "family_d_malformed_record",
+                    f"{path} must be an exact {expected_type.__name__}",
+                    path,
+                )
+            )
+    safe_gold = gold if type(gold) is GoldRecord else None
+    collections = {
+        "events": getattr(task, "events", None),
+        "target_objects": getattr(task, "target_objects", None),
+        "queries": getattr(task, "queries", None),
+        "gold.actions": getattr(safe_gold, "actions", None),
+        "gold.action_sequence": getattr(safe_gold, "action_sequence", None),
+    }
+    for path, value in collections.items():
+        if value is None:
+            continue
+        if type(value) is not list:
+            issues.append(
+                _issue(
+                    "family_d_malformed_collection",
+                    f"{path} must be an exact list",
+                    path,
+                )
+            )
+            continue
+        if len(value) > _COLLECTION_LIMITS[path]:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    f"{path} exceeds the Family D inspection limit",
+                    path,
+                )
+            )
+            if path == "events":
+                issues.append(
+                    _issue(
+                        "family_d_canonical_event_count_mismatch",
+                        "Family D tasks require exactly 12 events",
+                        "events",
+                    )
+                )
+    if issues:
+        return issues
+
+    record_collections = (
+        ("events", collections.get("events") or [], MemoryEvent),
+        ("target_objects", collections.get("target_objects") or [], MemoryObjectKey),
+        ("queries", collections.get("queries") or [], MemoryQuery),
+        ("gold.actions", collections.get("gold.actions") or [], GoldAction),
+    )
+    for path, values, expected_type in record_collections:
+        for index, value in enumerate(values):
+            if type(value) is not expected_type:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_record",
+                        f"{path} entries must be exact {expected_type.__name__} records",
+                        f"{path}[{index}]",
+                    )
+                )
+    if issues:
+        return issues
+
+    for index, event in enumerate(collections.get("events") or []):
+        if type(event.gold_action_ids) is not list:
+            issues.append(
+                _issue(
+                    "family_d_malformed_collection",
+                    "event gold_action_ids must be an exact list",
+                    f"events[{index}].gold_action_ids",
+                )
+            )
+        elif len(event.gold_action_ids) > 1:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "event gold_action_ids exceeds the Family D inspection limit",
+                    f"events[{index}].gold_action_ids",
+                )
+            )
+    for index, action in enumerate(collections.get("gold.actions") or []):
+        if type(action.target_object_keys) is not list:
+            issues.append(
+                _issue(
+                    "family_d_malformed_collection",
+                    "action target_object_keys must be an exact list",
+                    f"gold.actions[{index}].target_object_keys",
+                )
+            )
+        elif len(action.target_object_keys) > 1:
+            issues.append(
+                _issue(
+                    "family_d_input_size_limit",
+                    "action target_object_keys exceeds the Family D inspection limit",
+                    f"gold.actions[{index}].target_object_keys",
+                )
+            )
+    for index, query in enumerate(collections.get("queries") or []):
+        for field_name in (
+            "target_object_keys",
+            "reference_candidates",
+            "surface_references",
+        ):
+            value = getattr(query, field_name)
+            if type(value) is not list:
+                issues.append(
+                    _issue(
+                        "family_d_malformed_collection",
+                        f"query {field_name} must be an exact list",
+                        f"queries[{index}].{field_name}",
+                    )
+                )
+            elif len(value) > 1:
+                issues.append(
+                    _issue(
+                        "family_d_input_size_limit",
+                        f"query {field_name} exceeds the Family D inspection limit",
+                        f"queries[{index}].{field_name}",
+                    )
+                )
+    return issues
 
 
 def _event_records(task: MemUpdateTask) -> tuple[list[dict[str, Any]], list[Any]]:
@@ -266,6 +416,63 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             )
         )
 
+    target_records = [
+        record for record in records if record["lifecycle"] == "target_current"
+    ]
+    target_current_value = None
+    target_record_valid = False
+    if len(target_records) == 1 and len(target_records[0]["actions"]) == 1:
+        target_action = target_records[0]["actions"][0]
+        target_current_value = getattr(target_action, "value", None)
+        target_record_valid = (
+            _enum_value(getattr(target_action, "operation", None)) == Operation.ADD.value
+            and target_identity is not None
+            and _action_targets(target_action) == [target_identity]
+            and target_current_value is not None
+        )
+    if not target_record_valid:
+        path = (
+            f"events[{target_records[0]['index']}].gold_action_ids"
+            if target_records
+            else "events"
+        )
+        issues.append(
+            _issue(
+                "family_d_target_isolation_corruption",
+                "Family D requires one ADD target_current action on only the query target",
+                path,
+            )
+        )
+
+    semantic_statement = None
+    duplicate_statement = None
+    independent_statements: set[str] = set()
+    if target_identity is not None:
+        semantic_statement = family_d_semantic_near_miss_statement(
+            target_identity[1],
+            target_identity[2],
+        )
+        if isinstance(target_current_value, str):
+            duplicate_statement = family_d_duplicate_current_statement(
+                target_identity[1],
+                target_identity[2],
+                target_current_value,
+            )
+        independent_count = max(
+            0,
+            (expected_noop_count or 0) - (1 if declared_trap in _NOOP_TRAPS else 0),
+        )
+        independent_statements = {
+            family_d_independent_noop_statement(target_identity[1], note_number)
+            for note_number in range(1, independent_count + 1)
+        }
+    canonical_noop_statements = independent_statements | {
+        statement
+        for statement in (semantic_statement, duplicate_statement)
+        if statement is not None
+    }
+    surface_variant = extra.get("surface_variant")
+
     for record in records:
         lifecycle = record["lifecycle"]
         event_actions = record["actions"]
@@ -278,9 +485,8 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                 )
             )
         event_role = _enum_value(getattr(record["event"], "role", None))
-        statement_noop = _statement_requires_noop(
-            record["metadata"].get("surface_statement")
-        )
+        statement = record["metadata"].get("surface_statement")
+        statement_noop = statement in canonical_noop_statements
         trap_noop = record["trap_type"] in _NOOP_TRAPS
         role_noop = event_role == EventRole.NOOP_NEAR_MISS.value
         designated_noop = record["index"] in required_noop_indices
@@ -291,17 +497,48 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             or statement_noop
             or designated_noop
         )
+        expected_trap_statement = None
+        trap_kind = record["trap_type"]
+        if designated_noop:
+            trap_kind = declared_trap
+        if trap_kind == "semantic_near_miss":
+            expected_trap_statement = semantic_statement
+        elif trap_kind == "duplicate_current":
+            expected_trap_statement = duplicate_statement
         if (trap_noop or role_noop or designated_noop) and not (
             trap_noop
             and role_noop
             and lifecycle == "trap_noop"
-            and statement_noop
+            and statement == expected_trap_statement
         ):
             issues.append(
                 _issue(
                     "family_d_noop_semantics_mismatch",
-                    "NOOP trap type, role, lifecycle, and no-change statement disagree",
+                    "NOOP trap type, role, lifecycle, and canonical statement disagree",
                     f"events[{record['index']}]",
+                )
+            )
+        canonical_statement = expected_trap_statement
+        if canonical_statement is None and lifecycle == "independent_noop":
+            canonical_statement = statement if statement in independent_statements else None
+        has_noop_action = any(
+            _enum_value(getattr(action, "operation", None)) == Operation.NOOP.value
+            for action in event_actions
+        )
+        if (expected_noop or has_noop_action) and (
+            canonical_statement is None
+            or statement != canonical_statement
+            or not _raw_text_matches_noop_template(
+                canonical_statement,
+                getattr(record["event"], "raw_text", None),
+                surface_variant,
+            )
+        ):
+            issues.append(
+                _issue(
+                    "family_d_noop_visibility_mismatch",
+                    "NOOP statement and visible text must match canonical Family D rendering",
+                    f"events[{record['index']}].raw_text",
                 )
             )
         for action in event_actions:
@@ -343,34 +580,6 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                         f"events[{record['index']}].gold_action_ids",
                     )
                 )
-
-    target_records = [
-        record for record in records if record["lifecycle"] == "target_current"
-    ]
-    target_current_value = None
-    target_record_valid = False
-    if len(target_records) == 1 and len(target_records[0]["actions"]) == 1:
-        target_action = target_records[0]["actions"][0]
-        target_current_value = getattr(target_action, "value", None)
-        target_record_valid = (
-            _enum_value(getattr(target_action, "operation", None)) == Operation.ADD.value
-            and target_identity is not None
-            and _action_targets(target_action) == [target_identity]
-            and target_current_value is not None
-        )
-    if not target_record_valid:
-        path = (
-            f"events[{target_records[0]['index']}].gold_action_ids"
-            if target_records
-            else "events"
-        )
-        issues.append(
-            _issue(
-                "family_d_target_isolation_corruption",
-                "Family D requires one ADD target_current action on only the query target",
-                path,
-            )
-        )
 
     if target_current_value is not None:
         for record in records:
@@ -454,11 +663,13 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             and _enum_value(getattr(event_actions[0], "operation", None))
             == Operation.NOOP.value
         )
-        if not _duplicate_observation_is_canonical(
-            record["metadata"].get("surface_statement"),
-            getattr(event, "raw_text", None),
-            target_identity,
-            target_current_value,
+        if (
+            record["metadata"].get("surface_statement") != duplicate_statement
+            or not _raw_text_matches_noop_template(
+                duplicate_statement,
+                getattr(event, "raw_text", None),
+                surface_variant,
+            )
         ):
             issues.append(
                 _issue(
@@ -583,13 +794,47 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         str(_enum_value(getattr(action, "operation", None)))
         for action in semantic_actions
     )
+    target_update_count = sum(
+        _enum_value(getattr(action, "operation", None)) == Operation.UPDATE.value
+        and target_identity is not None
+        and target_identity in _action_targets(action)
+        for action in semantic_actions
+    )
+    integer_metadata = (
+        stratification.get("num_events"),
+        stratification.get("noop_count"),
+        stratification.get("true_write_count"),
+        stratification.get("num_target_updates"),
+        stratification.get("duplicate_current_count"),
+        stratification.get("trap_position"),
+        profile.get("context_length"),
+    )
+    if any(type(value) is not int for value in integer_metadata):
+        issues.append(
+            _issue(
+                "family_d_integer_metadata_type_mismatch",
+                "Family D counters, trap position, and context length must be exact integers",
+                "metadata.extra.stratification",
+            )
+        )
     counter_checks = (
-        stratification.get("num_events") == len(records),
-        stratification.get("noop_count") == action_noops,
-        stratification.get("true_write_count")
-        == len(semantic_actions) - action_noops,
+        _strict_int_equal(stratification.get("num_events"), len(records)),
+        _strict_int_equal(stratification.get("noop_count"), action_noops),
+        _strict_int_equal(
+            stratification.get("true_write_count"),
+            len(semantic_actions) - action_noops,
+        ),
+        _strict_int_equal(
+            stratification.get("num_target_updates"),
+            target_update_count,
+        ),
+        _strict_int_equal(
+            stratification.get("duplicate_current_count"),
+            len(duplicate_records),
+        ),
+        type(stratification.get("trap_position")) is int,
         stratification.get("operation_signature") == expected_signature,
-        profile.get("context_length") == len(records),
+        _strict_int_equal(profile.get("context_length"), len(records)),
         type(observed_density) is float
         and type(configured_density) is float
         and observed_density == configured_density,
@@ -678,25 +923,29 @@ def _validate_family_d_task(task: Any) -> ValidationReport:
             ]
         )
 
+    preflight_issues = _preflight_issues(task)
+    if preflight_issues:
+        return _bounded_report(preflight_issues)
+
     issues: list[ValidationIssue] = []
     for validator in (validate_task, validate_gold_replay):
         try:
             issues.extend(validator(task).issues)
-        except Exception as exc:
+        except Exception:
             issues.append(
                 _issue(
                     "family_d_malformed_task",
-                    f"existing validator failed safely: {type(exc).__name__}: {exc}",
+                    "existing validator rejected malformed task structure",
                     "task",
                 )
             )
     try:
         issues.extend(_family_d_issues(task))
-    except Exception as exc:
+    except Exception:
         issues.append(
             _issue(
                 "family_d_malformed_task",
-                f"could not inspect malformed Family D semantics: {type(exc).__name__}: {exc}",
+                "Family D semantic inspection rejected malformed task structure",
                 "task",
             )
         )
@@ -707,12 +956,12 @@ def validate_family_d_task(task: Any) -> ValidationReport:
     """Validate one Family D task without mutation, external I/O, or exception leaks."""
     try:
         return _validate_family_d_task(task)
-    except Exception as exc:
+    except Exception:
         return _bounded_report(
             [
                 _issue(
                     "family_d_malformed_task",
-                    f"could not inspect malformed Family D task: {type(exc).__name__}",
+                    "Family D validation rejected malformed task structure",
                     "task",
                 )
             ]

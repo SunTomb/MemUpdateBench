@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import mub.vnext.validation.pilot as pilot_module
 from mub.vnext.contracts import EventRole, Operation, Split, TaskFamily
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.generation import (
@@ -21,6 +23,21 @@ from mub.vnext.validation.pilot import validate_family_d_task
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "configs" / "vnext" / "pilot.yaml"
 MAX_REPORT_ISSUES = 128
+
+
+class ExplosiveSequence(Sequence):
+    def __init__(self):
+        self.iteration_count = 0
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        raise RuntimeError(f"unstable-item-{self.iteration_count}-{index}")
+
+    def __iter__(self):
+        self.iteration_count += 1
+        raise RuntimeError(f"unstable-iteration-{self.iteration_count}")
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +65,18 @@ def family_d_tasks():
                 context=context,
             )
             tasks[density_key] = task
+        if trap_type == "duplicate_current" and "duplicate_current_variant_0" not in tasks:
+            for variant in range(3):
+                tasks[f"duplicate_current_variant_{variant}"] = (
+                    task
+                    if variant == 0 and task is not None
+                    else render_core(
+                        core,
+                        split=Split.TEST,
+                        surface_variant=variant,
+                        context=context,
+                    )
+                )
         if (
             trap_type == "semantic_near_miss"
             and "semantic_near_miss_with_prior_write" not in tasks
@@ -182,11 +211,23 @@ def _append_extra_noop(task):
     return MemUpdateTask.model_validate(payload)
 
 
-def test_validate_family_d_task_accepts_valid_generated_sample(family_d_tasks):
-    report = validate_family_d_task(family_d_tasks["duplicate_current"])
+@pytest.mark.parametrize("surface_variant", (0, 1, 2))
+def test_validate_family_d_task_accepts_valid_generated_sample(
+    family_d_tasks,
+    surface_variant,
+):
+    report = validate_family_d_task(
+        family_d_tasks[f"duplicate_current_variant_{surface_variant}"]
+    )
 
     assert report.valid
     assert report.issues == ()
+
+
+def test_validate_family_d_task_is_exported_from_validation_package():
+    import mub.vnext.validation as validation
+
+    assert validation.validate_family_d_task is validate_family_d_task
 
 
 def test_validate_family_d_task_uses_semantic_event_order_not_action_storage_order(
@@ -275,6 +316,36 @@ def test_validate_family_d_task_requires_exact_canonical_density(
 
 
 @pytest.mark.parametrize(
+    ("container", "field"),
+    (
+        ("stratification", "num_events"),
+        ("stratification", "noop_count"),
+        ("stratification", "true_write_count"),
+        ("stratification", "num_target_updates"),
+        ("stratification", "duplicate_current_count"),
+        ("stratification", "trap_position"),
+        ("profile", "context_length"),
+    ),
+)
+def test_validate_family_d_task_rejects_non_integer_counter_metadata(
+    family_d_tasks,
+    container,
+    field,
+):
+    payload = _payload(family_d_tasks["duplicate_current"])
+    if container == "stratification":
+        target = payload["metadata"]["extra"]["stratification"]
+    else:
+        target = payload["metadata"]["resolved_profile"]
+    target[field] = float(target[field])
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_integer_metadata_type_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
     ("trap_type", "mutation"),
     (
         ("semantic_near_miss", "lifecycle"),
@@ -303,6 +374,36 @@ def test_validate_family_d_task_cross_checks_noop_semantic_signals(
     report = validate_family_d_task(corrupted)
 
     assert "family_d_noop_semantics_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "corruption"),
+    (
+        ("trap_noop", "statement"),
+        ("trap_noop", "raw_text"),
+        ("independent_noop", "statement"),
+        ("independent_noop", "raw_text"),
+    ),
+)
+def test_validate_family_d_task_rejects_contradictory_noop_payloads(
+    family_d_tasks,
+    lifecycle,
+    corruption,
+):
+    payload = _payload(family_d_tasks["semantic_near_miss"])
+    event = _event_with_lifecycle(payload, lifecycle)
+    if corruption == "statement":
+        event["metadata"]["surface_statement"] += " Now update another value."
+        event["raw_text"] = (
+            f"{event['metadata']['surface_statement']} No memory change is required."
+        )
+    else:
+        event["raw_text"] += " Actually, perform a memory update."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_noop_visibility_mismatch" in _codes(report)
 
 
 def test_validate_family_d_task_detects_gold_claiming_a_noop_state_change(
@@ -505,6 +606,22 @@ def test_validate_family_d_task_handles_constructed_models_with_missing_fields()
     )
 
 
+def test_validate_family_d_task_rejects_custom_sequences_without_iteration():
+    sequence = ExplosiveSequence()
+    malformed = MemUpdateTask.model_construct(
+        task_family=TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+        events=sequence,
+    )
+
+    first = validate_family_d_task(malformed)
+    second = validate_family_d_task(malformed)
+
+    assert first == second
+    assert not first.valid
+    assert sequence.iteration_count == 0
+    assert "family_d_malformed_collection" in _codes(first)
+
+
 def test_validate_family_d_task_is_deterministic_immutable_and_does_no_disk_io(
     family_d_tasks,
     monkeypatch,
@@ -536,7 +653,17 @@ def test_validate_family_d_task_is_deterministic_immutable_and_does_no_disk_io(
     )
 
 
-def test_validate_family_d_task_bounds_malformed_reports():
+def test_validate_family_d_task_rejects_oversized_input_before_generic_validation(
+    monkeypatch,
+):
+    generic_calls = []
+
+    def unexpected_generic_call(task):
+        generic_calls.append(task)
+        raise AssertionError("oversized input reached a generic validator")
+
+    monkeypatch.setattr(pilot_module, "validate_task", unexpected_generic_call)
+    monkeypatch.setattr(pilot_module, "validate_gold_replay", unexpected_generic_call)
     malformed_event = SimpleNamespace(
         event_id="",
         sequence_index=None,
@@ -578,4 +705,5 @@ def test_validate_family_d_task_bounds_malformed_reports():
 
     assert not report.valid
     assert len(report.issues) <= MAX_REPORT_ISSUES
-    assert "family_d_issue_limit_reached" in _codes(report)
+    assert "family_d_input_size_limit" in _codes(report)
+    assert generic_calls == []
