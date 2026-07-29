@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mub.vnext.contracts import Operation, Split, TaskFamily
+from mub.vnext.contracts import EventRole, Operation, Split, TaskFamily
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.generation import (
     GenerationContext,
@@ -29,13 +29,35 @@ def family_d_tasks():
     tasks = {}
     for core in generate_family_d_cores(config):
         trap_type = core.stratification["trap_type"]
+        task = None
         if trap_type not in tasks:
-            tasks[trap_type] = render_core(
+            task = render_core(
                 core,
                 split=Split.TEST,
                 surface_variant=0,
                 context=context,
             )
+            tasks[trap_type] = task
+        if (
+            trap_type == "semantic_near_miss"
+            and "semantic_near_miss_with_prior_write" not in tasks
+        ):
+            task = task or render_core(
+                core,
+                split=Split.TEST,
+                surface_variant=0,
+                context=context,
+            )
+            trap_index = next(
+                index
+                for index, event in enumerate(task.events)
+                if event.metadata.get("trap_type") == trap_type
+            )
+            if any(
+                event.metadata.get("lifecycle") == "independent_current"
+                for event in task.events[:trap_index]
+            ):
+                tasks["semantic_near_miss_with_prior_write"] = task
     return tasks
 
 
@@ -60,6 +82,55 @@ def _action_for_event(payload, event):
     return next(
         action for action in payload["gold"]["actions"] if action["action_id"] == action_id
     )
+
+
+def _rewrite_semantic_noop_as_non_target_update(task):
+    payload = _payload(task)
+    trap_index = next(
+        index
+        for index, event in enumerate(payload["events"])
+        if event["metadata"].get("trap_type") == "semantic_near_miss"
+    )
+    trap_event = payload["events"][trap_index]
+    prior_index = next(
+        index
+        for index in range(trap_index - 1, -1, -1)
+        if payload["events"][index]["metadata"].get("lifecycle")
+        == "independent_current"
+    )
+    prior_event = payload["events"][prior_index]
+    prior_action = _action_for_event(payload, prior_event)
+    prior_typed_action = next(
+        action
+        for action in task.gold.actions
+        if action.action_id == prior_event["gold_action_ids"][0]
+    )
+    non_target_id = prior_typed_action.target_object_keys[0].canonical_id
+
+    trap_event["metadata"]["lifecycle"] = "independent_current"
+    trap_action = _action_for_event(payload, trap_event)
+    trap_action["operation"] = Operation.UPDATE.value
+    trap_action["scope"] = "attribute"
+    trap_action["target_object_keys"] = prior_action["target_object_keys"]
+    trap_action["value"] = "coordinated-adversary-value"
+
+    payload["gold"]["final_state"][non_target_id] = trap_action["value"]
+    payload["gold"]["version_history"][non_target_id].append(trap_action["value"])
+    stratification = payload["metadata"]["extra"]["stratification"]
+    stratification["noop_count"] -= 1
+    stratification["true_write_count"] += 1
+    density = stratification["noop_count"] / stratification["num_events"]
+    stratification["configured_noop_density"] = density
+    stratification["observed_noop_density"] = density
+    payload["metadata"]["resolved_profile"]["noop_density"] = density
+    actions_by_id = {
+        action["action_id"]: action for action in payload["gold"]["actions"]
+    }
+    stratification["operation_signature"] = ",".join(
+        actions_by_id[event["gold_action_ids"][0]]["operation"]
+        for event in payload["events"]
+    )
+    return MemUpdateTask.model_validate(payload)
 
 
 def test_validate_family_d_task_accepts_valid_generated_sample(family_d_tasks):
@@ -94,6 +165,51 @@ def test_validate_family_d_task_detects_noop_converted_to_write(family_d_tasks):
     report = validate_family_d_task(corrupted)
 
     assert "family_d_noop_state_mutation" in _codes(report)
+
+
+def test_validate_family_d_task_rejects_coordinated_semantic_noop_rewrite(
+    family_d_tasks,
+):
+    corrupted = _rewrite_semantic_noop_as_non_target_update(
+        family_d_tasks["semantic_near_miss_with_prior_write"]
+    )
+
+    report = validate_family_d_task(corrupted)
+
+    assert not report.valid
+    assert "family_d_noop_state_mutation" in _codes(report)
+    assert "family_d_noop_semantics_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    ("trap_type", "mutation"),
+    (
+        ("semantic_near_miss", "lifecycle"),
+        ("duplicate_current", "lifecycle"),
+        ("semantic_near_miss", "role"),
+        ("semantic_near_miss", "statement"),
+    ),
+)
+def test_validate_family_d_task_cross_checks_noop_semantic_signals(
+    family_d_tasks,
+    trap_type,
+    mutation,
+):
+    payload = _payload(family_d_tasks[trap_type])
+    event = next(
+        item for item in payload["events"] if item["metadata"].get("trap_type") == trap_type
+    )
+    if mutation == "lifecycle":
+        event["metadata"]["lifecycle"] = "independent_noop"
+    elif mutation == "role":
+        event["role"] = EventRole.NEUTRAL.value
+    else:
+        event["metadata"]["surface_statement"] = "This text now directs a write."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_noop_semantics_mismatch" in _codes(report)
 
 
 def test_validate_family_d_task_detects_gold_claiming_a_noop_state_change(

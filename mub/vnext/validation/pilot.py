@@ -18,6 +18,12 @@ _CORRECTION_TRAPS = frozenset(
 )
 _NOOP_TRAPS = frozenset({"semantic_near_miss", "duplicate_current"})
 _TRAPS = _NOOP_TRAPS | _CORRECTION_TRAPS
+_NOOP_STATEMENT_MARKERS = (
+    "does not assert a current-state change",
+    "remains exactly",
+    "repeats the exact current target value",
+    "does not direct any memory change",
+)
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -63,6 +69,12 @@ def _identity(key: Any) -> tuple[str, str, str, str | None] | None:
 
 def _same_value(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
+
+
+def _statement_requires_noop(value: Any) -> bool:
+    return isinstance(value, str) and any(
+        marker in value.casefold() for marker in _NOOP_STATEMENT_MARKERS
+    )
 
 
 def _bounded_report(issues: Sequence[ValidationIssue]) -> ValidationReport:
@@ -160,7 +172,31 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                     f"events[{record['index']}].gold_action_ids",
                 )
             )
-        expected_noop = lifecycle in _NOOP_LIFECYCLES
+        event_role = _enum_value(getattr(record["event"], "role", None))
+        statement_noop = _statement_requires_noop(
+            record["metadata"].get("surface_statement")
+        )
+        trap_noop = record["trap_type"] in _NOOP_TRAPS
+        role_noop = event_role == EventRole.NOOP_NEAR_MISS.value
+        expected_noop = (
+            lifecycle in _NOOP_LIFECYCLES
+            or trap_noop
+            or role_noop
+            or statement_noop
+        )
+        if (trap_noop or role_noop) and not (
+            trap_noop
+            and role_noop
+            and lifecycle == "trap_noop"
+            and statement_noop
+        ):
+            issues.append(
+                _issue(
+                    "family_d_noop_semantics_mismatch",
+                    "NOOP trap type, role, lifecycle, and no-change statement disagree",
+                    f"events[{record['index']}]",
+                )
+            )
         for action in event_actions:
             operation = _enum_value(getattr(action, "operation", None))
             targets = _action_targets(action)
