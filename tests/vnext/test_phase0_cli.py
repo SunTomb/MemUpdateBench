@@ -18,6 +18,14 @@ from mub.vnext.contracts import (
     TaskManifest,
     TaskRunRecord,
 )
+from mub.vnext.validation import (
+    merge_reports,
+    validate_distractors,
+    validate_family_a_task,
+    validate_gold_replay,
+    validate_task,
+    validate_task_semantics,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -109,6 +117,25 @@ def test_dataset_cli_writes_canonical_tasks_and_exact_manifest(tmp_path: Path) -
     manifest_payload = _load_json(manifest_path)
     manifest = TaskManifest.model_validate(manifest_payload)
     assert len(tasks) == 2
+    for task in tasks:
+        expected = merge_reports(
+            validate_task(task),
+            validate_gold_replay(task),
+            validate_distractors(task),
+        )
+        aggregate = validate_task_semantics(task)
+        direct = validate_family_a_task(task)
+        assert expected.valid
+        assert aggregate == expected
+        assert not direct.valid
+
+        ambiguous_metadata = task.metadata.model_copy(
+            update={"tags": [*task.metadata.tags, "vnext_pilot"]}
+        )
+        ambiguous = task.model_copy(update={"metadata": ambiguous_metadata})
+        ambiguous_direct = validate_family_a_task(ambiguous)
+        assert validate_task_semantics(ambiguous) == ambiguous_direct
+        assert not ambiguous_direct.valid
     assert set(manifest_payload) == set(TaskManifest.model_fields)
     assert manifest.leakage_check_summary["compatibility_only"] is True
     assert manifest.split_counts == {

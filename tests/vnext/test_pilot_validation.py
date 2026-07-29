@@ -742,6 +742,23 @@ def test_validate_family_a_task_routes_hostile_family_without_override_access(
     assert hostile.override_access_count == 0
 
 
+def test_validate_task_semantics_does_not_execute_hostile_generator_string(
+    family_a_tasks,
+):
+    task = family_a_tasks[0]
+    hostile = HostileFamilyString("legacy_p63_episode_compiler")
+    generator = _construct_replace(task.source.generator, generator_name=hostile)
+    source = _construct_replace(task.source, generator=generator)
+    malformed = _construct_replace(task, source=source)
+
+    direct = validate_family_a_task(malformed)
+    aggregate = validate_task_semantics(malformed)
+
+    assert aggregate == direct
+    assert "family_a_invalid_field_type" in _codes(direct)
+    assert hostile.override_access_count == 0
+
+
 def test_validate_family_a_task_is_public_and_other_families_are_inapplicable(
     family_a_tasks,
     family_d_tasks,
