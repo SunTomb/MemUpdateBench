@@ -34,6 +34,10 @@ from mub.vnext.generation.identity import (
     trajectory_id,
 )
 from mub.vnext.generation.render import render_core
+from mub.vnext.generation.publish import (
+    PublishedPilotBundle,
+    publish_pilot_artifact_bundle,
+)
 from mub.vnext.generation.splits import (
     CoreSplitAssignment,
     SplitAssignmentResult,
@@ -53,6 +57,7 @@ __all__ = [
     "NAMESPACES",
     "PilotArtifactBundle",
     "PilotConfig",
+    "PublishedPilotBundle",
     "REFERENCE_CONDITION_LABELS",
     "REFERENCE_QUERY_TEMPLATE_SETS",
     "RELATION_QUALIFIED_ENTITIES",
@@ -75,6 +80,7 @@ __all__ = [
     "generate_family_d_cores",
     "load_pilot_config",
     "paraphrase_group_id",
+    "publish_pilot_artifact_bundle",
     "query_id",
     "render_core",
     "select_conflicting_values",
