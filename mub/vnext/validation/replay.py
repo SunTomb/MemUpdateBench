@@ -539,10 +539,23 @@ def _superseded_non_target_answer_overlap(
     return matched
 
 
+def _canonical_noop_answer_observation(event_actions: list[Any]) -> bool:
+    if len(event_actions) != 1:
+        return False
+    action = event_actions[0]
+    return (
+        _enum_value(getattr(action, "operation", None)) == Operation.NOOP.value
+        and not _targets(action)
+        and getattr(action, "value", None) is None
+        and not bool(_mapping(getattr(action, "expected_effect", None)))
+    )
+
+
 def _validate_distractors(
     task: MemUpdateTask,
     *,
     allow_superseded_non_target_answer_overlap: bool = False,
+    allow_noop_answer_observation_overlap: bool = False,
 ) -> ValidationReport:
     issues: list[ValidationIssue] = []
     gold = getattr(task, "gold", None)
@@ -686,7 +699,7 @@ def _validate_distractors(
 
     for event_index, event in _event_order(task):
         role = _enum_value(getattr(event, "role", None))
-        if role in _DISTRACTOR_ROLES and _mapping(getattr(event, "metadata", None)).get("allow_accepted_answer_ambiguity") is not True:
+        if role in _DISTRACTOR_ROLES:
             referenced_ids = _list(getattr(event, "gold_action_ids", None))
             event_actions = [
                 ordered_by_id[action_id]
@@ -711,6 +724,12 @@ def _validate_distractors(
                             query_target_ids,
                             terminal_absence,
                         )
+                    ):
+                        continue
+                    if (
+                        allow_noop_answer_observation_overlap
+                        and role == EventRole.NOOP_NEAR_MISS.value
+                        and _canonical_noop_answer_observation(event_actions)
                     ):
                         continue
                     _issue(issues, "distractor_text_contains_accepted_answer", f"distractor text contains accepted string answer {accepted!r}", f"events[{event_index}].{field_name}")
@@ -776,12 +795,16 @@ def validate_distractors(
     task: MemUpdateTask,
     *,
     allow_superseded_non_target_answer_overlap: bool = False,
+    allow_noop_answer_observation_overlap: bool = False,
 ) -> ValidationReport:
     try:
         return _validate_distractors(
             task,
             allow_superseded_non_target_answer_overlap=(
                 allow_superseded_non_target_answer_overlap
+            ),
+            allow_noop_answer_observation_overlap=(
+                allow_noop_answer_observation_overlap
             ),
         )
     except Exception as exc:

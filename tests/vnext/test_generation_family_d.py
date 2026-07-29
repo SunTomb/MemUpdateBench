@@ -20,7 +20,7 @@ from mub.vnext.generation import (
 from mub.vnext.generation.catalogs import CANONICAL_ATTRIBUTES
 from mub.vnext.generation.core import CoreEvent
 from mub.vnext.io import semantic_task_hash
-from mub.vnext.validation import validate_task_semantics
+from mub.vnext.validation import validate_pilot_task
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
 
@@ -372,7 +372,7 @@ def test_family_d_three_rendered_variants_validate_replay_and_share_hash(config,
         assert len({semantic_task_hash(task) for task in tasks}) == 1
         assert all(validate_task(task).valid for task in tasks)
         assert all(validate_gold_replay(task).valid for task in tasks)
-        assert all(not validate_task_semantics(task).issues for task in tasks)
+        assert all(not validate_pilot_task(task).issues for task in tasks)
 
 
 def test_family_a_through_c_generation_smoke(config):

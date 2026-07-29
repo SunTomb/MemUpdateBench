@@ -627,9 +627,46 @@ def test_family_b_structured_distractor_overlap_policy_preserves_real_leaks(
     )
     leaking_event["raw_text"] += f" Unrelated leak: {target_gold}."
     leaking_event["normalized_text"] += f" Unrelated leak: {target_gold}."
+    leaking_event["metadata"]["allow_accepted_answer_ambiguity"] = True
     leaking = MemUpdateTask.model_validate(payload)
+    assert "distractor_text_contains_accepted_answer" in _codes(
+        validate_distractors(leaking)
+    )
     report = validate_family_b_task(leaking)
     assert "distractor_text_contains_accepted_answer" in _codes(report)
+
+
+def test_family_b_forged_role_and_history_cannot_authorize_answer_leak(
+    family_b_tasks,
+):
+    task = _family_b_task(family_b_tasks)
+    payload = _payload(task)
+    query_id = payload["queries"][0]["query_id"]
+    target_gold = payload["gold"]["gold_answers"][query_id]
+    target_id = _canonical_id(payload["queries"][0]["target_object_keys"][0])
+    target_event = next(
+        event
+        for event in payload["events"]
+        if event["metadata"]["slot_index"] == 0
+        and event["metadata"]["version_index"] == 0
+    )
+    target_action = _action_for_event(payload, target_event)
+    target_action["value"] = target_gold
+    payload["gold"]["version_history"][target_id][0] = target_gold
+    target_event["role"] = EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+    target_event["metadata"]["allow_accepted_answer_ambiguity"] = True
+    target_event["raw_text"] += f" Forged current answer: {target_gold}."
+    target_event["normalized_text"] += f" Forged current answer: {target_gold}."
+    forged = MemUpdateTask.model_validate(payload)
+
+    specialized = validate_distractors(
+        forged,
+        allow_superseded_non_target_answer_overlap=True,
+    )
+    assert "distractor_text_contains_accepted_answer" in _codes(specialized)
+    report = validate_family_b_task(forged)
+    assert "distractor_text_contains_accepted_answer" in _codes(report)
+    assert "family_b_target_chain_corruption" in _codes(report)
 
 
 def test_family_b_preflight_is_hostile_safe_bounded_and_dispatch_equivalent(

@@ -2870,6 +2870,7 @@ def _generic_validation_issues(
     *,
     family: str,
     allow_superseded_non_target_answer_overlap: bool = False,
+    allow_noop_answer_observation_overlap: bool = False,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     validators = (
@@ -2879,6 +2880,9 @@ def _generic_validation_issues(
             candidate,
             allow_superseded_non_target_answer_overlap=(
                 allow_superseded_non_target_answer_overlap
+            ),
+            allow_noop_answer_observation_overlap=(
+                allow_noop_answer_observation_overlap
             ),
         ),
     )
@@ -2986,7 +2990,13 @@ def _validate_family_d_task(task: Any) -> ValidationReport:
         return _bounded_report(preflight_issues)
 
     issues = _contract_constraint_issues(task, family="d")
-    issues.extend(_generic_validation_issues(task, family="d"))
+    issues.extend(
+        _generic_validation_issues(
+            task,
+            family="d",
+            allow_noop_answer_observation_overlap=True,
+        )
+    )
     try:
         issues.extend(_family_d_issues(task))
     except Exception:

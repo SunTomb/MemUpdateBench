@@ -423,14 +423,14 @@ def test_distractor_action_must_not_establish_accepted_current_answer(make_task,
     assert "distractor_establishes_accepted_answer" in _codes(validate_distractors(_replace(task, events=events)))
 
 
-def test_simple_distractor_text_cannot_leak_string_answer_without_explicit_exception(make_task):
+def test_simple_distractor_text_leak_rejects_forged_metadata_waiver(make_task):
     task = make_task()
     event = _replace(task.events[0], raw_text="Maybe Qingdao", normalized_text="maybe qingdao", role=EventRole.NEUTRAL)
     report = validate_distractors(_replace(task, events=[event, task.events[1]]))
     assert "distractor_text_contains_accepted_answer" in _codes(report)
-    allowed = _replace(event, metadata={"allow_accepted_answer_ambiguity": True})
-    allowed_codes = _codes(validate_distractors(_replace(task, events=[allowed, task.events[1]])))
-    assert "distractor_text_contains_accepted_answer" not in allowed_codes
+    forged = _replace(event, metadata={"allow_accepted_answer_ambiguity": True})
+    forged_codes = _codes(validate_distractors(_replace(task, events=[forged, task.events[1]])))
+    assert "distractor_text_contains_accepted_answer" in forged_codes
 
 
 def test_canonical_answer_must_be_present_in_acceptable_support(make_task):
