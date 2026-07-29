@@ -504,7 +504,46 @@ def _event_order(task: MemUpdateTask) -> list[tuple[int, Any]]:
     )
 
 
-def _validate_distractors(task: MemUpdateTask) -> ValidationReport:
+def _superseded_non_target_answer_overlap(
+    event_actions: list[Any],
+    accepted: Any,
+    terminal_future: Mapping[Any, Mapping[str, Any]],
+    query_target_ids: set[str],
+    terminal_absence: Any,
+) -> bool:
+    matched = False
+    for action in event_actions:
+        if _enum_value(getattr(action, "operation", None)) not in (
+            Operation.ADD.value,
+            Operation.UPDATE.value,
+        ) or not _same_value(getattr(action, "value", None), accepted):
+            continue
+        action_id = getattr(action, "action_id", None)
+        target_ids: list[str] = []
+        for target in _targets(action):
+            try:
+                target_ids.append(_canonical_id(target))
+            except ValueError:
+                return False
+        if not target_ids or any(target_id in query_target_ids for target_id in target_ids):
+            return False
+        future = terminal_future.get(action_id, {})
+        if any(
+            future.get(target_id) is None
+            or future.get(target_id) is terminal_absence
+            or _same_value(future.get(target_id), accepted)
+            for target_id in target_ids
+        ):
+            return False
+        matched = True
+    return matched
+
+
+def _validate_distractors(
+    task: MemUpdateTask,
+    *,
+    allow_superseded_non_target_answer_overlap: bool = False,
+) -> ValidationReport:
     issues: list[ValidationIssue] = []
     gold = getattr(task, "gold", None)
     _semantic_map(issues, getattr(gold, "final_state", None), "gold.final_state", "malformed_final_state")
@@ -637,18 +676,45 @@ def _validate_distractors(task: MemUpdateTask) -> ValidationReport:
             elif operation == Operation.DELETE.value:
                 state.pop(canonical_id, None)
 
+    query_target_ids: set[str] = set()
+    for query in queries:
+        for target in _targets(query):
+            try:
+                query_target_ids.add(_canonical_id(target))
+            except ValueError:
+                continue
+
     for event_index, event in _event_order(task):
         role = _enum_value(getattr(event, "role", None))
         if role in _DISTRACTOR_ROLES and _mapping(getattr(event, "metadata", None)).get("allow_accepted_answer_ambiguity") is not True:
+            referenced_ids = _list(getattr(event, "gold_action_ids", None))
+            event_actions = [
+                ordered_by_id[action_id]
+                for action_id in referenced_ids
+                if action_id in ordered_by_id
+            ]
             accepted_candidates = [candidate for candidates in query_support.values() for candidate in candidates]
             for field_name in ("raw_text", "normalized_text"):
                 text = getattr(event, field_name, None)
                 if not isinstance(text, str):
                     continue
                 for accepted in accepted_candidates:
-                    if _text_contains_value(text, accepted):
-                        _issue(issues, "distractor_text_contains_accepted_answer", f"distractor text contains accepted string answer {accepted!r}", f"events[{event_index}].{field_name}")
-                        break
+                    if not _text_contains_value(text, accepted):
+                        continue
+                    if (
+                        allow_superseded_non_target_answer_overlap
+                        and role == EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+                        and _superseded_non_target_answer_overlap(
+                            event_actions,
+                            accepted,
+                            terminal_future,
+                            query_target_ids,
+                            terminal_absence,
+                        )
+                    ):
+                        continue
+                    _issue(issues, "distractor_text_contains_accepted_answer", f"distractor text contains accepted string answer {accepted!r}", f"events[{event_index}].{field_name}")
+                    break
 
     try:
         replay = _replay_records(records)
@@ -706,9 +772,18 @@ def _validate_distractors(task: MemUpdateTask) -> ValidationReport:
     return build_report(issues)
 
 
-def validate_distractors(task: MemUpdateTask) -> ValidationReport:
+def validate_distractors(
+    task: MemUpdateTask,
+    *,
+    allow_superseded_non_target_answer_overlap: bool = False,
+) -> ValidationReport:
     try:
-        return _validate_distractors(task)
+        return _validate_distractors(
+            task,
+            allow_superseded_non_target_answer_overlap=(
+                allow_superseded_non_target_answer_overlap
+            ),
+        )
     except Exception as exc:
         issues: list[ValidationIssue] = []
         _issue(

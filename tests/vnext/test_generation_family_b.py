@@ -15,6 +15,10 @@ from mub.vnext.contracts.task import GoldAction
 from mub.vnext.generation import GenerationContext, load_pilot_config, render_core
 from mub.vnext.generation.catalogs import CANONICAL_ATTRIBUTES
 from mub.vnext.generation.family_b import generate_family_b_cores
+from mub.vnext.generation.family_b_schedule import (
+    canonical_cross_slot_update_count,
+    canonical_interleaving_schedule,
+)
 from mub.vnext.validation.replay import replay_actions, validate_gold_replay
 from mub.vnext.validation.task import validate_task
 
@@ -32,6 +36,31 @@ def config():
 @pytest.fixture(scope="module")
 def cores(config):
     return generate_family_b_cores(config)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    (
+        ("burst", ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0))),
+        ("round_robin", ((1, 0), (2, 0), (0, 0), (1, 1), (0, 1))),
+        ("adversarial_adjacent", ((0, 0), (1, 0), (1, 1), (2, 0), (0, 1))),
+    ),
+)
+def test_canonical_interleaving_schedule(pattern, expected):
+    assert canonical_interleaving_schedule((2, 2, 1), pattern) == expected
+
+
+@pytest.mark.parametrize("lengths", ((), (2, 0), [2, 1]))
+def test_canonical_interleaving_schedule_rejects_invalid_lengths(lengths):
+    with pytest.raises((TypeError, ValueError)):
+        canonical_interleaving_schedule(lengths, "burst")
+
+
+def test_canonical_cross_slot_count_uses_decimal_half_up():
+    assert canonical_cross_slot_update_count(5, 0.5) == 3
+    assert canonical_cross_slot_update_count(12, 0.25) == 3
+    with pytest.raises(TypeError):
+        canonical_cross_slot_update_count(True, 0.5)
 
 
 def _target_events(core):

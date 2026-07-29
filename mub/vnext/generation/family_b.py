@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from decimal import Decimal, ROUND_HALF_UP
 from itertools import product
 
 from mub.vnext.contracts import Difficulty, EventRole, MemoryObjectKey, Operation, TaskFamily
@@ -15,12 +14,17 @@ from mub.vnext.generation.catalogs import (
 from mub.vnext.generation.config import InterleavedMultiSlotUpdateConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
+from mub.vnext.generation.family_b_schedule import (
+    INTERLEAVING_PATTERNS,
+    canonical_cross_slot_update_count,
+    canonical_interleaving_schedule,
+)
 
 
 _FAMILY_NAME = TaskFamily.INTERLEAVED_MULTI_SLOT.value
 _DEPTHS = (1, 4, 16)
 _DIFFICULTIES = (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
-_PATTERNS = ("round_robin", "burst", "adversarial_adjacent")
+_PATTERNS = INTERLEAVING_PATTERNS
 
 
 def _validate_config(config: PilotConfig) -> InterleavedMultiSlotUpdateConfig:
@@ -167,11 +171,6 @@ def _target_trajectory(
     return tuple(events)
 
 
-def _cross_slot_distractor_count(base_event_count: int, density: float) -> int:
-    scaled = Decimal(base_event_count) * Decimal(str(density))
-    return int(scaled.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-
 def _distribute_updates(count: int, slot_count: int) -> tuple[int, ...]:
     allocations = [0] * slot_count
     for index in range(count):
@@ -262,25 +261,14 @@ def _interleave(
     trajectories: tuple[tuple[CoreEvent, ...], ...],
     pattern: str,
 ) -> tuple[CoreEvent, ...]:
-    target = trajectories[0]
-    non_targets = trajectories[1:]
-    if pattern == "burst":
-        return tuple(event for trajectory in trajectories for event in trajectory)
-    if pattern == "round_robin":
-        ordered_trajectories = (*non_targets, target)
-        max_length = max(len(trajectory) for trajectory in ordered_trajectories)
-        return tuple(
-            trajectory[version_index]
-            for version_index in range(max_length)
-            for trajectory in ordered_trajectories
-            if version_index < len(trajectory)
-        )
-    if pattern == "adversarial_adjacent":
-        distractors = tuple(
-            event for trajectory in non_targets for event in trajectory
-        )
-        return (*target[:-1], *distractors, target[-1])
-    raise ValueError(f"unsupported interleaving pattern: {pattern}")
+    schedule = canonical_interleaving_schedule(
+        tuple(len(trajectory) for trajectory in trajectories),
+        pattern,
+    )
+    return tuple(
+        trajectories[slot_index][version_index]
+        for slot_index, version_index in schedule
+    )
 
 
 def _balanced_group_cells(
@@ -500,7 +488,7 @@ def generate_family_b_cores(config: PilotConfig) -> list[SemanticCore]:
         cached = trajectory_cache.get(group_index)
         if cached is None:
             base_event_count = active_object_count + depth
-            distractor_count = _cross_slot_distractor_count(
+            distractor_count = canonical_cross_slot_update_count(
                 base_event_count,
                 density,
             )

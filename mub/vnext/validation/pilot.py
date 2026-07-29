@@ -12,7 +12,16 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from mub.vnext.contracts import EventRole, Operation, QueryType, TaskFamily
 from mub.vnext.contracts.task import MemUpdateTask
-from mub.vnext.generation.catalogs import SAME_NAME_ENTITIES, SURFACE_TEMPLATE_SETS
+from mub.vnext.generation.catalogs import (
+    CANONICAL_ATTRIBUTES,
+    SAME_NAME_ENTITIES,
+    SURFACE_TEMPLATE_SETS,
+)
+from mub.vnext.generation.family_b_schedule import (
+    INTERLEAVING_PATTERNS,
+    canonical_cross_slot_update_count,
+    canonical_interleaving_schedule,
+)
 from mub.vnext.generation.family_d import (
     family_d_duplicate_current_statement,
     family_d_independent_noop_statement,
@@ -24,7 +33,11 @@ from mub.vnext.validation.issues import (
     build_report,
     merge_reports,
 )
-from mub.vnext.validation.replay import validate_distractors, validate_gold_replay
+from mub.vnext.validation.replay import (
+    replay_actions,
+    validate_distractors,
+    validate_gold_replay,
+)
 from mub.vnext.validation.task import acceptable_candidates, validate_task
 
 
@@ -64,6 +77,8 @@ _FAMILY_A_BASE_PROFILE = {
 }
 _FAMILY_A_DEPTH_BUCKETS = {1: "1", 4: "4-7", 16: "16+"}
 _FAMILY_A_DEPTHS = frozenset(_FAMILY_A_DEPTH_BUCKETS)
+_FAMILY_B_ACTIVE_COUNTS = {"easy": 2, "medium": 4, "hard": 8}
+_FAMILY_B_DENSITIES = {"easy": 0.0, "medium": 0.25, "hard": 0.5}
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -174,6 +189,92 @@ def _bounded_report(
         )
         ordered.sort(key=lambda item: (item.code, item.path, item.message, item.severity))
     return build_report(ordered)
+
+
+def _raw_task_family(task: Any) -> Any:
+    if type(task) is not MemUpdateTask:
+        return None
+    try:
+        raw = object.__getattribute__(task, "__dict__")
+    except (AttributeError, TypeError):
+        return None
+    return raw.get("task_family") if type(raw) is dict else None
+
+
+def _task_identifies_family(task: Any, expected_family: str) -> bool:
+    task_family = _raw_task_family(task)
+    return isinstance(task_family, str) and str.__eq__(
+        task_family,
+        expected_family,
+    ) is True
+
+
+def _strict_family_precheck(
+    task: Any,
+    *,
+    family: str,
+    expected_family: str,
+) -> ValidationReport | None:
+    label = family.upper()
+    if type(task) is not MemUpdateTask:
+        return _bounded_report(
+            [
+                _issue(
+                    f"family_{family}_invalid_task_type",
+                    f"Family {label} validation requires an exact MemUpdateTask instance",
+                    "task",
+                )
+            ],
+            family=family,
+        )
+    task_family = _raw_task_family(task)
+    identifies_family = _task_identifies_family(task, expected_family)
+    if not identifies_family and (
+        type(task_family) is not str or not str.strip(task_family)
+    ):
+        return _bounded_report(
+            [
+                _issue(
+                    f"family_{family}_malformed_task",
+                    "MemUpdateTask.task_family must be a nonblank exact string",
+                    "task_family",
+                )
+            ],
+            family=family,
+        )
+    if not identifies_family:
+        return _bounded_report(
+            [
+                _issue(
+                    f"family_{family}_inapplicable_task_family",
+                    f"Family {label} validation is inapplicable to this task family",
+                    "task_family",
+                )
+            ],
+            family=family,
+        )
+    return None
+
+
+def _run_strict_family_validator(
+    task: Any,
+    validator: Any,
+    *,
+    family: str,
+) -> ValidationReport:
+    try:
+        return validator(task)
+    except Exception:
+        return _bounded_report(
+            [
+                _issue(
+                    f"family_{family}_malformed_task",
+                    f"Family {family.upper()} validation rejected malformed task structure",
+                    "task",
+                )
+            ],
+            family=family,
+        )
 
 
 def _schema_issue(
@@ -1027,6 +1128,71 @@ def _family_a_preflight_issues(
     return issues
 
 
+def _family_b_preflight_issues(
+    task: MemUpdateTask,
+    *,
+    schema_checked: bool = False,
+) -> list[ValidationIssue]:
+    if not schema_checked:
+        schema_issues = _schema_preflight_issues(task, family="b")
+        if schema_issues:
+            return schema_issues
+
+    issues: list[ValidationIssue] = []
+    bounded_collections = (
+        ("events", task.events, 64),
+        ("queries", task.queries, 1),
+        ("target_objects", task.target_objects, 8),
+        ("gold.actions", task.gold.actions, 64),
+        ("gold.action_sequence", task.gold.action_sequence, 64),
+        ("gold.gold_source_event_ids", task.gold.gold_source_event_ids, 1),
+        ("gold.expected_present_objects", task.gold.expected_present_objects, 8),
+    )
+    for path, values, limit in bounded_collections:
+        if len(values) > limit:
+            issues.append(
+                _issue(
+                    "family_b_input_size_limit",
+                    f"{path} exceeds the Family B inspection limit",
+                    path,
+                )
+            )
+    for index, event in enumerate(task.events):
+        if len(event.gold_action_ids) > 1:
+            issues.append(
+                _issue(
+                    "family_b_input_size_limit",
+                    "event gold_action_ids exceeds the Family B cardinality limit",
+                    f"events[{index}].gold_action_ids",
+                )
+            )
+    for index, action in enumerate(task.gold.actions):
+        if len(action.target_object_keys) > 1:
+            issues.append(
+                _issue(
+                    "family_b_input_size_limit",
+                    "action target_object_keys exceeds the Family B cardinality limit",
+                    f"gold.actions[{index}].target_object_keys",
+                )
+            )
+    for index, query in enumerate(task.queries):
+        for field_name in (
+            "target_object_keys",
+            "reference_candidates",
+            "surface_references",
+        ):
+            values = object.__getattribute__(query, field_name)
+            if len(values) > 1:
+                issues.append(
+                    _issue(
+                        "family_b_input_size_limit",
+                        f"query {field_name} exceeds the Family B cardinality limit",
+                        f"queries[{index}].{field_name}",
+                    )
+                )
+    return issues
+
+
 def _event_records(task: MemUpdateTask) -> tuple[list[dict[str, Any]], list[Any]]:
     actions = _items(getattr(getattr(task, "gold", None), "actions", None))
     action_by_id: dict[str, Any] = {}
@@ -1599,6 +1765,505 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             )
         )
 
+    return issues
+
+
+def _family_b_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    records, _ = _event_records(task)
+    gold = task.gold
+    extra = _mapping(task.metadata.extra)
+    raw_stratification = extra.get("stratification")
+    stratification = raw_stratification if type(raw_stratification) is dict else {}
+    profile = _mapping(task.metadata.resolved_profile)
+    difficulty = _enum_value(task.difficulty)
+    expected_active_count = _FAMILY_B_ACTIVE_COUNTS.get(difficulty)
+    expected_density = _FAMILY_B_DENSITIES.get(difficulty)
+
+    queries = _items(task.queries)
+    query = queries[0] if len(queries) == 1 else None
+    query_targets = _items(getattr(query, "target_object_keys", None))
+    target_identities = [
+        identity
+        for key in query_targets
+        if (identity := _identity(key)) is not None
+    ]
+    target_identity = target_identities[0] if len(target_identities) == 1 else None
+    if (
+        query is None
+        or target_identity is None
+        or _enum_value(getattr(query, "query_type", None))
+        != QueryType.CURRENT_STATE.value
+        or _items(getattr(query, "reference_candidates", None))
+        or _items(getattr(query, "surface_references", None))
+    ):
+        issues.append(
+            _issue(
+                "family_b_query_semantics_mismatch",
+                "Family B requires one current-state query on one exact four-part identity",
+                "queries",
+            )
+        )
+
+    depth = profile.get("update_depth")
+    depth_valid = type(depth) is int and depth in _FAMILY_A_DEPTHS
+    if not depth_valid:
+        issues.append(
+            _issue(
+                "family_b_update_depth_mismatch",
+                "Family B update_depth must be the exact integer 1, 4, or 16",
+                "metadata.resolved_profile.update_depth",
+            )
+        )
+        depth = 0
+
+    action_ids_in_event_order: list[Any] = []
+    has_noop = False
+    slot_records: dict[int, list[dict[str, Any]]] = {}
+    all_event_actions_valid = True
+    for record in records:
+        event = record["event"]
+        event_action_ids = _items(event.gold_action_ids)
+        action_ids_in_event_order.extend(event_action_ids)
+        if len(event_action_ids) != 1 or len(record["actions"]) != 1:
+            all_event_actions_valid = False
+            continue
+        action = record["actions"][0]
+        operation = _enum_value(getattr(action, "operation", None))
+        if operation == Operation.NOOP.value or _enum_value(event.role) == EventRole.NOOP_NEAR_MISS.value:
+            has_noop = True
+        metadata = record["metadata"]
+        slot_index = metadata.get("slot_index")
+        if type(slot_index) is int and 0 <= slot_index <= 7:
+            slot_records.setdefault(slot_index, []).append(record)
+        else:
+            all_event_actions_valid = False
+        if (
+            operation not in {Operation.ADD.value, Operation.UPDATE.value}
+            or len(_action_targets(action)) != 1
+            or getattr(action, "value", None) is None
+        ):
+            all_event_actions_valid = False
+    if not all_event_actions_valid:
+        issues.append(
+            _issue(
+                "family_b_event_action_binding_mismatch",
+                "each Family B event must bind one single-target ADD or UPDATE action",
+                "events",
+            )
+        )
+    if action_ids_in_event_order != _items(gold.action_sequence):
+        issues.append(
+            _issue(
+                "family_b_event_action_order_mismatch",
+                "Family B action_sequence must follow emitted event order",
+                "gold.action_sequence",
+            )
+        )
+    if has_noop:
+        issues.append(
+            _issue(
+                "family_b_noop_forbidden",
+                "Family B cannot contain NOOP events or actions",
+                "events",
+            )
+        )
+
+    slot_identities: dict[int, tuple[str, str, str, str | None]] = {}
+    slot_values: dict[int, list[Any]] = {}
+    target_chain_valid = depth_valid and target_identity is not None
+    non_target_valid = expected_active_count is not None
+    expected_slots = set(range(expected_active_count or 0))
+    if set(slot_records) != expected_slots:
+        target_chain_valid = False
+        non_target_valid = False
+
+    for slot_index in sorted(slot_records):
+        trajectory = slot_records[slot_index]
+        versions = [record["metadata"].get("version_index") for record in trajectory]
+        if versions != list(range(len(trajectory))):
+            if slot_index == 0:
+                target_chain_valid = False
+            else:
+                non_target_valid = False
+        identities: list[tuple[str, str, str, str | None]] = []
+        values: list[Any] = []
+        for version_index, record in enumerate(trajectory):
+            action = record["actions"][0] if len(record["actions"]) == 1 else None
+            targets = _action_targets(action) if action is not None else []
+            identity = targets[0] if len(targets) == 1 else None
+            if identity is not None:
+                identities.append(identity)
+            value = getattr(action, "value", None)
+            values.append(value)
+            operation = _enum_value(getattr(action, "operation", None))
+            expected_operation = Operation.ADD.value if version_index == 0 else Operation.UPDATE.value
+            is_latest = version_index == len(trajectory) - 1
+            expected_version_metadata = "latest" if is_latest else "stale"
+            metadata = record["metadata"]
+            if slot_index == 0:
+                expected_role = EventRole.LATEST_GOLD.value if is_latest else EventRole.STALE_SAME_SLOT.value
+                record_valid = (
+                    operation == expected_operation
+                    and identity == target_identity
+                    and value is not None
+                    and not bool(_mapping(getattr(action, "expected_effect", None)))
+                    and _enum_value(record["event"].role) == expected_role
+                    and metadata.get("target_relation") == "target"
+                    and metadata.get("version_metadata") == expected_version_metadata
+                    and "distractor_kind" not in metadata
+                )
+                target_chain_valid = target_chain_valid and record_valid
+            else:
+                expected_kind = "active_non_target" if version_index == 0 else "cross_slot"
+                record_valid = (
+                    operation == expected_operation
+                    and value is not None
+                    and not bool(_mapping(getattr(action, "expected_effect", None)))
+                    and _enum_value(record["event"].role)
+                    == EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+                    and metadata.get("target_relation") == "same_entity_other_attribute"
+                    and metadata.get("distractor_kind") == expected_kind
+                    and metadata.get("version_metadata") == expected_version_metadata
+                )
+                non_target_valid = non_target_valid and record_valid
+        if identities:
+            slot_identities[slot_index] = identities[0]
+            if any(identity != identities[0] for identity in identities):
+                if slot_index == 0:
+                    target_chain_valid = False
+                else:
+                    non_target_valid = False
+        else:
+            if slot_index == 0:
+                target_chain_valid = False
+            else:
+                non_target_valid = False
+        slot_values[slot_index] = values
+
+    target_values = slot_values.get(0, [])
+    if len(target_values) != depth + 1:
+        target_chain_valid = False
+    if not target_chain_valid:
+        issues.append(
+            _issue(
+                "family_b_target_chain_corruption",
+                "Family B target trajectory must be one ADD followed by exactly update_depth ordered UPDATEs on slot zero",
+                "events",
+            )
+        )
+    final_target_value = target_values[-1] if target_values else None
+    if final_target_value is None or any(
+        _same_value(value, final_target_value) for value in target_values[:-1]
+    ):
+        issues.append(
+            _issue(
+                "family_b_target_value_corruption",
+                "Family B pre-final target values must be stale and unequal to the final target value",
+                "events",
+            )
+        )
+
+    active_identities = [
+        slot_identities[index]
+        for index in sorted(slot_identities)
+        if index in slot_identities
+    ]
+    geometry_valid = (
+        expected_active_count is not None
+        and len(active_identities) == expected_active_count
+        and len(set(active_identities)) == expected_active_count
+        and slot_identities.get(0) == target_identity
+    )
+    if geometry_valid and target_identity is not None:
+        for slot_index in range(1, expected_active_count):
+            identity = slot_identities.get(slot_index)
+            geometry_valid = geometry_valid and (
+                identity is not None
+                and identity[0] == target_identity[0]
+                and identity[1] == target_identity[1]
+                and identity[2] != target_identity[2]
+                and identity[2] in CANONICAL_ATTRIBUTES
+                and identity[3] is None
+            )
+        geometry_valid = geometry_valid and (
+            target_identity[2] in CANONICAL_ATTRIBUTES and target_identity[3] is None
+        )
+    declared_identities = [
+        identity
+        for key in _items(task.target_objects)
+        if (identity := _identity(key)) is not None
+    ]
+    expected_present = [
+        identity
+        for key in _items(gold.expected_present_objects)
+        if (identity := _identity(key)) is not None
+    ]
+    if (
+        not geometry_valid
+        or len(declared_identities) != (expected_active_count or 0)
+        or len(set(declared_identities)) != len(declared_identities)
+        or set(declared_identities) != set(active_identities)
+        or len(expected_present) != (expected_active_count or 0)
+        or len(set(expected_present)) != len(expected_present)
+        or set(expected_present) != set(active_identities)
+        or bool(_items(gold.expected_absent_objects))
+    ):
+        issues.append(
+            _issue(
+                "family_b_active_identity_corruption",
+                "Family B active objects must be distinct reviewed same-entity attributes with contiguous slot identities",
+                "target_objects",
+            )
+        )
+    if not non_target_valid:
+        issues.append(
+            _issue(
+                "family_b_non_target_corruption",
+                "each Family B non-target slot must preserve its own canonical ADD/UPDATE trajectory and metadata",
+                "events",
+            )
+        )
+
+    pattern = stratification.get("interleaving_pattern")
+    actual_pattern = [
+        (record["metadata"].get("slot_index"), record["metadata"].get("version_index"))
+        for record in records
+    ]
+    trajectory_lengths = tuple(
+        len(slot_records.get(slot_index, []))
+        for slot_index in range(expected_active_count or 0)
+    )
+    try:
+        expected_pattern = canonical_interleaving_schedule(
+            trajectory_lengths,
+            pattern,
+        )
+    except (TypeError, ValueError):
+        expected_pattern = ()
+    if tuple(actual_pattern) != expected_pattern:
+        issues.append(
+            _issue(
+                "family_b_interleaving_pattern_mismatch",
+                "Family B emitted order must exactly implement its declared interleaving pattern",
+                "events",
+            )
+        )
+
+    ordered_actions = [
+        record["actions"][0]
+        for record in records
+        if len(record["actions"]) == 1
+    ]
+    try:
+        replay_payload = replay_actions(ordered_actions).model_dump(mode="json")
+        computed_state = replay_payload["final_state"]
+        computed_history = replay_payload["version_history"]
+    except Exception:
+        computed_state = {}
+        computed_history = {}
+    final_state = _mapping(gold.final_state)
+    version_history = _mapping(gold.version_history)
+    if not _same_value(final_state, computed_state) or not _same_value(
+        version_history, computed_history
+    ):
+        issues.append(
+            _issue(
+                "family_b_gold_state_history_mismatch",
+                "Family B final state and version history must exactly equal emitted writes",
+                "gold",
+            )
+        )
+    for slot_index in range(1, expected_active_count or 0):
+        identity = slot_identities.get(slot_index)
+        values = slot_values.get(slot_index, [])
+        if identity is None or not values:
+            continue
+        object_id = _identity_id(identity)
+        if (
+            object_id not in final_state
+            or not _same_value(final_state.get(object_id), values[-1])
+            or not _same_value(version_history.get(object_id), values)
+        ):
+            issues.append(
+                _issue(
+                    "family_b_non_target_state_history_corruption",
+                    "a Family B non-target final state or history does not match its own trajectory",
+                    f"gold.final_state.{object_id}",
+                )
+            )
+
+    final_values = [values[-1] for values in slot_values.values() if values]
+    canonical_final_values = [_canonical_json_value(value) for value in final_values]
+    if len(canonical_final_values) != (expected_active_count or 0) or len(
+        set(canonical_final_values)
+    ) != len(canonical_final_values):
+        issues.append(
+            _issue(
+                "family_b_final_value_collision",
+                "Family B active objects must retain distinct final values",
+                "gold.final_state",
+            )
+        )
+    if final_target_value is not None:
+        for slot_index in range(1, expected_active_count or 0):
+            values = slot_values.get(slot_index, [])
+            if values and _same_value(values[-1], final_target_value):
+                issues.append(
+                    _issue(
+                        "family_b_non_target_current_gold_collision",
+                        "a Family B non-target current value cannot equal the target gold",
+                        f"events.slot[{slot_index}]",
+                    )
+                )
+
+    issues.extend(_current_answer_issues(task, final_target_value, family="b"))
+    target_id = _identity_id(target_identity) if target_identity is not None else None
+    if (
+        target_id is None
+        or target_id not in final_state
+        or not _same_value(final_state.get(target_id), final_target_value)
+        or not _same_value(version_history.get(target_id), target_values)
+    ):
+        issues.append(
+            _issue(
+                "family_b_target_value_corruption",
+                "Family B target answer, state, and history must equal the final target trajectory",
+                "gold",
+            )
+        )
+    target_records = slot_records.get(0, [])
+    expected_source = [target_records[-1]["event"].event_id] if target_records else []
+    if _items(gold.gold_source_event_ids) != expected_source:
+        issues.append(
+            _issue(
+                "family_b_query_semantics_mismatch",
+                "gold_source_event_ids must identify the final target update",
+                "gold.gold_source_event_ids",
+            )
+        )
+
+    actual_cross_slot_updates = sum(
+        max(0, len(slot_records.get(slot_index, [])) - 1)
+        for slot_index in range(1, expected_active_count or 0)
+    )
+    base_event_count = (expected_active_count or 0) + depth
+    expected_cross_slot_updates = (
+        canonical_cross_slot_update_count(base_event_count, expected_density)
+        if expected_density is not None and base_event_count > 0
+        else -1
+    )
+    expected_event_count = base_event_count + expected_cross_slot_updates
+    realized_density = (
+        expected_cross_slot_updates / base_event_count if base_event_count else None
+    )
+    core_index = extra.get("core_index")
+    pattern_group_index = stratification.get("pattern_group_index")
+    axis_product_index = stratification.get("axis_product_index")
+    axis_product_size = stratification.get("axis_product_size")
+    allocation_count = stratification.get("allocation_cell_count")
+    allocation_ideal = stratification.get("allocation_cell_ideal")
+    allocation_deviation = stratification.get("allocation_cell_deviation")
+    difficulty_count = stratification.get("difficulty_allocation_count")
+    difficulty_ideal = stratification.get("difficulty_allocation_ideal")
+    difficulty_deviation = stratification.get("difficulty_allocation_deviation")
+    integer_values = (
+        profile.get("active_object_count"),
+        profile.get("context_length"),
+        profile.get("stale_count"),
+        stratification.get("num_events"),
+        stratification.get("num_target_updates"),
+        stratification.get("active_object_count"),
+        stratification.get("cross_slot_distractor_count"),
+        stratification.get("base_event_count"),
+        stratification.get("update_depth"),
+        stratification.get("stale_count"),
+        stratification.get("noop_count"),
+        stratification.get("axis_product_index"),
+        stratification.get("axis_product_size"),
+        stratification.get("pattern_group_index"),
+        stratification.get("allocation_cell_count"),
+        stratification.get("difficulty_allocation_count"),
+        core_index,
+    )
+    counters_valid = all(type(value) is int for value in integer_values)
+    counters_valid = counters_valid and all(
+        (
+            _strict_int_equal(profile.get("active_object_count"), expected_active_count or -1),
+            _strict_int_equal(profile.get("context_length"), len(records)),
+            _strict_int_equal(profile.get("stale_count"), depth),
+            _strict_int_equal(stratification.get("num_events"), len(records)),
+            _strict_int_equal(stratification.get("num_target_updates"), depth),
+            _strict_int_equal(stratification.get("active_object_count"), expected_active_count or -1),
+            _strict_int_equal(stratification.get("cross_slot_distractor_count"), actual_cross_slot_updates),
+            actual_cross_slot_updates == expected_cross_slot_updates,
+            _strict_int_equal(stratification.get("base_event_count"), base_event_count),
+            _strict_int_equal(stratification.get("update_depth"), depth),
+            _strict_int_equal(stratification.get("stale_count"), depth),
+            _strict_int_equal(stratification.get("noop_count"), 0),
+            len(records) == expected_event_count,
+            type(stratification.get("cross_slot_distractor_density")) is float
+            and stratification.get("cross_slot_distractor_density") == expected_density,
+            type(stratification.get("realized_cross_slot_distractor_density")) is float
+            and stratification.get("realized_cross_slot_distractor_density") == realized_density,
+            type(core_index) is int and core_index >= 0,
+            type(pattern_group_index) is int and pattern_group_index >= 0,
+            type(axis_product_index) is int
+            and type(axis_product_size) is int
+            and 0 <= axis_product_index < axis_product_size,
+            type(allocation_count) is int and allocation_count > 0,
+            type(allocation_ideal) is float
+            and math.isfinite(allocation_ideal)
+            and allocation_ideal > 0.0,
+            type(allocation_deviation) is float
+            and allocation_deviation == allocation_count - allocation_ideal,
+            type(difficulty_count) is int and difficulty_count > 0,
+            type(difficulty_ideal) is float
+            and math.isfinite(difficulty_ideal)
+            and difficulty_ideal > 0.0,
+            type(difficulty_deviation) is float
+            and difficulty_deviation == difficulty_count - difficulty_ideal,
+            "num_updates" not in stratification,
+            "num_updates" not in profile,
+        )
+    )
+    entity_ambiguity, attribute_ambiguity = _FAMILY_A_AMBIGUITY.get(
+        difficulty, (None, None)
+    )
+    _, _, expected_naturalness = _FAMILY_A_BASE_PROFILE.get(
+        difficulty, (None, None, None)
+    )
+    surface_variant = extra.get("surface_variant")
+    profile_valid = (
+        raw_stratification is stratification
+        and profile.get("difficulty") == difficulty
+        and profile.get("profile_name") == difficulty
+        and profile.get("task_family") == TaskFamily.INTERLEAVED_MULTI_SLOT.value
+        and profile.get("update_depth_bucket") == _FAMILY_A_DEPTH_BUCKETS.get(depth)
+        and profile.get("entity_ambiguity") == entity_ambiguity
+        and profile.get("attribute_ambiguity") == attribute_ambiguity
+        and profile.get("query_type") == QueryType.CURRENT_STATE.value
+        and profile.get("version_metadata") == "event_index"
+        and profile.get("context_order") == "chronological"
+        and type(profile.get("noop_density")) is float
+        and profile.get("noop_density") == 0.0
+        and type(profile.get("cross_slot_interleaving")) is float
+        and profile.get("cross_slot_interleaving") == expected_density
+        and profile.get("source_naturalness") == expected_naturalness
+        and pattern in INTERLEAVING_PATTERNS
+        and profile.get("interleaving_pattern", pattern) == pattern
+        and type(surface_variant) is int
+        and 0 <= surface_variant < len(SURFACE_TEMPLATE_SETS)
+        and extra.get("surface_template") == SURFACE_TEMPLATE_SETS[surface_variant][0]
+    )
+    if not counters_valid or not profile_valid:
+        issues.append(
+            _issue(
+                "family_b_counter_profile_mismatch",
+                "Family B counts, densities, allocation fields, context, and profile metadata must match observed semantics",
+                "metadata",
+            )
+        )
     return issues
 
 
@@ -2204,9 +2869,20 @@ def _generic_validation_issues(
     task: MemUpdateTask,
     *,
     family: str,
+    allow_superseded_non_target_answer_overlap: bool = False,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    for validator in (validate_task, validate_gold_replay, validate_distractors):
+    validators = (
+        validate_task,
+        validate_gold_replay,
+        lambda candidate: validate_distractors(
+            candidate,
+            allow_superseded_non_target_answer_overlap=(
+                allow_superseded_non_target_answer_overlap
+            ),
+        ),
+    )
+    for validator in validators:
         try:
             issues.extend(validator(task).issues)
         except Exception:
@@ -2221,50 +2897,13 @@ def _generic_validation_issues(
 
 
 def _validate_family_a_task(task: Any) -> ValidationReport:
-    if type(task) is not MemUpdateTask:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_a_invalid_task_type",
-                    "Family A validation requires an exact MemUpdateTask instance",
-                    "task",
-                )
-            ],
-            family="a",
-        )
-    try:
-        raw = object.__getattribute__(task, "__dict__")
-    except (AttributeError, TypeError):
-        raw = None
-    task_family = raw.get("task_family") if type(raw) is dict else None
-    identifies_family_a = isinstance(task_family, str) and str.__eq__(
-        task_family,
-        TaskFamily.REPEATED_SAME_SLOT.value,
-    ) is True
-    if not identifies_family_a and (
-        type(task_family) is not str or not str.strip(task_family)
-    ):
-        return _bounded_report(
-            [
-                _issue(
-                    "family_a_malformed_task",
-                    "MemUpdateTask.task_family must be a nonblank exact string",
-                    "task_family",
-                )
-            ],
-            family="a",
-        )
-    if not identifies_family_a:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_a_inapplicable_task_family",
-                    "Family A validation is inapplicable to this task family",
-                    "task_family",
-                )
-            ],
-            family="a",
-        )
+    precheck = _strict_family_precheck(
+        task,
+        family="a",
+        expected_family=TaskFamily.REPEATED_SAME_SLOT.value,
+    )
+    if precheck is not None:
+        return precheck
 
     schema_issues = _schema_preflight_issues(task, family="a")
     if schema_issues:
@@ -2290,63 +2929,57 @@ def _validate_family_a_task(task: Any) -> ValidationReport:
 
 def validate_family_a_task(task: Any) -> ValidationReport:
     """Validate one Family A task without mutation, external I/O, or exception leaks."""
-    try:
-        return _validate_family_a_task(task)
-    except Exception:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_a_malformed_task",
-                    "Family A validation rejected malformed task structure",
-                    "task",
-                )
-            ],
-            family="a",
+    return _run_strict_family_validator(task, _validate_family_a_task, family="a")
+
+
+def _validate_family_b_task(task: Any) -> ValidationReport:
+    precheck = _strict_family_precheck(
+        task,
+        family="b",
+        expected_family=TaskFamily.INTERLEAVED_MULTI_SLOT.value,
+    )
+    if precheck is not None:
+        return precheck
+
+    schema_issues = _schema_preflight_issues(task, family="b")
+    if schema_issues:
+        return _bounded_report(schema_issues, family="b")
+
+    issues = _contract_constraint_issues(task, family="b")
+    issues.extend(
+        _generic_validation_issues(
+            task,
+            family="b",
+            allow_superseded_non_target_answer_overlap=True,
         )
+    )
+    issues.extend(_family_b_preflight_issues(task, schema_checked=True))
+    try:
+        issues.extend(_family_b_issues(task))
+    except Exception:
+        issues.append(
+            _issue(
+                "family_b_malformed_task",
+                "Family B semantic inspection rejected malformed task structure",
+                "task",
+            )
+        )
+    return _bounded_report(issues, family="b")
+
+
+def validate_family_b_task(task: Any) -> ValidationReport:
+    """Validate one Family B task without mutation, external I/O, or exception leaks."""
+    return _run_strict_family_validator(task, _validate_family_b_task, family="b")
 
 
 def _validate_family_d_task(task: Any) -> ValidationReport:
-    if type(task) is not MemUpdateTask:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_d_invalid_task_type",
-                    "Family D validation requires an exact MemUpdateTask instance",
-                    "task",
-                )
-            ]
-        )
-    try:
-        raw = object.__getattribute__(task, "__dict__")
-    except (AttributeError, TypeError):
-        raw = None
-    task_family = raw.get("task_family") if type(raw) is dict else None
-    identifies_family_d = isinstance(task_family, str) and str.__eq__(
-        task_family,
-        TaskFamily.NOOP_WRITE_DISCIPLINE.value,
-    ) is True
-    if not identifies_family_d and (
-        type(task_family) is not str or not str.strip(task_family)
-    ):
-        return _bounded_report(
-            [
-                _issue(
-                    "family_d_malformed_task",
-                    "MemUpdateTask.task_family must be a nonblank exact string",
-                    "task_family",
-                )
-            ]
-        )
-    if not identifies_family_d:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_d_inapplicable_task_family",
-                    "Family D validation is inapplicable to this task family",
-                    "task_family",
-                )
-            ]
-        )
+    precheck = _strict_family_precheck(
+        task,
+        family="d",
+        expected_family=TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+    )
+    if precheck is not None:
+        return precheck
 
     preflight_issues = _preflight_issues(task)
     if preflight_issues:
@@ -2369,44 +3002,21 @@ def _validate_family_d_task(task: Any) -> ValidationReport:
 
 def validate_family_d_task(task: Any) -> ValidationReport:
     """Validate one Family D task without mutation, external I/O, or exception leaks."""
-    try:
-        return _validate_family_d_task(task)
-    except Exception:
-        return _bounded_report(
-            [
-                _issue(
-                    "family_d_malformed_task",
-                    "Family D validation rejected malformed task structure",
-                    "task",
-                )
-            ]
-        )
+    return _run_strict_family_validator(task, _validate_family_d_task, family="d")
 
 
 def validate_pilot_task(task: Any) -> ValidationReport:
     """Validate with explicit Pilot semantics.
 
-    Families A and D use their strict semantic validators. Families B and C
-    temporarily retain the historical generic task/replay/distractor composition;
-    a valid report for those families does not yet claim family-semantic completeness.
+    Families A, B, and D use their strict semantic validators. Family C
+    temporarily retains the historical generic task/replay/distractor composition;
+    a valid report for Family C does not yet claim family-semantic completeness.
     """
-    identifies_family_a = False
-    identifies_family_d = False
-    if type(task) is MemUpdateTask:
-        raw = object.__getattribute__(task, "__dict__")
-        if type(raw) is dict:
-            candidate = raw.get("task_family")
-            identifies_family_a = isinstance(candidate, str) and str.__eq__(
-                candidate,
-                TaskFamily.REPEATED_SAME_SLOT.value,
-            ) is True
-            identifies_family_d = isinstance(candidate, str) and str.__eq__(
-                candidate,
-                TaskFamily.NOOP_WRITE_DISCIPLINE.value,
-            ) is True
-    if identifies_family_a:
+    if _task_identifies_family(task, TaskFamily.REPEATED_SAME_SLOT.value):
         return validate_family_a_task(task)
-    if identifies_family_d:
+    if _task_identifies_family(task, TaskFamily.INTERLEAVED_MULTI_SLOT.value):
+        return validate_family_b_task(task)
+    if _task_identifies_family(task, TaskFamily.NOOP_WRITE_DISCIPLINE.value):
         return validate_family_d_task(task)
     return merge_reports(
         validate_task(task),
@@ -2417,6 +3027,7 @@ def validate_pilot_task(task: Any) -> ValidationReport:
 
 __all__ = [
     "validate_family_a_task",
+    "validate_family_b_task",
     "validate_family_d_task",
     "validate_pilot_task",
 ]
