@@ -23,6 +23,7 @@ from mub.vnext.validation import (
     validate_distractors,
     validate_family_a_task,
     validate_gold_replay,
+    validate_pilot_task,
     validate_task,
     validate_task_semantics,
 )
@@ -125,17 +126,11 @@ def test_dataset_cli_writes_canonical_tasks_and_exact_manifest(tmp_path: Path) -
         )
         aggregate = validate_task_semantics(task)
         direct = validate_family_a_task(task)
+        explicit = validate_pilot_task(task)
         assert expected.valid
         assert aggregate == expected
+        assert explicit == direct
         assert not direct.valid
-
-        ambiguous_metadata = task.metadata.model_copy(
-            update={"tags": [*task.metadata.tags, "vnext_pilot"]}
-        )
-        ambiguous = task.model_copy(update={"metadata": ambiguous_metadata})
-        ambiguous_direct = validate_family_a_task(ambiguous)
-        assert validate_task_semantics(ambiguous) == ambiguous_direct
-        assert not ambiguous_direct.valid
     assert set(manifest_payload) == set(TaskManifest.model_fields)
     assert manifest.leakage_check_summary["compatibility_only"] is True
     assert manifest.split_counts == {

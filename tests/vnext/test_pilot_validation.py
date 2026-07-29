@@ -20,6 +20,8 @@ from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.generation import (
     GenerationContext,
     generate_family_a_cores,
+    generate_family_b_cores,
+    generate_family_c_cores,
     generate_family_d_cores,
     load_pilot_config,
     render_core,
@@ -31,7 +33,11 @@ from mub.vnext.validation import (
     validate_task,
     validate_task_semantics,
 )
-from mub.vnext.validation.pilot import validate_family_d_task, validate_family_a_task
+from mub.vnext.validation.pilot import (
+    validate_family_a_task,
+    validate_family_d_task,
+    validate_pilot_task,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -319,7 +325,7 @@ def test_validate_family_a_task_accepts_generated_samples_and_aggregate_dispatch
 ):
     task = family_a_tasks[task_index]
     direct = validate_family_a_task(task)
-    aggregate = validate_task_semantics(task)
+    aggregate = validate_pilot_task(task)
     assert direct.valid
     assert direct.issues == ()
     assert aggregate == direct
@@ -328,7 +334,7 @@ def test_validate_family_a_task_accepts_generated_samples_and_aggregate_dispatch
 def test_validate_family_a_task_accepts_all_generated_tasks(family_a_tasks):
     for task in family_a_tasks:
         direct = validate_family_a_task(task)
-        aggregate = validate_task_semantics(task)
+        aggregate = validate_pilot_task(task)
         assert direct.valid, (task.task_id, direct.issues)
         assert aggregate == direct
 
@@ -594,6 +600,7 @@ def test_validate_family_a_task_cannot_downgrade_semantics_via_release_provenanc
     stale_action = _action_for_event(payload, payload["events"][0])
     stale_action["value"] = final_value
     payload["gold"]["version_history"][target_id][0] = final_value
+    payload["metadata"]["extra"]["stratification"]["num_events"] += 1
     corrupted = MemUpdateTask.model_validate(payload)
     provenance = dict(corrupted.source.provenance)
     if release_mutation == "missing":
@@ -604,11 +611,19 @@ def test_validate_family_a_task_cannot_downgrade_semantics_via_release_provenanc
     corrupted = _construct_replace(corrupted, source=source)
 
     direct = validate_family_a_task(corrupted)
-    aggregate = validate_task_semantics(corrupted)
+    explicit = validate_pilot_task(corrupted)
+    generic = validate_task_semantics(corrupted)
 
-    assert aggregate == direct
+    assert explicit == direct
+    assert generic == merge_reports(
+        validate_task(corrupted),
+        validate_gold_replay(corrupted),
+        validate_distractors(corrupted),
+    )
+    assert "family_a_release_provenance_mismatch" not in _codes(generic)
     assert "family_a_release_provenance_mismatch" in _codes(direct)
     assert "family_a_stale_value_equals_current_gold" in _codes(direct)
+    assert "family_a_counter_profile_mismatch" in _codes(direct)
 
 
 def test_validate_family_d_task_rejects_multiple_acceptable_current_answers(
@@ -661,7 +676,7 @@ def test_validate_family_a_task_malformed_construct_matches_aggregate():
     )
 
     direct = validate_family_a_task(malformed)
-    aggregate = validate_task_semantics(malformed)
+    aggregate = validate_pilot_task(malformed)
 
     assert direct == aggregate
     assert not direct.valid
@@ -718,7 +733,7 @@ def test_validate_family_a_task_merges_generic_and_family_findings(
     malformed = _construct_replace(task, task_id="", queries=queries)
 
     direct = validate_family_a_task(malformed)
-    aggregate = validate_task_semantics(malformed)
+    aggregate = validate_pilot_task(malformed)
 
     assert aggregate == direct
     assert {
@@ -735,14 +750,14 @@ def test_validate_family_a_task_routes_hostile_family_without_override_access(
     malformed = _construct_replace(family_a_tasks[0], task_family=hostile)
 
     direct = validate_family_a_task(malformed)
-    aggregate = validate_task_semantics(malformed)
+    aggregate = validate_pilot_task(malformed)
 
     assert direct == aggregate
     assert "family_a_invalid_field_type" in _codes(direct)
     assert hostile.override_access_count == 0
 
 
-def test_validate_task_semantics_does_not_execute_hostile_generator_string(
+def test_validate_pilot_task_does_not_execute_hostile_generator_string(
     family_a_tasks,
 ):
     task = family_a_tasks[0]
@@ -752,7 +767,7 @@ def test_validate_task_semantics_does_not_execute_hostile_generator_string(
     malformed = _construct_replace(task, source=source)
 
     direct = validate_family_a_task(malformed)
-    aggregate = validate_task_semantics(malformed)
+    aggregate = validate_pilot_task(malformed)
 
     assert aggregate == direct
     assert "family_a_invalid_field_type" in _codes(direct)
@@ -766,6 +781,7 @@ def test_validate_family_a_task_is_public_and_other_families_are_inapplicable(
     import mub.vnext.validation as validation
 
     assert validation.validate_family_a_task is validate_family_a_task
+    assert validation.validate_pilot_task is validate_pilot_task
     report = validate_family_a_task(family_d_tasks["semantic_near_miss"])
     assert _codes(report) == {"family_a_inapplicable_task_family"}
 
@@ -784,7 +800,7 @@ def test_validate_family_a_task_preserves_distractor_answer_leak_checks(family_a
     corrupted = MemUpdateTask.model_validate(payload)
 
     direct = validate_family_a_task(corrupted)
-    aggregate = validate_task_semantics(corrupted)
+    aggregate = validate_pilot_task(corrupted)
 
     assert aggregate == direct
     assert "distractor_text_contains_accepted_answer" in _codes(direct)
@@ -800,7 +816,7 @@ def test_validate_family_d_task_preserves_distractor_answer_leak_checks(family_d
     corrupted = MemUpdateTask.model_validate(payload)
 
     direct = validate_family_d_task(corrupted)
-    aggregate = validate_task_semantics(corrupted)
+    aggregate = validate_pilot_task(corrupted)
 
     assert aggregate == direct
     assert "distractor_text_contains_accepted_answer" in _codes(direct)
@@ -846,7 +862,7 @@ def test_validate_family_d_task_is_exported_from_validation_package():
     assert validation.validate_family_d_task is validate_family_d_task
 
 
-def test_validate_task_semantics_dispatches_family_d_without_duplicate_generic_issues(
+def test_validate_pilot_task_dispatches_family_d_without_duplicate_generic_issues(
     family_d_tasks,
 ):
     payload = _payload(family_d_tasks["duplicate_current"])
@@ -861,13 +877,13 @@ def test_validate_task_semantics_dispatches_family_d_without_duplicate_generic_i
     corrupted = MemUpdateTask.model_validate(payload)
 
     direct = validate_family_d_task(corrupted)
-    aggregate = validate_task_semantics(corrupted)
+    aggregate = validate_pilot_task(corrupted)
 
     assert aggregate == direct
     assert "family_d_canonical_noop_density_mismatch" in _codes(aggregate)
 
 
-def test_validate_task_semantics_routes_hostile_family_string_without_overrides(
+def test_validate_pilot_task_routes_hostile_family_string_without_overrides(
     family_d_tasks,
 ):
     hostile = HostileFamilyString(TaskFamily.NOOP_WRITE_DISCIPLINE.value)
@@ -877,14 +893,14 @@ def test_validate_task_semantics_routes_hostile_family_string_without_overrides(
     )
 
     direct = validate_family_d_task(malformed)
-    aggregate = validate_task_semantics(malformed)
+    aggregate = validate_pilot_task(malformed)
 
     assert aggregate == direct
     assert "family_d_invalid_field_type" in _codes(aggregate)
     assert hostile.override_access_count == 0
 
 
-def test_validate_task_semantics_preserves_non_family_dispatch():
+def test_validate_task_semantics_remains_family_agnostic():
     config = load_pilot_config(CONFIG_PATH)
     context = GenerationContext(config=config, code_revision="non-family-dispatch-test")
     task = render_core(
@@ -901,6 +917,30 @@ def test_validate_task_semantics_preserves_non_family_dispatch():
     )
 
     assert validate_task_semantics(task) == expected
+
+
+@pytest.mark.parametrize(
+    "generator",
+    (generate_family_b_cores, generate_family_c_cores),
+)
+def test_validate_pilot_task_preserves_generic_family_b_c_compatibility(generator):
+    config = load_pilot_config(CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="pilot-generic-bc-test")
+    core = generator(config)[0]
+    for surface_variant in range(3):
+        task = render_core(
+            core,
+            split=Split.TEST,
+            surface_variant=surface_variant,
+            context=context,
+        )
+        expected = merge_reports(
+            validate_task(task),
+            validate_gold_replay(task),
+            validate_distractors(task),
+        )
+        assert validate_task_semantics(task) == expected
+        assert validate_pilot_task(task) == expected
 
 
 def test_validate_family_d_task_uses_semantic_event_order_not_action_storage_order(

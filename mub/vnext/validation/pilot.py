@@ -22,6 +22,7 @@ from mub.vnext.validation.issues import (
     ValidationIssue,
     ValidationReport,
     build_report,
+    merge_reports,
 )
 from mub.vnext.validation.replay import validate_distractors, validate_gold_replay
 from mub.vnext.validation.task import acceptable_candidates, validate_task
@@ -2382,4 +2383,40 @@ def validate_family_d_task(task: Any) -> ValidationReport:
         )
 
 
-__all__ = ["validate_family_a_task", "validate_family_d_task"]
+def validate_pilot_task(task: Any) -> ValidationReport:
+    """Validate with explicit Pilot semantics.
+
+    Families A and D use their strict semantic validators. Families B and C
+    temporarily retain the historical generic task/replay/distractor composition;
+    a valid report for those families does not yet claim family-semantic completeness.
+    """
+    identifies_family_a = False
+    identifies_family_d = False
+    if type(task) is MemUpdateTask:
+        raw = object.__getattribute__(task, "__dict__")
+        if type(raw) is dict:
+            candidate = raw.get("task_family")
+            identifies_family_a = isinstance(candidate, str) and str.__eq__(
+                candidate,
+                TaskFamily.REPEATED_SAME_SLOT.value,
+            ) is True
+            identifies_family_d = isinstance(candidate, str) and str.__eq__(
+                candidate,
+                TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+            ) is True
+    if identifies_family_a:
+        return validate_family_a_task(task)
+    if identifies_family_d:
+        return validate_family_d_task(task)
+    return merge_reports(
+        validate_task(task),
+        validate_gold_replay(task),
+        validate_distractors(task),
+    )
+
+
+__all__ = [
+    "validate_family_a_task",
+    "validate_family_d_task",
+    "validate_pilot_task",
+]

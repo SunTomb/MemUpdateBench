@@ -749,7 +749,7 @@ def test_numeric_leakage_compares_complete_numeric_literals(make_task):
 
 
 def test_standalone_answer_maps_are_guarded_without_queries_or_mutation(make_task):
-    task = _replace(make_task(), task_family="generic_validation_fixture")
+    task = make_task()
     gold = _replace(task.gold, gold_answers=[], acceptable_answers=None)
     malformed = _replace(task, queries=[], gold=gold)
     before_answers = deepcopy(malformed.gold.gold_answers)
@@ -863,7 +863,7 @@ def test_typed_text_leakage_and_numeric_boundaries(make_task):
 
 
 def test_composed_validation_order_purity_and_duplicate_behavior(make_task):
-    task = _replace(make_task(), task_family="generic_validation_fixture")
+    task = make_task()
     before = deepcopy(task.model_dump(mode="python"))
     malformed = _replace(task, schema_version="bad", gold=_replace(task.gold, final_state={}))
     report = validate_task_semantics(malformed)
