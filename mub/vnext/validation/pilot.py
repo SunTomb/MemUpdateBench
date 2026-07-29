@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -19,11 +18,17 @@ _CORRECTION_TRAPS = frozenset(
 _NOOP_TRAPS = frozenset({"semantic_near_miss", "duplicate_current"})
 _TRAPS = _NOOP_TRAPS | _CORRECTION_TRAPS
 _CANONICAL_NOOPS_BY_DIFFICULTY = {"easy": 3, "medium": 6, "hard": 9}
+_CANONICAL_DENSITY_BY_DIFFICULTY = {"easy": 0.25, "medium": 0.50, "hard": 0.75}
 _NOOP_STATEMENT_MARKERS = (
     "does not assert a current-state change",
     "remains exactly",
     "repeats the exact current target value",
     "does not direct any memory change",
+)
+_DUPLICATE_CURRENT_RAW_SUFFIXES = (
+    "No memory change is required.",
+    "Keep memory unchanged.",
+    "Do not write anything to memory.",
 )
 
 
@@ -85,18 +90,24 @@ def _identity_id(identity: tuple[str, str, str, str | None]) -> str:
     )
 
 
-def _observation_binds_target(
-    text: Any,
+def _duplicate_observation_is_canonical(
+    statement: Any,
+    raw_text: Any,
     target: tuple[str, str, str, str | None] | None,
     value: Any,
 ) -> bool:
-    if not isinstance(text, str) or target is None or value is None:
+    if not isinstance(statement, str) or not isinstance(raw_text, str):
         return False
-    normalized = text.casefold()
-    expected_observation = (
-        f"{target[1]}.{target[2]} remains exactly {value};".casefold()
+    if target is None or value is None:
+        return False
+    canonical_statement = (
+        f"{target[1]}.{target[2]} remains exactly {value}; "
+        "this repeats the exact current target value."
     )
-    return expected_observation in normalized
+    return statement == canonical_statement and raw_text in {
+        f"{canonical_statement} {suffix}"
+        for suffix in _DUPLICATE_CURRENT_RAW_SUFFIXES
+    }
 
 
 def _bounded_report(issues: Sequence[ValidationIssue]) -> ValidationReport:
@@ -186,6 +197,23 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
                 "family_d_canonical_noop_count_mismatch",
                 f"Family D {difficulty} tasks require exactly {expected_noop_count} NOOP actions",
                 "events",
+            )
+        )
+    expected_density = _CANONICAL_DENSITY_BY_DIFFICULTY.get(difficulty)
+    density_values = (
+        stratification.get("configured_noop_density"),
+        stratification.get("observed_noop_density"),
+        profile.get("noop_density"),
+    )
+    if expected_density is not None and any(
+        type(value) is not float or value != expected_density
+        for value in density_values
+    ):
+        issues.append(
+            _issue(
+                "family_d_canonical_noop_density_mismatch",
+                f"Family D {difficulty} density metadata must equal {expected_density} exactly",
+                "metadata.extra.stratification.configured_noop_density",
             )
         )
 
@@ -426,17 +454,11 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             and _enum_value(getattr(event_actions[0], "operation", None))
             == Operation.NOOP.value
         )
-        if not (
-            _observation_binds_target(
-                record["metadata"].get("surface_statement"),
-                target_identity,
-                target_current_value,
-            )
-            and _observation_binds_target(
-                getattr(event, "raw_text", None),
-                target_identity,
-                target_current_value,
-            )
+        if not _duplicate_observation_is_canonical(
+            record["metadata"].get("surface_statement"),
+            getattr(event, "raw_text", None),
+            target_identity,
+            target_current_value,
         ):
             issues.append(
                 _issue(
@@ -568,19 +590,15 @@ def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         == len(semantic_actions) - action_noops,
         stratification.get("operation_signature") == expected_signature,
         profile.get("context_length") == len(records),
-        isinstance(observed_density, float)
+        type(observed_density) is float
         and type(configured_density) is float
-        and math.isclose(observed_density, configured_density, abs_tol=1e-12),
-        isinstance(observed_density, float)
+        and observed_density == configured_density,
+        type(observed_density) is float
         and type(stratification.get("observed_noop_density")) is float
-        and math.isclose(
-            observed_density,
-            stratification["observed_noop_density"],
-            abs_tol=1e-12,
-        ),
-        isinstance(observed_density, float)
+        and observed_density == stratification["observed_noop_density"],
+        type(observed_density) is float
         and type(profile.get("noop_density")) is float
-        and math.isclose(observed_density, profile["noop_density"], abs_tol=1e-12),
+        and observed_density == profile["noop_density"],
     )
     if not all(counter_checks):
         issues.append(

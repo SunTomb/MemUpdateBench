@@ -39,6 +39,15 @@ def family_d_tasks():
                 context=context,
             )
             tasks[trap_type] = task
+        density_key = f"density_{core.stratification['configured_noop_density']}"
+        if density_key not in tasks:
+            task = task or render_core(
+                core,
+                split=Split.TEST,
+                surface_variant=0,
+                context=context,
+            )
+            tasks[density_key] = task
         if (
             trap_type == "semantic_near_miss"
             and "semantic_near_miss_with_prior_write" not in tasks
@@ -244,6 +253,27 @@ def test_validate_family_d_task_enforces_canonical_event_count(family_d_tasks):
     assert "family_d_canonical_event_count_mismatch" in _codes(report)
 
 
+@pytest.mark.parametrize("density", (0.25, 0.50, 0.75))
+def test_validate_family_d_task_requires_exact_canonical_density(
+    family_d_tasks,
+    density,
+):
+    payload = _payload(family_d_tasks[f"density_{density}"])
+    near_density = density + 1e-10
+    payload["metadata"]["extra"]["stratification"][
+        "configured_noop_density"
+    ] = near_density
+    payload["metadata"]["extra"]["stratification"][
+        "observed_noop_density"
+    ] = near_density
+    payload["metadata"]["resolved_profile"]["noop_density"] = near_density
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_canonical_noop_density_mismatch" in _codes(report)
+
+
 @pytest.mark.parametrize(
     ("trap_type", "mutation"),
     (
@@ -370,6 +400,41 @@ def test_validate_family_d_task_binds_duplicate_observation_to_target_and_value(
     )
     duplicate_event["metadata"]["surface_statement"] = statement
     duplicate_event["raw_text"] = f"{statement} No memory change is required."
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_d_task(corrupted)
+
+    assert "family_d_duplicate_current_visibility_mismatch" in _codes(report)
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    ("negated_prefix", "trailing_change", "raw_trailing_change"),
+)
+def test_validate_family_d_task_rejects_contradictory_duplicate_observation(
+    family_d_tasks,
+    contradiction,
+):
+    payload = _payload(family_d_tasks["duplicate_current"])
+    duplicate_event = next(
+        event
+        for event in payload["events"]
+        if event["metadata"].get("trap_type") == "duplicate_current"
+    )
+    canonical = duplicate_event["metadata"]["surface_statement"]
+    if contradiction == "negated_prefix":
+        contradictory = f"It is false that {canonical}"
+        duplicate_event["metadata"]["surface_statement"] = contradictory
+        duplicate_event["raw_text"] = contradictory
+    elif contradiction == "trailing_change":
+        contradictory = f"{canonical} However, immediately change it to another value."
+        duplicate_event["metadata"]["surface_statement"] = contradictory
+        duplicate_event["raw_text"] = contradictory
+    else:
+        duplicate_event["raw_text"] = (
+            f"{canonical} No memory change is required. "
+            "Actually, update it to another value."
+        )
     corrupted = MemUpdateTask.model_validate(payload)
 
     report = validate_family_d_task(corrupted)
