@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import json
 import math
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from functools import lru_cache
-from pathlib import Path
 from enum import Enum
 from string import Template
 from types import SimpleNamespace, UnionType
@@ -48,7 +48,7 @@ from mub.vnext.generation.catalogs import (
     SURFACE_TEMPLATE_SETS,
 )
 from mub.vnext.generation.config import load_pilot_config
-from mub.vnext.generation.core import CoreEvent
+from mub.vnext.generation.core import CoreEvent, GenerationContext
 from mub.vnext.generation.family_b_schedule import (
     INTERLEAVING_PATTERNS,
     canonical_cross_slot_update_count,
@@ -59,6 +59,7 @@ from mub.vnext.generation.family_d import (
     family_d_independent_noop_statement,
     family_d_semantic_near_miss_statement,
 )
+from mub.vnext.generation.splits import assign_splits
 from mub.vnext.generation.identity import (
     action_id as canonical_action_id,
     event_id as canonical_event_id,
@@ -81,7 +82,7 @@ from mub.vnext.validation.replay import (
     validate_distractors,
     validate_gold_replay,
 )
-from mub.vnext.validation.split import validate_splits
+from mub.vnext.validation.split import _normalize_task_manifest, validate_splits
 from mub.vnext.validation.task import acceptable_candidates, validate_task
 
 
@@ -4164,17 +4165,32 @@ def _canonical_release_order(record: dict[str, Any]) -> tuple[int, int, str, int
 
 
 @lru_cache(maxsize=1)
-def _canonical_generation_ledger() -> dict[tuple[str, int], dict[str, Any]]:
-    config_path = Path(__file__).resolve().parents[3] / "configs" / "vnext" / "pilot.yaml"
-    config = load_pilot_config(config_path)
+def _canonical_pilot_config() -> Any:
+    resource = importlib.resources.files("mub.vnext.resources").joinpath("pilot.yaml")
+    with importlib.resources.as_file(resource) as config_path:
+        config = load_pilot_config(config_path)
     if hashlib.sha256(canonical_json_bytes(config)).hexdigest() != _PILOT_CONFIG_SHA256:
         raise ValueError("canonical Pilot config digest mismatch")
+    return config
+
+
+@lru_cache(maxsize=1)
+def _canonical_pilot_cores() -> tuple[Any, ...]:
+    config = _canonical_pilot_config()
     cores = (
         *family_a_generation.generate_family_a_cores(config),
         *family_b_generation.generate_family_b_cores(config),
         *family_c_generation.generate_family_c_cores(config),
         *family_d_generation.generate_family_d_cores(config),
     )
+    if len(cores) != _PILOT_CORE_COUNT:
+        raise ValueError("canonical Pilot generation core set is incomplete")
+    return cores
+
+
+@lru_cache(maxsize=1)
+def _canonical_generation_ledger() -> dict[tuple[str, int], dict[str, Any]]:
+    cores = _canonical_pilot_cores()
     ledger: dict[tuple[str, int], dict[str, Any]] = {}
     for core in cores:
         family = core.task_family.value
@@ -4187,6 +4203,90 @@ def _canonical_generation_ledger() -> dict[tuple[str, int], dict[str, Any]]:
         }
     if len(ledger) != _PILOT_CORE_COUNT:
         raise ValueError("canonical Pilot generation ledger is incomplete")
+    return ledger
+
+
+def _task_identity_projection(task: MemUpdateTask) -> dict[str, Any]:
+    extra = task.metadata.extra
+    return {
+        "task_id": task.task_id,
+        "source_id": task.source.source_id,
+        "source_provenance": dict(task.source.provenance),
+        "generator_provenance": (
+            task.source.generator.model_dump(mode="json")
+            if task.source.generator is not None
+            else None
+        ),
+        "split": task.metadata.split.value,
+        "split_key": task.metadata.split_key.model_dump(mode="json"),
+        "metadata_identity": {
+            key: extra.get(key)
+            for key in ("semantic_core_id", "core_index", "surface_variant")
+        },
+        "events": [
+            {
+                "event_id": event.event_id,
+                "gold_action_ids": list(event.gold_action_ids),
+            }
+            for event in task.events
+        ],
+        "actions": [
+            {"action_id": action.action_id, "event_id": action.event_id}
+            for action in task.gold.actions
+        ],
+        "action_sequence": list(task.gold.action_sequence),
+        "queries": [
+            {
+                "query_id": query.query_id,
+                "candidate_ids": [
+                    candidate.candidate_id for candidate in query.reference_candidates
+                ],
+                "surface_references": [
+                    {
+                        "reference_id": reference.reference_id,
+                        "candidate_ids": list(reference.candidate_ids),
+                    }
+                    for reference in query.surface_references
+                ],
+            }
+            for query in task.queries
+        ],
+        "answer_query_ids": {
+            "gold": sorted(task.gold.gold_answers),
+            "acceptable": sorted(task.gold.acceptable_answers),
+            "canonical": sorted(task.gold.canonical_answers),
+        },
+        "canonical_answer_candidates": {
+            query_id: list(answer.selected_candidate_ids)
+            for query_id, answer in sorted(task.gold.canonical_answers.items())
+        },
+        "gold_source_event_ids": list(task.gold.gold_source_event_ids),
+    }
+
+
+@lru_cache(maxsize=8)
+def _canonical_identity_ledger(code_revision: str) -> dict[tuple[str, int, int], str]:
+    config = _canonical_pilot_config()
+    cores = _canonical_pilot_cores()
+    assignments = assign_splits(cores, config.seed)
+    split_by_core = {
+        assignment.semantic_core_id: assignment.split
+        for assignment in assignments.assignments
+    }
+    context = GenerationContext(config=config, code_revision=code_revision)
+    ledger: dict[tuple[str, int, int], str] = {}
+    for core in cores:
+        for surface_variant in range(config.surface_variants_per_core):
+            task = render_generation.render_core(
+                core,
+                split=split_by_core[core.core_id],
+                surface_variant=surface_variant,
+                context=context,
+            )
+            key = (core.task_family.value, core.core_index, surface_variant)
+            ledger[key] = _canonical_json_value(_task_identity_projection(task))
+    if len(ledger) != _PILOT_TASK_COUNT:
+        raise ValueError("canonical Pilot identity ledger is incomplete")
     return ledger
 
 
@@ -4679,6 +4779,158 @@ def _release_identity_and_group_issues(
     return issues
 
 
+def _release_canonical_identity_issues(
+    records: list[dict[str, Any]],
+    manifest: TaskManifest | None,
+) -> list[ValidationIssue]:
+    if type(manifest) is not TaskManifest:
+        return []
+    issues: list[ValidationIssue] = []
+    try:
+        ledger = _canonical_identity_ledger(manifest.code_revision)
+    except Exception:
+        return [
+            _issue(
+                "pilot_release_canonical_identity_ledger_error",
+                "canonical Pilot identity ledger could not be verified",
+                "canonical_identity",
+            )
+        ]
+    observed_keys = Counter()
+    for record in records:
+        family = record["family"]
+        core_index = record["core_index"]
+        surface_variant = record["surface_variant"]
+        task = record["task"]
+        if (
+            type(family) is not str
+            or type(core_index) is not int
+            or type(surface_variant) is not int
+            or type(task) is not MemUpdateTask
+        ):
+            continue
+        key = (family, core_index, surface_variant)
+        observed_keys[key] += 1
+        try:
+            actual = _canonical_json_value(_task_identity_projection(task))
+        except Exception:
+            actual = None
+        if actual != ledger.get(key):
+            issues.append(
+                _issue(
+                    "pilot_release_canonical_identity_mismatch",
+                    "task and internal linkage IDs must match the trusted canonical renderer identity graph",
+                    f"canonical_identity.{family}.{core_index}.{surface_variant}",
+                )
+            )
+    if set(observed_keys) != set(ledger) or any(
+        count != 1 for count in observed_keys.values()
+    ):
+        issues.append(
+            _issue(
+                "pilot_release_canonical_identity_coverage_mismatch",
+                "canonical family/core/surface identity keys must occur exactly once",
+                "canonical_identity",
+            )
+        )
+    return issues
+
+
+def _snapshot_release_task(
+    task: Any,
+) -> tuple[MemUpdateTask | None, list[ValidationIssue]]:
+    if type(task) is not MemUpdateTask:
+        label = f"<invalid-{type(task).__module__}.{type(task).__qualname__}>"
+        return None, [
+            _issue(
+                "pilot_release_malformed_task_snapshot",
+                "release tasks must be exact MemUpdateTask models",
+                f"tasks.{label}",
+            )
+        ]
+    raw_task_id = None
+    raw_family = None
+    try:
+        raw = object.__getattribute__(task, "__dict__")
+        if type(raw) is dict:
+            raw_task_id = raw.get("task_id")
+            raw_family = raw.get("task_family")
+    except Exception:
+        pass
+    malformed_kind = raw_family if type(raw_family) is str else "unknown"
+    label = (
+        raw_task_id
+        if type(raw_task_id) is str and raw_task_id.strip()
+        else f"<malformed-{malformed_kind}>"
+    )
+    identity_issues: list[ValidationIssue] = []
+    if type(raw_task_id) is not str or not raw_task_id.strip():
+        identity_issues.append(
+            _issue(
+                "pilot_release_missing_task_id",
+                "every Pilot task requires a nonblank exact task_id",
+                "tasks.<missing>.task_id",
+            )
+        )
+    try:
+        preflight = _schema_preflight_issues(task, family="a")
+    except Exception:
+        preflight = [
+            _issue(
+                "pilot_release_task_snapshot_preflight_error",
+                "bounded task snapshot preflight rejected malformed runtime structure",
+                "task",
+            )
+        ]
+    if preflight:
+        return None, [
+            *identity_issues,
+            *[
+                ValidationIssue(
+                    code=issue.code,
+                    message=issue.message,
+                    path=f"tasks.{label}.{issue.path}",
+                    severity=issue.severity,
+                )
+                for issue in preflight
+            ],
+        ]
+    try:
+        serialized = canonical_json_bytes(task)
+        snapshot = MemUpdateTask.model_validate_json(serialized)
+    except Exception:
+        return None, [
+            *identity_issues,
+            _issue(
+                "pilot_release_task_snapshot_error",
+                "task could not be canonically serialized and strictly reconstructed",
+                f"tasks.{label}",
+            ),
+        ]
+    return snapshot, identity_issues
+
+
+def _snapshot_release_manifest(
+    manifest: Any,
+) -> tuple[TaskManifest | None, list[ValidationIssue]]:
+    normalization_issues: list[ValidationIssue] = []
+    normalized = _normalize_task_manifest(manifest, normalization_issues)
+    if normalized is None or normalization_issues:
+        return None, normalization_issues
+    try:
+        serialized = canonical_json_bytes(normalized)
+        snapshot = TaskManifest.model_validate_json(serialized)
+    except Exception:
+        return None, [
+            _issue(
+                "pilot_release_manifest_snapshot_error",
+                "manifest could not be canonically serialized and strictly reconstructed",
+                "manifest",
+            )
+        ]
+    return snapshot, []
+
+
 def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
     """Validate the complete manifest-bound 1,440-task Families A-D Pilot release."""
     issues: list[ValidationIssue] = []
@@ -4711,7 +4963,17 @@ def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
             )
         )
 
-    ordered_tasks = sorted(copied_tasks, key=_release_task_sort_key)
+    snapshot_manifest, manifest_snapshot_issues = _snapshot_release_manifest(manifest)
+    issues.extend(manifest_snapshot_issues)
+    snapshots: list[MemUpdateTask] = []
+    for task in copied_tasks:
+        snapshot, snapshot_issues = _snapshot_release_task(task)
+        issues.extend(snapshot_issues)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    snapshotted_tasks = tuple(snapshots)
+
+    ordered_tasks = sorted(snapshotted_tasks, key=_release_task_sort_key)
     records = [_release_record(task) for task in ordered_tasks]
     for index, task in enumerate(ordered_tasks):
         record = records[index]
@@ -4744,7 +5006,9 @@ def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
 
     if all(record["structurally_safe"] for record in records):
         try:
-            issues.extend(validate_splits(ordered_tasks, task_manifest=manifest).issues)
+            issues.extend(
+                validate_splits(ordered_tasks, task_manifest=snapshot_manifest).issues
+            )
         except Exception:
             issues.append(
                 _issue(
@@ -4759,7 +5023,7 @@ def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
     ):
         try:
             if validator is _release_cardinality_issues:
-                issues.extend(validator(records, copied_tasks))
+                issues.extend(validator(records, snapshotted_tasks))
             else:
                 issues.extend(validator(records))
         except Exception:
@@ -4771,7 +5035,21 @@ def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
                 )
             )
     try:
-        issues.extend(_release_manifest_issues(records, copied_tasks, manifest))
+        issues.extend(
+            _release_canonical_identity_issues(records, snapshot_manifest)
+        )
+    except Exception:
+        issues.append(
+            _issue(
+                "pilot_release_canonical_identity_validator_exception",
+                "canonical identity validation rejected malformed snapshot structure",
+                "canonical_identity",
+            )
+        )
+    try:
+        issues.extend(
+            _release_manifest_issues(records, snapshotted_tasks, snapshot_manifest)
+        )
     except Exception:
         issues.append(
             _issue(

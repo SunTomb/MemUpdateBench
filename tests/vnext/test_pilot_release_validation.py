@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.resources
 import itertools
 import random
 from pathlib import Path
 
 import pytest
+import yaml
 
+import mub.vnext.validation.pilot as pilot_module
 from mub.vnext.contracts import (
     AnswerDisposition,
     ArtifactRef,
@@ -15,10 +19,12 @@ from mub.vnext.contracts import (
     TaskManifest,
 )
 from mub.vnext.generation import (
+    PilotConfig,
     build_pilot_artifact_bundle,
     compile_pilot_tasks,
     load_pilot_config,
 )
+from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.validation import validate_pilot_release
 
 
@@ -43,6 +49,46 @@ def _replace_manifest(manifest: TaskManifest, **updates) -> TaskManifest:
     payload = manifest.model_dump(mode="python")
     payload.update(updates)
     return TaskManifest.model_validate(payload)
+
+
+def _coordinated_manifest_for_tasks(
+    tasks: tuple[MemUpdateTask, ...], manifest: TaskManifest
+) -> TaskManifest:
+    split_order = {Split.TRAIN: 0, Split.DEV: 1, Split.TEST: 2}
+    family_order = {
+        family.value: index
+        for index, family in enumerate(
+            (
+                TaskFamily.REPEATED_SAME_SLOT,
+                TaskFamily.INTERLEAVED_MULTI_SLOT,
+                TaskFamily.ENTITY_ATTRIBUTE_GROUNDING,
+                TaskFamily.NOOP_WRITE_DISCIPLINE,
+            )
+        )
+    }
+    ordered = sorted(
+        tasks,
+        key=lambda task: (
+            split_order[task.metadata.split],
+            family_order[task.task_family],
+            task.metadata.split_key.semantic_core_id,
+            task.metadata.extra["surface_variant"],
+        ),
+    )
+    task_bytes = b"".join(canonical_json_bytes(task) + b"\n" for task in ordered)
+    task_ref_payload = manifest.task_file_paths_and_hashes[0].model_dump(mode="python")
+    task_ref_payload["sha256"] = hashlib.sha256(task_bytes).hexdigest()
+    task_ref_payload["record_count"] = len(tasks)
+    task_ref = ArtifactRef.model_validate(task_ref_payload)
+    summary = manifest.model_dump(mode="python")["leakage_check_summary"]
+    summary["task_hashes"] = {
+        task.task_id: sha256_model(task) for task in sorted(tasks, key=lambda item: item.task_id)
+    }
+    return _replace_manifest(
+        manifest,
+        task_file_paths_and_hashes=(task_ref,),
+        leakage_check_summary=summary,
+    )
 
 
 def _replace_task(tasks, index: int, task: MemUpdateTask):
@@ -73,6 +119,51 @@ def test_canonical_pilot_release_passes(canonical_release) -> None:
         if task.task_family == TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value
         for canonical in task.gold.canonical_answers.values()
     )
+
+
+def test_canonical_pilot_config_is_packaged_and_digest_bound() -> None:
+    resource = importlib.resources.files("mub.vnext.resources").joinpath(
+        "pilot.yaml"
+    )
+    payload = yaml.safe_load(resource.read_text(encoding="utf-8"))
+    config = PilotConfig.model_validate(payload)
+
+    assert resource.read_text(encoding="utf-8") == CONFIG_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert hashlib.sha256(canonical_json_bytes(config)).hexdigest() == (
+        "685759627773beba18f431a53c43f7077d9639596ee1a78fe970265a0d0626bf"
+    )
+
+
+def test_release_snapshots_tasks_and_manifest_before_validation(
+    canonical_release, monkeypatch
+) -> None:
+    tasks, manifest = canonical_release
+    original_validate = pilot_module.validate_pilot_task
+    original_provenance = dict(tasks[0].source.provenance)
+    original_revision = manifest.code_revision
+    mutated = False
+
+    def mutate_callers_then_validate(task):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            tasks[0].source.provenance["release_id"] = "mutated-after-ingress"
+            object.__setattr__(manifest, "code_revision", "mutated-after-ingress")
+        return original_validate(task)
+
+    monkeypatch.setattr(pilot_module, "validate_pilot_task", mutate_callers_then_validate)
+    try:
+        report = validate_pilot_release(tasks, manifest)
+    finally:
+        tasks[0].source.provenance.clear()
+        tasks[0].source.provenance.update(original_provenance)
+        object.__setattr__(manifest, "code_revision", original_revision)
+
+    assert mutated
+    assert report.valid
+    assert report.issues == ()
 
 
 def test_release_validation_is_independent_of_task_input_order(canonical_release) -> None:
@@ -215,6 +306,42 @@ def test_release_rejects_source_group_split_leakage(canonical_release) -> None:
     report = validate_pilot_release(_replace_task(tasks, train_index, changed), manifest)
 
     assert "pilot_release_source_group_split_leakage" in _codes(report)
+
+
+def test_release_rejects_coordinated_core_identity_relabel(canonical_release) -> None:
+    tasks, manifest = canonical_release
+    original_core_id = tasks[0].metadata.split_key.semantic_core_id
+    relabeled_core_id = "core_ffffffffffffffff"
+    changed_tasks = []
+    for task in tasks:
+        if task.metadata.split_key.semantic_core_id != original_core_id:
+            changed_tasks.append(task)
+            continue
+        split_key = task.metadata.split_key.model_copy(
+            update={"semantic_core_id": relabeled_core_id}
+        )
+        extra = dict(task.metadata.extra)
+        extra["semantic_core_id"] = relabeled_core_id
+        provenance = dict(task.source.provenance)
+        provenance["semantic_core_id"] = relabeled_core_id
+        changed_tasks.append(
+            task.model_copy(
+                update={
+                    "source": task.source.model_copy(
+                        update={"provenance": provenance}
+                    ),
+                    "metadata": task.metadata.model_copy(
+                        update={"split_key": split_key, "extra": extra}
+                    ),
+                }
+            )
+        )
+    changed = tuple(changed_tasks)
+    coordinated_manifest = _coordinated_manifest_for_tasks(changed, manifest)
+
+    report = validate_pilot_release(changed, coordinated_manifest)
+
+    assert "pilot_release_canonical_identity_mismatch" in _codes(report)
 
 
 def test_release_rejects_surface_and_core_cardinality_corruption(
@@ -389,6 +516,18 @@ def test_release_handles_hostile_constructed_and_wrong_type_inputs_stably(
     nested_payload["metadata"] = hostile_metadata
     hostile_nested = MemUpdateTask.model_construct(**nested_payload)
     nested = validate_pilot_release([hostile_nested], manifest)
+
+    cyclic_extra = {}
+    cyclic_extra["self"] = cyclic_extra
+    cyclic_metadata_payload = dict(exemplar.metadata.__dict__)
+    cyclic_metadata_payload["extra"] = cyclic_extra
+    cyclic_metadata = type(exemplar.metadata).model_construct(
+        **cyclic_metadata_payload
+    )
+    cyclic_payload = dict(exemplar.__dict__)
+    cyclic_payload["metadata"] = cyclic_metadata
+    cyclic_task = MemUpdateTask.model_construct(**cyclic_payload)
+    cyclic = validate_pilot_release([cyclic_task], manifest)
     oversized = validate_pilot_release(itertools.repeat(object()), manifest)
 
     assert first == second
@@ -400,4 +539,7 @@ def test_release_handles_hostile_constructed_and_wrong_type_inputs_stably(
     assert "pilot_release_malformed_manifest" in _codes(wrong)
     assert not nested.valid
     assert len(nested.issues) <= 128
+    assert not cyclic.valid
+    assert len(cyclic.issues) <= 128
+    assert "family_a_cyclic_json" in _codes(cyclic)
     assert "pilot_release_input_size_limit" in _codes(oversized)

@@ -5,5 +5,7 @@ setup(
     version="0.1.0",
     description="MemUpdateBench: repeated same-slot update-frequency benchmark for external memory systems",
     packages=find_packages(),
+    package_data={"mub.vnext.resources": ["pilot.yaml"]},
+    include_package_data=True,
     python_requires=">=3.10",
 )
