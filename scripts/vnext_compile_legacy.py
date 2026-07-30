@@ -22,7 +22,7 @@ from mub.vnext.legacy.artifacts import (
     LEGACY_CLI_CODE_REVISION,
     LEGACY_CLI_COMPILER_VERSION,
     LegacyAnalysisManifest,
-    authenticate_legacy_task_manifest,
+    _authenticate_legacy_task_validation_context,
     build_expected_legacy_task_manifest,
     with_legacy_index_profile,
 )
@@ -39,10 +39,11 @@ from mub.vnext.legacy.results import (
     authenticate_legacy_result_selection,
     import_evomemory_results,
 )
-from mub.vnext.validation import (
-    validate_legacy_task_semantics,
-    validate_splits,
+from mub.vnext.legacy.validation import (
+    _validate_authenticated_legacy_task_semantics,
+    _validate_compiler_constructed_legacy_task_semantics,
 )
+from mub.vnext.validation import validate_splits
 from mub.vnext.version import (
     SCHEMA_VERSION,
     TASK_MANIFEST_VERSION,
@@ -217,7 +218,7 @@ def _validate_task_stage(path: Path) -> None:
     """Validate bytes staged by this legacy compiler under its explicit context."""
     tasks = _load_canonical_jsonl(path, MemUpdateTask, "task_id")
     for task in tasks:
-        report = validate_legacy_task_semantics(task)
+        report = _validate_compiler_constructed_legacy_task_semantics(task)
         if not report.valid:
             raise ValueError(f"staged task semantic validation failed: {report.issues}")
 
@@ -287,7 +288,7 @@ def _task_manifest_for_tasks(
     _require_regular_file(manifest_path, "task manifest")
     manifest = _load_canonical_model(manifest_path, TaskManifest)
     assert isinstance(manifest, TaskManifest)
-    manifest = authenticate_legacy_task_manifest(
+    context = _authenticate_legacy_task_validation_context(
         manifest,
         tasks,
         tasks_path=tasks_path,
@@ -346,7 +347,7 @@ def _task_manifest_for_tasks(
     if dict(summary.get("row_counts", {})) != {"tasks.jsonl": len(tasks)}:
         raise ValueError("task manifest row counts do not match supplied tasks")
     for task in tasks:
-        report = validate_legacy_task_semantics(task)
+        report = _validate_authenticated_legacy_task_semantics(task, context)
         if not report.valid:
             raise ValueError(f"compiled task semantic validation failed: {report.issues}")
         update_depth = task.metadata.resolved_profile.get("update_depth")

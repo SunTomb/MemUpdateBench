@@ -325,6 +325,78 @@ def test_results_cli_writes_canonical_records_and_authenticated_manifest(
         assert json.loads(validated.stdout)["valid"] is True
 
 
+def test_authenticated_legacy_validation_requires_auth_and_exact_task_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mub.vnext.legacy.artifacts import (
+        _authenticate_legacy_task_validation_context,
+    )
+    from mub.vnext.legacy.validation import (
+        _validate_authenticated_legacy_task_semantics,
+    )
+    import scripts.vnext_validate_artifacts as validator_module
+
+    source = LEGACY_FIXTURES / "p63_dataset_minimal.json"
+    output_dir = tmp_path / "authenticated-context"
+    compiled = _run(
+        COMPILE_CLI,
+        "dataset",
+        "--input",
+        source,
+        "--split",
+        "test",
+        "--legacy-phase",
+        "P6.3",
+        "--output-dir",
+        output_dir,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    tasks_path = output_dir / "tasks.jsonl"
+    manifest_path = output_dir / "task_manifest.json"
+    tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
+    manifest = TaskManifest.model_validate(_load_json(manifest_path))
+
+    bare = _validate_authenticated_legacy_task_semantics(tasks[0], None)
+    assert not bare.valid
+    assert "legacy_validation_context_required" in {
+        issue.code for issue in bare.issues
+    }
+
+    context = _authenticate_legacy_task_validation_context(
+        manifest,
+        tasks,
+        tasks_path=tasks_path,
+    )
+    forged_payload = tasks[0].model_dump(mode="json")
+    forged_payload["source"]["generator"]["generator_name"] = "attacker_generator"
+    forged = MemUpdateTask.model_validate(forged_payload)
+    mismatch = _validate_authenticated_legacy_task_semantics(forged, context)
+    assert not mismatch.valid
+    assert "legacy_validation_context_task_mismatch" in {
+        issue.code for issue in mismatch.issues
+    }
+
+    forged_manifest_payload = manifest.model_dump(mode="json")
+    forged_manifest_payload["code_revision"] = "attacker-controlled"
+    forged_manifest = TaskManifest.model_validate(forged_manifest_payload)
+    privileged_called = False
+
+    def unexpected_privileged_validation(*args, **kwargs):
+        nonlocal privileged_called
+        privileged_called = True
+        raise AssertionError("privileged validation ran before manifest authentication")
+
+    monkeypatch.setattr(
+        validator_module,
+        "_validate_authenticated_legacy_task_semantics",
+        unexpected_privileged_validation,
+    )
+    with pytest.raises(ValueError, match="authenticated deterministic compilation"):
+        validator_module._load_tasks_from_manifest(forged_manifest, manifest_path)
+    assert privileged_called is False
+
+
 def test_validator_accepts_intact_tasks_and_rejects_tampered_hash(
     tmp_path: Path,
 ) -> None:

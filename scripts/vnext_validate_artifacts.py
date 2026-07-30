@@ -18,7 +18,7 @@ from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.io.jsonl import read_models
 from mub.vnext.legacy.artifacts import (
     LEGACY_CLI_COMPILER_VERSION,
-    authenticate_legacy_task_manifest,
+    _authenticate_legacy_task_validation_context,
 )
 from mub.vnext.legacy.loaders import load_evomemory_results
 from mub.vnext.legacy.results import (
@@ -27,10 +27,10 @@ from mub.vnext.legacy.results import (
     import_evomemory_results,
     is_legacy_evomemory_adapter_identity,
 )
-from mub.vnext.validation import (
-    validate_legacy_task_semantics,
-    validate_splits,
+from mub.vnext.legacy.validation import (
+    _validate_authenticated_legacy_task_semantics,
 )
+from mub.vnext.validation import validate_splits
 from mub.vnext.version import (
     METRIC_REGISTRY_VERSION,
     PROFILE_VERSION,
@@ -196,7 +196,7 @@ def _load_tasks_from_manifest(
         all_tasks.extend(row for row in rows if isinstance(row, MemUpdateTask))
     if len(task_paths) != 1:
         raise ValueError("TaskManifest must reference exactly one task artifact")
-    authenticate_legacy_task_manifest(
+    context = _authenticate_legacy_task_validation_context(
         manifest,
         all_tasks,
         tasks_path=task_paths[0],
@@ -233,7 +233,7 @@ def _load_tasks_from_manifest(
     for task in all_tasks:
         if task.schema_version != SCHEMA_VERSION:
             raise ValueError("task schema_version is not current")
-        report = validate_legacy_task_semantics(task)
+        report = _validate_authenticated_legacy_task_semantics(task, context)
         if not report.valid:
             raise ValueError("canonical task semantic validation failed")
         if any(

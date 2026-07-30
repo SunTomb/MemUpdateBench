@@ -22,6 +22,10 @@ from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.legacy.dataset import compile_legacy_episode
 from mub.vnext.legacy.loaders import load_evomemory_dataset
+from mub.vnext.legacy.validation import (
+    _AuthenticatedLegacyValidationContext,
+    _make_authenticated_legacy_validation_context,
+)
 from mub.vnext.profiles import hard_profile, resolve_profile
 
 
@@ -233,6 +237,20 @@ def authenticate_legacy_task_manifest(
             "TaskManifest does not exactly match authenticated deterministic compilation"
         )
     return expected
+
+
+def _authenticate_legacy_task_validation_context(
+    manifest: TaskManifest,
+    tasks: list[MemUpdateTask],
+    *,
+    tasks_path: Path,
+) -> _AuthenticatedLegacyValidationContext:
+    authenticated = authenticate_legacy_task_manifest(
+        manifest,
+        tasks,
+        tasks_path=tasks_path,
+    )
+    return _make_authenticated_legacy_validation_context(authenticated, tasks)
 
 
 def _authenticate_tasks_against_source(

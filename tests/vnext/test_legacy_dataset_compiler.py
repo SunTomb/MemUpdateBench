@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import mub.vnext.validation as validation_api
+
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import EvaluationMode, EventRole, Operation, SourceType, Split
 from mub.vnext.io.canonical import canonical_json_bytes, semantic_task_hash
@@ -20,10 +22,7 @@ from mub.vnext.legacy import (
     load_evomemory_dataset,
 )
 from mub.vnext.legacy import dataset as dataset_module
-from mub.vnext.validation import (
-    validate_legacy_task_semantics,
-    validate_task_semantics,
-)
+from mub.vnext.validation import validate_task_semantics
 from mub.vnext.validation.replay import replay_actions, validate_distractors, validate_gold_replay
 from mub.vnext.validation.split import validate_splits
 from mub.vnext.validation.task import validate_task
@@ -568,7 +567,6 @@ def test_answer_bearing_non_target_text_uses_audited_ambiguity_exception() -> No
         issue.code for issue in validate_task_semantics(task).issues
     }
     assert "distractor_text_contains_accepted_answer" in strict_codes
-    assert validate_legacy_task_semantics(task).valid
     assert validate_task(task).valid
     assert validate_gold_replay(task).valid
     assert not validate_distractors(task).valid
@@ -578,6 +576,31 @@ def _audited_overlap_payload() -> dict:
     episode = _generator_record()
     episode["events"][0] = "User says: my friend Alex visited Suzhou last year."
     return _compile(episode).model_dump(mode="json")
+
+
+def test_coordinated_forgery_has_no_public_legacy_waiver() -> None:
+    payload = _audited_overlap_payload()
+    payload["metadata"]["legacy_provenance"] = None
+    payload["source"]["generator"].update(
+        generator_name="attacker_generator",
+        code_revision="attacker-controlled",
+        config_sha256="a" * 64,
+    )
+    payload["events"][0]["raw_text"] = "Attacker supplied current answer Suzhou"
+    payload["events"][0]["normalized_text"] = "Attacker supplied current answer Suzhou"
+    forged = type(_compile(_generator_record())).model_validate(payload)
+
+    assert "distractor_text_contains_accepted_answer" in {
+        issue.code for issue in validate_task_semantics(forged).issues
+    }
+    assert "distractor_text_contains_accepted_answer" in {
+        issue.code for issue in validate_distractors(forged).issues
+    }
+    assert not hasattr(validation_api, "validate_legacy_task_semantics")
+    assert not hasattr(validation_api, "DistractorValidationPolicy")
+    public_parameters = inspect.signature(validate_distractors).parameters
+    assert "policy" not in public_parameters
+    assert "accepted_overlap_policy" not in public_parameters
 
 
 def test_legacy_policy_rejects_structured_auxiliary_write_leak() -> None:
@@ -604,7 +627,7 @@ def test_legacy_policy_rejects_structured_auxiliary_write_leak() -> None:
     payload["gold"]["expected_present_objects"].append(auxiliary_key)
     task = type(_compile(_generator_record())).model_validate(payload)
 
-    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    codes = {issue.code for issue in validate_task_semantics(task).issues}
     assert "distractor_text_contains_accepted_answer" in codes
 
 
@@ -613,7 +636,7 @@ def test_legacy_policy_rejects_unmarked_gold_bearing_noop() -> None:
     payload["events"][0]["metadata"] = {"legacy_role": EventRole.NEUTRAL.value}
     task = type(_compile(_generator_record())).model_validate(payload)
 
-    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    codes = {issue.code for issue in validate_task_semantics(task).issues}
     assert "distractor_text_contains_accepted_answer" in codes
 
 
@@ -622,7 +645,7 @@ def test_legacy_policy_rejects_forged_normalized_ambiguity_text() -> None:
     payload["events"][0]["normalized_text"] = "Forged neutral mention of Suzhou"
     task = type(_compile(_generator_record())).model_validate(payload)
 
-    codes = {issue.code for issue in validate_legacy_task_semantics(task).issues}
+    codes = {issue.code for issue in validate_task_semantics(task).issues}
     assert "distractor_text_contains_accepted_answer" in codes
 
 
@@ -648,7 +671,7 @@ def test_legacy_policy_rejects_unlinked_same_name_leak() -> None:
     )
     malformed = task.model_copy(update={"events": (event, *task.events[1:])})
 
-    report = validate_legacy_task_semantics(malformed)
+    report = validate_task_semantics(malformed)
     codes = {issue.code for issue in report.issues}
     assert not report.valid
     assert "distractor_text_contains_accepted_answer" in codes
@@ -1197,7 +1220,6 @@ def test_fixed_seed_real_p63_dev_test_corpus_compiles_all_records(tmp_path: Path
             )
             assert validate_task(task).valid
             assert validate_gold_replay(task).valid
-            assert validate_legacy_task_semantics(task).valid
             strict_report = validate_distractors(task)
             if task.metadata.extra["compatibility_policies"]:
                 assert not strict_report.valid
