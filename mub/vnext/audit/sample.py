@@ -229,43 +229,35 @@ class AuditGateReport(_StrictFrozenAuditModel):
     @computed_field(return_type=tuple[str, ...])
     @property
     def passed_audit_ids(self) -> tuple[str, ...]:
-        selected = set(self.selected_audit_ids)
-        evidence_counts = Counter(
-            decision.audit_id for decision in self.decision_evidence
-        )
-        return tuple(
-            sorted(
-                decision.audit_id
-                for decision in self.decision_evidence
-                if (
-                    decision.audit_id in selected
-                    and evidence_counts[decision.audit_id] == 1
-                    and decision.verdict == "pass"
-                    and decision.all_checks_pass
-                )
-            )
-        )
+        snapshot = self._strict_readiness_snapshot()
+        if snapshot is None:
+            return ()
+        return self._passed_ids_from_snapshot(snapshot)
 
     @computed_field(return_type=bool)
     @property
     def release_ready(self) -> bool:
+        snapshot = self._strict_readiness_snapshot()
+        if snapshot is None:
+            return False
         issue_fields = (
-            self.malformed_selection_ids,
-            self.duplicate_selection_ids,
-            self.missing_audit_ids,
-            self.duplicate_audit_ids,
-            self.foreign_audit_ids,
-            self.malformed_decision_ids,
-            self.non_pass_audit_ids,
-            self.failed_check_audit_ids,
+            snapshot.malformed_selection_ids,
+            snapshot.duplicate_selection_ids,
+            snapshot.missing_audit_ids,
+            snapshot.duplicate_audit_ids,
+            snapshot.foreign_audit_ids,
+            snapshot.malformed_decision_ids,
+            snapshot.non_pass_audit_ids,
+            snapshot.failed_check_audit_ids,
         )
         evidence_ids = tuple(
-            sorted(decision.audit_id for decision in self.decision_evidence)
+            sorted(decision.audit_id for decision in snapshot.decision_evidence)
         )
         return bool(
-            self.selected_audit_ids
-            and evidence_ids == self.selected_audit_ids
-            and self.passed_audit_ids == self.selected_audit_ids
+            snapshot.selected_audit_ids
+            and evidence_ids == snapshot.selected_audit_ids
+            and self._passed_ids_from_snapshot(snapshot)
+            == snapshot.selected_audit_ids
             and not any(issue_fields)
         )
 
@@ -278,6 +270,45 @@ class AuditGateReport(_StrictFrozenAuditModel):
         if any(type(decision) is not AuditDecision for decision in self.decision_evidence):
             raise ValueError("decision_evidence requires exact AuditDecision records")
         return self
+
+    def _exact_field_snapshot(self) -> dict[str, Any]:
+        try:
+            raw = object.__getattribute__(self, "__dict__")
+        except Exception as exc:
+            raise ValueError("AuditGateReport requires intact fields") from exc
+        if type(raw) is not dict or set(raw) != set(AuditGateReport.model_fields):
+            raise ValueError("AuditGateReport requires intact fields")
+        return dict(raw)
+
+    def _strict_readiness_snapshot(self) -> AuditGateReport | None:
+        try:
+            return AuditGateReport.model_validate(self._exact_field_snapshot())
+        except Exception:
+            return None
+
+    def validated_replace(self, **changes) -> AuditGateReport:
+        data = self._exact_field_snapshot()
+        data.update(changes)
+        return type(self).model_validate(data)
+
+    @staticmethod
+    def _passed_ids_from_snapshot(report: AuditGateReport) -> tuple[str, ...]:
+        selected = set(report.selected_audit_ids)
+        evidence_counts = Counter(
+            decision.audit_id for decision in report.decision_evidence
+        )
+        return tuple(
+            sorted(
+                decision.audit_id
+                for decision in report.decision_evidence
+                if (
+                    decision.audit_id in selected
+                    and evidence_counts[decision.audit_id] == 1
+                    and decision.verdict == "pass"
+                    and decision.all_checks_pass
+                )
+            )
+        )
 
     @property
     def duplicate_decision_ids(self) -> tuple[str, ...]:
@@ -369,8 +400,11 @@ def evaluate_audit_gate(
     valid_selections: list[AuditSelection] = []
     malformed_selection_ids: set[str] = set()
     malformed_selection_positions: set[int] = set()
+    observed_selection_ids: list[str] = []
     for index, item in enumerate(selected_snapshot):
         observation = _observe_audit_id(item, index)
+        if observation.audit_id is not None:
+            observed_selection_ids.append(observation.audit_id)
         snapshot = _snapshot_record(item, AuditSelection)
         if snapshot is not None:
             valid_selections.append(snapshot)
@@ -382,8 +416,13 @@ def evaluate_audit_gate(
     selection_counts = Counter(item.audit_id for item in valid_selections)
     selected_ids = tuple(sorted(selection_counts))
     selected_set = set(selected_ids)
+    observed_selection_counts = Counter(observed_selection_ids)
     duplicate_selection_ids = tuple(
-        sorted(audit_id for audit_id, count in selection_counts.items() if count > 1)
+        sorted(
+            audit_id
+            for audit_id, count in observed_selection_counts.items()
+            if count > 1
+        )
     )
 
     valid_decisions: list[AuditDecision] = []

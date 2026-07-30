@@ -137,6 +137,38 @@ def test_gate_report_readiness_requires_normalized_decision_evidence() -> None:
         AuditGateReport(selected_audit_ids=("audit-1", "audit-1"))
 
 
+def test_gate_report_validated_replace_excludes_computed_fields() -> None:
+    report = AuditGateReport(
+        selected_audit_ids=("audit-1",),
+        decision_evidence=(decision("audit-1"),),
+    )
+
+    replaced = report.validated_replace(non_pass_audit_ids=("audit-1",))
+
+    assert replaced.non_pass_audit_ids == ("audit-1",)
+    assert replaced.release_ready is False
+    assert report.release_ready is True
+    with pytest.raises((TypeError, ValidationError)):
+        replaced.non_pass_audit_ids = ()
+
+
+def test_gate_report_model_copy_update_excludes_computed_fields() -> None:
+    report = AuditGateReport(
+        selected_audit_ids=("audit-1",),
+        decision_evidence=(decision("audit-1"),),
+    )
+
+    copied = report.model_copy(
+        update={"failed_check_audit_ids": ("audit-1",)}
+    )
+
+    assert copied.failed_check_audit_ids == ("audit-1",)
+    assert copied.release_ready is False
+    assert report.release_ready is True
+    with pytest.raises(ValidationError):
+        report.model_copy(update={"selected_audit_ids": ("audit-1", 1)})
+
+
 @pytest.mark.parametrize(
     "evidence",
     (
@@ -173,6 +205,44 @@ def test_gate_report_rejects_hostile_constructed_decision_evidence() -> None:
             selected_audit_ids=("audit-1",),
             decision_evidence=(malformed,),
         )
+
+
+def test_hostile_constructed_gate_report_fails_closed() -> None:
+    malformed = AuditDecision.model_construct(
+        audit_id="audit-1",
+        reviewer=" ",
+        verdict="pass",
+        answer_unique=True,
+        actions_correct=True,
+        roles_correct=True,
+        surface_natural=True,
+        notes="fabricated",
+    )
+    report = AuditGateReport.model_construct(
+        selected_audit_ids=("audit-1",),
+        decision_evidence=(malformed,),
+    )
+
+    assert report.passed_audit_ids == ()
+    assert report.release_ready is False
+
+
+@pytest.mark.parametrize(
+    ("field_name", "hostile_value"),
+    (("reviewer", " "), ("answer_unique", 1)),
+)
+def test_gate_report_readiness_fails_closed_after_nested_mutation(
+    field_name: str, hostile_value: object
+) -> None:
+    report = AuditGateReport(
+        selected_audit_ids=("audit-1",),
+        decision_evidence=(decision("audit-1"),),
+    )
+    nested_fields = object.__getattribute__(report.decision_evidence[0], "__dict__")
+    nested_fields[field_name] = hostile_value
+
+    assert report.passed_audit_ids == ()
+    assert report.release_ready is False
 
 
 def test_selection_jsonl_round_trip_accepts_canonical_enum_strings(tmp_path) -> None:
@@ -295,6 +365,36 @@ def test_gate_rejects_malformed_model_construct_and_wrong_iterables() -> None:
         evaluate_audit_gate(iter([selection("audit-1")]), [])
     with pytest.raises(TypeError):
         evaluate_audit_gate([selection("audit-1")], {decision("audit-1")})
+
+
+def test_selection_duplicate_ids_include_valid_and_malformed_observations() -> None:
+    valid = selection("shared-audit")
+    malformed = AuditSelection.model_construct(**valid.model_dump(mode="python"))
+    object.__getattribute__(malformed, "__dict__")["task_id"] = " "
+
+    report = evaluate_audit_gate([valid, malformed], [])
+
+    assert report.selected_audit_ids == ("shared-audit",)
+    assert report.malformed_selection_ids == ("shared-audit",)
+    assert report.duplicate_selection_ids == ("shared-audit",)
+
+
+def test_selection_duplicate_ids_include_only_malformed_observations() -> None:
+    audit_id = "<index:literal-selection>"
+    first = AuditSelection.model_construct(
+        **selection(audit_id).model_dump(mode="python")
+    )
+    second = AuditSelection.model_construct(
+        **selection(audit_id).model_dump(mode="python")
+    )
+    object.__getattribute__(first, "__dict__")["task_id"] = " "
+    object.__getattribute__(second, "__dict__")["selection_reason"] = " "
+
+    report = evaluate_audit_gate([first, second], [])
+
+    assert report.selected_audit_ids == ()
+    assert report.malformed_selection_ids == (audit_id,)
+    assert report.duplicate_selection_ids == (audit_id,)
 
 
 def test_template_and_records_reject_wrong_iterable_condition_payloads() -> None:
