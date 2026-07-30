@@ -11,14 +11,22 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from mub.vnext.contracts import (
+    ActionScope,
     AnswerDisposition,
+    EvaluationMode,
     EventRole,
     Operation,
     QueryType,
     ReferenceResolutionStatus,
     TaskFamily,
 )
-from mub.vnext.contracts.task import CanonicalAnswer, MemUpdateTask
+from mub.vnext.contracts.task import (
+    CanonicalAnswer,
+    GoldAction,
+    MemUpdateTask,
+    MemoryEvent,
+    MemoryQuery,
+)
 import mub.vnext.generation.family_c as family_c_generation
 import mub.vnext.generation.render as render_generation
 from mub.vnext.generation.catalogs import (
@@ -2398,6 +2406,7 @@ def _family_c_surface_integrity_issues(
     references: list[Any],
     extra: Mapping[str, Any],
     semantic_core_id: str | None,
+    canonical: Any,
 ) -> list[ValidationIssue]:
     surface_variant = extra.get("surface_variant")
     if type(surface_variant) is not int or not 0 <= surface_variant < len(
@@ -2418,6 +2427,7 @@ def _family_c_surface_integrity_issues(
         "surface_variant": surface_variant,
     }
     valid = event_template_name == reference_template_name
+    structure_valid = True
     claimed_semantic_core_id = extra.get("semantic_core_id")
     core_index = extra.get("core_index")
     valid = valid and type(semantic_core_id) is str
@@ -2431,6 +2441,8 @@ def _family_c_surface_integrity_issues(
         expected_task_id = None
 
     core_events: list[CoreEvent] = []
+    expected_actions: list[GoldAction] = []
+    expected_events: list[MemoryEvent] = []
     expected_raw_events: list[dict[str, str]] = []
     for index, record in enumerate(records):
         event = record["event"]
@@ -2444,12 +2456,14 @@ def _family_c_surface_integrity_issues(
         }
         if action is None or expected_task_id is None:
             valid = False
+            structure_valid = False
             continue
         if (
             type(action.operation) is not Operation
             or action.operation is not Operation.ADD
         ):
             valid = False
+            structure_valid = False
             continue
         expected_event_id = canonical_event_id(expected_task_id, index)
         expected_action_id = canonical_action_id(expected_task_id, index, 0)
@@ -2473,15 +2487,46 @@ def _family_c_surface_integrity_issues(
         valid = valid and event.raw_text == expected_raw_text
         valid = valid and event.normalized_text == expected_normalized_text
         valid = valid and event.speaker == expected_speaker
+        expected_action = GoldAction(
+            action_id=expected_action_id,
+            event_id=expected_event_id,
+            operation=Operation.ADD,
+            scope=ActionScope.ATTRIBUTE,
+            target_object_keys=list(action.target_object_keys),
+            value=action.value,
+            effective_at=None,
+            expected_effect={},
+        )
+        expected_event = MemoryEvent(
+            event_id=expected_event_id,
+            sequence_index=index,
+            timestamp=None,
+            raw_text=expected_raw_text,
+            normalized_text=expected_normalized_text,
+            speaker=expected_speaker,
+            gold_action_ids=[expected_action_id],
+            role=EventRole.LATEST_GOLD,
+            source_anchor={"event_index": index},
+            metadata={
+                "candidate_index": index,
+                render_generation._RENDERER_METADATA_KEY: dict(renderer_admin),
+            },
+        )
+        expected_actions.append(expected_action)
+        expected_events.append(expected_event)
+        structure_valid = structure_valid and action == expected_action
+        structure_valid = structure_valid and event == expected_event
         expected_raw_events.append(
             {"raw_text": expected_raw_text, "speaker": expected_speaker}
         )
 
     if query is None or expected_task_id is None:
         valid = False
+        structure_valid = False
         expected_query_text = None
     else:
-        valid = valid and query.query_id == canonical_query_id(expected_task_id, 0)
+        expected_query_id = canonical_query_id(expected_task_id, 0)
+        valid = valid and query.query_id == expected_query_id
         valid = valid and _mapping(query.metadata) == {
             render_generation._RENDERER_METADATA_KEY: renderer_admin
         }
@@ -2495,6 +2540,52 @@ def _family_c_surface_integrity_issues(
             surface_variant,
         )
         valid = valid and query.text == expected_query_text
+        if (
+            type(canonical) is CanonicalAnswer
+            and len(expected_actions) == len(records)
+        ):
+            query_core = SimpleNamespace(
+                query_type=QueryType.UNRESOLVED_REFERENCE,
+                canonical_answer=canonical,
+                reference_candidates=candidates,
+                query_targets=list(query.target_object_keys),
+                expected_answer=None,
+            )
+            try:
+                expected_replay = replay_actions(expected_actions)
+                expected_query_type, _, expected_answer_schema = (
+                    render_generation._query_semantics(
+                        query_core,
+                        expected_replay,
+                    )
+                )
+            except ValueError:
+                structure_valid = False
+            else:
+                expected_query = MemoryQuery(
+                    query_id=expected_query_id,
+                    query_type=expected_query_type,
+                    text=expected_query_text,
+                    target_object_keys=list(query.target_object_keys),
+                    reference_candidates=list(candidates),
+                    surface_references=list(references),
+                    answer_schema=expected_answer_schema,
+                    evaluation_mode=EvaluationMode.RETRIEVED_PROMPT,
+                    metadata={
+                        render_generation._RENDERER_METADATA_KEY: dict(
+                            renderer_admin
+                        )
+                    },
+                )
+                structure_valid = structure_valid and query == expected_query
+        else:
+            structure_valid = False
+
+    structure_valid = structure_valid and task.events == expected_events
+    structure_valid = structure_valid and task.gold.actions == expected_actions
+    structure_valid = structure_valid and task.gold.action_sequence == [
+        action.action_id for action in expected_actions
+    ]
 
     provenance = _mapping(task.source.provenance)
     valid = valid and extra.get("surface_template") == event_template_name
@@ -2554,15 +2645,24 @@ def _family_c_surface_integrity_issues(
     for candidate in candidates:
         valid = valid and not _items(getattr(candidate, "source_anchors", None))
 
-    if valid:
-        return []
-    return [
-        _issue(
-            "family_c_surface_integrity_mismatch",
-            "Family C query, event, reference, candidate, source, and renderer surfaces must match the canonical selected template",
-            "task",
+    issues: list[ValidationIssue] = []
+    if not valid:
+        issues.append(
+            _issue(
+                "family_c_surface_integrity_mismatch",
+                "Family C query, event, reference, candidate, source, and renderer surfaces must match the canonical selected template",
+                "task",
+            )
         )
-    ]
+    if not structure_valid:
+        issues.append(
+            _issue(
+                "family_c_canonical_structure_mismatch",
+                "Family C query, event, and action records must equal the canonical renderer structures and order",
+                "task",
+            )
+        )
+    return issues
 
 
 def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
@@ -2618,6 +2718,7 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             references,
             extra,
             recomputed_semantic_core_id,
+            canonical,
         )
     )
     if (

@@ -381,6 +381,40 @@ def test_family_c_rejects_coordinated_cross_variant_surface_substitution(
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "evaluation_mode",
+        "answer_schema",
+        "timestamp",
+        "effective_at",
+        "action_storage_order",
+    ),
+)
+def test_family_c_rejects_noncanonical_runtime_structure(
+    family_c_tasks,
+    mutation,
+):
+    payload = _payload(_task(family_c_tasks, "distinct", "exact", variant=1))
+    if mutation == "evaluation_mode":
+        payload["queries"][0]["evaluation_mode"] = "state_direct"
+    elif mutation == "answer_schema":
+        payload["queries"][0]["answer_schema"] = "number"
+    elif mutation == "timestamp":
+        payload["events"][0]["timestamp"] = "2026-07-30T00:00:00Z"
+    elif mutation == "effective_at":
+        payload["gold"]["actions"][0]["effective_at"] = (
+            "2026-07-30T00:00:00Z"
+        )
+    else:
+        payload["gold"]["actions"].reverse()
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_canonical_structure_mismatch" in _codes(
+        validate_family_c_task(corrupted)
+    )
+
+
 @pytest.mark.parametrize("replacement", ("arbitrary", "other_core"))
 def test_family_c_rejects_noncanonical_surface_reference_id(
     family_c_tasks,
