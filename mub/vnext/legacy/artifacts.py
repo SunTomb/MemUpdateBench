@@ -223,12 +223,12 @@ def build_expected_legacy_task_manifest(
     )
 
 
-def authenticate_legacy_task_manifest(
+def _authenticate_legacy_task_manifest_snapshot(
     manifest: TaskManifest,
     tasks: list[MemUpdateTask],
     *,
     tasks_path: Path,
-    tasks_bytes: bytes | None = None,
+    tasks_bytes: bytes,
 ) -> TaskManifest:
     expected = build_expected_legacy_task_manifest(
         tasks,
@@ -240,6 +240,21 @@ def authenticate_legacy_task_manifest(
             "TaskManifest does not exactly match authenticated deterministic compilation"
         )
     return expected
+
+
+def authenticate_legacy_task_manifest(
+    manifest: TaskManifest,
+    tasks: list[MemUpdateTask],
+    *,
+    tasks_path: Path,
+) -> TaskManifest:
+    resolved_path = _require_regular_file(tasks_path, "compiled tasks")
+    return _authenticate_legacy_task_manifest_snapshot(
+        manifest,
+        tasks,
+        tasks_path=resolved_path,
+        tasks_bytes=resolved_path.read_bytes(),
+    )
 
 
 def _authenticate_and_validate_legacy_tasks(
@@ -258,7 +273,7 @@ def _authenticate_and_validate_legacy_tasks(
         raise ValueError(
             "compiled task snapshot does not equal supplied canonical task bytes"
         )
-    authenticated = authenticate_legacy_task_manifest(
+    authenticated = _authenticate_legacy_task_manifest_snapshot(
         manifest,
         tasks,
         tasks_path=resolved_path,

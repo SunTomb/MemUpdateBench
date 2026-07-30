@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -352,6 +353,9 @@ def test_atomic_legacy_validation_authenticates_snapshot_before_waiver(
     tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
     manifest = TaskManifest.model_validate(_load_json(manifest_path))
 
+    assert "tasks_bytes" not in inspect.signature(
+        artifact_module.authenticate_legacy_task_manifest
+    ).parameters
     assert not hasattr(legacy_validation_module, "_AuthenticatedLegacyValidationContext")
     assert not hasattr(
         legacy_validation_module,
