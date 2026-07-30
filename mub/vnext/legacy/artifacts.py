@@ -22,8 +22,9 @@ from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.legacy.dataset import compile_legacy_episode
 from mub.vnext.legacy.loaders import load_evomemory_dataset
-from mub.vnext.legacy.validation import _AuthenticatedLegacyValidationContext
+from mub.vnext.legacy.validation import _validate_trusted_legacy_task_semantics
 from mub.vnext.profiles import hard_profile, resolve_profile
+from mub.vnext.validation.issues import ValidationReport
 
 
 LEGACY_SCHEMA_VERSION = "1.0.0"
@@ -227,8 +228,13 @@ def authenticate_legacy_task_manifest(
     tasks: list[MemUpdateTask],
     *,
     tasks_path: Path,
+    tasks_bytes: bytes | None = None,
 ) -> TaskManifest:
-    expected = build_expected_legacy_task_manifest(tasks, tasks_path=tasks_path)
+    expected = build_expected_legacy_task_manifest(
+        tasks,
+        tasks_path=tasks_path,
+        tasks_bytes=tasks_bytes,
+    )
     if canonical_json_bytes(manifest) != canonical_json_bytes(expected):
         raise ValueError(
             "TaskManifest does not exactly match authenticated deterministic compilation"
@@ -236,23 +242,32 @@ def authenticate_legacy_task_manifest(
     return expected
 
 
-def _authenticate_legacy_task_validation_context(
+def _authenticate_and_validate_legacy_tasks(
     manifest: TaskManifest,
     tasks: list[MemUpdateTask],
     *,
     tasks_path: Path,
-) -> _AuthenticatedLegacyValidationContext:
+) -> tuple[TaskManifest, tuple[ValidationReport, ...]]:
+    """Authenticate one task-file snapshot, then validate those exact task models."""
+    resolved_path = _require_regular_file(tasks_path, "compiled tasks")
+    snapshot = resolved_path.read_bytes()
+    canonical_snapshot = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tasks
+    )
+    if snapshot != canonical_snapshot:
+        raise ValueError(
+            "compiled task snapshot does not equal supplied canonical task bytes"
+        )
     authenticated = authenticate_legacy_task_manifest(
         manifest,
         tasks,
-        tasks_path=tasks_path,
+        tasks_path=resolved_path,
+        tasks_bytes=snapshot,
     )
-    return _AuthenticatedLegacyValidationContext(
-        manifest_sha256=sha256_model(authenticated),
-        task_hashes=tuple(
-            sorted((task.task_id, sha256_model(task)) for task in tasks)
-        ),
+    reports = tuple(
+        _validate_trusted_legacy_task_semantics(task) for task in tasks
     )
+    return authenticated, reports
 
 
 def _authenticate_tasks_against_source(

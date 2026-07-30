@@ -1,26 +1,20 @@
 """Internal legacy validation boundary.
 
 These Python-private helpers are not a security sandbox. Compiler callers must own
-strict source construction, and artifact callers receive compatibility validation
-only after manifest authentication binds each task ID to its canonical hash. Public
-validation APIs remain strict and never produce a compatibility-waived claim.
+strict source construction. Artifact callers invoke them only inside an atomic
+operation that first authenticates the manifest against the exact canonical task-file
+snapshot and then validates those same in-memory task models. Public validation APIs
+remain strict and never produce a compatibility-waived claim.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from mub.vnext.contracts.enums import EventRole, Operation
 from mub.vnext.contracts.task import MemUpdateTask
-from mub.vnext.io.canonical import sha256_model
-from mub.vnext.validation.issues import (
-    ValidationIssue,
-    ValidationReport,
-    build_report,
-    merge_reports,
-)
+from mub.vnext.validation.issues import ValidationReport, merge_reports
 from mub.vnext.validation.replay import (
     _text_contains_value,
     _validate_distractors_with_accepted_overlap,
@@ -38,12 +32,6 @@ _LEGACY_AMBIGUITY_METADATA_KEYS = frozenset(
         "legacy_role",
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class _AuthenticatedLegacyValidationContext:
-    manifest_sha256: str
-    task_hashes: tuple[tuple[str, str], ...]
 
 
 def _enum_value(value: Any) -> Any:
@@ -151,32 +139,8 @@ def _validate_compiler_constructed_legacy_task_semantics(
     return _legacy_task_semantics(task)
 
 
-def _validate_authenticated_legacy_task_semantics(
+def _validate_trusted_legacy_task_semantics(
     task: MemUpdateTask,
-    context: _AuthenticatedLegacyValidationContext,
 ) -> ValidationReport:
-    """Validate a task only when bound to an authenticated manifest context."""
-    if type(context) is not _AuthenticatedLegacyValidationContext:
-        return build_report(
-            [
-                ValidationIssue(
-                    code="legacy_validation_context_required",
-                    message="authenticated legacy validation context is required",
-                    path="task",
-                    severity="error",
-                )
-            ]
-        )
-    expected_hash = dict(context.task_hashes).get(getattr(task, "task_id", None))
-    if expected_hash is None or expected_hash != sha256_model(task):
-        return build_report(
-            [
-                ValidationIssue(
-                    code="legacy_validation_context_task_mismatch",
-                    message="task is not bound to the authenticated legacy context",
-                    path="task",
-                    severity="error",
-                )
-            ]
-        )
+    """Validate within a compiler-owned or atomically authenticated boundary."""
     return _legacy_task_semantics(task)

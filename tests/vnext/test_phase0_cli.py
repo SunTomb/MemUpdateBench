@@ -325,17 +325,12 @@ def test_results_cli_writes_canonical_records_and_authenticated_manifest(
         assert json.loads(validated.stdout)["valid"] is True
 
 
-def test_authenticated_legacy_validation_requires_auth_and_exact_task_hash(
+def test_atomic_legacy_validation_authenticates_snapshot_before_waiver(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from mub.vnext.legacy.artifacts import (
-        _authenticate_legacy_task_validation_context,
-    )
-    from mub.vnext.legacy.validation import (
-        _validate_authenticated_legacy_task_semantics,
-    )
-    import scripts.vnext_validate_artifacts as validator_module
+    import mub.vnext.legacy.artifacts as artifact_module
+    import mub.vnext.legacy.validation as legacy_validation_module
 
     source = LEGACY_FIXTURES / "p63_dataset_minimal.json"
     output_dir = tmp_path / "authenticated-context"
@@ -357,25 +352,38 @@ def test_authenticated_legacy_validation_requires_auth_and_exact_task_hash(
     tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
     manifest = TaskManifest.model_validate(_load_json(manifest_path))
 
-    bare = _validate_authenticated_legacy_task_semantics(tasks[0], None)
-    assert not bare.valid
-    assert "legacy_validation_context_required" in {
-        issue.code for issue in bare.issues
-    }
-
-    context = _authenticate_legacy_task_validation_context(
+    assert not hasattr(legacy_validation_module, "_AuthenticatedLegacyValidationContext")
+    assert not hasattr(
+        legacy_validation_module,
+        "_validate_authenticated_legacy_task_semantics",
+    )
+    authenticated, reports = artifact_module._authenticate_and_validate_legacy_tasks(
         manifest,
         tasks,
         tasks_path=tasks_path,
     )
+    assert authenticated == manifest
+    assert all(report.valid for report in reports)
+
     forged_payload = tasks[0].model_dump(mode="json")
     forged_payload["source"]["generator"]["generator_name"] = "attacker_generator"
     forged = MemUpdateTask.model_validate(forged_payload)
-    mismatch = _validate_authenticated_legacy_task_semantics(forged, context)
-    assert not mismatch.valid
-    assert "legacy_validation_context_task_mismatch" in {
-        issue.code for issue in mismatch.issues
-    }
+    with pytest.raises(ValueError, match="snapshot|canonical task bytes"):
+        artifact_module._authenticate_and_validate_legacy_tasks(
+            manifest,
+            [forged, *tasks[1:]],
+            tasks_path=tasks_path,
+        )
+
+    original_bytes = tasks_path.read_bytes()
+    tasks_path.write_bytes(original_bytes.replace(b"Suzhou", b"Xuzhou", 1))
+    with pytest.raises(ValueError, match="snapshot|canonical task bytes|manifest"):
+        artifact_module._authenticate_and_validate_legacy_tasks(
+            manifest,
+            tasks,
+            tasks_path=tasks_path,
+        )
+    tasks_path.write_bytes(original_bytes)
 
     forged_manifest_payload = manifest.model_dump(mode="json")
     forged_manifest_payload["code_revision"] = "attacker-controlled"
@@ -388,12 +396,16 @@ def test_authenticated_legacy_validation_requires_auth_and_exact_task_hash(
         raise AssertionError("privileged validation ran before manifest authentication")
 
     monkeypatch.setattr(
-        validator_module,
-        "_validate_authenticated_legacy_task_semantics",
+        artifact_module,
+        "_validate_trusted_legacy_task_semantics",
         unexpected_privileged_validation,
     )
     with pytest.raises(ValueError, match="authenticated deterministic compilation"):
-        validator_module._load_tasks_from_manifest(forged_manifest, manifest_path)
+        artifact_module._authenticate_and_validate_legacy_tasks(
+            forged_manifest,
+            tasks,
+            tasks_path=tasks_path,
+        )
     assert privileged_called is False
 
 

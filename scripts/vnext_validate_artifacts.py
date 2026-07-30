@@ -18,7 +18,7 @@ from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.io.jsonl import read_models
 from mub.vnext.legacy.artifacts import (
     LEGACY_CLI_COMPILER_VERSION,
-    _authenticate_legacy_task_validation_context,
+    _authenticate_and_validate_legacy_tasks,
 )
 from mub.vnext.legacy.loaders import load_evomemory_results
 from mub.vnext.legacy.results import (
@@ -26,9 +26,6 @@ from mub.vnext.legacy.results import (
     authenticate_legacy_result_selection,
     import_evomemory_results,
     is_legacy_evomemory_adapter_identity,
-)
-from mub.vnext.legacy.validation import (
-    _validate_authenticated_legacy_task_semantics,
 )
 from mub.vnext.validation import validate_splits
 from mub.vnext.version import (
@@ -196,7 +193,7 @@ def _load_tasks_from_manifest(
         all_tasks.extend(row for row in rows if isinstance(row, MemUpdateTask))
     if len(task_paths) != 1:
         raise ValueError("TaskManifest must reference exactly one task artifact")
-    context = _authenticate_legacy_task_validation_context(
+    manifest, semantic_reports = _authenticate_and_validate_legacy_tasks(
         manifest,
         all_tasks,
         tasks_path=task_paths[0],
@@ -230,10 +227,9 @@ def _load_tasks_from_manifest(
     }
     if summary != expected_semantic:
         raise ValueError("TaskManifest semantic-core counts do not match task rows")
-    for task in all_tasks:
+    for task, report in zip(all_tasks, semantic_reports, strict=True):
         if task.schema_version != SCHEMA_VERSION:
             raise ValueError("task schema_version is not current")
-        report = _validate_authenticated_legacy_task_semantics(task, context)
         if not report.valid:
             raise ValueError("canonical task semantic validation failed")
         if any(

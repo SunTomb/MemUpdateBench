@@ -22,7 +22,7 @@ from mub.vnext.legacy.artifacts import (
     LEGACY_CLI_CODE_REVISION,
     LEGACY_CLI_COMPILER_VERSION,
     LegacyAnalysisManifest,
-    _authenticate_legacy_task_validation_context,
+    _authenticate_and_validate_legacy_tasks,
     build_expected_legacy_task_manifest,
     with_legacy_index_profile,
 )
@@ -40,7 +40,6 @@ from mub.vnext.legacy.results import (
     import_evomemory_results,
 )
 from mub.vnext.legacy.validation import (
-    _validate_authenticated_legacy_task_semantics,
     _validate_compiler_constructed_legacy_task_semantics,
 )
 from mub.vnext.validation import validate_splits
@@ -288,7 +287,7 @@ def _task_manifest_for_tasks(
     _require_regular_file(manifest_path, "task manifest")
     manifest = _load_canonical_model(manifest_path, TaskManifest)
     assert isinstance(manifest, TaskManifest)
-    context = _authenticate_legacy_task_validation_context(
+    manifest, semantic_reports = _authenticate_and_validate_legacy_tasks(
         manifest,
         tasks,
         tasks_path=tasks_path,
@@ -346,8 +345,7 @@ def _task_manifest_for_tasks(
         raise ValueError("task manifest output hashes do not match supplied tasks")
     if dict(summary.get("row_counts", {})) != {"tasks.jsonl": len(tasks)}:
         raise ValueError("task manifest row counts do not match supplied tasks")
-    for task in tasks:
-        report = _validate_authenticated_legacy_task_semantics(task, context)
+    for task, report in zip(tasks, semantic_reports, strict=True):
         if not report.valid:
             raise ValueError(f"compiled task semantic validation failed: {report.issues}")
         update_depth = task.metadata.resolved_profile.get("update_depth")
