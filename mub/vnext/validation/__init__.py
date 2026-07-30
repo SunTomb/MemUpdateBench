@@ -23,6 +23,7 @@ from mub.vnext.validation.pilot import (
     validate_family_b_task,
     validate_family_c_task,
     validate_family_d_task,
+    validate_pilot_release,
     validate_pilot_task,
 )
 
@@ -56,6 +57,7 @@ __all__ = [
     "validate_family_c_task",
     "validate_family_d_task",
     "validate_gold_replay",
+    "validate_pilot_release",
     "validate_pilot_task",
     "validate_splits",
     "validate_task",

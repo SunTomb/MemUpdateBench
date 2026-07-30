@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from collections import Counter, defaultdict
 from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 from enum import Enum
 from string import Template
 from types import SimpleNamespace, UnionType
@@ -18,7 +22,9 @@ from mub.vnext.contracts import (
     Operation,
     QueryType,
     ReferenceResolutionStatus,
+    Split,
     TaskFamily,
+    TaskManifest,
 )
 from mub.vnext.contracts.task import (
     CanonicalAnswer,
@@ -27,7 +33,10 @@ from mub.vnext.contracts.task import (
     MemoryEvent,
     MemoryQuery,
 )
+import mub.vnext.generation.family_a as family_a_generation
+import mub.vnext.generation.family_b as family_b_generation
 import mub.vnext.generation.family_c as family_c_generation
+import mub.vnext.generation.family_d as family_d_generation
 import mub.vnext.generation.render as render_generation
 from mub.vnext.generation.catalogs import (
     ALIAS_MAPPINGS,
@@ -38,6 +47,7 @@ from mub.vnext.generation.catalogs import (
     SAME_NAME_ENTITIES,
     SURFACE_TEMPLATE_SETS,
 )
+from mub.vnext.generation.config import load_pilot_config
 from mub.vnext.generation.core import CoreEvent
 from mub.vnext.generation.family_b_schedule import (
     INTERLEAVING_PATTERNS,
@@ -59,6 +69,7 @@ from mub.vnext.generation.identity import (
     task_id as canonical_task_id,
     trajectory_id as canonical_trajectory_id,
 )
+from mub.vnext.io import canonical_json_bytes, semantic_task_hash
 from mub.vnext.validation.issues import (
     ValidationIssue,
     ValidationReport,
@@ -70,6 +81,7 @@ from mub.vnext.validation.replay import (
     validate_distractors,
     validate_gold_replay,
 )
+from mub.vnext.validation.split import validate_splits
 from mub.vnext.validation.task import acceptable_candidates, validate_task
 
 
@@ -87,6 +99,7 @@ _MAX_NESTED_ITEMS = 64
 _MAX_NESTED_DEPTH = 16
 _MAX_SCHEMA_NODES = 4096
 _PILOT_RELEASE_ID = "vnext-pilot-2026-07"
+_PILOT_CONFIG_SHA256 = "685759627773beba18f431a53c43f7077d9639596ee1a78fe970265a0d0626bf"
 _FAMILY_A_COUNTS = {
     "easy": (0, 0, 0),
     "medium": (2, 1, 2),
@@ -111,6 +124,39 @@ _FAMILY_A_DEPTH_BUCKETS = {1: "1", 4: "4-7", 16: "16+"}
 _FAMILY_A_DEPTHS = frozenset(_FAMILY_A_DEPTH_BUCKETS)
 _FAMILY_B_ACTIVE_COUNTS = {"easy": 2, "medium": 4, "hard": 8}
 _FAMILY_B_DENSITIES = {"easy": 0.0, "medium": 0.25, "hard": 0.5}
+_PILOT_FAMILIES = (
+    TaskFamily.REPEATED_SAME_SLOT.value,
+    TaskFamily.INTERLEAVED_MULTI_SLOT.value,
+    TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,
+    TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+)
+_PILOT_SPLITS = (Split.TRAIN, Split.DEV, Split.TEST)
+_PILOT_TASK_COUNT = 1440
+_PILOT_CORE_COUNT = 480
+_PILOT_TASKS_PER_FAMILY = 360
+_PILOT_CORES_PER_FAMILY = 120
+_PILOT_SPLIT_TASK_COUNTS = {
+    Split.TRAIN: 1008,
+    Split.DEV: 144,
+    Split.TEST: 288,
+}
+_PILOT_FAMILY_SPLIT_TASK_COUNTS = {
+    Split.TRAIN: 252,
+    Split.DEV: 36,
+    Split.TEST: 72,
+}
+_PILOT_FAMILY_SPLIT_CORE_COUNTS = {
+    Split.TRAIN: 84,
+    Split.DEV: 12,
+    Split.TEST: 24,
+}
+_RELEASE_GROUP_FIELDS = (
+    "trajectory_id",
+    "source_group_id",
+    "paraphrase_group_id",
+    "source_document_id",
+    "version_group_id",
+)
 
 
 def _issue(code: str, message: str, path: str) -> ValidationIssue:
@@ -3993,10 +4039,755 @@ def validate_pilot_task(task: Any) -> ValidationReport:
     )
 
 
+def _bounded_release_report(issues: list[ValidationIssue]) -> ValidationReport:
+    unique = {
+        (issue.code, issue.path, issue.message, issue.severity): issue for issue in issues
+    }
+    ordered = [unique[key] for key in sorted(unique)]
+    if len(ordered) > _MAX_ISSUES:
+        omitted = len(ordered) - (_MAX_ISSUES - 1)
+        ordered = ordered[: _MAX_ISSUES - 1]
+        ordered.append(
+            _issue(
+                "pilot_release_issue_limit_reached",
+                f"validation report omitted {omitted} additional deterministic issues",
+                "tasks",
+            )
+        )
+        ordered.sort(key=lambda item: (item.code, item.path, item.message, item.severity))
+    return build_report(ordered)
+
+
+def _release_task_sort_key(task: Any) -> tuple[str, str, str, str]:
+    task_id = ""
+    family = ""
+    grouping = ""
+    if type(task) is MemUpdateTask:
+        try:
+            raw = object.__getattribute__(task, "__dict__")
+            raw_task_id = raw.get("task_id") if type(raw) is dict else None
+            raw_family = raw.get("task_family") if type(raw) is dict else None
+            if type(raw_task_id) is str:
+                task_id = raw_task_id
+            if type(raw_family) is str:
+                family = raw_family
+            metadata = raw.get("metadata") if type(raw) is dict else None
+            metadata_raw = object.__getattribute__(metadata, "__dict__")
+            split_key = metadata_raw.get("split_key")
+            split_key_raw = object.__getattribute__(split_key, "__dict__")
+            core_id = split_key_raw.get("semantic_core_id")
+            if type(core_id) is str:
+                grouping = core_id
+        except Exception:
+            pass
+    return (
+        task_id,
+        f"{type(task).__module__}.{type(task).__qualname__}",
+        family,
+        grouping,
+    )
+
+
+def _release_record(task: Any) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "task": task,
+        "task_id": None,
+        "family": None,
+        "difficulty": None,
+        "split": None,
+        "core_id": None,
+        "core_index": None,
+        "surface_variant": None,
+        "semantic_hash": None,
+        "stratification": None,
+        "structurally_safe": False,
+        "groups": {},
+    }
+    if type(task) is not MemUpdateTask:
+        return record
+    try:
+        raw = object.__getattribute__(task, "__dict__")
+        if type(raw) is not dict:
+            return record
+        task_id = raw.get("task_id")
+        family = raw.get("task_family")
+        difficulty = _enum_value(raw.get("difficulty"))
+        record["task_id"] = task_id if type(task_id) is str else None
+        record["family"] = family if type(family) is str else None
+        record["difficulty"] = difficulty if type(difficulty) is str else None
+        metadata = raw.get("metadata")
+        metadata_raw = object.__getattribute__(metadata, "__dict__")
+        split = metadata_raw.get("split")
+        record["split"] = split if type(split) is Split else None
+        split_key = metadata_raw.get("split_key")
+        split_key_raw = object.__getattribute__(split_key, "__dict__")
+        core_id = split_key_raw.get("semantic_core_id")
+        record["core_id"] = core_id if type(core_id) is str else None
+        record["groups"] = {
+            field: value if type(value) is str else None
+            for field in _RELEASE_GROUP_FIELDS
+            for value in (split_key_raw.get(field),)
+        }
+        extra = metadata_raw.get("extra")
+        if isinstance(extra, Mapping):
+            surface_variant = extra.get("surface_variant")
+            core_index = extra.get("core_index")
+            stratification = extra.get("stratification")
+            record["surface_variant"] = (
+                surface_variant if type(surface_variant) is int else None
+            )
+            record["core_index"] = core_index if type(core_index) is int else None
+            record["stratification"] = (
+                dict(stratification) if isinstance(stratification, Mapping) else None
+            )
+        record["structurally_safe"] = not _schema_preflight_issues(task, family="a")
+        if record["structurally_safe"]:
+            record["semantic_hash"] = semantic_task_hash(task)
+    except Exception:
+        pass
+    return record
+
+
+def _canonical_release_order(record: dict[str, Any]) -> tuple[int, int, str, int, str]:
+    split = record["split"]
+    family = record["family"]
+    surface = record["surface_variant"]
+    return (
+        _PILOT_SPLITS.index(split) if split in _PILOT_SPLITS else len(_PILOT_SPLITS),
+        _PILOT_FAMILIES.index(family)
+        if family in _PILOT_FAMILIES
+        else len(_PILOT_FAMILIES),
+        record["core_id"] if type(record["core_id"]) is str else "",
+        surface if type(surface) is int else 99,
+        record["task_id"] if type(record["task_id"]) is str else "",
+    )
+
+
+@lru_cache(maxsize=1)
+def _canonical_generation_ledger() -> dict[tuple[str, int], dict[str, Any]]:
+    config_path = Path(__file__).resolve().parents[3] / "configs" / "vnext" / "pilot.yaml"
+    config = load_pilot_config(config_path)
+    if hashlib.sha256(canonical_json_bytes(config)).hexdigest() != _PILOT_CONFIG_SHA256:
+        raise ValueError("canonical Pilot config digest mismatch")
+    cores = (
+        *family_a_generation.generate_family_a_cores(config),
+        *family_b_generation.generate_family_b_cores(config),
+        *family_c_generation.generate_family_c_cores(config),
+        *family_d_generation.generate_family_d_cores(config),
+    )
+    ledger: dict[tuple[str, int], dict[str, Any]] = {}
+    for core in cores:
+        family = core.task_family.value
+        key = (family, core.core_index)
+        if key in ledger:
+            raise ValueError("canonical Pilot generation ledger contains duplicate keys")
+        ledger[key] = {
+            "difficulty": core.difficulty.value,
+            "stratification": dict(core.stratification),
+        }
+    if len(ledger) != _PILOT_CORE_COUNT:
+        raise ValueError("canonical Pilot generation ledger is incomplete")
+    return ledger
+
+
+def _release_linked_ids(task: Any) -> list[tuple[str, str]]:
+    if type(task) is not MemUpdateTask:
+        return []
+    linked: list[tuple[str, str]] = []
+    try:
+        source_id = task.source.source_id
+        if type(source_id) is str and source_id:
+            linked.append(("source", source_id))
+        for field, items in (
+            ("event", task.events),
+            ("action", task.gold.actions),
+            ("query", task.queries),
+        ):
+            identifier = f"{field}_id"
+            for item in _items(items):
+                value = getattr(item, identifier, None)
+                if type(value) is str and value:
+                    linked.append((field, value))
+    except Exception:
+        return linked
+    return linked
+
+
+def _release_manifest_issues(
+    records: list[dict[str, Any]],
+    tasks: tuple[Any, ...],
+    manifest: Any,
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    if type(manifest) is not TaskManifest:
+        issues.append(
+            _issue(
+                "pilot_release_malformed_manifest",
+                "manifest must be an exact TaskManifest contract",
+                "manifest",
+            )
+        )
+        return issues
+    try:
+        if manifest.data_release_id != _PILOT_RELEASE_ID:
+            issues.append(
+                _issue(
+                    "pilot_release_manifest_release_id_mismatch",
+                    "TaskManifest data_release_id must identify the canonical Pilot release",
+                    "manifest.data_release_id",
+                )
+            )
+
+        task_refs = manifest.task_file_paths_and_hashes
+        task_ref = task_refs[0] if type(task_refs) is tuple and len(task_refs) == 1 else None
+        if (
+            task_ref is None
+            or task_ref.path != "tasks.jsonl"
+            or task_ref.media_type != "application/x-ndjson"
+        ):
+            issues.append(
+                _issue(
+                    "pilot_release_task_file_binding_mismatch",
+                    "TaskManifest must bind exactly one canonical tasks.jsonl artifact",
+                    "manifest.task_file_paths_and_hashes",
+                )
+            )
+        else:
+            if task_ref.record_count != len(tasks):
+                issues.append(
+                    _issue(
+                        "pilot_release_task_file_count_mismatch",
+                        "task artifact record_count must equal the supplied task model count",
+                        "manifest.task_file_paths_and_hashes[0].record_count",
+                    )
+                )
+            try:
+                if any(type(task) is not MemUpdateTask for task in tasks) or any(
+                    not record["structurally_safe"] for record in records
+                ):
+                    raise TypeError("noncanonical task input")
+                ordered = sorted(records, key=_canonical_release_order)
+                task_bytes = b"".join(
+                    canonical_json_bytes(record["task"]) + b"\n" for record in ordered
+                )
+                observed_hash = hashlib.sha256(task_bytes).hexdigest()
+            except Exception:
+                issues.append(
+                    _issue(
+                        "pilot_release_task_file_serialization_error",
+                        "supplied task models cannot form the canonical task artifact",
+                        "tasks",
+                    )
+                )
+            else:
+                if task_ref.sha256 != observed_hash:
+                    issues.append(
+                        _issue(
+                            "pilot_release_task_file_hash_mismatch",
+                            "task artifact hash must equal canonical JSONL reconstructed from supplied models",
+                            "manifest.task_file_paths_and_hashes[0].sha256",
+                        )
+                    )
+
+        config_refs = manifest.generation_configs_and_hashes
+        config_ref = (
+            config_refs[0]
+            if type(config_refs) is tuple and len(config_refs) == 1
+            else None
+        )
+        if (
+            config_ref is None
+            or config_ref.path != "generation_config.json"
+            or config_ref.media_type != "application/json"
+            or config_ref.record_count != 1
+        ):
+            issues.append(
+                _issue(
+                    "pilot_release_generation_config_binding_mismatch",
+                    "TaskManifest must bind exactly one canonical generation_config.json artifact",
+                    "manifest.generation_configs_and_hashes",
+                )
+            )
+        else:
+            if config_ref.sha256 != _PILOT_CONFIG_SHA256:
+                issues.append(
+                    _issue(
+                        "pilot_release_generation_config_hash_mismatch",
+                        "generation config artifact must match the reviewed canonical Pilot config digest",
+                        "manifest.generation_configs_and_hashes[0].sha256",
+                    )
+                )
+            mismatched_task_ids: list[str] = []
+            for record in records:
+                task = record["task"]
+                if type(task) is not MemUpdateTask:
+                    continue
+                task_id = record["task_id"] if type(record["task_id"]) is str else "<missing>"
+                try:
+                    generator = task.source.generator
+                    matches = (
+                        task.metadata.generation_config_hash == config_ref.sha256
+                        and generator is not None
+                        and generator.config_sha256 == config_ref.sha256
+                        and generator.code_revision == manifest.code_revision
+                        and manifest.compiler_versions
+                        == {generator.generator_name: generator.compiler_version}
+                    )
+                except Exception:
+                    matches = False
+                if not matches:
+                    mismatched_task_ids.append(task_id)
+            if mismatched_task_ids:
+                issues.append(
+                    _issue(
+                        "pilot_release_build_metadata_mismatch",
+                        f"task generation provenance disagrees with manifest for {len(mismatched_task_ids)} task models",
+                        "tasks.metadata",
+                    )
+                )
+    except Exception:
+        issues.append(
+            _issue(
+                "pilot_release_malformed_manifest",
+                "TaskManifest runtime structure is malformed",
+                "manifest",
+            )
+        )
+    return issues
+
+
+def _release_cardinality_issues(
+    records: list[dict[str, Any]], tasks: tuple[Any, ...]
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    if len(tasks) != _PILOT_TASK_COUNT:
+        issues.append(
+            _issue(
+                "pilot_release_task_count_mismatch",
+                f"Pilot release requires exactly {_PILOT_TASK_COUNT} tasks",
+                "tasks",
+            )
+        )
+
+    family_counts = Counter(record["family"] for record in records)
+    if any(family_counts[family] != _PILOT_TASKS_PER_FAMILY for family in _PILOT_FAMILIES):
+        issues.append(
+            _issue(
+                "pilot_release_family_task_count_mismatch",
+                "each Pilot family requires exactly 360 tasks",
+                "tasks.task_family",
+            )
+        )
+    split_counts = Counter(record["split"] for record in records)
+    if any(split_counts[split] != expected for split, expected in _PILOT_SPLIT_TASK_COUNTS.items()):
+        issues.append(
+            _issue(
+                "pilot_release_split_task_count_mismatch",
+                "Pilot train/dev/test task counts must be exactly 1008/144/288",
+                "tasks.metadata.split",
+            )
+        )
+    if any(
+        sum(
+            record["family"] == family and record["split"] == split
+            for record in records
+        )
+        != expected
+        for family in _PILOT_FAMILIES
+        for split, expected in _PILOT_FAMILY_SPLIT_TASK_COUNTS.items()
+    ):
+        issues.append(
+            _issue(
+                "pilot_release_family_split_count_mismatch",
+                "each family must contribute exactly 252/36/72 train/dev/test tasks",
+                "tasks.family_by_split",
+            )
+        )
+    return issues
+
+
+def _release_identity_and_group_issues(
+    records: list[dict[str, Any]],
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    task_ids: dict[str, int] = Counter(
+        record["task_id"]
+        for record in records
+        if type(record["task_id"]) is str and bool(record["task_id"].strip())
+    )
+    for record in records:
+        if type(record["task_id"]) is not str or not record["task_id"].strip():
+            issues.append(
+                _issue(
+                    "pilot_release_missing_task_id",
+                    "every Pilot task requires a nonblank exact task_id",
+                    "tasks.<missing>.task_id",
+                )
+            )
+    for task_id in sorted(task_ids):
+        if task_ids[task_id] > 1:
+            issues.append(
+                _issue(
+                    "pilot_release_duplicate_task_id",
+                    f"task_id {task_id} occurs more than once",
+                    f"tasks.{task_id}.task_id",
+                )
+            )
+
+    linked_locations: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for record in records:
+        task_id = record["task_id"] if type(record["task_id"]) is str else "<missing>"
+        for kind, linked_id in _release_linked_ids(record["task"]):
+            linked_locations[(kind, linked_id)].append(task_id)
+    for kind, linked_id in sorted(linked_locations):
+        locations = linked_locations[(kind, linked_id)]
+        if len(locations) > 1:
+            issues.append(
+                _issue(
+                    "pilot_release_duplicate_surface_id",
+                    f"{kind} ID {linked_id} occurs in multiple task surfaces",
+                    f"surface_ids.{kind}.{linked_id}",
+                )
+            )
+
+    core_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        core_id = record["core_id"]
+        if type(core_id) is str and core_id.strip():
+            core_records[core_id].append(record)
+        else:
+            issues.append(
+                _issue(
+                    "pilot_release_missing_semantic_core_id",
+                    "every Pilot task requires a semantic_core_id",
+                    "tasks.metadata.split_key.semantic_core_id",
+                )
+            )
+    if len(core_records) != _PILOT_CORE_COUNT:
+        issues.append(
+            _issue(
+                "pilot_release_semantic_core_count_mismatch",
+                f"Pilot release requires exactly {_PILOT_CORE_COUNT} semantic cores",
+                "semantic_cores",
+            )
+        )
+
+    semantic_hash_cores: dict[str, set[str]] = defaultdict(set)
+    family_core_counts = Counter()
+    family_split_core_counts = Counter()
+    family_core_indices: dict[str, set[int]] = defaultdict(set)
+    observed_generation_cells = Counter()
+    try:
+        canonical_ledger = _canonical_generation_ledger()
+    except Exception:
+        canonical_ledger = {}
+        issues.append(
+            _issue(
+                "pilot_release_generation_ledger_error",
+                "canonical Pilot generation ledger could not be verified",
+                "generation_config",
+            )
+        )
+    for core_id in sorted(core_records):
+        members = core_records[core_id]
+        families = {member["family"] for member in members}
+        difficulties = {member["difficulty"] for member in members}
+        splits = {member["split"] for member in members}
+        if len(splits) > 1:
+            issues.append(
+                _issue(
+                    "pilot_release_semantic_core_split_leakage",
+                    "all surfaces of one semantic core must stay in one split",
+                    f"semantic_cores.{core_id}.split",
+                )
+            )
+        grouping_mismatch = len(families) != 1 or len(difficulties) != 1
+        core_indices = {member["core_index"] for member in members}
+        if len(core_indices) != 1 or None in core_indices:
+            grouping_mismatch = True
+        for field in _RELEASE_GROUP_FIELDS:
+            if len({member["groups"].get(field) for member in members}) != 1:
+                grouping_mismatch = True
+        if grouping_mismatch:
+            issues.append(
+                _issue(
+                    "pilot_release_core_grouping_mismatch",
+                    "core surfaces must agree on family, difficulty, and trajectory/source grouping",
+                    f"semantic_cores.{core_id}",
+                )
+            )
+
+        expected_generation = None
+        if len(families) == 1 and len(core_indices) == 1 and None not in core_indices:
+            expected_generation = canonical_ledger.get(
+                (next(iter(families)), next(iter(core_indices)))
+            )
+        generation_matches = expected_generation is not None
+        if generation_matches:
+            for member in members:
+                try:
+                    member_matches = (
+                        member["difficulty"] == expected_generation["difficulty"]
+                        and _same_value(
+                            member["stratification"],
+                            expected_generation["stratification"],
+                        )
+                    )
+                except Exception:
+                    member_matches = False
+                generation_matches = generation_matches and member_matches
+        if not generation_matches:
+            issues.append(
+                _issue(
+                    "pilot_release_generation_strata_mismatch",
+                    "core difficulty and family-specific strata must match the canonical generation ledger for its family/core_index",
+                    f"semantic_cores.{core_id}.stratification",
+                )
+            )
+        else:
+            observed_generation_cells[
+                (
+                    next(iter(families)),
+                    _canonical_json_value(expected_generation["stratification"]),
+                )
+            ] += 1
+
+        surfaces = [member["surface_variant"] for member in members]
+        if len(surfaces) != len(set(surfaces)):
+            issues.append(
+                _issue(
+                    "pilot_release_duplicate_surface_id",
+                    "surface_variant must be unique within a semantic core",
+                    f"semantic_cores.{core_id}.surface_variant",
+                )
+            )
+        if len(members) != 3 or set(surfaces) != {0, 1, 2}:
+            issues.append(
+                _issue(
+                    "pilot_release_core_surface_cardinality_mismatch",
+                    "each semantic core requires exactly surface variants 0, 1, and 2",
+                    f"semantic_cores.{core_id}.surface_variant",
+                )
+            )
+
+        semantic_hashes = {
+            member["semantic_hash"]
+            for member in members
+            if type(member["semantic_hash"]) is str
+        }
+        if len(semantic_hashes) != 1 or len(semantic_hashes) != len(
+            {member["semantic_hash"] for member in members}
+        ):
+            issues.append(
+                _issue(
+                    "pilot_release_semantic_hash_mismatch",
+                    "all surface variants of one core must share one semantic hash",
+                    f"semantic_cores.{core_id}.semantic_hash",
+                )
+            )
+        for semantic_hash in semantic_hashes:
+            semantic_hash_cores[semantic_hash].add(core_id)
+
+        if len(families) == 1:
+            family = next(iter(families))
+            family_core_counts[family] += 1
+            if len(core_indices) == 1 and None not in core_indices:
+                family_core_indices[family].update(core_indices)
+            if len(splits) == 1:
+                family_split_core_counts[(family, next(iter(splits)))] += 1
+
+    expected_generation_cells = Counter(
+        (
+            family,
+            _canonical_json_value(expected["stratification"]),
+        )
+        for (family, _), expected in canonical_ledger.items()
+    )
+    if observed_generation_cells != expected_generation_cells:
+        issues.append(
+            _issue(
+                "pilot_release_generation_cell_count_mismatch",
+                "family-specific canonical generation condition-cell counts must match the reviewed Pilot schedule",
+                "semantic_cores.stratification_counts",
+            )
+        )
+
+    for semantic_hash in sorted(semantic_hash_cores):
+        if len(semantic_hash_cores[semantic_hash]) > 1:
+            issues.append(
+                _issue(
+                    "pilot_release_semantic_hash_cross_core_collision",
+                    "one semantic hash cannot identify multiple semantic cores",
+                    f"semantic_hashes.{semantic_hash}",
+                )
+            )
+    if any(
+        family_core_counts[family] != _PILOT_CORES_PER_FAMILY
+        for family in _PILOT_FAMILIES
+    ):
+        issues.append(
+            _issue(
+                "pilot_release_family_core_count_mismatch",
+                "each Pilot family requires exactly 120 semantic cores",
+                "semantic_cores.task_family",
+            )
+        )
+    if any(
+        family_core_indices[family] != set(range(_PILOT_CORES_PER_FAMILY))
+        for family in _PILOT_FAMILIES
+    ):
+        issues.append(
+            _issue(
+                "pilot_release_generation_strata_mismatch",
+                "each family must cover canonical generation core_index values 0 through 119 exactly once",
+                "semantic_cores.core_index",
+            )
+        )
+    if any(
+        family_split_core_counts[(family, split)] != expected
+        for family in _PILOT_FAMILIES
+        for split, expected in _PILOT_FAMILY_SPLIT_CORE_COUNTS.items()
+    ):
+        issues.append(
+            _issue(
+                "pilot_release_family_core_split_count_mismatch",
+                "each family requires exactly 84/12/24 train/dev/test cores",
+                "semantic_cores.family_by_split",
+            )
+        )
+
+    for field in ("semantic_core_id", "source_group_id"):
+        grouped_splits: dict[str, set[Any]] = defaultdict(set)
+        for record in records:
+            value = record["core_id"] if field == "semantic_core_id" else record["groups"].get(field)
+            if type(value) is str and value.strip():
+                grouped_splits[value].add(record["split"])
+        for group_id in sorted(grouped_splits):
+            if len(grouped_splits[group_id]) > 1:
+                code = (
+                    "pilot_release_semantic_core_split_leakage"
+                    if field == "semantic_core_id"
+                    else "pilot_release_source_group_split_leakage"
+                )
+                issues.append(
+                    _issue(
+                        code,
+                        f"{field} cannot cross Pilot splits",
+                        f"groups.{field}.{group_id}",
+                    )
+                )
+    return issues
+
+
+def validate_pilot_release(tasks: Any, manifest: Any) -> ValidationReport:
+    """Validate the complete manifest-bound 1,440-task Families A-D Pilot release."""
+    issues: list[ValidationIssue] = []
+    copied: list[Any] = []
+    try:
+        iterator = iter(tasks)
+        for index in range(_PILOT_TASK_COUNT + 1):
+            try:
+                task = next(iterator)
+            except StopIteration:
+                break
+            if index == _PILOT_TASK_COUNT:
+                issues.append(
+                    _issue(
+                        "pilot_release_input_size_limit",
+                        "tasks iterable exceeds the 1,440-task Pilot release limit",
+                        "tasks",
+                    )
+                )
+                break
+            copied.append(task)
+        copied_tasks = tuple(copied)
+    except Exception:
+        copied_tasks = tuple(copied)
+        issues.append(
+            _issue(
+                "pilot_release_malformed_tasks_iterable",
+                "tasks must be a finite iterable of Pilot task models",
+                "tasks",
+            )
+        )
+
+    ordered_tasks = sorted(copied_tasks, key=_release_task_sort_key)
+    records = [_release_record(task) for task in ordered_tasks]
+    for index, task in enumerate(ordered_tasks):
+        record = records[index]
+        if type(task) is not MemUpdateTask:
+            task_id = f"<invalid-{type(task).__module__}.{type(task).__qualname__}>"
+        elif type(record["task_id"]) is str and record["task_id"].strip():
+            task_id = record["task_id"]
+        else:
+            family = record["family"] if type(record["family"]) is str else "unknown"
+            task_id = f"<missing-{family}>"
+        try:
+            report = validate_pilot_task(task)
+            for issue in report.issues:
+                issues.append(
+                    ValidationIssue(
+                        code=issue.code,
+                        message=issue.message,
+                        path=f"tasks.{task_id}.{issue.path}",
+                        severity=issue.severity,
+                    )
+                )
+        except Exception:
+            issues.append(
+                _issue(
+                    "pilot_release_task_validator_exception",
+                    "strict Pilot task validation rejected malformed input",
+                    f"tasks.{task_id}",
+                )
+            )
+
+    if all(record["structurally_safe"] for record in records):
+        try:
+            issues.extend(validate_splits(ordered_tasks, task_manifest=manifest).issues)
+        except Exception:
+            issues.append(
+                _issue(
+                    "pilot_release_split_validator_exception",
+                    "generic split/manifest validation rejected malformed release input",
+                    "tasks",
+                )
+            )
+    for validator, code in (
+        (_release_cardinality_issues, "pilot_release_cardinality_validator_exception"),
+        (_release_identity_and_group_issues, "pilot_release_group_validator_exception"),
+    ):
+        try:
+            if validator is _release_cardinality_issues:
+                issues.extend(validator(records, copied_tasks))
+            else:
+                issues.extend(validator(records))
+        except Exception:
+            issues.append(
+                _issue(
+                    code,
+                    "release-wide validation rejected malformed task structure",
+                    "tasks",
+                )
+            )
+    try:
+        issues.extend(_release_manifest_issues(records, copied_tasks, manifest))
+    except Exception:
+        issues.append(
+            _issue(
+                "pilot_release_manifest_validator_exception",
+                "release manifest validation rejected malformed runtime structure",
+                "manifest",
+            )
+        )
+    return _bounded_release_report(issues)
+
+
 __all__ = [
     "validate_family_a_task",
     "validate_family_b_task",
     "validate_family_c_task",
     "validate_family_d_task",
+    "validate_pilot_release",
     "validate_pilot_task",
 ]
