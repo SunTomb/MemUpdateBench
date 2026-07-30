@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from itertools import product
 
 from mub.vnext.contracts import (
@@ -276,6 +277,86 @@ def _candidate_values(config: PilotConfig, core_index: int) -> tuple[str, str]:
     return ordered[0], ordered[1]
 
 
+def _semantic_core_payload(
+    *,
+    entity_condition: str,
+    attribute_condition: str,
+    entity_mapping_id: str,
+    attribute_mapping_id: str,
+    events: Sequence[CoreEvent],
+    candidates: Sequence[ReferenceCandidate],
+    reference: SurfaceReference,
+    canonical: CanonicalAnswer,
+) -> dict[str, object]:
+    candidate_ids = [candidate.candidate_id for candidate in candidates]
+    linked_candidate_indices = [
+        candidate_ids.index(candidate_id) for candidate_id in reference.candidate_ids
+    ]
+    selected_candidate_indices = [
+        candidate_ids.index(candidate_id)
+        for candidate_id in canonical.selected_candidate_ids
+    ]
+    return {
+        "family": _FAMILY_NAME,
+        "entity_condition": entity_condition,
+        "attribute_condition": attribute_condition,
+        "entity_mapping_id": entity_mapping_id,
+        "attribute_mapping_id": attribute_mapping_id,
+        "events": [
+            {
+                "operation": event.operation.value,
+                "object_keys": [
+                    _identity_payload(key) for key in event.object_keys
+                ],
+                "value": event.value,
+                "role": event.role.value,
+                "metadata": dict(event.metadata),
+            }
+            for event in events
+        ],
+        "candidate_identities": [
+            _identity_payload(candidate.object_key) for candidate in candidates
+        ],
+        "reference_graph": {
+            "condition_kind": reference.condition_kind,
+            "evidence_kind": reference.evidence_kind,
+            "linked_candidate_indices": linked_candidate_indices,
+        },
+        "canonical_answer": {
+            "disposition": canonical.disposition.value,
+            "resolution_status": canonical.resolution_status.value,
+            "selected_candidate_indices": selected_candidate_indices,
+            "value": canonical.value,
+        },
+    }
+
+
+def _semantic_core_id(
+    *,
+    entity_condition: str,
+    attribute_condition: str,
+    entity_mapping_id: str,
+    attribute_mapping_id: str,
+    events: Sequence[CoreEvent],
+    candidates: Sequence[ReferenceCandidate],
+    reference: SurfaceReference,
+    canonical: CanonicalAnswer,
+) -> str:
+    return core_id(
+        _FAMILY_NAME,
+        _semantic_core_payload(
+            entity_condition=entity_condition,
+            attribute_condition=attribute_condition,
+            entity_mapping_id=entity_mapping_id,
+            attribute_mapping_id=attribute_mapping_id,
+            events=events,
+            candidates=candidates,
+            reference=reference,
+            canonical=canonical,
+        ),
+    )
+
+
 def _build_core(
     config: PilotConfig,
     core_index: int,
@@ -394,47 +475,16 @@ def _build_core(
         )
     )
     difficulty = _difficulty(entity_condition, attribute_condition)
-    linked_candidate_indices = [
-        candidate_ids.index(candidate_id) for candidate_id in linked_candidate_ids
-    ]
-    selected_candidate_indices = [
-        candidate_ids.index(candidate_id)
-        for candidate_id in canonical.selected_candidate_ids
-    ]
-    semantic_payload = {
-        "family": _FAMILY_NAME,
-        "entity_condition": entity_condition,
-        "attribute_condition": attribute_condition,
-        "entity_mapping_id": entity_mapping_id,
-        "attribute_mapping_id": attribute_mapping_id,
-        "events": [
-            {
-                "operation": event.operation.value,
-                "object_keys": [
-                    _identity_payload(key) for key in event.object_keys
-                ],
-                "value": event.value,
-                "role": event.role.value,
-                "metadata": dict(event.metadata),
-            }
-            for event in events
-        ],
-        "candidate_identities": [
-            _identity_payload(candidate.object_key) for candidate in candidates
-        ],
-        "reference_graph": {
-            "condition_kind": reference.condition_kind,
-            "evidence_kind": reference.evidence_kind,
-            "linked_candidate_indices": linked_candidate_indices,
-        },
-        "canonical_answer": {
-            "disposition": canonical.disposition.value,
-            "resolution_status": canonical.resolution_status.value,
-            "selected_candidate_indices": selected_candidate_indices,
-            "value": canonical.value,
-        },
-    }
-    identifier = core_id(_FAMILY_NAME, semantic_payload)
+    identifier = _semantic_core_id(
+        entity_condition=entity_condition,
+        attribute_condition=attribute_condition,
+        entity_mapping_id=entity_mapping_id,
+        attribute_mapping_id=attribute_mapping_id,
+        events=events,
+        candidates=candidates,
+        reference=reference,
+        canonical=canonical,
+    )
     profile = {
         "update_depth": 1,
         "active_object_count": len(keys),

@@ -2291,11 +2291,53 @@ def _family_b_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _family_c_recomputed_semantic_core_id(
+    records: list[dict[str, Any]],
+    candidates: list[Any],
+    reference: Any,
+    canonical: Any,
+    stratification: Mapping[str, Any],
+) -> str | None:
+    if (
+        len(records) != 2
+        or len(candidates) != 2
+        or reference is None
+        or type(canonical) is not CanonicalAnswer
+    ):
+        return None
+    core_events: list[CoreEvent] = []
+    for record in records:
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        if action is None:
+            return None
+        metadata = dict(record["metadata"])
+        metadata.pop(render_generation._RENDERER_METADATA_KEY, None)
+        core_events.append(
+            CoreEvent(
+                operation=action.operation,
+                object_keys=list(action.target_object_keys),
+                value=action.value,
+                role=record["event"].role,
+                metadata=metadata,
+            )
+        )
+    return family_c_generation._semantic_core_id(
+        entity_condition=stratification.get("entity_condition"),
+        attribute_condition=stratification.get("attribute_condition"),
+        entity_mapping_id=stratification.get("entity_mapping_id"),
+        attribute_mapping_id=stratification.get("attribute_mapping_id"),
+        events=core_events,
+        candidates=candidates,
+        reference=reference,
+        canonical=canonical,
+    )
+
+
 def _family_c_provenance_link_issues(
     task: MemUpdateTask,
     extra: Mapping[str, Any],
+    semantic_core_id: str | None,
 ) -> list[ValidationIssue]:
-    semantic_core_id = extra.get("semantic_core_id")
     core_index = extra.get("core_index")
     if type(semantic_core_id) is not str or type(core_index) is not int:
         return [
@@ -2337,10 +2379,6 @@ def _family_c_provenance_link_issues(
         for field, expected in expected_groups.items()
     )
     valid = valid and split_key.semantic_core_id == semantic_core_id
-    valid = valid and split_key.split_exception_id is None
-    valid = valid and split_key.split_policy_version == (
-        render_generation._SPLIT_POLICY_VERSION
-    )
     if valid:
         return []
     return [
@@ -2359,6 +2397,7 @@ def _family_c_surface_integrity_issues(
     candidates: list[Any],
     references: list[Any],
     extra: Mapping[str, Any],
+    semantic_core_id: str | None,
 ) -> list[ValidationIssue]:
     surface_variant = extra.get("surface_variant")
     if type(surface_variant) is not int or not 0 <= surface_variant < len(
@@ -2379,9 +2418,10 @@ def _family_c_surface_integrity_issues(
         "surface_variant": surface_variant,
     }
     valid = event_template_name == reference_template_name
-    semantic_core_id = extra.get("semantic_core_id")
+    claimed_semantic_core_id = extra.get("semantic_core_id")
     core_index = extra.get("core_index")
-    valid = valid and type(semantic_core_id) is str and bool(semantic_core_id.strip())
+    valid = valid and type(semantic_core_id) is str
+    valid = valid and claimed_semantic_core_id == semantic_core_id
     valid = valid and type(core_index) is int
     if type(semantic_core_id) is str:
         expected_task_id = canonical_task_id(semantic_core_id, surface_variant)
@@ -2541,7 +2581,34 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     candidates = _items(getattr(query, "reference_candidates", None))
     references = _items(getattr(query, "surface_references", None))
     reference = references[0] if len(references) == 1 else None
-    issues.extend(_family_c_provenance_link_issues(task, extra))
+    query_id = getattr(query, "query_id", None)
+    canonical_answers = _mapping(gold.canonical_answers)
+    canonical = canonical_answers.get(query_id) if type(query_id) is str else None
+    recomputed_semantic_core_id = _family_c_recomputed_semantic_core_id(
+        records,
+        candidates,
+        reference,
+        canonical,
+        stratification,
+    )
+    if (
+        recomputed_semantic_core_id is None
+        or extra.get("semantic_core_id") != recomputed_semantic_core_id
+    ):
+        issues.append(
+            _issue(
+                "family_c_semantic_core_id_mismatch",
+                "Family C semantic_core_id must be recomputed from the ID-free canonical semantic projection",
+                "metadata.extra.semantic_core_id",
+            )
+        )
+    issues.extend(
+        _family_c_provenance_link_issues(
+            task,
+            extra,
+            recomputed_semantic_core_id,
+        )
+    )
     issues.extend(
         _family_c_surface_integrity_issues(
             task,
@@ -2550,6 +2617,7 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             candidates,
             references,
             extra,
+            recomputed_semantic_core_id,
         )
     )
     if (
@@ -2872,9 +2940,6 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             entity_condition,
             attribute_condition,
         )
-    query_id = getattr(query, "query_id", None)
-    canonical_answers = _mapping(gold.canonical_answers)
-    canonical = canonical_answers.get(query_id) if type(query_id) is str else None
     answer_support_valid = (
         type(query_id) is str
         and len(queries) == 1

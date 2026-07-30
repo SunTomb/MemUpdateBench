@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import mub.vnext.generation.identity as identity_module
 import mub.vnext.generation.render as render_module
 from mub.vnext.contracts import (
     AnswerDisposition,
@@ -26,6 +27,7 @@ from mub.vnext.generation import (
     load_pilot_config,
     render_core,
 )
+from mub.vnext.io import semantic_task_hash
 from mub.vnext.validation import (
     replay_actions,
     validate_family_a_task,
@@ -139,6 +141,67 @@ def _rewrite_raw_source_hash(payload):
             "query_text": payload["queries"][0]["text"],
         }
     )
+
+
+def _rewrite_as_core_id_impersonation(payload, donor):
+    payload["task_id"] = donor["task_id"]
+    for event, action, donor_event, donor_action in zip(
+        payload["events"],
+        payload["gold"]["actions"],
+        donor["events"],
+        donor["gold"]["actions"],
+    ):
+        event["event_id"] = donor_event["event_id"]
+        event["gold_action_ids"] = list(donor_event["gold_action_ids"])
+        action["action_id"] = donor_action["action_id"]
+        action["event_id"] = donor_action["event_id"]
+    payload["gold"]["action_sequence"] = list(
+        donor["gold"]["action_sequence"]
+    )
+    payload["gold"]["gold_source_event_ids"] = list(
+        donor["gold"]["gold_source_event_ids"]
+    )
+
+    query = payload["queries"][0]
+    donor_query = donor["queries"][0]
+    old_query_id = query["query_id"]
+    query["query_id"] = donor_query["query_id"]
+    canonical = payload["gold"]["canonical_answers"].pop(old_query_id)
+    payload["gold"]["canonical_answers"] = {query["query_id"]: canonical}
+
+    candidate_id_map = {}
+    for candidate, donor_candidate in zip(
+        query["reference_candidates"], donor_query["reference_candidates"]
+    ):
+        candidate_id_map[candidate["candidate_id"]] = donor_candidate["candidate_id"]
+        candidate["candidate_id"] = donor_candidate["candidate_id"]
+    reference = query["surface_references"][0]
+    reference["reference_id"] = donor_query["surface_references"][0][
+        "reference_id"
+    ]
+    reference["candidate_ids"] = [
+        candidate_id_map[candidate_id] for candidate_id in reference["candidate_ids"]
+    ]
+    canonical["selected_candidate_ids"] = [
+        candidate_id_map[candidate_id]
+        for candidate_id in canonical["selected_candidate_ids"]
+    ]
+
+    payload["metadata"]["extra"]["semantic_core_id"] = donor["metadata"][
+        "extra"
+    ]["semantic_core_id"]
+    payload["metadata"]["extra"]["core_index"] = donor["metadata"]["extra"][
+        "core_index"
+    ]
+    payload["metadata"]["split_key"] = deepcopy(
+        donor["metadata"]["split_key"]
+    )
+    for field in ("semantic_core_id", *_GROUP_FIELDS):
+        payload["source"]["provenance"][field] = donor["source"]["provenance"][
+            field
+        ]
+    payload["source"]["source_id"] = donor["source"]["source_id"]
+    payload["source"]["source_uri"] = donor["source"]["source_uri"]
 
 
 def _render_first(config, generator, label):
@@ -380,6 +443,98 @@ def test_family_c_rejects_cross_core_group_substitution(family_c_tasks):
     assert "family_c_provenance_link_mismatch" in _codes(
         validate_family_c_task(corrupted)
     )
+
+
+def test_family_c_rejects_coordinated_cross_core_identity_impersonation(
+    family_c_tasks,
+):
+    tasks = _cell_tasks(family_c_tasks, "distinct", "exact", variant=0)
+    payload = _payload(tasks[0])
+    donor = _payload(tasks[1])
+    _rewrite_as_core_id_impersonation(payload, donor)
+    impersonated = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_semantic_core_id_mismatch" in _codes(
+        validate_family_c_task(impersonated)
+    )
+
+
+def test_family_c_admin_core_index_can_change_without_changing_semantic_core(
+    family_c_tasks,
+):
+    task = _task(family_c_tasks, "alias", "paraphrase", variant=1)
+    payload = _payload(task)
+    semantic_core_id = payload["metadata"]["extra"]["semantic_core_id"]
+    old_groups = {
+        field: payload["metadata"]["split_key"][field]
+        for field in (
+            "source_group_id",
+            "paraphrase_group_id",
+            "source_document_id",
+        )
+    }
+    core_index = 999
+    surface_variant = payload["metadata"]["extra"]["surface_variant"]
+    payload["metadata"]["extra"]["core_index"] = core_index
+    payload["source"]["source_id"] = identity_module.source_id(
+        "vnext_pilot",
+        core_index,
+        {
+            "semantic_core_id": semantic_core_id,
+            "surface_variant": surface_variant,
+        },
+    )
+    payload["source"]["source_uri"] = (
+        f"memory://{payload['source']['source_id']}"
+    )
+    payload["queries"][0]["surface_references"][0]["reference_id"] = (
+        identity_module.stable_id(
+            "reference",
+            {
+                "family": TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,
+                "core_index": core_index,
+            },
+        )
+    )
+    trajectory = identity_module.trajectory_id(
+        semantic_core_id,
+        f"family_c_{core_index:03d}",
+    )
+    version_group = identity_module.stable_id(
+        "version_group",
+        {"trajectory_id": trajectory},
+    )
+    for container in (
+        payload["source"]["provenance"],
+        payload["metadata"]["split_key"],
+    ):
+        container["trajectory_id"] = trajectory
+        container["version_group_id"] = version_group
+    rewritten = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_c_task(rewritten)
+    assert report.valid, report.issues
+    assert semantic_task_hash(rewritten) == semantic_task_hash(task)
+    assert {
+        field: payload["metadata"]["split_key"][field]
+        for field in old_groups
+    } == old_groups
+
+
+def test_family_c_allows_evaluation_only_split_exception(family_c_tasks):
+    payload = _payload(
+        _task(family_c_tasks, "namespace_collision", "near_name", variant=2)
+    )
+    payload["metadata"]["split_key"]["split_exception_id"] = (
+        "family_c_eval_robustness_exception_v1"
+    )
+    payload["metadata"]["split_key"]["split_policy_version"] = (
+        "evaluation_only_robustness_v1"
+    )
+    exceptional = MemUpdateTask.model_validate(payload)
+
+    report = validate_family_c_task(exceptional)
+    assert report.valid, report.issues
 
 
 def test_family_c_rejects_coordinated_candidate_geometry_collapse(family_c_tasks):
