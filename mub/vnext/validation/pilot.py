@@ -5,7 +5,7 @@ import math
 from collections.abc import Mapping
 from enum import Enum
 from string import Template
-from types import UnionType
+from types import SimpleNamespace, UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -20,6 +20,7 @@ from mub.vnext.contracts import (
 )
 from mub.vnext.contracts.task import CanonicalAnswer, MemUpdateTask
 import mub.vnext.generation.family_c as family_c_generation
+import mub.vnext.generation.render as render_generation
 from mub.vnext.generation.catalogs import (
     ALIAS_MAPPINGS,
     CANONICAL_ATTRIBUTES,
@@ -29,6 +30,7 @@ from mub.vnext.generation.catalogs import (
     SAME_NAME_ENTITIES,
     SURFACE_TEMPLATE_SETS,
 )
+from mub.vnext.generation.core import CoreEvent
 from mub.vnext.generation.family_b_schedule import (
     INTERLEAVING_PATTERNS,
     canonical_cross_slot_update_count,
@@ -38,6 +40,13 @@ from mub.vnext.generation.family_d import (
     family_d_duplicate_current_statement,
     family_d_independent_noop_statement,
     family_d_semantic_near_miss_statement,
+)
+from mub.vnext.generation.identity import (
+    action_id as canonical_action_id,
+    event_id as canonical_event_id,
+    query_id as canonical_query_id,
+    source_id as canonical_source_id,
+    task_id as canonical_task_id,
 )
 from mub.vnext.validation.issues import (
     ValidationIssue,
@@ -2279,6 +2288,166 @@ def _family_b_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _family_c_surface_integrity_issues(
+    task: MemUpdateTask,
+    records: list[dict[str, Any]],
+    query: Any,
+    candidates: list[Any],
+    references: list[Any],
+    extra: Mapping[str, Any],
+) -> list[ValidationIssue]:
+    surface_variant = extra.get("surface_variant")
+    if type(surface_variant) is not int or not 0 <= surface_variant < len(
+        REFERENCE_QUERY_TEMPLATE_SETS
+    ):
+        return [
+            _issue(
+                "family_c_surface_integrity_mismatch",
+                "Family C visible surfaces require a canonical surface variant",
+                "metadata.extra.surface_variant",
+            )
+        ]
+
+    event_template_name, add_template, *_ = SURFACE_TEMPLATE_SETS[surface_variant]
+    reference_template_name = REFERENCE_QUERY_TEMPLATE_SETS[surface_variant][0]
+    renderer_admin = {
+        "surface_template": event_template_name,
+        "surface_variant": surface_variant,
+    }
+    valid = event_template_name == reference_template_name
+    semantic_core_id = extra.get("semantic_core_id")
+    core_index = extra.get("core_index")
+    valid = valid and type(semantic_core_id) is str and bool(semantic_core_id.strip())
+    valid = valid and type(core_index) is int
+    if type(semantic_core_id) is str:
+        expected_task_id = canonical_task_id(semantic_core_id, surface_variant)
+        valid = valid and task.task_id == expected_task_id
+        valid = valid and task.metadata.split_key.semantic_core_id == semantic_core_id
+    else:
+        expected_task_id = None
+
+    core_events: list[CoreEvent] = []
+    expected_raw_events: list[dict[str, str]] = []
+    for index, record in enumerate(records):
+        event = record["event"]
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        metadata = dict(record["metadata"])
+        renderer = metadata.pop(render_generation._RENDERER_METADATA_KEY, None)
+        valid = valid and renderer == renderer_admin
+        valid = valid and metadata == {"candidate_index": index}
+        valid = valid and _mapping(getattr(event, "source_anchor", None)) == {
+            "event_index": index
+        }
+        if action is None or expected_task_id is None:
+            valid = False
+            continue
+        if (
+            type(action.operation) is not Operation
+            or action.operation is not Operation.ADD
+        ):
+            valid = False
+            continue
+        expected_event_id = canonical_event_id(expected_task_id, index)
+        expected_action_id = canonical_action_id(expected_task_id, index, 0)
+        valid = valid and event.event_id == expected_event_id
+        valid = valid and action.action_id == expected_action_id
+        valid = valid and action.event_id == expected_event_id
+        core_event = CoreEvent(
+            operation=action.operation,
+            object_keys=list(action.target_object_keys),
+            value=action.value,
+            role=event.role,
+            metadata=metadata,
+        )
+        core_events.append(core_event)
+        expected_raw_text = render_generation._render_event_text(
+            core_event,
+            {Operation.ADD: add_template},
+        )
+        expected_normalized_text = render_generation._normalized_event_text(core_event)
+        expected_speaker = render_generation._SPEAKERS[surface_variant]
+        valid = valid and event.raw_text == expected_raw_text
+        valid = valid and event.normalized_text == expected_normalized_text
+        valid = valid and event.speaker == expected_speaker
+        expected_raw_events.append(
+            {"raw_text": expected_raw_text, "speaker": expected_speaker}
+        )
+
+    if query is None or expected_task_id is None:
+        valid = False
+        expected_query_text = None
+    else:
+        valid = valid and query.query_id == canonical_query_id(expected_task_id, 0)
+        valid = valid and _mapping(query.metadata) == {
+            render_generation._RENDERER_METADATA_KEY: renderer_admin
+        }
+        surface_core = SimpleNamespace(
+            events=core_events,
+            reference_candidates=candidates,
+            surface_references=references,
+        )
+        expected_query_text = render_generation._render_unresolved_query_text(
+            surface_core,
+            surface_variant,
+        )
+        valid = valid and query.text == expected_query_text
+
+    provenance = _mapping(task.source.provenance)
+    valid = valid and extra.get("surface_template") == event_template_name
+    valid = valid and provenance.get("surface_variant") == surface_variant
+    valid = valid and provenance.get("surface_template") == event_template_name
+    valid = valid and provenance.get("semantic_core_id") == semantic_core_id
+    valid = valid and task.source.normalization_version == (
+        render_generation._NORMALIZATION_VERSION
+    )
+    if type(semantic_core_id) is str and type(core_index) is int:
+        expected_source_id = canonical_source_id(
+            "vnext_pilot",
+            core_index,
+            {
+                "semantic_core_id": semantic_core_id,
+                "surface_variant": surface_variant,
+            },
+        )
+        valid = valid and task.source.source_id == expected_source_id
+        valid = valid and task.source.source_uri == f"memory://{expected_source_id}"
+
+    if len(core_events) == len(records) and expected_query_text is not None:
+        surface_core = SimpleNamespace(events=core_events)
+        expected_normalized_hash = render_generation._payload_sha256(
+            render_generation._normalized_source_semantic_projection(surface_core)
+        )
+        expected_raw_hash = render_generation._payload_sha256(
+            {
+                "events": expected_raw_events,
+                "query_text": expected_query_text,
+            }
+        )
+        valid = valid and task.source.normalized_hash == expected_normalized_hash
+        valid = valid and task.source.raw_hash == expected_raw_hash
+    else:
+        valid = False
+
+    for reference in references:
+        surface_text = getattr(reference, "surface_text", None)
+        valid = valid and type(surface_text) is str
+        valid = valid and getattr(reference, "normalized_text", None) == (
+            surface_text.casefold() if type(surface_text) is str else None
+        )
+    for candidate in candidates:
+        valid = valid and not _items(getattr(candidate, "source_anchors", None))
+
+    if valid:
+        return []
+    return [
+        _issue(
+            "family_c_surface_integrity_mismatch",
+            "Family C query, event, reference, candidate, source, and renderer surfaces must match the canonical selected template",
+            "task",
+        )
+    ]
+
+
 def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     records, actions = _event_records(task)
@@ -2295,6 +2464,16 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     candidates = _items(getattr(query, "reference_candidates", None))
     references = _items(getattr(query, "surface_references", None))
     reference = references[0] if len(references) == 1 else None
+    issues.extend(
+        _family_c_surface_integrity_issues(
+            task,
+            records,
+            query,
+            candidates,
+            references,
+            extra,
+        )
+    )
     if (
         query is None
         or query_type != QueryType.UNRESOLVED_REFERENCE.value

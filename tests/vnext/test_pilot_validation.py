@@ -35,6 +35,8 @@ from mub.vnext.validation import (
 )
 from mub.vnext.validation.pilot import (
     validate_family_a_task,
+    validate_family_b_task,
+    validate_family_c_task,
     validate_family_d_task,
     validate_pilot_task,
 )
@@ -920,10 +922,16 @@ def test_validate_task_semantics_remains_family_agnostic():
 
 
 @pytest.mark.parametrize(
-    "generator",
-    (generate_family_b_cores, generate_family_c_cores),
+    ("generator", "strict_validator"),
+    (
+        (generate_family_b_cores, validate_family_b_task),
+        (generate_family_c_cores, validate_family_c_task),
+    ),
 )
-def test_validate_pilot_task_preserves_generic_family_b_c_compatibility(generator):
+def test_generic_semantics_remain_historical_while_pilot_dispatches_strict(
+    generator,
+    strict_validator,
+):
     config = load_pilot_config(CONFIG_PATH)
     context = GenerationContext(config=config, code_revision="pilot-generic-bc-test")
     core = generator(config)[0]
@@ -940,7 +948,7 @@ def test_validate_pilot_task_preserves_generic_family_b_c_compatibility(generato
             validate_distractors(task),
         )
         assert validate_task_semantics(task) == expected
-        assert validate_pilot_task(task) == expected
+        assert validate_pilot_task(task) == strict_validator(task)
 
 
 def test_validate_family_d_task_uses_semantic_event_order_not_action_storage_order(

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import mub.vnext.generation.render as render_module
 from mub.vnext.contracts import (
     AnswerDisposition,
     EventRole,
@@ -104,6 +105,21 @@ def _rewrite_replay(payload):
 
 def _canonical_id(key):
     return MemoryObjectKey.model_validate(key).canonical_id
+
+
+def _rewrite_raw_source_hash(payload):
+    payload["source"]["raw_hash"] = render_module._payload_sha256(
+        {
+            "events": [
+                {
+                    "raw_text": event["raw_text"],
+                    "speaker": event["speaker"],
+                }
+                for event in payload["events"]
+            ],
+            "query_text": payload["queries"][0]["text"],
+        }
+    )
 
 
 def _render_first(config, generator, label):
@@ -222,6 +238,64 @@ def test_family_c_rejects_surface_reference_evidence_rewrite(
     corrupted = MemUpdateTask.model_validate(payload)
     assert "family_c_reviewed_mapping_mismatch" in _codes(
         validate_family_c_task(corrupted)
+    )
+
+
+def test_family_c_rejects_coordinated_forged_visible_surface(family_c_tasks):
+    payload = _payload(_task(family_c_tasks, "alias", "paraphrase", variant=0))
+    for index, event in enumerate(payload["events"]):
+        event["raw_text"] = f"Forged candidate event {index}."
+        event["normalized_text"] = f"Forged normalized candidate event {index}."
+        event["speaker"] = "Records clerk"
+        event["metadata"]["__surface_renderer__"] = {
+            "surface_template": "correction",
+            "surface_variant": 2,
+        }
+    query = payload["queries"][0]
+    query["text"] = "Forged unresolved-reference prompt with no candidates."
+    query["metadata"]["__surface_renderer__"] = {
+        "surface_template": "correction",
+        "surface_variant": 2,
+    }
+    payload["metadata"]["extra"]["surface_template"] = "correction"
+    payload["metadata"]["extra"]["surface_variant"] = 2
+    payload["source"]["provenance"]["surface_template"] = "correction"
+    payload["source"]["provenance"]["surface_variant"] = 2
+    _rewrite_raw_source_hash(payload)
+    forged = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_surface_integrity_mismatch" in _codes(
+        validate_family_c_task(forged)
+    )
+
+
+def test_family_c_rejects_coordinated_cross_variant_surface_substitution(
+    family_c_tasks,
+):
+    original = _payload(_task(family_c_tasks, "same_name", "exact", variant=0))
+    substitute = _payload(_task(family_c_tasks, "same_name", "exact", variant=1))
+    for original_event, substitute_event in zip(
+        original["events"], substitute["events"]
+    ):
+        original_event["raw_text"] = substitute_event["raw_text"]
+        original_event["normalized_text"] = substitute_event["normalized_text"]
+        original_event["speaker"] = substitute_event["speaker"]
+        original_event["metadata"]["__surface_renderer__"] = deepcopy(
+            substitute_event["metadata"]["__surface_renderer__"]
+        )
+    original["queries"][0]["text"] = substitute["queries"][0]["text"]
+    original["queries"][0]["metadata"]["__surface_renderer__"] = deepcopy(
+        substitute["queries"][0]["metadata"]["__surface_renderer__"]
+    )
+    original["metadata"]["extra"]["surface_template"] = "conversational"
+    original["metadata"]["extra"]["surface_variant"] = 1
+    original["source"]["provenance"]["surface_template"] = "conversational"
+    original["source"]["provenance"]["surface_variant"] = 1
+    original["source"]["raw_hash"] = substitute["source"]["raw_hash"]
+    substituted = MemUpdateTask.model_validate(original)
+
+    assert "family_c_surface_integrity_mismatch" in _codes(
+        validate_family_c_task(substituted)
     )
 
 
