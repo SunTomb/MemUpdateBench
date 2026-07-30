@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Mapping
 import hashlib
 import json
+import os
 from pathlib import Path
 import stat
 from typing import Literal
@@ -21,7 +22,7 @@ from mub.vnext.contracts.manifest import TaskManifest
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.legacy.dataset import compile_legacy_episode
-from mub.vnext.legacy.loaders import load_evomemory_dataset
+from mub.vnext.legacy.loaders import _parse_dataset
 from mub.vnext.legacy.validation import _validate_trusted_legacy_task_semantics
 from mub.vnext.profiles import hard_profile, resolve_profile
 from mub.vnext.validation.issues import ValidationReport
@@ -118,23 +119,60 @@ def build_expected_legacy_task_manifest(
     tasks: list[MemUpdateTask],
     *,
     tasks_path: Path,
-    tasks_bytes: bytes | None = None,
 ) -> TaskManifest:
+    resolved_tasks_path = _require_regular_file(tasks_path, "compiled tasks")
+    return _build_expected_legacy_task_manifest_snapshot(
+        tasks,
+        tasks_path=resolved_tasks_path,
+        tasks_bytes=resolved_tasks_path.read_bytes(),
+    )
+
+
+def _build_expected_legacy_task_manifest_snapshot(
+    tasks: list[MemUpdateTask],
+    *,
+    tasks_path: Path,
+    tasks_bytes: bytes,
+) -> TaskManifest:
+    manifest, source_path, source_bytes, source_signature = (
+        _build_expected_legacy_task_manifest_snapshot_bound(
+            tasks,
+            tasks_path=tasks_path,
+            tasks_bytes=tasks_bytes,
+        )
+    )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
+    return manifest
+
+
+def _build_expected_legacy_task_manifest_snapshot_bound(
+    tasks: list[MemUpdateTask],
+    *,
+    tasks_path: Path,
+    tasks_bytes: bytes,
+) -> tuple[TaskManifest, Path, bytes, tuple[int, int, int, int]]:
     if not tasks:
         raise ValueError("compiled task artifact must contain at least one task")
-    if tasks_bytes is None:
-        resolved_tasks_path = _require_regular_file(tasks_path, "compiled tasks")
-        tasks_bytes = resolved_tasks_path.read_bytes()
-    else:
-        resolved_tasks_path = tasks_path.resolve(strict=False)
-    source_path, source_hash, split, legacy_phase = _authenticated_task_source(tasks)
-    _authenticate_tasks_against_source(
-        tasks,
-        source_path=source_path,
-        source_hash=source_hash,
-        split=split,
-        legacy_phase=legacy_phase,
+    resolved_tasks_path = tasks_path.resolve(strict=False)
+    source_path, source_hash, split, legacy_phase = _declared_task_source(tasks)
+    source_bytes, rows, source_signature = _read_legacy_source_snapshot(
+        source_path,
+        source_hash,
     )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
+    try:
+        _authenticate_tasks_against_rows(
+            tasks,
+            rows=rows,
+            source_path=source_path,
+            source_hash=source_hash,
+            split=split,
+            legacy_phase=legacy_phase,
+        )
+    except Exception:
+        _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
+        raise
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
     family_difficulty = Counter(
         f"{task.task_family}|{task.difficulty.value}" for task in tasks
     )
@@ -170,7 +208,7 @@ def build_expected_legacy_task_manifest(
         )
     ]
     tasks_hash = hashlib.sha256(tasks_bytes).hexdigest()
-    return TaskManifest(
+    manifest = TaskManifest(
         data_release_id=_stable_identity(
             "legacy_release",
             {
@@ -221,6 +259,29 @@ def build_expected_legacy_task_manifest(
         created_at="legacy-authenticated-source",
         code_revision=LEGACY_CLI_CODE_REVISION,
     )
+    return manifest, source_path, source_bytes, source_signature
+
+
+def _authenticate_legacy_task_manifest_snapshot_bound(
+    manifest: TaskManifest,
+    tasks: list[MemUpdateTask],
+    *,
+    tasks_path: Path,
+    tasks_bytes: bytes,
+) -> tuple[TaskManifest, Path, bytes, tuple[int, int, int, int]]:
+    expected, source_path, source_bytes, source_signature = (
+        _build_expected_legacy_task_manifest_snapshot_bound(
+            tasks,
+            tasks_path=tasks_path,
+            tasks_bytes=tasks_bytes,
+        )
+    )
+    if canonical_json_bytes(manifest) != canonical_json_bytes(expected):
+        raise ValueError(
+            "TaskManifest does not exactly match authenticated deterministic compilation"
+        )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
+    return expected, source_path, source_bytes, source_signature
 
 
 def _authenticate_legacy_task_manifest_snapshot(
@@ -230,15 +291,15 @@ def _authenticate_legacy_task_manifest_snapshot(
     tasks_path: Path,
     tasks_bytes: bytes,
 ) -> TaskManifest:
-    expected = build_expected_legacy_task_manifest(
-        tasks,
-        tasks_path=tasks_path,
-        tasks_bytes=tasks_bytes,
-    )
-    if canonical_json_bytes(manifest) != canonical_json_bytes(expected):
-        raise ValueError(
-            "TaskManifest does not exactly match authenticated deterministic compilation"
+    expected, source_path, source_bytes, source_signature = (
+        _authenticate_legacy_task_manifest_snapshot_bound(
+            manifest,
+            tasks,
+            tasks_path=tasks_path,
+            tasks_bytes=tasks_bytes,
         )
+    )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
     return expected
 
 
@@ -273,27 +334,31 @@ def _authenticate_and_validate_legacy_tasks(
         raise ValueError(
             "compiled task snapshot does not equal supplied canonical task bytes"
         )
-    authenticated = _authenticate_legacy_task_manifest_snapshot(
-        manifest,
-        tasks,
-        tasks_path=resolved_path,
-        tasks_bytes=snapshot,
+    authenticated, source_path, source_bytes, source_signature = (
+        _authenticate_legacy_task_manifest_snapshot_bound(
+            manifest,
+            tasks,
+            tasks_path=resolved_path,
+            tasks_bytes=snapshot,
+        )
     )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
     reports = tuple(
         _validate_trusted_legacy_task_semantics(task) for task in tasks
     )
+    _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
     return authenticated, reports
 
 
-def _authenticate_tasks_against_source(
+def _authenticate_tasks_against_rows(
     tasks: list[MemUpdateTask],
     *,
+    rows: list[dict[str, object]],
     source_path: Path,
     source_hash: str,
     split: Split,
     legacy_phase: str,
 ) -> None:
-    rows = load_evomemory_dataset(source_path)
     if len(rows) != len(tasks):
         raise ValueError("legacy dataset source record count does not match tasks")
     for index, (row, supplied) in enumerate(zip(rows, tasks, strict=True)):
@@ -314,7 +379,7 @@ def _authenticate_tasks_against_source(
             )
 
 
-def _authenticated_task_source(
+def _declared_task_source(
     tasks: list[MemUpdateTask],
 ) -> tuple[Path, str, Split, str]:
     identities: set[tuple[str, str, Split, str]] = set()
@@ -338,10 +403,65 @@ def _authenticated_task_source(
         raise ValueError("compiled tasks must share one authenticated source/split/phase")
     source_text, declared_hash, split, legacy_phase = identities.pop()
     source_path = _require_regular_file(Path(source_text), "legacy dataset source")
-    actual_hash = _sha256_file(source_path)
-    if actual_hash != declared_hash:
-        raise ValueError("legacy dataset source hash does not match task provenance")
-    return source_path, actual_hash, split, legacy_phase
+    return source_path, declared_hash, split, legacy_phase
+
+
+def _stat_signature(result: os.stat_result) -> tuple[int, int, int, int]:
+    return result.st_dev, result.st_ino, result.st_size, result.st_mtime_ns
+
+
+def _source_changed(path: Path) -> RuntimeError:
+    return RuntimeError(f"legacy dataset source changed during authentication: {path}")
+
+
+def _read_legacy_source_snapshot(
+    source_path: Path,
+    declared_hash: str,
+) -> tuple[bytes, list[dict[str, object]], tuple[int, int, int, int]]:
+    try:
+        initial_stat = source_path.stat()
+        with source_path.open("rb") as handle:
+            descriptor_before = os.fstat(handle.fileno())
+            source_bytes = handle.read()
+            descriptor_after = os.fstat(handle.fileno())
+        after_read_stat = source_path.stat()
+    except OSError as exc:
+        raise _source_changed(source_path) from exc
+    signatures = {
+        _stat_signature(initial_stat),
+        _stat_signature(descriptor_before),
+        _stat_signature(descriptor_after),
+        _stat_signature(after_read_stat),
+    }
+    source_signature = _stat_signature(initial_stat)
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    if len(signatures) != 1 or source_hash != declared_hash:
+        raise _source_changed(source_path)
+    try:
+        rows = _parse_dataset(source_bytes, source_path)
+    except Exception:
+        _verify_legacy_source_snapshot(source_path, source_bytes, source_signature)
+        raise
+    return source_bytes, rows, source_signature
+
+
+def _verify_legacy_source_snapshot(
+    source_path: Path,
+    source_bytes: bytes,
+    source_signature: tuple[int, int, int, int],
+) -> None:
+    try:
+        before_hash_stat = source_path.stat()
+        current_hash = _sha256_file(source_path)
+        final_stat = source_path.stat()
+    except OSError as exc:
+        raise _source_changed(source_path) from exc
+    if (
+        _stat_signature(before_hash_stat) != source_signature
+        or _stat_signature(final_stat) != source_signature
+        or current_hash != hashlib.sha256(source_bytes).hexdigest()
+    ):
+        raise _source_changed(source_path)
 
 
 def _require_regular_file(path: Path, label: str) -> Path:

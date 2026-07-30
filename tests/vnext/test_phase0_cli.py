@@ -356,6 +356,10 @@ def test_atomic_legacy_validation_authenticates_snapshot_before_waiver(
     assert "tasks_bytes" not in inspect.signature(
         artifact_module.authenticate_legacy_task_manifest
     ).parameters
+    assert "tasks_bytes" not in inspect.signature(
+        artifact_module.build_expected_legacy_task_manifest
+    ).parameters
+    assert "_build_expected_legacy_task_manifest_snapshot" not in artifact_module.__all__
     assert not hasattr(legacy_validation_module, "_AuthenticatedLegacyValidationContext")
     assert not hasattr(
         legacy_validation_module,
@@ -411,6 +415,144 @@ def test_atomic_legacy_validation_authenticates_snapshot_before_waiver(
             tasks_path=tasks_path,
         )
     assert privileged_called is False
+
+
+@pytest.mark.parametrize("race_stage", ["snapshot", "parse", "recompile"])
+def test_atomic_legacy_validation_rejects_source_races_before_waiver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race_stage: str,
+) -> None:
+    import mub.vnext.legacy.artifacts as artifact_module
+
+    source = tmp_path / "source.json"
+    source.write_bytes((LEGACY_FIXTURES / "p63_dataset_minimal.json").read_bytes())
+    output_dir = tmp_path / "compiled"
+    compiled = _run(
+        COMPILE_CLI,
+        "dataset",
+        "--input",
+        source,
+        "--split",
+        "test",
+        "--legacy-phase",
+        "P6.3",
+        "--output-dir",
+        output_dir,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    tasks_path = output_dir / "tasks.jsonl"
+    tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
+    manifest = TaskManifest.model_validate(_load_json(output_dir / "task_manifest.json"))
+    original_source = source.read_bytes()
+    changed_source = original_source.replace(b"Suzhou", b"Xuzhou", 1)
+    assert changed_source != original_source
+
+    if race_stage == "snapshot":
+        original_read = artifact_module._read_legacy_source_snapshot
+
+        def racing_read(source_path: Path, declared_hash: str):
+            source.write_bytes(changed_source)
+            return original_read(source_path, declared_hash)
+
+        monkeypatch.setattr(
+            artifact_module,
+            "_read_legacy_source_snapshot",
+            racing_read,
+        )
+    elif race_stage == "parse":
+        original_parse = artifact_module._parse_dataset
+
+        def racing_parse(raw: bytes, source_path: Path):
+            rows = original_parse(raw, source_path)
+            source.write_bytes(changed_source)
+            return rows
+
+        monkeypatch.setattr(artifact_module, "_parse_dataset", racing_parse)
+    else:
+        original_compile = artifact_module.compile_legacy_episode
+        mutation_pending = True
+
+        def racing_compile(*args, **kwargs):
+            nonlocal mutation_pending
+            task = original_compile(*args, **kwargs)
+            if mutation_pending:
+                mutation_pending = False
+                source.write_bytes(changed_source)
+            return task
+
+        monkeypatch.setattr(artifact_module, "compile_legacy_episode", racing_compile)
+
+    privileged_called = False
+
+    def unexpected_privileged_validation(*args, **kwargs):
+        nonlocal privileged_called
+        privileged_called = True
+        raise AssertionError("privileged validation ran after a source race")
+
+    monkeypatch.setattr(
+        artifact_module,
+        "_validate_trusted_legacy_task_semantics",
+        unexpected_privileged_validation,
+    )
+    with pytest.raises(RuntimeError, match="source changed during authentication"):
+        artifact_module._authenticate_and_validate_legacy_tasks(
+            manifest,
+            tasks,
+            tasks_path=tasks_path,
+        )
+    assert privileged_called is False
+
+
+def test_atomic_legacy_validation_rechecks_source_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mub.vnext.legacy.artifacts as artifact_module
+
+    source = tmp_path / "source.json"
+    source.write_bytes((LEGACY_FIXTURES / "p63_dataset_minimal.json").read_bytes())
+    output_dir = tmp_path / "compiled"
+    compiled = _run(
+        COMPILE_CLI,
+        "dataset",
+        "--input",
+        source,
+        "--split",
+        "test",
+        "--legacy-phase",
+        "P6.3",
+        "--output-dir",
+        output_dir,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    tasks_path = output_dir / "tasks.jsonl"
+    tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
+    manifest = TaskManifest.model_validate(_load_json(output_dir / "task_manifest.json"))
+    original_semantics = artifact_module._validate_trusted_legacy_task_semantics
+    original_source = source.read_bytes()
+    changed_source = original_source.replace(b"Suzhou", b"Xuzhou", 1)
+    mutation_pending = True
+
+    def racing_semantics(task: MemUpdateTask):
+        nonlocal mutation_pending
+        report = original_semantics(task)
+        if mutation_pending:
+            mutation_pending = False
+            source.write_bytes(changed_source)
+        return report
+
+    monkeypatch.setattr(
+        artifact_module,
+        "_validate_trusted_legacy_task_semantics",
+        racing_semantics,
+    )
+    with pytest.raises(RuntimeError, match="source changed during authentication"):
+        artifact_module._authenticate_and_validate_legacy_tasks(
+            manifest,
+            tasks,
+            tasks_path=tasks_path,
+        )
 
 
 def test_validator_accepts_intact_tasks_and_rejects_tampered_hash(

@@ -23,7 +23,7 @@ from mub.vnext.legacy.artifacts import (
     LEGACY_CLI_COMPILER_VERSION,
     LegacyAnalysisManifest,
     _authenticate_and_validate_legacy_tasks,
-    build_expected_legacy_task_manifest,
+    _build_expected_legacy_task_manifest_snapshot,
     with_legacy_index_profile,
 )
 from mub.vnext.legacy.dataset import compile_legacy_episode
@@ -192,7 +192,7 @@ def _task_manifest(
     tasks_path: Path,
     tasks_bytes: bytes,
 ) -> TaskManifest:
-    manifest = build_expected_legacy_task_manifest(
+    manifest = _build_expected_legacy_task_manifest_snapshot(
         tasks,
         tasks_path=tasks_path,
         tasks_bytes=tasks_bytes,
