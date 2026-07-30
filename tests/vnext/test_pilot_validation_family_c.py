@@ -38,6 +38,13 @@ from mub.vnext.validation import (
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "configs" / "vnext" / "pilot.yaml"
+_GROUP_FIELDS = (
+    "source_group_id",
+    "trajectory_id",
+    "paraphrase_group_id",
+    "source_document_id",
+    "version_group_id",
+)
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +80,18 @@ def _task(family_c_tasks, entity_condition, attribute_condition, variant=0):
         == attribute_condition
         and task.metadata.extra["surface_variant"] == variant
     )
+
+
+def _cell_tasks(family_c_tasks, entity_condition, attribute_condition, variant=0):
+    return [
+        task
+        for task in family_c_tasks
+        if task.metadata.extra["stratification"]["entity_condition"]
+        == entity_condition
+        and task.metadata.extra["stratification"]["attribute_condition"]
+        == attribute_condition
+        and task.metadata.extra["surface_variant"] == variant
+    ]
 
 
 def _action_for_event(payload, event):
@@ -296,6 +315,70 @@ def test_family_c_rejects_coordinated_cross_variant_surface_substitution(
 
     assert "family_c_surface_integrity_mismatch" in _codes(
         validate_family_c_task(substituted)
+    )
+
+
+@pytest.mark.parametrize("replacement", ("arbitrary", "other_core"))
+def test_family_c_rejects_noncanonical_surface_reference_id(
+    family_c_tasks,
+    replacement,
+):
+    tasks = _cell_tasks(family_c_tasks, "alias", "exact", variant=0)
+    payload = _payload(tasks[0])
+    payload["queries"][0]["surface_references"][0]["reference_id"] = (
+        "reference_forged"
+        if replacement == "arbitrary"
+        else tasks[1].queries[0].surface_references[0].reference_id
+    )
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_surface_integrity_mismatch" in _codes(
+        validate_family_c_task(corrupted)
+    )
+
+
+@pytest.mark.parametrize("field", _GROUP_FIELDS)
+def test_family_c_rejects_independent_provenance_group_rewrite(
+    family_c_tasks,
+    field,
+):
+    payload = _payload(_task(family_c_tasks, "distinct", "exact", variant=0))
+    payload["source"]["provenance"][field] = f"{field}_forged"
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_provenance_link_mismatch" in _codes(
+        validate_family_c_task(corrupted)
+    )
+
+
+def test_family_c_rejects_coordinated_all_group_rewrite(family_c_tasks):
+    payload = _payload(_task(family_c_tasks, "alias", "paraphrase", variant=1))
+    for field in _GROUP_FIELDS:
+        forged = f"{field}_coordinated_forgery"
+        payload["source"]["provenance"][field] = forged
+        payload["metadata"]["split_key"][field] = forged
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_provenance_link_mismatch" in _codes(
+        validate_family_c_task(corrupted)
+    )
+
+
+def test_family_c_rejects_cross_core_group_substitution(family_c_tasks):
+    tasks = _cell_tasks(family_c_tasks, "same_name", "near_name", variant=2)
+    payload = _payload(tasks[0])
+    other = _payload(tasks[1])
+    for field in _GROUP_FIELDS:
+        payload["source"]["provenance"][field] = other["source"]["provenance"][
+            field
+        ]
+        payload["metadata"]["split_key"][field] = other["metadata"]["split_key"][
+            field
+        ]
+    corrupted = MemUpdateTask.model_validate(payload)
+
+    assert "family_c_provenance_link_mismatch" in _codes(
+        validate_family_c_task(corrupted)
     )
 
 

@@ -44,9 +44,12 @@ from mub.vnext.generation.family_d import (
 from mub.vnext.generation.identity import (
     action_id as canonical_action_id,
     event_id as canonical_event_id,
+    paraphrase_group_id as canonical_paraphrase_group_id,
     query_id as canonical_query_id,
     source_id as canonical_source_id,
+    stable_id as canonical_stable_id,
     task_id as canonical_task_id,
+    trajectory_id as canonical_trajectory_id,
 )
 from mub.vnext.validation.issues import (
     ValidationIssue,
@@ -2288,6 +2291,67 @@ def _family_b_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _family_c_provenance_link_issues(
+    task: MemUpdateTask,
+    extra: Mapping[str, Any],
+) -> list[ValidationIssue]:
+    semantic_core_id = extra.get("semantic_core_id")
+    core_index = extra.get("core_index")
+    if type(semantic_core_id) is not str or type(core_index) is not int:
+        return [
+            _issue(
+                "family_c_provenance_link_mismatch",
+                "Family C provenance grouping requires canonical core identity coordinates",
+                "metadata",
+            )
+        ]
+
+    expected_trajectory_id = canonical_trajectory_id(
+        semantic_core_id,
+        f"family_c_{core_index:03d}",
+    )
+    expected_groups = {
+        "source_group_id": canonical_stable_id(
+            "source_group",
+            {"semantic_core_id": semantic_core_id},
+        ),
+        "trajectory_id": expected_trajectory_id,
+        "paraphrase_group_id": canonical_paraphrase_group_id(
+            semantic_core_id,
+            "surface_variants",
+        ),
+        "source_document_id": canonical_stable_id(
+            "source_document",
+            {"semantic_core_id": semantic_core_id},
+        ),
+        "version_group_id": canonical_stable_id(
+            "version_group",
+            {"trajectory_id": expected_trajectory_id},
+        ),
+    }
+    provenance = _mapping(task.source.provenance)
+    split_key = task.metadata.split_key
+    valid = all(
+        provenance.get(field) == expected
+        and getattr(split_key, field, None) == expected
+        for field, expected in expected_groups.items()
+    )
+    valid = valid and split_key.semantic_core_id == semantic_core_id
+    valid = valid and split_key.split_exception_id is None
+    valid = valid and split_key.split_policy_version == (
+        render_generation._SPLIT_POLICY_VERSION
+    )
+    if valid:
+        return []
+    return [
+        _issue(
+            "family_c_provenance_link_mismatch",
+            "Family C source provenance and split-key grouping must equal canonical core, trajectory, paraphrase, document, and version derivations",
+            "source.provenance",
+        )
+    ]
+
+
 def _family_c_surface_integrity_issues(
     task: MemUpdateTask,
     records: list[dict[str, Any]],
@@ -2428,7 +2492,20 @@ def _family_c_surface_integrity_issues(
     else:
         valid = False
 
+    expected_reference_id = (
+        canonical_stable_id(
+            "reference",
+            {
+                "family": TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,
+                "core_index": core_index,
+            },
+        )
+        if type(core_index) is int
+        else None
+    )
+    valid = valid and len(references) == 1
     for reference in references:
+        valid = valid and reference.reference_id == expected_reference_id
         surface_text = getattr(reference, "surface_text", None)
         valid = valid and type(surface_text) is str
         valid = valid and getattr(reference, "normalized_text", None) == (
@@ -2464,6 +2541,7 @@ def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     candidates = _items(getattr(query, "reference_candidates", None))
     references = _items(getattr(query, "surface_references", None))
     reference = references[0] if len(references) == 1 else None
+    issues.extend(_family_c_provenance_link_issues(task, extra))
     issues.extend(
         _family_c_surface_integrity_issues(
             task,
