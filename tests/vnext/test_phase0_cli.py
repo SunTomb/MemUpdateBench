@@ -555,6 +555,92 @@ def test_atomic_legacy_validation_rechecks_source_before_return(
         )
 
 
+def test_public_legacy_manifest_apis_require_exact_canonical_task_file(
+    tmp_path: Path,
+) -> None:
+    import mub.vnext.legacy.artifacts as artifact_module
+
+    source = LEGACY_FIXTURES / "p63_dataset_minimal.json"
+    output_dir = tmp_path / "compiled"
+    compiled = _run(
+        COMPILE_CLI,
+        "dataset",
+        "--input",
+        source,
+        "--split",
+        "test",
+        "--legacy-phase",
+        "P6.3",
+        "--output-dir",
+        output_dir,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    tasks_path = output_dir / "tasks.jsonl"
+    original_snapshot = tasks_path.read_bytes()
+    tasks = [MemUpdateTask.model_validate(row) for row in _load_jsonl(tasks_path)]
+    manifest = TaskManifest.model_validate(_load_json(output_dir / "task_manifest.json"))
+
+    assert artifact_module.build_expected_legacy_task_manifest(
+        tasks,
+        tasks_path=tasks_path,
+    ) == manifest
+    assert artifact_module.authenticate_legacy_task_manifest(
+        manifest,
+        tasks,
+        tasks_path=tasks_path,
+    ) == manifest
+
+    rows = original_snapshot.splitlines(keepends=True)
+    invalid_snapshots = {
+        "arbitrary": b"not a task artifact",
+        "reordered_file": b"".join(reversed(rows)),
+        "noncanonical_whitespace": b" " + original_snapshot,
+        "extra_newline": original_snapshot + b"\n",
+        "encoding_bom": b"\xef\xbb\xbf" + original_snapshot,
+        "malformed_row": b'{"task_id":\n',
+    }
+    for label, invalid_snapshot in invalid_snapshots.items():
+        crafted_manifest = artifact_module._build_expected_legacy_task_manifest_snapshot(
+            tasks,
+            tasks_path=tasks_path,
+            tasks_bytes=invalid_snapshot,
+        )
+        tasks_path.write_bytes(invalid_snapshot)
+        with pytest.raises(ValueError, match="canonical task bytes"):
+            artifact_module.build_expected_legacy_task_manifest(
+                tasks,
+                tasks_path=tasks_path,
+            )
+        with pytest.raises(ValueError, match="canonical task bytes"):
+            artifact_module.authenticate_legacy_task_manifest(
+                crafted_manifest,
+                tasks,
+                tasks_path=tasks_path,
+            )
+        tasks_path.write_bytes(original_snapshot)
+
+    changed_payload = tasks[0].model_dump(mode="json")
+    changed_payload["source"]["generator"]["generator_name"] = "changed-model"
+    changed_model = MemUpdateTask.model_validate(changed_payload)
+    mismatched_task_lists = {
+        "reordered_models": list(reversed(tasks)),
+        "missing_model": tasks[:-1],
+        "changed_model": [changed_model, *tasks[1:]],
+    }
+    for label, mismatched_tasks in mismatched_task_lists.items():
+        with pytest.raises(ValueError, match="canonical task bytes"):
+            artifact_module.build_expected_legacy_task_manifest(
+                mismatched_tasks,
+                tasks_path=tasks_path,
+            )
+        with pytest.raises(ValueError, match="canonical task bytes"):
+            artifact_module.authenticate_legacy_task_manifest(
+                manifest,
+                mismatched_tasks,
+                tasks_path=tasks_path,
+            )
+
+
 def test_validator_accepts_intact_tasks_and_rejects_tampered_hash(
     tmp_path: Path,
 ) -> None:

@@ -121,11 +121,26 @@ def build_expected_legacy_task_manifest(
     tasks_path: Path,
 ) -> TaskManifest:
     resolved_tasks_path = _require_regular_file(tasks_path, "compiled tasks")
+    tasks_bytes = resolved_tasks_path.read_bytes()
+    _require_exact_canonical_task_snapshot(tasks, tasks_bytes)
     return _build_expected_legacy_task_manifest_snapshot(
         tasks,
         tasks_path=resolved_tasks_path,
-        tasks_bytes=resolved_tasks_path.read_bytes(),
+        tasks_bytes=tasks_bytes,
     )
+
+
+def _require_exact_canonical_task_snapshot(
+    tasks: list[MemUpdateTask],
+    tasks_bytes: bytes,
+) -> None:
+    canonical_snapshot = b"".join(
+        canonical_json_bytes(task) + b"\n" for task in tasks
+    )
+    if tasks_bytes != canonical_snapshot:
+        raise ValueError(
+            "compiled task snapshot does not equal supplied canonical task bytes"
+        )
 
 
 def _build_expected_legacy_task_manifest_snapshot(
@@ -310,11 +325,13 @@ def authenticate_legacy_task_manifest(
     tasks_path: Path,
 ) -> TaskManifest:
     resolved_path = _require_regular_file(tasks_path, "compiled tasks")
+    tasks_bytes = resolved_path.read_bytes()
+    _require_exact_canonical_task_snapshot(tasks, tasks_bytes)
     return _authenticate_legacy_task_manifest_snapshot(
         manifest,
         tasks,
         tasks_path=resolved_path,
-        tasks_bytes=resolved_path.read_bytes(),
+        tasks_bytes=tasks_bytes,
     )
 
 
@@ -327,13 +344,7 @@ def _authenticate_and_validate_legacy_tasks(
     """Authenticate one task-file snapshot, then validate those exact task models."""
     resolved_path = _require_regular_file(tasks_path, "compiled tasks")
     snapshot = resolved_path.read_bytes()
-    canonical_snapshot = b"".join(
-        canonical_json_bytes(task) + b"\n" for task in tasks
-    )
-    if snapshot != canonical_snapshot:
-        raise ValueError(
-            "compiled task snapshot does not equal supplied canonical task bytes"
-        )
+    _require_exact_canonical_task_snapshot(tasks, snapshot)
     authenticated, source_path, source_bytes, source_signature = (
         _authenticate_legacy_task_manifest_snapshot_bound(
             manifest,
