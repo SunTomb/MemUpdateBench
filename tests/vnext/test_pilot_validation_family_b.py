@@ -21,8 +21,8 @@ from mub.vnext.validation import (
     replay_actions,
     validate_distractors,
     validate_family_b_task,
+    validate_family_c_task,
     validate_pilot_task,
-    validate_task_semantics,
 )
 
 
@@ -81,9 +81,9 @@ def test_validate_family_b_task_is_inapplicable_to_other_exact_families(config):
         assert _codes(report) == {"family_b_inapplicable_task_family"}
 
 
-def test_family_c_explicit_validation_remains_generic_only(config):
+def test_family_c_explicit_validation_dispatches_strict_validator(config):
     task = _render_first(config, generate_family_c_cores, "c")
-    assert validate_pilot_task(task) == validate_task_semantics(task)
+    assert validate_pilot_task(task) == validate_family_c_task(task)
 
 
 def test_validate_family_b_task_rejects_non_task_and_malformed_family():

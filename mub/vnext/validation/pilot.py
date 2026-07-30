@@ -10,10 +10,22 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
-from mub.vnext.contracts import EventRole, Operation, QueryType, TaskFamily
-from mub.vnext.contracts.task import MemUpdateTask
+from mub.vnext.contracts import (
+    AnswerDisposition,
+    EventRole,
+    Operation,
+    QueryType,
+    ReferenceResolutionStatus,
+    TaskFamily,
+)
+from mub.vnext.contracts.task import CanonicalAnswer, MemUpdateTask
+import mub.vnext.generation.family_c as family_c_generation
 from mub.vnext.generation.catalogs import (
+    ALIAS_MAPPINGS,
     CANONICAL_ATTRIBUTES,
+    NAMESPACES,
+    REFERENCE_QUERY_TEMPLATE_SETS,
+    RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
     SURFACE_TEMPLATE_SETS,
 )
@@ -2267,6 +2279,492 @@ def _family_b_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     return issues
 
 
+def _family_c_issues(task: MemUpdateTask) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    records, actions = _event_records(task)
+    gold = task.gold
+    profile = _mapping(task.metadata.resolved_profile)
+    extra = _mapping(task.metadata.extra)
+    raw_stratification = extra.get("stratification")
+    stratification = raw_stratification if type(raw_stratification) is dict else {}
+    difficulty = _enum_value(task.difficulty)
+
+    queries = _items(task.queries)
+    query = queries[0] if len(queries) == 1 else None
+    query_type = _enum_value(getattr(query, "query_type", None))
+    candidates = _items(getattr(query, "reference_candidates", None))
+    references = _items(getattr(query, "surface_references", None))
+    reference = references[0] if len(references) == 1 else None
+    if (
+        query is None
+        or query_type != QueryType.UNRESOLVED_REFERENCE.value
+        or len(candidates) != 2
+        or len(references) != 1
+    ):
+        issues.append(
+            _issue(
+                "family_c_query_semantics_mismatch",
+                "Family C requires one unresolved-reference query with two candidates and one surface reference",
+                "queries",
+            )
+        )
+
+    candidate_ids = [getattr(candidate, "candidate_id", None) for candidate in candidates]
+    candidate_identities = [
+        _identity(getattr(candidate, "object_key", None)) for candidate in candidates
+    ]
+    valid_identities = [identity for identity in candidate_identities if identity is not None]
+    candidate_geometry_valid = (
+        len(candidates) == 2
+        and all(type(candidate_id) is str and bool(candidate_id.strip()) for candidate_id in candidate_ids)
+        and len(set(candidate_ids)) == 2
+        and len(valid_identities) == 2
+        and len(set(valid_identities)) == 2
+    )
+
+    entity_condition = stratification.get("entity_condition")
+    attribute_condition = stratification.get("attribute_condition")
+    if entity_condition not in family_c_generation._ENTITY_CONDITIONS:
+        candidate_geometry_valid = False
+    if attribute_condition not in family_c_generation._ATTRIBUTE_CONDITIONS:
+        candidate_geometry_valid = False
+
+    surface_text = getattr(reference, "surface_text", None)
+    normalized_text = getattr(reference, "normalized_text", None)
+    surface_parts = surface_text.split(".", 1) if type(surface_text) is str else []
+    entity_surface = surface_parts[0] if len(surface_parts) == 2 else None
+    attribute_surface = surface_parts[1] if len(surface_parts) == 2 else None
+    first_identity = candidate_identities[0] if len(candidate_identities) > 0 else None
+    second_identity = candidate_identities[1] if len(candidate_identities) > 1 else None
+
+    reviewed_geometry_valid = (
+        candidate_geometry_valid
+        and first_identity is not None
+        and second_identity is not None
+        and first_identity[0] in NAMESPACES
+        and second_identity[0] in NAMESPACES
+        and first_identity[1] in RELATION_QUALIFIED_ENTITIES
+        and second_identity[1] in RELATION_QUALIFIED_ENTITIES
+        and first_identity[2] in CANONICAL_ATTRIBUTES
+        and first_identity[2] == second_identity[2]
+        and first_identity[3] is None
+        and second_identity[3] is None
+    )
+    expected_entity_mapping = None
+    expected_namespace_evidence = None
+    expected_entity_evidence_kind = None
+    if reviewed_geometry_valid:
+        if entity_condition == "distinct":
+            reviewed_geometry_valid = (
+                first_identity[0] == second_identity[0]
+                and first_identity[1] != second_identity[1]
+                and first_identity[1].rsplit("_", 1)[-1]
+                != second_identity[1].rsplit("_", 1)[-1]
+                and entity_surface == f"{first_identity[0]}:{first_identity[1]}"
+            )
+            expected_entity_mapping = f"exact_entity_v1:{first_identity[1]}"
+            expected_namespace_evidence = f"qualified:{first_identity[0]}"
+            expected_entity_evidence_kind = "exact_qualified_entity"
+        elif entity_condition == "same_name":
+            bare_name = first_identity[1].rsplit("_", 1)[-1]
+            reviewed_geometry_valid = (
+                first_identity[0] == second_identity[0]
+                and first_identity[1] != second_identity[1]
+                and entity_surface == bare_name
+                and any(
+                    first_identity[1] in group and second_identity[1] in group
+                    for group in SAME_NAME_ENTITIES
+                )
+            )
+            expected_entity_mapping = f"same_name_group_v1:{bare_name}"
+            expected_namespace_evidence = (
+                f"unqualified_with_shared_namespace:{first_identity[0]}"
+            )
+            expected_entity_evidence_kind = "unqualified_same_name"
+        elif entity_condition == "alias":
+            reviewed_geometry_valid = (
+                first_identity[0] == second_identity[0]
+                and first_identity[1] != second_identity[1]
+                and first_identity[1].rsplit("_", 1)[-1]
+                != second_identity[1].rsplit("_", 1)[-1]
+                and (entity_surface, first_identity[1]) in ALIAS_MAPPINGS
+            )
+            expected_entity_mapping = (
+                f"reviewed_alias_v1:{entity_surface}->{first_identity[1]}"
+            )
+            expected_namespace_evidence = (
+                f"unqualified_with_shared_namespace:{first_identity[0]}"
+            )
+            expected_entity_evidence_kind = "reviewed_alias_map"
+        elif entity_condition == "namespace_collision":
+            reviewed_geometry_valid = (
+                first_identity[0] != second_identity[0]
+                and first_identity[1] == second_identity[1]
+                and entity_surface == first_identity[1]
+            )
+            expected_entity_mapping = (
+                f"namespace_collision_v1:{first_identity[1]}:"
+                f"{first_identity[0]}|{second_identity[0]}"
+            )
+            expected_namespace_evidence = (
+                f"unqualified:{first_identity[1]}@"
+                f"{first_identity[0]}|{second_identity[0]}"
+            )
+            expected_entity_evidence_kind = "unqualified_namespace"
+
+    if not reviewed_geometry_valid:
+        issues.append(
+            _issue(
+                "family_c_candidate_geometry_mismatch",
+                "Family C candidates must preserve the reviewed two-object entity, namespace, attribute, and subkey geometry",
+                "queries[0].reference_candidates",
+            )
+        )
+
+    expected_attribute_mapping = None
+    expected_near_name_evidence = None
+    expected_attribute_evidence_kind = None
+    attribute_mapping_valid = first_identity is not None
+    canonical_attribute = first_identity[2] if first_identity is not None else None
+    if attribute_mapping_valid and attribute_condition == "exact":
+        attribute_mapping_valid = attribute_surface == canonical_attribute
+        expected_attribute_mapping = f"exact_attribute_v1:{canonical_attribute}"
+        expected_near_name_evidence = (
+            f"reviewed_match:{canonical_attribute}->{canonical_attribute}"
+        )
+        expected_attribute_evidence_kind = "exact_attribute"
+    elif attribute_mapping_valid and attribute_condition == "paraphrase":
+        attribute_mapping_valid = (
+            attribute_surface,
+            canonical_attribute,
+        ) in family_c_generation._ATTRIBUTE_PARAPHRASE_MAPPINGS
+        expected_attribute_mapping = (
+            f"reviewed_attribute_paraphrase_v1:"
+            f"{attribute_surface}->{canonical_attribute}"
+        )
+        expected_near_name_evidence = (
+            f"reviewed_match:{attribute_surface}->{canonical_attribute}"
+        )
+        expected_attribute_evidence_kind = "reviewed_attribute_paraphrase"
+    elif attribute_mapping_valid and attribute_condition == "near_name":
+        attribute_mapping_valid = (
+            attribute_surface,
+            canonical_attribute,
+        ) in family_c_generation._ATTRIBUTE_NEAR_NAMES
+        expected_attribute_mapping = (
+            f"near_name_nonmatch_v1:{attribute_surface}!{canonical_attribute}"
+        )
+        expected_near_name_evidence = (
+            f"noncanonical_attribute:{attribute_surface}!={canonical_attribute}"
+        )
+        expected_attribute_evidence_kind = "near_name_nonmatch"
+    else:
+        attribute_mapping_valid = False
+
+    expected_condition_kind = (
+        "attribute_paraphrase"
+        if entity_condition == "distinct" and attribute_condition == "paraphrase"
+        else entity_condition
+    )
+    expected_evidence_kind = (
+        f"{expected_entity_evidence_kind}+{expected_attribute_evidence_kind}"
+        if expected_entity_evidence_kind is not None
+        and expected_attribute_evidence_kind is not None
+        else None
+    )
+    candidate_evidence_valid = len(candidates) == 2
+    for index, candidate in enumerate(candidates):
+        identity = candidate_identities[index]
+        if identity is None:
+            candidate_evidence_valid = False
+            continue
+        expected_evidence = (
+            f"event_candidate={index}; namespace={identity[0]}; "
+            f"entity={identity[1]}; attribute={identity[2]}"
+        )
+        candidate_evidence_valid = candidate_evidence_valid and (
+            getattr(candidate, "evidence", None) == expected_evidence
+            and not _items(getattr(candidate, "source_anchors", None))
+        )
+    reviewed_mapping_valid = (
+        reviewed_geometry_valid
+        and attribute_mapping_valid
+        and stratification.get("entity_mapping_id") == expected_entity_mapping
+        and stratification.get("attribute_mapping_id") == expected_attribute_mapping
+        and stratification.get("namespace_evidence") == expected_namespace_evidence
+        and stratification.get("near_name_evidence") == expected_near_name_evidence
+        and reference is not None
+        and surface_text == normalized_text
+        and getattr(reference, "condition_kind", None) == expected_condition_kind
+        and getattr(reference, "evidence_kind", None) == expected_evidence_kind
+        and candidate_evidence_valid
+    )
+    if not reviewed_mapping_valid:
+        issues.append(
+            _issue(
+                "family_c_reviewed_mapping_mismatch",
+                "Family C surface, alias, attribute, namespace, and nonmatch evidence must match the reviewed catalogs",
+                "metadata.extra.stratification",
+            )
+        )
+
+    event_count_valid = len(records) == 2 and len(actions) == 2
+    if not event_count_valid:
+        issues.append(
+            _issue(
+                "family_c_event_count_mismatch",
+                "Family C requires exactly two candidate-establishing events and actions",
+                "events",
+            )
+        )
+
+    action_ids_in_event_order: list[Any] = []
+    event_values: list[Any] = []
+    linkage_valid = event_count_valid
+    write_semantics_valid = event_count_valid
+    for index, record in enumerate(records):
+        event = record["event"]
+        event_action_ids = _items(getattr(event, "gold_action_ids", None))
+        action_ids_in_event_order.extend(event_action_ids)
+        action = record["actions"][0] if len(record["actions"]) == 1 else None
+        identity = candidate_identities[index] if index < len(candidate_identities) else None
+        expected_candidate_id = candidate_ids[index] if index < len(candidate_ids) else None
+        if action is None:
+            linkage_valid = False
+            write_semantics_valid = False
+            event_values.append(None)
+            continue
+        action_targets = _action_targets(action)
+        value = getattr(action, "value", None)
+        event_values.append(value)
+        renderer = record["metadata"].get("__surface_renderer__")
+        linkage_valid = linkage_valid and (
+            len(event_action_ids) == 1
+            and getattr(action, "action_id", None) == event_action_ids[0]
+            and getattr(action, "event_id", None) == getattr(event, "event_id", None)
+            and action_targets == ([identity] if identity is not None else [])
+            and _strict_int_equal(record["metadata"].get("candidate_index"), index)
+            and _mapping(getattr(event, "source_anchor", None)) == {"event_index": index}
+            and _strict_int_equal(getattr(event, "sequence_index", None), index)
+            and type(expected_candidate_id) is str
+            and type(renderer) is dict
+        )
+        write_semantics_valid = write_semantics_valid and (
+            _enum_value(getattr(action, "operation", None)) == Operation.ADD.value
+            and _enum_value(getattr(action, "scope", None)) == "attribute"
+            and len(action_targets) == 1
+            and value is not None
+            and not bool(_mapping(getattr(action, "expected_effect", None)))
+            and _enum_value(getattr(event, "role", None)) == EventRole.LATEST_GOLD.value
+        )
+    if action_ids_in_event_order != _items(gold.action_sequence):
+        linkage_valid = False
+    if not write_semantics_valid:
+        issues.append(
+            _issue(
+                "family_c_write_semantics_mismatch",
+                "Family C candidate events must be ADD-only latest-gold writes with no NOOPs or other operations",
+                "gold.actions",
+            )
+        )
+
+    declared_identities = [
+        _identity(key) for key in _items(task.target_objects)
+    ]
+    query_target_identities = [
+        _identity(key)
+        for key in _items(getattr(query, "target_object_keys", None))
+    ]
+    expected_present_identities = [
+        _identity(key) for key in _items(gold.expected_present_objects)
+    ]
+    expected_final_state: dict[str, Any] = {}
+    expected_history: dict[str, list[Any]] = {}
+    if len(candidate_identities) == 2 and len(event_values) == 2:
+        for identity, value in zip(candidate_identities, event_values):
+            if identity is not None and value is not None:
+                object_id = _identity_id(identity)
+                expected_final_state[object_id] = value
+                expected_history[object_id] = [value]
+    linkage_valid = linkage_valid and (
+        declared_identities == candidate_identities
+        and query_target_identities == candidate_identities
+        and expected_present_identities == candidate_identities
+        and not _items(gold.expected_absent_objects)
+        and _same_value(_mapping(gold.final_state), expected_final_state)
+        and _same_value(_mapping(gold.version_history), expected_history)
+        and _items(gold.gold_source_event_ids)
+        == [getattr(record["event"], "event_id", None) for record in records]
+    )
+    if not linkage_valid:
+        issues.append(
+            _issue(
+                "family_c_linkage_mismatch",
+                "Family C candidate, event, action, target, replay state, history, and source links must agree exactly",
+                "gold",
+            )
+        )
+
+    expected_status = None
+    expected_disposition = None
+    if (
+        entity_condition in family_c_generation._ENTITY_CONDITIONS
+        and attribute_condition in family_c_generation._ATTRIBUTE_CONDITIONS
+    ):
+        expected_status, expected_disposition = family_c_generation._resolution(
+            entity_condition,
+            attribute_condition,
+        )
+    query_id = getattr(query, "query_id", None)
+    canonical_answers = _mapping(gold.canonical_answers)
+    canonical = canonical_answers.get(query_id) if type(query_id) is str else None
+    answer_support_valid = (
+        type(query_id) is str
+        and len(queries) == 1
+        and set(canonical_answers) == {query_id}
+        and not _mapping(gold.gold_answers)
+        and not _mapping(gold.acceptable_answers)
+    )
+    if not answer_support_valid:
+        issues.append(
+            _issue(
+                "family_c_answer_support_mismatch",
+                "Family C requires exactly one canonical answer for its sole unresolved query and no ordinary answer maps",
+                "gold.canonical_answers",
+            )
+        )
+
+    expected_linked_ids: list[Any] = []
+    expected_selected_ids: list[Any] = []
+    expected_value = None
+    expected_reason = None
+    if expected_status is ReferenceResolutionStatus.UNIQUE:
+        expected_linked_ids = candidate_ids[:1]
+        expected_selected_ids = candidate_ids[:1]
+        expected_value = event_values[0] if event_values else None
+    elif expected_status is ReferenceResolutionStatus.AMBIGUOUS:
+        expected_linked_ids = list(candidate_ids)
+        expected_reason = "reference matches multiple exact memory objects"
+    elif expected_status is ReferenceResolutionStatus.NO_MATCH:
+        expected_reason = "reference attribute has no reviewed canonical match"
+
+    resolution_valid = (
+        canonical is not None
+        and type(canonical) is CanonicalAnswer
+        and _enum_value(getattr(canonical, "resolution_status", None))
+        == _enum_value(expected_status)
+        and _enum_value(getattr(canonical, "disposition", None))
+        == _enum_value(expected_disposition)
+        and _items(getattr(reference, "candidate_ids", None)) == expected_linked_ids
+        and _items(getattr(canonical, "selected_candidate_ids", None))
+        == expected_selected_ids
+        and _same_value(getattr(canonical, "value", None), expected_value)
+        and getattr(canonical, "abstention_reason", None) == expected_reason
+    )
+    if not resolution_valid:
+        issues.append(
+            _issue(
+                "family_c_resolution_truth_table_mismatch",
+                "Family C resolution status, typed disposition, reference links, selected candidates, abstention, and value must follow the condition truth table",
+                "gold.canonical_answers",
+            )
+        )
+
+    expected_difficulty = None
+    if (
+        entity_condition in family_c_generation._ENTITY_CONDITIONS
+        and attribute_condition in family_c_generation._ATTRIBUTE_CONDITIONS
+    ):
+        expected_difficulty = family_c_generation._difficulty(
+            entity_condition,
+            attribute_condition,
+        ).value
+    expected_entity_ambiguity = family_c_generation._ENTITY_AMBIGUITY.get(
+        entity_condition
+    )
+    expected_attribute_ambiguity = family_c_generation._ATTRIBUTE_AMBIGUITY.get(
+        attribute_condition
+    )
+    required_profile = {
+        "update_depth": 1,
+        "update_depth_bucket": "1",
+        "active_object_count": 2,
+        "entity_ambiguity": expected_entity_ambiguity,
+        "attribute_ambiguity": expected_attribute_ambiguity,
+        "noop_density": 0.0,
+        "cross_slot_interleaving": 0.0,
+        "stale_count": 0,
+        "context_length": 2,
+        "context_order": "chronological",
+        "version_metadata": "none",
+        "query_type": QueryType.UNRESOLVED_REFERENCE.value,
+        "source_naturalness": "mixed_template",
+        "alias_namespace_condition": entity_condition,
+        "difficulty": expected_difficulty,
+        "profile_name": expected_difficulty,
+        "task_family": TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,
+    }
+    required_stratification = {
+        "entity_condition": entity_condition,
+        "attribute_condition": attribute_condition,
+        "resolution_status": _enum_value(expected_status),
+        "answer_disposition": _enum_value(expected_disposition),
+        "candidate_count": 2,
+        "entity_mapping_id": expected_entity_mapping,
+        "attribute_mapping_id": expected_attribute_mapping,
+        "namespace_evidence": expected_namespace_evidence,
+        "near_name_evidence": expected_near_name_evidence,
+        "difficulty": expected_difficulty,
+        "num_events": 2,
+        "num_target_updates": 0,
+        "noop_count": 0,
+    }
+    profile_valid = difficulty == expected_difficulty
+    profile_valid = profile_valid and all(
+        key in profile and _same_value(profile[key], value)
+        for key, value in required_profile.items()
+    )
+    profile_valid = profile_valid and all(
+        key in stratification and _same_value(stratification[key], value)
+        for key, value in required_stratification.items()
+    )
+    surface_variant = extra.get("surface_variant")
+    expected_surface_template = (
+        REFERENCE_QUERY_TEMPLATE_SETS[surface_variant][0]
+        if type(surface_variant) is int
+        and 0 <= surface_variant < len(REFERENCE_QUERY_TEMPLATE_SETS)
+        else None
+    )
+    profile_valid = profile_valid and (
+        expected_surface_template is not None
+        and extra.get("surface_template") == expected_surface_template
+    )
+    for record in records:
+        renderer = record["metadata"].get("__surface_renderer__")
+        profile_valid = profile_valid and type(renderer) is dict and renderer == {
+            "surface_template": expected_surface_template,
+            "surface_variant": surface_variant,
+        }
+    if query is not None:
+        query_renderer = _mapping(getattr(query, "metadata", None)).get(
+            "__surface_renderer__"
+        )
+        profile_valid = profile_valid and type(query_renderer) is dict and query_renderer == {
+            "surface_template": expected_surface_template,
+            "surface_variant": surface_variant,
+        }
+    if not profile_valid:
+        issues.append(
+            _issue(
+                "family_c_counter_profile_mismatch",
+                "Family C task-local profile, difficulty, condition, count, surface, mapping, evidence, status, and disposition fields must match observed semantics",
+                "metadata",
+            )
+        )
+
+    return issues
+
+
 def _family_d_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     records, actions = _event_records(task)
@@ -2871,21 +3369,22 @@ def _generic_validation_issues(
     family: str,
     allow_superseded_non_target_answer_overlap: bool = False,
     allow_noop_answer_observation_overlap: bool = False,
+    include_distractors: bool = True,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    validators = (
-        validate_task,
-        validate_gold_replay,
-        lambda candidate: validate_distractors(
-            candidate,
-            allow_superseded_non_target_answer_overlap=(
-                allow_superseded_non_target_answer_overlap
-            ),
-            allow_noop_answer_observation_overlap=(
-                allow_noop_answer_observation_overlap
-            ),
-        ),
-    )
+    validators = [validate_task, validate_gold_replay]
+    if include_distractors:
+        validators.append(
+            lambda candidate: validate_distractors(
+                candidate,
+                allow_superseded_non_target_answer_overlap=(
+                    allow_superseded_non_target_answer_overlap
+                ),
+                allow_noop_answer_observation_overlap=(
+                    allow_noop_answer_observation_overlap
+                ),
+            )
+        )
     for validator in validators:
         try:
             issues.extend(validator(task).issues)
@@ -2976,6 +3475,45 @@ def validate_family_b_task(task: Any) -> ValidationReport:
     return _run_strict_family_validator(task, _validate_family_b_task, family="b")
 
 
+def _validate_family_c_task(task: Any) -> ValidationReport:
+    precheck = _strict_family_precheck(
+        task,
+        family="c",
+        expected_family=TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value,
+    )
+    if precheck is not None:
+        return precheck
+
+    schema_issues = _schema_preflight_issues(task, family="c")
+    if schema_issues:
+        return _bounded_report(schema_issues, family="c")
+
+    issues = _contract_constraint_issues(task, family="c")
+    issues.extend(
+        _generic_validation_issues(
+            task,
+            family="c",
+            include_distractors=False,
+        )
+    )
+    try:
+        issues.extend(_family_c_issues(task))
+    except Exception:
+        issues.append(
+            _issue(
+                "family_c_malformed_task",
+                "Family C semantic inspection rejected malformed task structure",
+                "task",
+            )
+        )
+    return _bounded_report(issues, family="c")
+
+
+def validate_family_c_task(task: Any) -> ValidationReport:
+    """Validate one Family C task without mutation, external I/O, or exception leaks."""
+    return _run_strict_family_validator(task, _validate_family_c_task, family="c")
+
+
 def _validate_family_d_task(task: Any) -> ValidationReport:
     precheck = _strict_family_precheck(
         task,
@@ -3016,16 +3554,13 @@ def validate_family_d_task(task: Any) -> ValidationReport:
 
 
 def validate_pilot_task(task: Any) -> ValidationReport:
-    """Validate with explicit Pilot semantics.
-
-    Families A, B, and D use their strict semantic validators. Family C
-    temporarily retains the historical generic task/replay/distractor composition;
-    a valid report for Family C does not yet claim family-semantic completeness.
-    """
+    """Validate with explicit strict Pilot family semantics when available."""
     if _task_identifies_family(task, TaskFamily.REPEATED_SAME_SLOT.value):
         return validate_family_a_task(task)
     if _task_identifies_family(task, TaskFamily.INTERLEAVED_MULTI_SLOT.value):
         return validate_family_b_task(task)
+    if _task_identifies_family(task, TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value):
+        return validate_family_c_task(task)
     if _task_identifies_family(task, TaskFamily.NOOP_WRITE_DISCIPLINE.value):
         return validate_family_d_task(task)
     return merge_reports(
@@ -3038,6 +3573,7 @@ def validate_pilot_task(task: Any) -> ValidationReport:
 __all__ = [
     "validate_family_a_task",
     "validate_family_b_task",
+    "validate_family_c_task",
     "validate_family_d_task",
     "validate_pilot_task",
 ]

@@ -21,6 +21,7 @@ from mub.vnext.validation.task import validate_task
 from mub.vnext.validation.pilot import (
     validate_family_a_task,
     validate_family_b_task,
+    validate_family_c_task,
     validate_family_d_task,
     validate_pilot_task,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "validate_distractors",
     "validate_family_a_task",
     "validate_family_b_task",
+    "validate_family_c_task",
     "validate_family_d_task",
     "validate_gold_replay",
     "validate_pilot_task",
