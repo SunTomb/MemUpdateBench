@@ -4190,16 +4190,33 @@ def _canonical_pilot_cores() -> tuple[Any, ...]:
 
 @lru_cache(maxsize=1)
 def _canonical_generation_ledger() -> dict[tuple[str, int], dict[str, Any]]:
+    config = _canonical_pilot_config()
     cores = _canonical_pilot_cores()
+    assignments = assign_splits(cores, config.seed)
+    split_by_core = {
+        assignment.semantic_core_id: assignment.split
+        for assignment in assignments.assignments
+    }
+    context = GenerationContext(
+        config=config,
+        code_revision="canonical-semantic-hash-ledger",
+    )
     ledger: dict[tuple[str, int], dict[str, Any]] = {}
     for core in cores:
         family = core.task_family.value
         key = (family, core.core_index)
         if key in ledger:
             raise ValueError("canonical Pilot generation ledger contains duplicate keys")
+        rendered = render_generation.render_core(
+            core,
+            split=split_by_core[core.core_id],
+            surface_variant=0,
+            context=context,
+        )
         ledger[key] = {
             "difficulty": core.difficulty.value,
             "stratification": dict(core.stratification),
+            "semantic_task_hash": semantic_task_hash(rendered),
         }
     if len(ledger) != _PILOT_CORE_COUNT:
         raise ValueError("canonical Pilot generation ledger is incomplete")
@@ -4682,6 +4699,21 @@ def _release_identity_and_group_issues(
                 _issue(
                     "pilot_release_semantic_hash_mismatch",
                     "all surface variants of one core must share one semantic hash",
+                    f"semantic_cores.{core_id}.semantic_hash",
+                )
+            )
+        expected_semantic_hash = (
+            expected_generation.get("semantic_task_hash")
+            if expected_generation is not None
+            else None
+        )
+        if type(expected_semantic_hash) is str and semantic_hashes != {
+            expected_semantic_hash
+        }:
+            issues.append(
+                _issue(
+                    "pilot_release_semantic_core_hash_mismatch",
+                    "core semantics must match the trusted canonical four-part identity and semantic graph",
                     f"semantic_cores.{core_id}.semantic_hash",
                 )
             )

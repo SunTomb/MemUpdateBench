@@ -91,6 +91,38 @@ def _coordinated_manifest_for_tasks(
     )
 
 
+def _replace_strings(value, old: str, new: str):
+    if type(value) is str:
+        return value.replace(old, new)
+    if type(value) is list:
+        return [_replace_strings(item, old, new) for item in value]
+    if type(value) is tuple:
+        return tuple(_replace_strings(item, old, new) for item in value)
+    if type(value) is dict:
+        return {
+            _replace_strings(key, old, new): _replace_strings(item, old, new)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _replace_object_type(value, replacement: str):
+    if type(value) is list:
+        return [_replace_object_type(item, replacement) for item in value]
+    if type(value) is tuple:
+        return tuple(_replace_object_type(item, replacement) for item in value)
+    if type(value) is dict:
+        return {
+            key: (
+                replacement
+                if key == "object_type"
+                else _replace_object_type(item, replacement)
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
 def _replace_task(tasks, index: int, task: MemUpdateTask):
     changed = list(tasks)
     changed[index] = task
@@ -342,6 +374,62 @@ def test_release_rejects_coordinated_core_identity_relabel(canonical_release) ->
     report = validate_pilot_release(changed, coordinated_manifest)
 
     assert "pilot_release_canonical_identity_mismatch" in _codes(report)
+
+
+def test_release_rejects_coordinated_four_part_identity_relabel(
+    canonical_release,
+) -> None:
+    tasks, manifest = canonical_release
+    exemplar = next(
+        task
+        for task in tasks
+        if task.task_family == TaskFamily.REPEATED_SAME_SLOT.value
+        and task.metadata.extra["core_index"] == 0
+    )
+    core_id = exemplar.metadata.split_key.semantic_core_id
+    original_entity = exemplar.target_objects[0].entity
+    replacement_entity = "Caller Chosen Entity"
+    changed = tuple(
+        MemUpdateTask.model_validate(
+            _replace_strings(
+                task.model_dump(mode="python"),
+                original_entity,
+                replacement_entity,
+            )
+        )
+        if task.metadata.split_key.semantic_core_id == core_id
+        else task
+        for task in tasks
+    )
+    coordinated_manifest = _coordinated_manifest_for_tasks(changed, manifest)
+
+    report = validate_pilot_release(changed, coordinated_manifest)
+
+    assert "pilot_release_semantic_core_hash_mismatch" in _codes(report)
+
+
+def test_release_allows_object_type_and_admin_only_mutation(canonical_release) -> None:
+    tasks, manifest = canonical_release
+    exemplar = tasks[0]
+    core_id = exemplar.metadata.split_key.semantic_core_id
+    changed_tasks = []
+    for task in tasks:
+        if task.metadata.split_key.semantic_core_id != core_id:
+            changed_tasks.append(task)
+            continue
+        payload = _replace_object_type(
+            task.model_dump(mode="python"),
+            "caller_classification",
+        )
+        payload["metadata"]["extra"]["caller_admin_note"] = "permitted"
+        changed_tasks.append(MemUpdateTask.model_validate(payload))
+    changed = tuple(changed_tasks)
+    coordinated_manifest = _coordinated_manifest_for_tasks(changed, manifest)
+
+    report = validate_pilot_release(changed, coordinated_manifest)
+
+    assert report.valid
+    assert report.issues == ()
 
 
 def test_release_rejects_surface_and_core_cardinality_corruption(
