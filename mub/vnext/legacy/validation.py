@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from mub.vnext.contracts.enums import EventRole, Operation
-from mub.vnext.contracts.manifest import TaskManifest
 from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.io.canonical import sha256_model
 from mub.vnext.validation.issues import (
@@ -150,18 +149,6 @@ def _validate_compiler_constructed_legacy_task_semantics(
     construction boundary; arbitrary tasks must use the public strict validators.
     """
     return _legacy_task_semantics(task)
-
-
-def _make_authenticated_legacy_validation_context(
-    manifest: TaskManifest,
-    tasks: list[MemUpdateTask],
-) -> _AuthenticatedLegacyValidationContext:
-    return _AuthenticatedLegacyValidationContext(
-        manifest_sha256=sha256_model(manifest),
-        task_hashes=tuple(
-            sorted((task.task_id, sha256_model(task)) for task in tasks)
-        ),
-    )
 
 
 def _validate_authenticated_legacy_task_semantics(

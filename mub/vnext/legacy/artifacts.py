@@ -22,10 +22,7 @@ from mub.vnext.contracts.task import MemUpdateTask
 from mub.vnext.io.canonical import canonical_json_bytes, sha256_model
 from mub.vnext.legacy.dataset import compile_legacy_episode
 from mub.vnext.legacy.loaders import load_evomemory_dataset
-from mub.vnext.legacy.validation import (
-    _AuthenticatedLegacyValidationContext,
-    _make_authenticated_legacy_validation_context,
-)
+from mub.vnext.legacy.validation import _AuthenticatedLegacyValidationContext
 from mub.vnext.profiles import hard_profile, resolve_profile
 
 
@@ -250,7 +247,12 @@ def _authenticate_legacy_task_validation_context(
         tasks,
         tasks_path=tasks_path,
     )
-    return _make_authenticated_legacy_validation_context(authenticated, tasks)
+    return _AuthenticatedLegacyValidationContext(
+        manifest_sha256=sha256_model(authenticated),
+        task_hashes=tuple(
+            sorted((task.task_id, sha256_model(task)) for task in tasks)
+        ),
+    )
 
 
 def _authenticate_tasks_against_source(
