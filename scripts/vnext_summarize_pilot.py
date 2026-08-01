@@ -60,18 +60,33 @@ def _artifact_hash(path: Path, refs, label: str) -> str:
     return digest
 
 
-def _load_scores(path: Path, tasks: set[str], manifest: RunManifest) -> tuple[ScoreRecord, ...]:
+def _load_scores(
+    path: Path,
+    tasks: set[str],
+    manifest: RunManifest,
+    runs: tuple[TaskRunRecord, ...],
+) -> tuple[ScoreRecord, ...]:
     # Typed JSONL is intentional: this rejects P6/P8 legacy result JSON.
     scores = tuple(read_models(path, ScoreRecord, id_field="task_id"))
     if not scores:
         raise ValueError("score set is empty")
     if {score.task_id for score in scores} != tasks:
         raise ValueError("score task set is incomplete or unexpected")
+    runs_by_task = {run.task_id: run for run in runs}
     for score in scores:
-        if score.run_id != manifest.run_id:
-            raise ValueError(f"score run ID mismatch for {score.task_id}")
-        if score.adapter_id != manifest.adapter_info.adapter_id:
-            raise ValueError(f"score adapter ID mismatch for {score.task_id}")
+        run = runs_by_task.get(score.task_id)
+        if run is None or (
+            score.run_id,
+            score.adapter_id,
+            score.completion_status,
+        ) != (
+            run.run_id,
+            run.adapter_id,
+            run.completion_status,
+        ):
+            raise ValueError("score/run record mismatch")
+        if score.run_id != manifest.run_id or score.adapter_id != manifest.adapter_info.adapter_id:
+            raise ValueError("score/run record mismatch")
     return tuple(sorted(scores, key=lambda item: item.task_id))
 
 
@@ -159,7 +174,7 @@ def summarize_pilot(
     bundle = authenticate_pilot_files(tasks_path, task_manifest_path, runs_path, run_manifest_path)
     tasks = {task.task_id: task for task in bundle.tasks}
     score_hash = _artifact_hash(scores_path, bundle.run_manifest.score_artifacts, "score file")
-    scores = _load_scores(scores_path, set(tasks), bundle.run_manifest)
+    scores = _load_scores(scores_path, set(tasks), bundle.run_manifest, bundle.runs)
     task_hash = _artifact_hash(tasks_path, bundle.task_manifest.task_file_paths_and_hashes, "task file")
     run_hash = _artifact_hash(runs_path, bundle.run_manifest.normalized_runtime_artifacts, "run-record file")
     aggregate = aggregate_scores(scores, bundle.tasks, bundle.run_manifest)
