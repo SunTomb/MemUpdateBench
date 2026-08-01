@@ -9,15 +9,33 @@ from mub.vnext.audit.sample import (
     validate_audit_decisions,
     validate_audit_gate,
 )
+from mub.vnext.audit.select import (
+    AuditFamilySelectionReport,
+    AuditSelectionIssue,
+    AuditSelectionResult,
+    FAMILY_CONDITION_POLICY,
+    SELECTION_ALGORITHM,
+    SELECTION_VERSION,
+    audit_selection_id,
+    select_pilot_audit_sample,
+)
 
 __all__ = [
     "AuditDecision",
     "AuditDecisionTemplate",
+    "AuditFamilySelectionReport",
     "AuditGateReport",
     "AuditSelection",
+    "AuditSelectionIssue",
+    "AuditSelectionResult",
+    "FAMILY_CONDITION_POLICY",
+    "SELECTION_ALGORITHM",
+    "SELECTION_VERSION",
     "Verdict",
     "audit_decision_template",
+    "audit_selection_id",
     "evaluate_audit_gate",
+    "select_pilot_audit_sample",
     "validate_audit_decisions",
     "validate_audit_gate",
 ]
