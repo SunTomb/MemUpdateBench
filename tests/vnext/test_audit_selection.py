@@ -72,6 +72,35 @@ def _task_with_payload_change(task: MemUpdateTask, change) -> MemUpdateTask:
     return MemUpdateTask.model_validate(payload)
 
 
+def _rebound_selection(
+    selection: AuditSelection,
+    covered_conditions: tuple[str, ...],
+    **updates,
+) -> AuditSelection:
+    payload = selection.model_dump(mode="python")
+    payload.update(updates)
+    payload["covered_conditions"] = covered_conditions
+    payload["audit_id"] = audit_selection_id(
+        task_id=payload["task_id"],
+        family=payload["family"],
+        difficulty=payload["difficulty"],
+        split=payload["split"],
+        covered_conditions=covered_conditions,
+        selection_reason=payload["selection_reason"],
+    )
+    return AuditSelection.model_validate(payload)
+
+
+def _replace_condition_dimension(
+    conditions: tuple[str, ...],
+    dimension: str,
+    *replacements: str,
+) -> tuple[str, ...]:
+    prefix = f"{dimension}="
+    remaining = [token for token in conditions if not token.startswith(prefix)]
+    return tuple(sorted((*remaining, *replacements)))
+
+
 def test_canonical_release_selects_exact_balanced_valid_sample(
     canonical_release, canonical_selection
 ) -> None:
@@ -199,10 +228,15 @@ def test_reviewed_condition_policy_and_all_values_are_covered(
             'stratification.trap_type="other_attribute_correction"',
         },
     }
+    expected_required_conditions = {
+        family: tuple(sorted(universal | expected_family_tokens[family]))
+        for family in PILOT_FAMILIES
+    }
+    assert selector_module.CANONICAL_REQUIRED_CONDITIONS == expected_required_conditions
     for family in PILOT_FAMILIES:
-        assert universal | expected_family_tokens[family] <= covered[family]
+        assert covered[family] == set(expected_required_conditions[family])
         family_report = next(item for item in result.family_reports if item.family is family)
-        assert set(family_report.required_conditions) == universal | expected_family_tokens[family]
+        assert family_report.required_conditions == expected_required_conditions[family]
         assert family_report.uncovered_required_conditions == ()
         assert family_report.impossible_reasons == ()
 
@@ -377,6 +411,9 @@ def test_impossible_cover_is_not_silently_dropped(canonical_release, monkeypatch
 
 def test_set_cover_finds_a_feasible_cover_after_greedy_dead_end(monkeypatch) -> None:
     family = TaskFamily.REPEATED_SAME_SLOT
+    required = selector_module.CANONICAL_REQUIRED_CONDITIONS[family]
+    one, two, three, four = required[:4]
+    common = required[4:]
 
     def candidate(task_id: str, *conditions: str):
         return selector_module._Candidate(
@@ -386,13 +423,13 @@ def test_set_cover_finds_a_feasible_cover_after_greedy_dead_end(monkeypatch) -> 
             split=Split.TRAIN,
             semantic_core_id=f"core-{task_id}",
             surface_variant=0,
-            conditions=tuple(sorted(conditions)),
+            conditions=tuple(sorted((*common, *conditions))),
         )
 
     candidates = (
-        candidate("a", "one", "two"),
-        candidate("b", "one", "three"),
-        candidate("c", "two", "four"),
+        candidate("a", one, two),
+        candidate("b", one, three),
+        candidate("c", two, four),
     )
     monkeypatch.setattr(selector_module, "_TASKS_PER_FAMILY", 2)
 
@@ -415,43 +452,260 @@ def test_malformed_diagnostics_do_not_depend_on_input_indices(canonical_release)
     assert all("[" not in issue.path for issue in first.issues)
 
 
-def test_valid_rejects_family_report_with_incomplete_condition_universe(
+def test_result_rejects_family_report_with_incomplete_condition_universe(
     canonical_selection,
 ) -> None:
     report = canonical_selection.family_reports[0]
-    tampered = report.model_copy(
-        update={"required_conditions": report.required_conditions[1:]}
-    )
-    forged = canonical_selection.validated_replace(
-        family_reports=(tampered, *canonical_selection.family_reports[1:])
+    tampered = AuditFamilySelectionReport.model_construct(
+        family=report.family,
+        required_conditions=report.required_conditions[1:],
+        selected_task_ids=report.selected_task_ids,
+        uncovered_required_conditions=report.uncovered_required_conditions,
+        impossible_reasons=report.impossible_reasons,
     )
 
+    with pytest.raises(ValueError, match="required_conditions"):
+        canonical_selection.validated_replace(
+            family_reports=(tampered, *canonical_selection.family_reports[1:])
+        )
+
+
+def test_replacement_attack_cannot_self_declare_reduced_universe_after_round_trip(
+    canonical_release,
+    canonical_selection,
+) -> None:
+    tasks, _ = canonical_release
+    family = TaskFamily.REPEATED_SAME_SLOT
+    selected_ids = {item.task_id for item in canonical_selection.selections}
+    replacement_candidates = [
+        selector_module._candidate(task)
+        for task in tasks
+        if task.task_family == family.value
+        and task.metadata.resolved_profile["update_depth"] == 1
+        and task.task_id not in selected_ids
+    ]
+    replacements = []
+    used_replacement_ids: set[str] = set()
+    for selected in canonical_selection.selections:
+        if (
+            selected.family is not family
+            or "profile.update_depth=16" not in selected.covered_conditions
+        ):
+            replacements.append(selected)
+            continue
+        surface_token = next(
+            token
+            for token in selected.covered_conditions
+            if token.startswith("surface_variant=")
+        )
+        candidate = next(
+            item
+            for item in replacement_candidates
+            if item.task_id not in used_replacement_ids
+            and item.split is selected.split
+            and item.difficulty is selected.difficulty
+            and surface_token in item.conditions
+        )
+        used_replacement_ids.add(candidate.task_id)
+        replacements.append(
+            _rebound_selection(
+                selected,
+                candidate.conditions,
+                task_id=candidate.task_id,
+                family=candidate.family,
+                difficulty=candidate.difficulty,
+                split=candidate.split,
+            )
+        )
+
+    family_selections = [item for item in replacements if item.family is family]
+    reduced_universe = tuple(
+        sorted(
+            {
+                token
+                for selection in family_selections
+                for token in selection.covered_conditions
+            }
+        )
+    )
+    assert "profile.update_depth=16" not in reduced_universe
+    original_report = next(
+        report for report in canonical_selection.family_reports if report.family is family
+    )
+    forged_report = AuditFamilySelectionReport.model_construct(
+        family=original_report.family,
+        required_conditions=reduced_universe,
+        selected_task_ids=tuple(sorted(item.task_id for item in family_selections)),
+        uncovered_required_conditions=(),
+        impossible_reasons=(),
+    )
+    forged_reports = tuple(
+        forged_report if report.family is family else report
+        for report in canonical_selection.family_reports
+    )
+    forged = AuditSelectionResult.model_construct(
+        selection_algorithm=canonical_selection.selection_algorithm,
+        selection_version=canonical_selection.selection_version,
+        selections=tuple(sorted(replacements, key=selector_module._selection_sort_key)),
+        family_reports=forged_reports,
+        uncovered_required_conditions=(),
+        impossible_reasons=(),
+        issues=(),
+    )
+
+    with pytest.raises(ValueError, match="required_conditions"):
+        AuditSelectionResult.model_validate_json(canonical_json_bytes(forged))
     assert forged.valid is False
 
 
-def test_typed_selection_result_round_trips_through_canonical_json() -> None:
-    selection = AuditSelection(
-        audit_id="audit_roundtrip",
-        task_id="task_roundtrip",
-        family=TaskFamily.REPEATED_SAME_SLOT,
-        difficulty=Difficulty.EASY,
-        split=Split.TRAIN,
-        covered_conditions=("condition=true",),
-        selection_reason="greedy_set_cover",
+@pytest.mark.parametrize(
+    "case",
+    (
+        "missing_split",
+        "missing_difficulty",
+        "missing_surface",
+        "missing_family_condition",
+        "extra_condition",
+        "duplicate_split",
+        "duplicate_difficulty",
+        "duplicate_surface",
+        "duplicate_family_condition",
+        "typed_split_mismatch",
+        "typed_difficulty_mismatch",
+        "wrong_split_type",
+        "wrong_difficulty_type",
+        "wrong_surface_type",
+        "wrong_family_value_type",
+        "wrong_family_dimension",
+        "unknown_family_value",
+    ),
+)
+def test_result_rejects_noncanonical_selection_condition_tokens(
+    canonical_selection,
+    case: str,
+) -> None:
+    selected = next(
+        item
+        for item in canonical_selection.selections
+        if item.family is TaskFamily.REPEATED_SAME_SLOT
     )
-    report = AuditFamilySelectionReport(
-        family=TaskFamily.REPEATED_SAME_SLOT,
-        required_conditions=("condition=true",),
-        selected_task_ids=("task_roundtrip",),
+    conditions = selected.covered_conditions
+    updates = {}
+    split_token = f'split="{selected.split.value}"'
+    difficulty_token = f'difficulty="{selected.difficulty.value}"'
+    surface_token = next(
+        token for token in conditions if token.startswith("surface_variant=")
     )
+    depth_token = next(
+        token for token in conditions if token.startswith("profile.update_depth=")
+    )
+    depth = int(depth_token.partition("=")[2])
+
+    if case == "missing_split":
+        conditions = _replace_condition_dimension(conditions, "split")
+    elif case == "missing_difficulty":
+        conditions = _replace_condition_dimension(conditions, "difficulty")
+    elif case == "missing_surface":
+        conditions = _replace_condition_dimension(conditions, "surface_variant")
+    elif case == "missing_family_condition":
+        conditions = _replace_condition_dimension(conditions, "profile.update_depth")
+    elif case == "extra_condition":
+        conditions = tuple(sorted((*conditions, "unexpected=true")))
+    elif case == "duplicate_split":
+        alternate = next(
+            split
+            for split in (Split.TRAIN, Split.DEV, Split.TEST)
+            if split is not selected.split
+        )
+        conditions = tuple(sorted((*conditions, f'split="{alternate.value}"')))
+    elif case == "duplicate_difficulty":
+        alternate = next(
+            difficulty
+            for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+            if difficulty is not selected.difficulty
+        )
+        conditions = tuple(sorted((*conditions, f'difficulty="{alternate.value}"')))
+    elif case == "duplicate_surface":
+        current_surface = int(surface_token.partition("=")[2])
+        alternate_surface = next(
+            value for value in (0, 1, 2) if value != current_surface
+        )
+        conditions = tuple(
+            sorted((*conditions, f"surface_variant={alternate_surface}"))
+        )
+    elif case == "duplicate_family_condition":
+        alternate_depth = next(value for value in (1, 4, 16) if value != depth)
+        conditions = tuple(
+            sorted((*conditions, f"profile.update_depth={alternate_depth}"))
+        )
+    elif case == "typed_split_mismatch":
+        updates["split"] = next(
+            split
+            for split in (Split.TRAIN, Split.DEV, Split.TEST)
+            if split is not selected.split
+        )
+    elif case == "typed_difficulty_mismatch":
+        updates["difficulty"] = next(
+            difficulty
+            for difficulty in (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+            if difficulty is not selected.difficulty
+        )
+    elif case == "wrong_split_type":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "split",
+            f"split={selected.split.value}",
+        )
+    elif case == "wrong_difficulty_type":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "difficulty",
+            f"difficulty={selected.difficulty.value}",
+        )
+    elif case == "wrong_surface_type":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "surface_variant",
+            f'surface_variant="{surface_token.partition("=")[2]}"',
+        )
+    elif case == "wrong_family_value_type":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "profile.update_depth",
+            f'profile.update_depth="{depth}"',
+        )
+    elif case == "wrong_family_dimension":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "profile.update_depth",
+            "stratification.active_object_count=2",
+        )
+    elif case == "unknown_family_value":
+        conditions = _replace_condition_dimension(
+            conditions,
+            "profile.update_depth",
+            "profile.update_depth=999",
+        )
+    else:
+        raise AssertionError(f"unhandled test case: {case}")
+
+    assert split_token in selected.covered_conditions
+    assert difficulty_token in selected.covered_conditions
+    tampered = _rebound_selection(selected, conditions, **updates)
+    replacements = tuple(
+        tampered if item.audit_id == selected.audit_id else item
+        for item in canonical_selection.selections
+    )
+
+    with pytest.raises(ValueError, match="covered_conditions"):
+        canonical_selection.validated_replace(selections=replacements)
+
+
+def test_typed_invalid_selection_result_round_trips_through_canonical_json(
+    canonical_selection,
+) -> None:
     issue = AuditSelectionIssue(code="typed", message="typed", path="selection")
-    result = AuditSelectionResult(
-        selection_algorithm=selector_module.SELECTION_ALGORITHM,
-        selection_version=selector_module.SELECTION_VERSION,
-        selections=(selection,),
-        family_reports=(report,),
-        issues=(issue,),
-    )
+    result = canonical_selection.validated_replace(issues=(issue,))
 
     reconstructed = AuditSelectionResult.model_validate_json(
         canonical_json_bytes(result)

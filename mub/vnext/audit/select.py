@@ -56,34 +56,139 @@ _PILOT_FAMILIES = (
     TaskFamily.NOOP_WRITE_DISCIPLINE,
 )
 
+
+def _canonical_scalar(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _condition_token(label: str, value: Any) -> str:
+    return f"{label}={_canonical_scalar(value)}"
+
+
+# Exact axes and values from the reviewed, fixed Pilot condition config. This is
+# the trusted source for both candidate projection and serialized-result checks.
+_CANONICAL_UNIVERSAL_CONDITION_VALUES = (
+    ("split", ("train", "dev", "test")),
+    ("difficulty", ("easy", "medium", "hard")),
+    ("surface_variant", (0, 1, 2)),
+)
+_CANONICAL_FAMILY_CONDITION_SCHEMA: Mapping[
+    TaskFamily, tuple[tuple[str, str, tuple[Any, ...]], ...]
+] = MappingProxyType(
+    {
+        TaskFamily.REPEATED_SAME_SLOT: (
+            ("profile", "update_depth", (1, 4, 16)),
+            ("stratification", "same_name_distractor_count", (0, 2, 4)),
+            ("stratification", "same_entity_other_attribute_count", (0, 1, 2)),
+            ("stratification", "noop_count", (0, 2, 4)),
+        ),
+        TaskFamily.INTERLEAVED_MULTI_SLOT: (
+            ("profile", "update_depth", (1, 4, 16)),
+            ("stratification", "active_object_count", (2, 4, 8)),
+            ("stratification", "cross_slot_distractor_density", (0.0, 0.25, 0.5)),
+            (
+                "stratification",
+                "interleaving_pattern",
+                ("round_robin", "burst", "adversarial_adjacent"),
+            ),
+        ),
+        TaskFamily.ENTITY_ATTRIBUTE_GROUNDING: (
+            (
+                "stratification",
+                "entity_condition",
+                ("distinct", "same_name", "alias", "namespace_collision"),
+            ),
+            (
+                "stratification",
+                "attribute_condition",
+                ("exact", "paraphrase", "near_name"),
+            ),
+        ),
+        TaskFamily.NOOP_WRITE_DISCIPLINE: (
+            ("stratification", "configured_noop_density", (0.25, 0.5, 0.75)),
+            (
+                "stratification",
+                "trap_type",
+                (
+                    "semantic_near_miss",
+                    "duplicate_current",
+                    "other_entity_correction",
+                    "other_attribute_correction",
+                ),
+            ),
+        ),
+    }
+)
+
 # Reviewed generator/config knobs only. Derived counters, indices, IDs, hashes,
 # mapping IDs, allocation/cardinality fields, and free-form metadata are excluded.
 FAMILY_CONDITION_POLICY: Mapping[
     TaskFamily, tuple[tuple[str, str], ...]
 ] = MappingProxyType(
     {
-        TaskFamily.REPEATED_SAME_SLOT: (
-            ("profile", "update_depth"),
-            ("stratification", "same_name_distractor_count"),
-            ("stratification", "same_entity_other_attribute_count"),
-            ("stratification", "noop_count"),
-        ),
-        TaskFamily.INTERLEAVED_MULTI_SLOT: (
-            ("profile", "update_depth"),
-            ("stratification", "active_object_count"),
-            ("stratification", "cross_slot_distractor_density"),
-            ("stratification", "interleaving_pattern"),
-        ),
-        TaskFamily.ENTITY_ATTRIBUTE_GROUNDING: (
-            ("stratification", "entity_condition"),
-            ("stratification", "attribute_condition"),
-        ),
-        TaskFamily.NOOP_WRITE_DISCIPLINE: (
-            ("stratification", "configured_noop_density"),
-            ("stratification", "trap_type"),
-        ),
+        family: tuple((source, key) for source, key, _ in schema)
+        for family, schema in _CANONICAL_FAMILY_CONDITION_SCHEMA.items()
     }
 )
+
+
+def _canonical_condition_schema(
+    family: TaskFamily,
+) -> tuple[tuple[str, tuple[Any, ...]], ...]:
+    if family not in _CANONICAL_FAMILY_CONDITION_SCHEMA:
+        raise ValueError("family must belong to the canonical Pilot")
+    return (
+        *_CANONICAL_UNIVERSAL_CONDITION_VALUES,
+        *(
+            (f"{source}.{key}", values)
+            for source, key, values in _CANONICAL_FAMILY_CONDITION_SCHEMA[family]
+        ),
+    )
+
+
+CANONICAL_REQUIRED_CONDITIONS: Mapping[TaskFamily, tuple[str, ...]] = MappingProxyType(
+    {
+        family: tuple(
+            sorted(
+                _condition_token(dimension, value)
+                for dimension, values in _canonical_condition_schema(family)
+                for value in values
+            )
+        )
+        for family in _PILOT_FAMILIES
+    }
+)
+
+
+def _validate_selection_condition_contract(selection: AuditSelection) -> None:
+    schema = _canonical_condition_schema(selection.family)
+    conditions = set(selection.covered_conditions)
+    matched: set[str] = set()
+    for dimension, values in schema:
+        allowed = {_condition_token(dimension, value) for value in values}
+        present = conditions & allowed
+        if len(present) != 1:
+            raise ValueError(
+                "covered_conditions must contain exactly one canonical token for "
+                f"{dimension}"
+            )
+        matched.update(present)
+    if conditions != matched:
+        raise ValueError(
+            "covered_conditions must not contain extra, wrong-family, or unknown tokens"
+        )
+    if _condition_token("split", selection.split.value) not in conditions:
+        raise ValueError("covered_conditions split token must match selection.split")
+    if _condition_token("difficulty", selection.difficulty.value) not in conditions:
+        raise ValueError(
+            "covered_conditions difficulty token must match selection.difficulty"
+        )
 
 
 class _StrictFrozenSelectionModel(ImmutableContractModel):
@@ -135,6 +240,15 @@ class AuditFamilySelectionReport(_StrictFrozenSelectionModel):
     def _validate_text_tuple(cls, value: Any) -> tuple[str, ...]:
         return _normalized_text_tuple(value)
 
+    @model_validator(mode="after")
+    def _require_canonical_condition_universe(self) -> AuditFamilySelectionReport:
+        expected = CANONICAL_REQUIRED_CONDITIONS.get(self.family)
+        if expected is None or self.required_conditions != expected:
+            raise ValueError(
+                "required_conditions must equal the canonical family condition universe"
+            )
+        return self
+
 
 class AuditSelectionResult(_StrictFrozenSelectionModel):
     selection_algorithm: str
@@ -179,6 +293,12 @@ class AuditSelectionResult(_StrictFrozenSelectionModel):
     def _snapshot_issues(cls, value: Any) -> tuple[AuditSelectionIssue, ...]:
         issues = _snapshot_model_tuple(value, AuditSelectionIssue, limit=_MAX_ISSUES)
         return tuple(sorted(issues, key=lambda item: (item.code, item.path, item.message)))
+
+    @model_validator(mode="after")
+    def _require_canonical_selection_conditions(self) -> AuditSelectionResult:
+        for selection in self.selections:
+            _validate_selection_condition_contract(selection)
+        return self
 
     def _exact_field_snapshot(self) -> dict[str, Any]:
         raw = object.__getattribute__(self, "__dict__")
@@ -271,6 +391,10 @@ def _valid_selection_snapshot(result: AuditSelectionResult) -> bool:
     for selection in result.selections:
         if selection.family not in by_family:
             return False
+        try:
+            _validate_selection_condition_contract(selection)
+        except (TypeError, ValueError):
+            return False
         if selection.selection_reason not in {"greedy_set_cover", "spread_fill"}:
             return False
         expected_id = audit_selection_id(
@@ -292,6 +416,8 @@ def _valid_selection_snapshot(result: AuditSelectionResult) -> bool:
         if len(selections) != _TASKS_PER_FAMILY:
             return False
         if report.uncovered_required_conditions or report.impossible_reasons:
+            return False
+        if report.required_conditions != CANONICAL_REQUIRED_CONDITIONS[report.family]:
             return False
         if report.selected_task_ids != tuple(sorted(item.task_id for item in selections)):
             return False
@@ -461,20 +587,6 @@ def _snapshot_release(
     return tuple(snapshots), manifest_snapshot, ()
 
 
-def _canonical_scalar(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _condition_token(label: str, value: Any) -> str:
-    return f"{label}={_canonical_scalar(value)}"
-
-
 def _candidate(task: MemUpdateTask) -> _Candidate:
     family = TaskFamily(task.task_family)
     difficulty = task.difficulty
@@ -576,9 +688,7 @@ def _select_family(
     AuditFamilySelectionReport,
     tuple[AuditSelectionIssue, ...],
 ]:
-    required = {
-        condition for candidate in candidates for condition in candidate.conditions
-    }
+    required = set(CANONICAL_REQUIRED_CONDITIONS[family])
     uncovered = set(required)
     selected: list[tuple[_Candidate, str]] = []
     selected_ids: set[str] = set()
@@ -825,6 +935,7 @@ __all__ = [
     "AuditFamilySelectionReport",
     "AuditSelectionIssue",
     "AuditSelectionResult",
+    "CANONICAL_REQUIRED_CONDITIONS",
     "FAMILY_CONDITION_POLICY",
     "SELECTION_ALGORITHM",
     "SELECTION_VERSION",
