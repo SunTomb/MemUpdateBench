@@ -558,6 +558,136 @@ def test_replacement_attack_cannot_self_declare_reduced_universe_after_round_tri
     assert forged.valid is False
 
 
+def _false_condition_forgery(
+    tasks: tuple[MemUpdateTask, ...],
+    canonical_selection: AuditSelectionResult,
+) -> tuple[
+    tuple[AuditSelection, ...],
+    tuple[AuditFamilySelectionReport, ...],
+]:
+    selected = next(
+        item
+        for item in canonical_selection.selections
+        if item.family is TaskFamily.REPEATED_SAME_SLOT
+        and "profile.update_depth=16" in item.covered_conditions
+    )
+    surface_variant = next(
+        int(token.partition("=")[2])
+        for token in selected.covered_conditions
+        if token.startswith("surface_variant=")
+    )
+    selected_ids = {item.task_id for item in canonical_selection.selections}
+    replacement = next(
+        task
+        for task in tasks
+        if task.task_family == TaskFamily.REPEATED_SAME_SLOT.value
+        and task.difficulty is selected.difficulty
+        and task.metadata.split is selected.split
+        and task.metadata.extra["surface_variant"] == surface_variant
+        and task.metadata.resolved_profile["update_depth"] == 1
+        and task.task_id not in selected_ids
+    )
+    forged_selection = _rebound_selection(
+        selected,
+        selected.covered_conditions,
+        task_id=replacement.task_id,
+    )
+    selections = tuple(
+        forged_selection if item.audit_id == selected.audit_id else item
+        for item in canonical_selection.selections
+    )
+    original_report = next(
+        report
+        for report in canonical_selection.family_reports
+        if report.family is selected.family
+    )
+    selected_task_ids = tuple(
+        sorted(item.task_id for item in selections if item.family is selected.family)
+    )
+    forged_report = AuditFamilySelectionReport.model_validate(
+        original_report.model_dump(mode="python")
+        | {"selected_task_ids": selected_task_ids}
+    )
+    reports = tuple(
+        forged_report if report.family is selected.family else report
+        for report in canonical_selection.family_reports
+    )
+    return selections, reports
+
+
+def test_result_rejects_false_condition_task_replacement_via_validated_replace(
+    canonical_release,
+    canonical_selection,
+) -> None:
+    tasks, _ = canonical_release
+    selections, reports = _false_condition_forgery(tasks, canonical_selection)
+
+    with pytest.raises(ValueError, match="covered_conditions"):
+        canonical_selection.validated_replace(
+            selections=selections,
+            family_reports=reports,
+        )
+
+
+def test_result_rejects_false_condition_task_replacement_after_json_round_trip(
+    canonical_release,
+    canonical_selection,
+) -> None:
+    tasks, _ = canonical_release
+    selections, reports = _false_condition_forgery(tasks, canonical_selection)
+    forged = AuditSelectionResult.model_construct(
+        selection_algorithm=canonical_selection.selection_algorithm,
+        selection_version=canonical_selection.selection_version,
+        selections=selections,
+        family_reports=reports,
+        uncovered_required_conditions=(),
+        impossible_reasons=(),
+        issues=(),
+    )
+
+    with pytest.raises(ValueError, match="covered_conditions"):
+        AuditSelectionResult.model_validate_json(canonical_json_bytes(forged))
+    assert forged.valid is False
+
+
+def test_result_rejects_unknown_canonical_pilot_task_id(canonical_selection) -> None:
+    selected = canonical_selection.selections[0]
+    forged = _rebound_selection(
+        selected,
+        selected.covered_conditions,
+        task_id="unknown-canonical-pilot-task",
+    )
+    selections = tuple(
+        forged if item.audit_id == selected.audit_id else item
+        for item in canonical_selection.selections
+    )
+
+    with pytest.raises(ValueError, match="task_id"):
+        canonical_selection.validated_replace(selections=selections)
+
+
+def test_result_rejects_false_token_for_known_task_id(canonical_selection) -> None:
+    selected = next(
+        item
+        for item in canonical_selection.selections
+        if item.family is TaskFamily.REPEATED_SAME_SLOT
+        and "profile.update_depth=16" in item.covered_conditions
+    )
+    conditions = _replace_condition_dimension(
+        selected.covered_conditions,
+        "profile.update_depth",
+        "profile.update_depth=1",
+    )
+    forged = _rebound_selection(selected, conditions)
+    selections = tuple(
+        forged if item.audit_id == selected.audit_id else item
+        for item in canonical_selection.selections
+    )
+
+    with pytest.raises(ValueError, match="covered_conditions"):
+        canonical_selection.validated_replace(selections=selections)
+
+
 @pytest.mark.parametrize(
     "case",
     (

@@ -23,6 +23,7 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Any
 
@@ -37,7 +38,8 @@ from mub.vnext.contracts import (
     TaskManifest,
 )
 from mub.vnext.contracts.common import ImmutableContractModel
-from mub.vnext.generation.identity import stable_id
+from mub.vnext.generation.identity import stable_id, task_id as canonical_task_id
+from mub.vnext.generation.splits import assign_splits
 from mub.vnext.io import canonical_json_bytes
 from mub.vnext.validation import validate_pilot_release
 
@@ -136,6 +138,45 @@ FAMILY_CONDITION_POLICY: Mapping[
         for family, schema in _CANONICAL_FAMILY_CONDITION_SCHEMA.items()
     }
 )
+
+
+@lru_cache(maxsize=1)
+def _canonical_task_condition_bindings() -> Mapping[str, tuple[str, ...]]:
+    from mub.vnext.validation.pilot import (
+        _canonical_pilot_config,
+        _canonical_pilot_cores,
+    )
+
+    config = _canonical_pilot_config()
+    cores = _canonical_pilot_cores()
+    assignments = assign_splits(cores, config.seed)
+    split_by_core = {
+        assignment.semantic_core_id: assignment.split
+        for assignment in assignments.assignments
+    }
+    bindings: dict[str, tuple[str, ...]] = {}
+    for core in cores:
+        family = core.task_family
+        if family not in _PILOT_FAMILIES:
+            raise ValueError("canonical Pilot core has an unsupported family")
+        sources = {"profile": core.profile, "stratification": core.stratification}
+        for surface_variant in range(config.surface_variants_per_core):
+            conditions = {
+                _condition_token("split", split_by_core[core.core_id].value),
+                _condition_token("difficulty", core.difficulty.value),
+                _condition_token("surface_variant", surface_variant),
+            }
+            for source, key in FAMILY_CONDITION_POLICY[family]:
+                conditions.add(
+                    _condition_token(f"{source}.{key}", sources[source][key])
+                )
+            identifier = canonical_task_id(core.core_id, surface_variant)
+            if identifier in bindings:
+                raise ValueError("canonical Pilot task-condition binding is not unique")
+            bindings[identifier] = tuple(sorted(conditions))
+    if len(bindings) != config.total_tasks:
+        raise ValueError("canonical Pilot task-condition binding is incomplete")
+    return MappingProxyType(bindings)
 
 
 def _canonical_condition_schema(
@@ -296,8 +337,18 @@ class AuditSelectionResult(_StrictFrozenSelectionModel):
 
     @model_validator(mode="after")
     def _require_canonical_selection_conditions(self) -> AuditSelectionResult:
+        if not self.selections:
+            return self
+        trusted_bindings = _canonical_task_condition_bindings()
         for selection in self.selections:
             _validate_selection_condition_contract(selection)
+            trusted_conditions = trusted_bindings.get(selection.task_id)
+            if trusted_conditions is None:
+                raise ValueError("selection task_id must identify a canonical Pilot task")
+            if selection.covered_conditions != trusted_conditions:
+                raise ValueError(
+                    "covered_conditions must equal the canonical Pilot task projection"
+                )
         return self
 
     def _exact_field_snapshot(self) -> dict[str, Any]:
