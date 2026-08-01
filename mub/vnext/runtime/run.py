@@ -192,6 +192,8 @@ def run_tasks(
     task_runs_path = output / "task_runs.jsonl"
     progress_path = output / "progress.json"
     manifest_path = output / "run_manifest.json"
+    if not resume:
+        manifest_path.unlink(missing_ok=True)
     task_hash = task_manifest_hash or hashlib.sha256("".join(semantic_task_hash(task) for task in task_list).encode()).hexdigest()
 
     identity_adapter = adapter_factory(task_list[0])

@@ -110,6 +110,45 @@ def test_run_tasks_flushes_sidecar_and_finalizes_manifest(tmp_path: Path) -> Non
     assert result.manifest.completed_task_count == 1
 
 
+def test_non_resume_interruption_invalidates_previous_manifest(tmp_path: Path) -> None:
+    task = build_task()
+    second = task.model_copy(update={"task_id": "task-2"})
+    output = tmp_path / "rerun"
+
+    run_tasks(
+        [task],
+        adapter_factory=lambda item: FakeAdapter(item),
+        run_config=config(),
+        output_dir=output,
+        task_manifest_hash="b" * 64,
+    )
+    assert (output / "run_manifest.json").exists()
+
+    calls = 0
+
+    def factory(item):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return FakeAdapter(item)
+        raise KeyboardInterrupt("stop")
+
+    with pytest.raises(KeyboardInterrupt):
+        run_tasks(
+            [task, second],
+            adapter_factory=factory,
+            run_config=config(),
+            output_dir=output,
+            task_manifest_hash="b" * 64,
+            resume=False,
+        )
+
+    assert not (output / "run_manifest.json").exists()
+    progress = json.loads((output / "progress.json").read_text())
+    assert progress["expected_ids"] == [task.task_id, second.task_id]
+    assert progress["completed_ids"] == [task.task_id]
+
+
 def test_run_tasks_keeps_partial_progress_without_false_manifest(tmp_path: Path) -> None:
     task = build_task()
     output = tmp_path / "interrupted"
