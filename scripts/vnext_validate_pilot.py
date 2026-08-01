@@ -130,7 +130,7 @@ def _resolve_paths(
             if _paths_alias(left, right):
                 raise ValueError("input artifacts must identify distinct files")
 
-    output_dir = args.output_dir.resolve(strict=False)
+    output_dir = Path(os.path.abspath(args.output_dir))
     destinations = tuple(output_dir / name for name in _OUTPUT_NAMES)
     for source in source_paths:
         if any(_paths_alias(source, destination) for destination in destinations):
@@ -293,17 +293,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         tasks = _load_canonical_tasks(tasks_path)
         manifest = _load_canonical_manifest(manifest_path)
-    except Exception:
+    except ValueError:
         return _finish_automated_invalid(
             destinations=destinations,
             report=_input_error_report(),
             source_paths=source_paths,
         )
+    except Exception:
+        _write_error("could not read canonical Pilot inputs")
+        return EXIT_USAGE_OR_IO_ERROR
 
     try:
         report = validate_pilot_release(tasks, manifest)
     except Exception:
-        report = _input_error_report()
+        _write_error("automated validation failed")
+        return EXIT_USAGE_OR_IO_ERROR
     if not report.valid:
         return _finish_automated_invalid(
             destinations=destinations,
@@ -326,9 +330,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             decisions = _load_canonical_decisions(decisions_path)
             decision_status = "evaluated"
-        except Exception:
+        except ValueError:
             decision_status = "malformed"
             decisions = ()
+        except Exception:
+            _write_error("could not read canonical audit decisions")
+            return EXIT_USAGE_OR_IO_ERROR
     gate = evaluate_audit_gate(selections, decisions)
     if decision_status == "malformed":
         gate = gate.validated_replace(malformed_decision_ids=("<artifact>",))

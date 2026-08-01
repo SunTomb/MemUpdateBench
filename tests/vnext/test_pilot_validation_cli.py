@@ -300,6 +300,90 @@ def test_non_pass_missing_duplicate_and_foreign_decisions_remain_non_ready(
     assert getattr(gate, expected_field)
 
 
+@pytest.mark.parametrize(
+    "loader_name",
+    ("_load_canonical_tasks", "_load_canonical_manifest"),
+)
+def test_task_and_manifest_read_oserror_are_sanitized_operational_failures(
+    loader_name: str,
+    canonical_release,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks_path, manifest_path = _write_release(tmp_path, canonical_release)
+    output_dir = tmp_path / "validation"
+    secret = "PRIVATE-INPUT-READ-FAILURE"
+
+    def fail_read(path: Path):
+        raise PermissionError(secret)
+
+    monkeypatch.setattr(cli, loader_name, fail_read)
+
+    status = cli.main(_args(tasks_path, manifest_path, output_dir))
+    captured = capsys.readouterr()
+
+    assert status == cli.EXIT_USAGE_OR_IO_ERROR
+    assert secret not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert not any((output_dir / name).exists() for name in OUTPUT_NAMES)
+
+
+def test_unexpected_automated_validator_exception_is_operational_failure(
+    canonical_release,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks_path, manifest_path = _write_release(tmp_path, canonical_release)
+    output_dir = tmp_path / "validation"
+    secret = "PRIVATE-VALIDATOR-FAILURE"
+
+    def fail_validation(tasks, manifest):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(cli, "validate_pilot_release", fail_validation)
+
+    status = cli.main(_args(tasks_path, manifest_path, output_dir))
+    captured = capsys.readouterr()
+
+    assert status == cli.EXIT_USAGE_OR_IO_ERROR
+    assert secret not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert not any((output_dir / name).exists() for name in OUTPUT_NAMES)
+
+
+def test_decision_read_oserror_is_sanitized_operational_failure(
+    canonical_release,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks_path, manifest_path = _write_release(tmp_path, canonical_release)
+    _, release_report, selection = canonical_release
+    decisions_path = tmp_path / "audit_decisions.jsonl"
+    decisions_path.write_bytes(b"{}\n")
+    output_dir = tmp_path / "validation"
+    secret = "PRIVATE-DECISION-READ-FAILURE"
+
+    def fail_read(path: Path):
+        raise PermissionError(secret)
+
+    monkeypatch.setattr(cli, "validate_pilot_release", lambda tasks, manifest: release_report)
+    monkeypatch.setattr(cli, "select_pilot_audit_sample", lambda tasks, manifest: selection)
+    monkeypatch.setattr(cli, "_load_canonical_decisions", fail_read)
+
+    status = cli.main(
+        _args(tasks_path, manifest_path, output_dir, decisions_path)
+    )
+    captured = capsys.readouterr()
+
+    assert status == cli.EXIT_USAGE_OR_IO_ERROR
+    assert secret not in captured.out + captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert not any((output_dir / name).exists() for name in OUTPUT_NAMES)
+
+
 def test_malformed_decision_file_is_rejected_without_false_readiness(
     canonical_release,
     tmp_path: Path,
@@ -425,3 +509,66 @@ def test_output_paths_cannot_alias_inputs_or_each_other(
     capsys.readouterr()
     assert status == cli.EXIT_USAGE_OR_IO_ERROR
     assert first.read_bytes() == second.read_bytes() == b"existing-output"
+
+
+@pytest.mark.parametrize(
+    "output_parts",
+    ((".", "validation"), ("scratch", "..", "validation")),
+)
+def test_output_directory_is_normalized_lexically_on_native_platform(
+    canonical_release,
+    tmp_path: Path,
+    output_parts: tuple[str, ...],
+) -> None:
+    tasks_path, manifest_path = _write_release(tmp_path, canonical_release)
+    raw_output_dir = tmp_path.joinpath(*output_parts)
+    args = cli._build_parser().parse_args(
+        _args(tasks_path, manifest_path, raw_output_dir)
+    )
+
+    _, _, _, destinations, _ = cli._resolve_paths(args)
+
+    expected_output_dir = Path(os.path.abspath(raw_output_dir))
+    assert tuple(path.parent for path in destinations) == (expected_output_dir,) * len(
+        OUTPUT_NAMES
+    )
+
+
+@pytest.mark.parametrize("kind", ("symlink", "junction"))
+def test_reparse_output_directory_is_rejected_without_redirecting_artifacts(
+    kind: str,
+    canonical_release,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks_path, manifest_path = _write_release(tmp_path, canonical_release)
+    _, release_report, selection = canonical_release
+    real_output = tmp_path / f"real-{kind}"
+    real_output.mkdir()
+    alias_output = tmp_path / f"alias-{kind}"
+    if kind == "symlink":
+        try:
+            alias_output.symlink_to(real_output, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlink unavailable: {exc}")
+    else:
+        if os.name != "nt":
+            pytest.skip("Windows junction coverage")
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias_output), str(real_output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode != 0:
+            pytest.skip("junction creation unavailable")
+    monkeypatch.setattr(cli, "validate_pilot_release", lambda tasks, manifest: release_report)
+    monkeypatch.setattr(cli, "select_pilot_audit_sample", lambda tasks, manifest: selection)
+
+    status = cli.main(_args(tasks_path, manifest_path, alias_output))
+    captured = capsys.readouterr()
+
+    assert status == cli.EXIT_USAGE_OR_IO_ERROR
+    assert "Traceback" not in captured.out + captured.err
+    assert not any((real_output / name).exists() for name in OUTPUT_NAMES)
