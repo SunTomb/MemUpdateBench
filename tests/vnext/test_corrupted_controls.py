@@ -160,3 +160,21 @@ def test_invalid_formatter_never_writes_on_valid_or_malformed_events(make_task):
     assert all(log.error["code"] == "invalid_action_format" for log in logs)
     assert adapter.export_entries() == []
     assert _flags_from_trace(adapter) == {"invalid_action_format"}
+
+
+def test_malformed_event_rejects_retained_gold_ids_without_mutation(make_task):
+    task = make_task()
+    adapter = AlwaysAddAdapter(task=task)
+    assert adapter.reset("safe", {}).success
+    before = adapter.export_raw_state()
+
+    malformed = task.events[0].model_copy(
+        update={"raw_text": "not an action", "normalized_text": "not an action"}
+    )
+    assert malformed.gold_action_ids == task.events[0].gold_action_ids
+    log = adapter.ingest_event(malformed)
+
+    assert log.error is not None
+    assert log.error["code"] == "invalid_action_format"
+    assert adapter.export_entries() == []
+    assert adapter.export_raw_state()["state_by_object"] == before["state_by_object"]

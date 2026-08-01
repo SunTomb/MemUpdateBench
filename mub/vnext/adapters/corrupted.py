@@ -136,7 +136,21 @@ class CorruptedControlAdapter(ExactCrudAdapter):
     def _expected_action(self, event: MemoryEvent):
         if self._task is None:
             return None
-        actions = [action for action in self._task.gold.actions if action.action_id in event.gold_action_ids]
+        trusted_event = next(
+            (candidate for candidate in self._task.events if candidate.event_id == event.event_id),
+            None,
+        )
+        if trusted_event is None or (
+            event.sequence_index != trusted_event.sequence_index
+            or event.raw_text != trusted_event.raw_text
+            or event.normalized_text != trusted_event.normalized_text
+        ):
+            return None
+        actions = [
+            action
+            for action in self._task.gold.actions
+            if action.action_id in trusted_event.gold_action_ids
+        ]
         if not actions:
             return None
         order = {action_id: index for index, action_id in enumerate(self._task.gold.action_sequence)}
