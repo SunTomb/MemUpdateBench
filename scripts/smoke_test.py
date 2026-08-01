@@ -667,6 +667,263 @@ def test_vnext_contracts(results: SmokeTestResult) -> None:
         results.fail(name, exc)
 
 
+def test_vnext_pilot_pipeline(results: SmokeTestResult) -> None:
+    print("\n[9/9] Testing temporary no-network Pilot pipeline...")
+    name = "vNext temporary no-network Pilot pipeline"
+    smoke_root = None
+    try:
+        import hashlib
+        from collections import Counter
+        from unittest.mock import patch
+
+        from mub.vnext.adapters import build_adapter
+        from mub.vnext.adapters.corrupted import CONTROL_ADAPTERS, build_corrupted_adapter
+        from mub.vnext.adapters.reference import ReferenceAdapter
+        from mub.vnext.contracts import ArtifactRef, CompletionStatus, Split, TaskManifest
+        from mub.vnext.generation import (
+            GenerationContext,
+            generate_family_a_cores,
+            generate_family_b_cores,
+            generate_family_c_cores,
+            generate_family_d_cores,
+            load_pilot_config,
+            render_core,
+        )
+        from mub.vnext.io import canonical_json_bytes, sha256_model
+        from mub.vnext.io.jsonl import write_models
+        from mub.vnext.runtime import RuntimeConfig, run_tasks
+        from mub.vnext.scoring.aggregate import aggregate_scores
+        from mub.vnext.scoring.pilot import publish_scores, score_pilot_records
+        from mub.vnext.validation import merge_reports, validate_pilot_task
+        from scripts.vnext_summarize_pilot import summarize_pilot
+
+        config = load_pilot_config(Path(PROJECT_ROOT) / "configs" / "vnext" / "pilot.yaml")
+        context = GenerationContext(config=config, code_revision="temporary-pilot-smoke")
+        cores = tuple(
+            generator(config)[0]
+            for generator in (
+                generate_family_a_cores,
+                generate_family_b_cores,
+                generate_family_c_cores,
+                generate_family_d_cores,
+            )
+        )
+        tasks = tuple(
+            render_core(
+                core,
+                split=Split.TEST,
+                surface_variant=surface_variant,
+                context=context,
+            )
+            for core in cores
+            for surface_variant in range(3)
+        )
+        assert len(cores) == 4
+        assert len(tasks) == 12
+        assert len({core.task_family for core in cores}) == 4
+        assert Counter(
+            task.metadata.split_key.semantic_core_id for task in tasks
+        ) == Counter({core.core_id: 3 for core in cores})
+
+        validation_report = merge_reports(
+            *(validate_pilot_task(task) for task in tasks)
+        )
+        assert validation_report.valid, validation_report.issues
+        assert not validation_report.issues
+
+        offline_environment = {
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+        }
+        with tempfile.TemporaryDirectory(prefix="mub-vnext-pilot-smoke-") as tmpdir:
+            smoke_root = Path(tmpdir).resolve()
+            build_root = smoke_root / "build"
+            build_root.mkdir()
+            tasks_path = build_root / "tasks.jsonl"
+            task_manifest_path = build_root / "task_manifest.json"
+            validation_report_path = build_root / "validation_report.json"
+            write_models(tasks_path, tasks, id_field="task_id")
+
+            task_bytes_hash = hashlib.sha256(tasks_path.read_bytes()).hexdigest()
+            family_difficulty_counts = Counter(
+                f"{task.task_family}|{task.difficulty.value}" for task in tasks
+            )
+            split_policy_versions = {
+                task.metadata.split_key.split_policy_version for task in tasks
+            }
+            assert len(split_policy_versions) == 1
+            task_manifest = TaskManifest(
+                data_release_id="temporary-pilot-smoke",
+                split_policy_version=next(iter(split_policy_versions)),
+                compiler_versions={context.generator_name: context.compiler_version},
+                source_manifest_paths_and_hashes=(),
+                generation_configs_and_hashes=(),
+                split_counts={Split.TEST.value: len(tasks)},
+                family_difficulty_counts=dict(family_difficulty_counts),
+                semantic_core_counts={Split.TEST.value: len(cores)},
+                task_file_paths_and_hashes=(
+                    ArtifactRef(
+                        path=tasks_path.name,
+                        sha256=task_bytes_hash,
+                        media_type="application/jsonl",
+                        record_count=len(tasks),
+                    ),
+                ),
+                leakage_check_summary={
+                    "task_hashes": {
+                        task.task_id: sha256_model(task) for task in tasks
+                    }
+                },
+                human_audit_artifacts=(),
+                created_at="temporary-no-network-smoke",
+                code_revision=context.code_revision,
+            )
+            task_manifest_path.write_bytes(
+                canonical_json_bytes(task_manifest) + b"\n"
+            )
+            validation_report_path.write_bytes(
+                canonical_json_bytes(validation_report) + b"\n"
+            )
+            assert all(
+                path.is_file()
+                for path in (
+                    tasks_path,
+                    task_manifest_path,
+                    validation_report_path,
+                )
+            )
+            assert build_root.is_relative_to(smoke_root)
+
+            adapter_factories = {
+                "reference": lambda task: ReferenceAdapter(task),
+                "raw_add": lambda task: build_adapter("raw_add"),
+                "exact_crud": lambda task: build_adapter("exact_crud"),
+                "heuristic_crud_unsupported": lambda task: build_adapter(
+                    "heuristic_crud"
+                ),
+            }
+            adapter_factories.update(
+                {
+                    control_id: (
+                        lambda task, selected=control_id: build_corrupted_adapter(
+                            selected,
+                            task=task,
+                        )
+                    )
+                    for control_id in sorted(CONTROL_ADAPTERS)
+                }
+            )
+            task_manifest_hash = hashlib.sha256(
+                task_manifest_path.read_bytes()
+            ).hexdigest()
+            summary_outputs = {
+                "summary.json",
+                "summary.csv",
+                "failure_breakdown.json",
+                "capability_coverage.json",
+                "cases.jsonl",
+                "artifact_index.json",
+            }
+
+            with (
+                patch.dict(os.environ, offline_environment),
+                patch(
+                    "socket.create_connection",
+                    side_effect=AssertionError(
+                        "network access is forbidden in Pilot smoke"
+                    ),
+                ),
+                patch(
+                    "urllib.request.urlopen",
+                    side_effect=AssertionError("downloads are forbidden in Pilot smoke"),
+                ),
+            ):
+                for adapter_name, adapter_factory in adapter_factories.items():
+                    slug = adapter_name.replace("/", "_")
+                    run_root = smoke_root / "runs" / slug
+                    score_root = smoke_root / "scores" / slug
+                    summary_root = smoke_root / "summaries" / slug
+                    runtime_config = RuntimeConfig(
+                        run_id=f"temporary-pilot-smoke-{slug}",
+                        compiler_version=context.compiler_version,
+                        profile_version=config.profile_version,
+                        schema_version=config.schema_version,
+                    )
+                    run_result = run_tasks(
+                        tasks,
+                        adapter_factory=adapter_factory,
+                        run_config=runtime_config,
+                        output_dir=run_root,
+                        task_manifest_hash=task_manifest_hash,
+                    )
+                    assert run_result.manifest is not None
+                    assert all(
+                        path.is_file()
+                        for path in (
+                            run_result.task_runs_path,
+                            run_result.progress_path,
+                            run_result.manifest_path,
+                        )
+                    )
+                    if adapter_name == "heuristic_crud_unsupported":
+                        assert all(
+                            row.completion_status is CompletionStatus.NOT_SUPPORTED
+                            for row in run_result.rows
+                        )
+
+                    scores = score_pilot_records(
+                        tasks,
+                        run_result.rows,
+                        task_manifest,
+                        run_result.manifest,
+                    )
+                    assert len(scores) == len(tasks)
+                    aggregate = aggregate_scores(
+                        scores,
+                        tasks,
+                        run_result.manifest,
+                    )
+                    publish_scores(
+                        score_root,
+                        scores,
+                        aggregate,
+                        run_result.manifest,
+                    )
+                    assert all(
+                        (score_root / filename).is_file()
+                        for filename in (
+                            "scores.jsonl",
+                            "summary.json",
+                            "run_manifest.json",
+                        )
+                    )
+                    summarize_pilot(
+                        tasks_path,
+                        task_manifest_path,
+                        run_result.task_runs_path,
+                        score_root / "scores.jsonl",
+                        score_root / "run_manifest.json",
+                        summary_root,
+                        case_policy="all",
+                    )
+                    assert {
+                        path.name for path in summary_root.iterdir() if path.is_file()
+                    } == summary_outputs
+                    assert run_root.is_relative_to(smoke_root)
+                    assert score_root.is_relative_to(smoke_root)
+                    assert summary_root.is_relative_to(smoke_root)
+
+        assert smoke_root is not None
+        assert not smoke_root.exists()
+        results.ok(
+            name,
+            f"4 cores, {len(tasks)} tasks, {len(adapter_factories)} adapter/control paths",
+        )
+    except Exception as exc:
+        results.fail(name, exc)
+
+
 def main() -> int:
     print("=" * 50)
     print("MemUpdateBench SMOKE TEST")
@@ -681,6 +938,7 @@ def main() -> int:
     test_constrained_slots(results)
     test_api_probe_helpers(results)
     test_vnext_contracts(results)
+    test_vnext_pilot_pipeline(results)
     return 0 if results.summary() else 1
 
 

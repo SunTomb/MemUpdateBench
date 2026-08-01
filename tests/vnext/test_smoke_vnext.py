@@ -22,3 +22,7 @@ def test_vnext_contract_smoke_is_registered_and_self_contained() -> None:
         "[PASS] vNext contracts, replay, serialization, and capability gating"
         in completed.stdout
     )
+    assert (
+        "[PASS] vNext temporary no-network Pilot pipeline"
+        in completed.stdout
+    )
