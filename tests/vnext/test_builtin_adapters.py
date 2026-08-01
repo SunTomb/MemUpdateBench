@@ -49,6 +49,29 @@ def test_builtin_adapters_reset_link_source_events_and_canonical_entries(make_ta
     adapter.close()
 
 
+def test_raw_append_rejects_delete_without_mutating_state(make_task):
+    task = _direct_task(make_task)
+    delete_event = task.events[1].model_copy(
+        update={
+            "raw_text": "DELETE",
+            "normalized_text": "DELETE",
+            "metadata": {
+                "operation": Operation.DELETE.value,
+                "object_key": task.target_objects[0].model_dump(mode="python"),
+            },
+        }
+    )
+    adapter = RawAppendAdapter()
+    assert adapter.reset("session", {}).success
+    assert adapter.ingest_event(task.events[0]).error is None
+    before = adapter.export_raw_state()
+
+    log = adapter.ingest_event(delete_event)
+
+    assert log.error["code"] == "not_supported"
+    assert adapter.export_raw_state() == before
+
+
 def test_reference_is_gold_oracle_and_isolated(make_task):
     task = _direct_task(make_task)
     adapter = ReferenceAdapter(task)

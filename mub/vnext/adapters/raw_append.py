@@ -30,6 +30,13 @@ class RawAppendAdapter(BaseBuiltinAdapter):
                 raw_action=event.raw_text,
                 error={"code": "invalid_action_format", "reason": parsed.error},
             )
+        if parsed.operation is Operation.DELETE:
+            return AdapterActionLog(
+                event_id=event.event_id,
+                requested_operation=Operation.DELETE,
+                raw_action=event.raw_text,
+                error={"code": "not_supported", "reason": "capability_unavailable"},
+            )
         if parsed.operation is Operation.NOOP:
             self._actions.append({"event_id": event.event_id, "operation": "NOOP", "target_object_keys": []})
             return AdapterActionLog(
