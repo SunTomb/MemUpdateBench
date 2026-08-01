@@ -92,6 +92,27 @@ def _render_value(value: JsonValue) -> str:
     return json.dumps(thaw_json(value), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
+def _reverse_prompt_order(entries: Sequence[ContextEntry]) -> list[ContextEntry]:
+    ordered = sorted(
+        entries,
+        key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+        reverse=True,
+    )
+    labels = _entry_label_map(entries)
+    positions_by_key: defaultdict[str, list[int]] = defaultdict(list)
+    for position, entry in enumerate(ordered):
+        positions_by_key[entry.object_key.canonical_id].append(position)
+    for positions in positions_by_key.values():
+        if len(positions) < 2:
+            continue
+        same_object = [ordered[position] for position in positions]
+        stale = [entry for entry in same_object if labels[entry.entry_id] == "outdated"]
+        current = [entry for entry in same_object if labels[entry.entry_id] == "latest"]
+        for position, entry in zip(positions, [*stale, *current]):
+            ordered[position] = entry
+    return ordered
+
+
 def render_context(
     entries: Sequence[ContextEntry | Mapping[str, Any]],
     order: str,
@@ -119,7 +140,7 @@ def render_context(
     if order == "chronological":
         ordered = sorted(normalized, key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id))
     else:
-        ordered = sorted(normalized, key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id), reverse=True)
+        ordered = _reverse_prompt_order(normalized)
     labels = _entry_label_map(normalized) if annotation == "latest_outdated_label" else {}
     lines = []
     for entry in ordered:

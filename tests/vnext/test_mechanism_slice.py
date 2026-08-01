@@ -55,15 +55,47 @@ def test_render_context_pairs_preserve_entries_and_gold_without_answer_labels():
     assert any("[latest]" in line for line in labeled.rendered_context.splitlines())
 
 
-def test_reverse_order_is_explicit_and_current_version_is_auditable():
-    task = _tasks()[0]
-    entries = entries_from_task(task)
-    rendered = render_context(entries, "reverse_chronological", "none")
-    assert rendered.entry_order == list(reversed(sorted(rendered.entry_order)))
-    current = max(entries, key=lambda entry: entry.event_index)
-    stale = [entry for entry in entries if entry.object_key == current.object_key and entry.entry_id != current.entry_id]
-    assert stale
-    assert rendered.entry_ids.index(stale[0].entry_id) > rendered.entry_ids.index(current.entry_id)
+@pytest.mark.parametrize("annotation", ["none", "latest_outdated_label"])
+def test_reverse_order_places_reversed_stale_target_versions_before_current(annotation):
+    tasks = _tasks()
+    assert {task.metadata.resolved_profile["stale_count"] for task in tasks} == {1, 16}
+    for task in tasks:
+        entries = entries_from_task(task)
+        target_key = task.target_objects[0]
+        target_entries = [entry for entry in entries if entry.object_key == target_key]
+        current = max(
+            target_entries,
+            key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+        )
+        stale = [entry for entry in target_entries if entry.entry_id != current.entry_id]
+        expected_stale_ids = [
+            entry.entry_id
+            for entry in sorted(
+                stale,
+                key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+                reverse=True,
+            )
+        ]
+        auxiliary = [entry for entry in entries if entry.object_key != target_key]
+        expected_auxiliary_ids = [
+            entry.entry_id
+            for entry in sorted(
+                auxiliary,
+                key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+                reverse=True,
+            )
+        ]
+
+        rendered = render_context(entries, "reverse_chronological", annotation)
+        rendered_target_ids = [entry_id for entry_id in rendered.entry_ids if entry_id in {entry.entry_id for entry in target_entries}]
+        rendered_auxiliary_ids = [entry_id for entry_id in rendered.entry_ids if entry_id in {entry.entry_id for entry in auxiliary}]
+
+        assert rendered_target_ids == [*expected_stale_ids, current.entry_id]
+        assert all(rendered.entry_ids.index(entry_id) < rendered.entry_ids.index(current.entry_id) for entry_id in expected_stale_ids)
+        assert rendered_auxiliary_ids == expected_auxiliary_ids
+        if annotation == "latest_outdated_label":
+            assert rendered.labels[current.entry_id] == "latest"
+            assert all(rendered.labels[entry_id] == "outdated" for entry_id in expected_stale_ids)
 
 
 def test_render_context_rejects_unsupported_cells_and_malformed_entries():
@@ -95,6 +127,10 @@ def test_build_slice_selects_exact_stale_counts_and_manifest_contract():
     assert all(record.task_id for record in result.records)
     assert all(record.semantic_core_id for record in result.records)
     assert all(record.retrieval_composition == "identical_entry_multiset" for record in result.records)
+    for semantic_core_id in result.manifest["semantic_core_ids"]:
+        paired = [record for record in result.records if record.semantic_core_id == semantic_core_id]
+        assert len({record.gold_value for record in paired}) == 1
+        assert len({frozenset(record.entry_ids) for record in paired}) == 1
 
 
 def test_build_slice_is_permutation_invariant_and_rejects_invalid_inputs():
