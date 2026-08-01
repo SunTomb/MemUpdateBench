@@ -106,10 +106,17 @@ def _validate_run_set(
                 raise ValueError(f"{field} mismatch for task {run.task_id}")
         runtime_identity = _event_metadata(run, "run_identity")
         declared_identity = manifest.native_vs_extracted_field_summary.get("runtime_identity")
-        if runtime_identity is not None and runtime_identity != declared_identity:
+        if not isinstance(declared_identity, str) or not declared_identity:
+            raise ValueError("run manifest lacks authenticated runtime identity")
+        if not isinstance(runtime_identity, str) or not runtime_identity:
+            raise ValueError(f"missing runtime identity for task {run.task_id}")
+        if runtime_identity != declared_identity:
             raise ValueError(f"runtime identity mismatch for task {run.task_id}")
         declared_task_hash = _event_metadata(run, "task_hash")
-        if declared_task_hash is not None and declared_task_hash != semantic_task_hash(tasks[run.task_id]):
+        expected_task_hash = semantic_task_hash(tasks[run.task_id])
+        if not isinstance(declared_task_hash, str) or not declared_task_hash:
+            raise ValueError(f"missing runtime task hash for {run.task_id}")
+        if declared_task_hash != expected_task_hash:
             raise ValueError(f"runtime task hash mismatch for {run.task_id}")
         by_id[run.task_id] = run
     if set(by_id) != set(tasks):

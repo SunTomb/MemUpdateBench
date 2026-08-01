@@ -69,13 +69,64 @@ def _manifest(task, *, task_manifest_hash="b" * 64, runtime_hash="c" * 64, syste
         expected_task_count=1, completed_task_count=1, failed_task_count=0, not_supported_task_count=0,
         raw_provider_response_artifacts=(), raw_adapter_state_artifacts=(),
         normalized_runtime_artifacts=(ArtifactRef(path="runs.jsonl", sha256=runtime_hash, media_type="application/jsonl", record_count=1),),
-        score_artifacts=(), native_vs_extracted_field_summary={},
+        score_artifacts=(), native_vs_extracted_field_summary={"runtime_identity": "identity-fixture"},
     )
+
+
+def _authenticated_run(task, run):
+    payload = run.model_dump(mode="python")
+    payload["system_events"] = [{
+        "event": "runtime_identity",
+        "run_identity": "identity-fixture",
+        "task_hash": semantic_task_hash(task),
+    }]
+    return type(run).model_validate(payload)
+
+
+def test_scoring_rejects_missing_runtime_identity(make_task, make_task_run):
+    task = make_task()
+    with pytest.raises(ValueError, match="runtime identity"):
+        score_pilot_records([task], [make_task_run()], _task_manifest(task), _manifest(task))
+
+
+def test_scoring_rejects_missing_task_hash(make_task, make_task_run):
+    task = make_task()
+    run = _authenticated_run(task, make_task_run())
+    payload = run.model_dump(mode="python")
+    payload["system_events"][0].pop("task_hash")
+    with pytest.raises(ValueError, match="task hash"):
+        score_pilot_records([task], [TaskRunRecord.model_validate(payload)], _task_manifest(task), _manifest(task))
+
+
+def test_scoring_rejects_malformed_runtime_identity(make_task, make_task_run):
+    task = make_task()
+    run = _authenticated_run(task, make_task_run())
+    payload = run.model_dump(mode="python")
+    payload["system_events"][0]["run_identity"] = {"identity": "identity-fixture"}
+    with pytest.raises(ValueError, match="runtime identity"):
+        score_pilot_records([task], [TaskRunRecord.model_validate(payload)], _task_manifest(task), _manifest(task))
+
+
+def test_scoring_rejects_malformed_task_hash(make_task, make_task_run):
+    task = make_task()
+    run = _authenticated_run(task, make_task_run())
+    payload = run.model_dump(mode="python")
+    payload["system_events"][0]["task_hash"] = [semantic_task_hash(task)]
+    with pytest.raises(ValueError, match="task hash"):
+        score_pilot_records([task], [TaskRunRecord.model_validate(payload)], _task_manifest(task), _manifest(task))
+
+
+def test_scoring_accepts_exact_identity_evidence(make_task, make_task_run):
+    task = make_task()
+    run = _authenticated_run(task, make_task_run())
+    scores = score_pilot_records([task], [run], _task_manifest(task), _manifest(task))
+    assert len(scores) == 1
+
 
 
 def test_perfect_and_failure_decomposition(make_task, make_task_run):
     task = make_task()
-    perfect = make_task_run()
+    perfect = _authenticated_run(task, make_task_run())
     manifest = _manifest(task)
     score = score_pilot_records([task], [perfect], _task_manifest(task), manifest)[0]
     assert score.state_scores.final_state_accuracy == 1.0
@@ -115,7 +166,7 @@ def test_family_c_dispositions_are_not_collapsed(make_task, make_task_run):
         }
     }
     task = type(task).model_validate(task_payload)
-    run_payload = make_task_run().model_dump(mode="python")
+    run_payload = _authenticated_run(task, make_task_run()).model_dump(mode="python")
     run_payload["answer_predictions"][0]["disposition"] = AnswerDisposition.ABSTAINED
     run_payload["answer_predictions"][0]["parsed_answer"] = None
     abstained = TaskRunRecord.model_validate(run_payload)
@@ -155,7 +206,7 @@ def test_authentication_rejects_missing_duplicate_and_hash_mismatch(tmp_path: Pa
     write_models(tasks_path, [task], id_field="task_id")
     task_manifest = _task_manifest(task, task_hash=hashlib.sha256(tasks_path.read_bytes()).hexdigest())
     manifest_path.write_bytes(canonical_json_bytes(task_manifest))
-    run = make_task_run()
+    run = _authenticated_run(task, make_task_run())
     write_models(runs_path, [run], id_field="task_id")
     run_manifest = _manifest(task, task_manifest_hash=hashlib.sha256(manifest_path.read_bytes()).hexdigest(), runtime_hash=hashlib.sha256(runs_path.read_bytes()).hexdigest())
     run_manifest_path.write_bytes(canonical_json_bytes(run_manifest))
