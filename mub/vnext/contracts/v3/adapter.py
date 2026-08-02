@@ -137,12 +137,20 @@ class ExportedVersionRecordV3(ImmutableContractModel):
             raise ValueError("present exported versions require value")
         if self.status == LedgerEntryStatus.TOMBSTONE and self.value is not None:
             raise ValueError("tombstone exported versions cannot carry value")
-        if (self.valid_from is None) != (self.valid_until is None):
-            raise ValueError("valid_from and valid_until must be supplied together")
+        if self.valid_from is None and self.valid_until is not None:
+            raise ValueError("valid_until cannot be supplied without valid_from")
         if self.valid_from is None and self.logical_time is None:
             raise ValueError("exported versions require an event interval or logical-time anchor")
-        if self.valid_from is not None and self.valid_from.sequence_index >= self.valid_until.sequence_index:
+        if self.valid_from is not None and self.valid_until is not None and self.valid_from.sequence_index >= self.valid_until.sequence_index:
             raise ValueError("validity interval must be strictly chronological")
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_from.logical_time is not None
+            and self.valid_until.logical_time is not None
+            and self.valid_from.logical_time > self.valid_until.logical_time
+        ):
+            raise ValueError("validity logical-time bounds must be ordered")
         source_keys = [(anchor.sequence_index, anchor.event_id) for anchor in self.source_anchors]
         if source_keys != sorted(source_keys) or len(source_keys) != len(set(source_keys)):
             raise ValueError("source anchors must be ordered and unique")
@@ -151,10 +159,21 @@ class ExportedVersionRecordV3(ImmutableContractModel):
             raise ValueError("source anchor logical times must be nondecreasing")
         if self.valid_from is not None and any(
             anchor.sequence_index < self.valid_from.sequence_index
-            or anchor.sequence_index >= self.valid_until.sequence_index
+            or (self.valid_until is not None and anchor.sequence_index >= self.valid_until.sequence_index)
             for anchor in self.source_anchors
         ):
             raise ValueError("source anchors must belong to the validity interval")
+        logical_lower = self.valid_from.logical_time if self.valid_from is not None else self.logical_time
+        logical_upper = self.valid_until.logical_time if self.valid_until is not None else None
+        if any(
+            anchor.logical_time is not None
+            and (
+                (logical_lower is not None and anchor.logical_time < logical_lower)
+                or (logical_upper is not None and anchor.logical_time > logical_upper)
+            )
+            for anchor in self.source_anchors
+        ):
+            raise ValueError("source anchors must belong to the logical-time interval")
         return self
 
 
@@ -166,7 +185,11 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
     def _contiguous(self) -> Self:
         if tuple(version.version_index for version in self.versions) != tuple(range(len(self.versions))):
             raise ValueError("exported version history must start at zero and be contiguous")
+        for version in self.versions[:-1]:
+            if version.valid_from is not None and version.valid_until is None:
+                raise ValueError("only the final exported version may have an open event interval")
         event_positions: dict[str, int] = {}
+        position_events: dict[int, str] = {}
         for version in self.versions:
             for anchor in (version.valid_from, version.valid_until, *version.source_anchors):
                 if anchor is None:
@@ -174,6 +197,9 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
                 previous_position = event_positions.setdefault(anchor.event_id, anchor.sequence_index)
                 if previous_position != anchor.sequence_index:
                     raise ValueError("event anchors must use one consistent sequence_index")
+                previous_event = position_events.setdefault(anchor.sequence_index, anchor.event_id)
+                if previous_event != anchor.event_id:
+                    raise ValueError("each sequence_index must identify exactly one event_id")
         for previous, current in zip(self.versions, self.versions[1:]):
             if (previous.valid_until is None) != (current.valid_from is None):
                 raise ValueError("adjacent histories cannot mix event and logical-time bounds")
@@ -215,7 +241,14 @@ class ExportStateResultV3(ImmutableContractModel):
 
 
 class RetrievalResultV3(ImmutableContractModel):
+    request: RetrievalRequestV3
     trace: RetrievalTraceV3
+
+    @model_validator(mode="after")
+    def _bind_request(self) -> Self:
+        if self.trace.query_id != self.request.query.query_id:
+            raise ValueError("retrieval trace query_id must match bound request query")
+        return self
 
 
 @runtime_checkable

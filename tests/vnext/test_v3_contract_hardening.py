@@ -150,6 +150,13 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
         request.query.text = "mutated"
     with pytest.raises((TypeError, AttributeError)):
         request.options["nested"].append(2)
+    with pytest.raises(ValidationError, match="match bound request"):
+        RetrievalResultV3(request=request, trace=RetrievalTraceV3(query_id="other"))
+    bound = RetrievalResultV3(request=request, trace=RetrievalTraceV3(query_id="q"))
+    round_trip = RetrievalResultV3.model_validate(bound.model_dump(mode="python"))
+    assert round_trip == bound
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        bound.request.query.text = "mutated"
     for bad in (True, 1.0, HostileInt(1)):
         with pytest.raises(ValidationError):
             RetrievalRequestV3(query=query, k=bad)
@@ -177,16 +184,28 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
         ExportedVersionRecordV3(version_index=0, status="tombstone", value="forbidden", valid_from=e0, valid_until=e1, source_anchors=(e0,))
     with pytest.raises(ValidationError):
         ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e2, valid_until=e1, source_anchors=(e1,))
-    with pytest.raises(ValidationError):
-        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, source_anchors=(e0,))
+    open_final = ExportedVersionRecordV3(version_index=0, status="present", value="current", valid_from=e2, source_anchors=(e2,))
+    assert ObjectVersionHistoryV3(object_key=key(), versions=(open_final,)).versions[-1].valid_until is None
+    partial_nonfinal = ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, source_anchors=(e0,))
+    with pytest.raises(ValidationError, match="final"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(partial_nonfinal, tombstone))
     with pytest.raises(ValidationError):
         ObjectVersionHistoryV3(object_key=key(), versions=(present, tombstone.model_copy(update={"valid_from": e2, "valid_until": e3})))
+    conflicting_e1 = ExportedEventAnchorV3(event_id="other-e1", sequence_index=1)
+    conflicting = tombstone.model_copy(update={"valid_from": conflicting_e1})
+    with pytest.raises(ValidationError, match="sequence_index|continuous"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(present, conflicting))
     logical_z = ExportedVersionRecordV3(version_index=0, status="present", value="x", logical_time="z", source_anchors=(e0,))
     logical_a = ExportedVersionRecordV3(version_index=1, status="present", value="y", logical_time="a", source_anchors=(e1,))
     with pytest.raises(ValidationError):
         ObjectVersionHistoryV3(object_key=key(), versions=(logical_z, logical_a))
     with pytest.raises(ValidationError):
         ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=e2, source_anchors=(e1, e0))
+    logical_from = ExportedEventAnchorV3(event_id="l0", sequence_index=0, logical_time="b")
+    logical_until = ExportedEventAnchorV3(event_id="l2", sequence_index=2, logical_time="d")
+    logical_outside = ExportedEventAnchorV3(event_id="l1", sequence_index=1, logical_time="a")
+    with pytest.raises(ValidationError, match="logical-time interval"):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=logical_from, valid_until=logical_until, source_anchors=(logical_outside,))
     with pytest.raises(ValidationError):
         ObjectVersionHistoryV3(object_key=key(), versions=(present, present.model_copy(update={"version_index": 2})))
 
@@ -200,7 +219,7 @@ def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None
         def export_entries(self): return ExportEntriesResultV3(entries=())
         def export_raw_state(self): return ExportStateResultV3(raw_state={})
         def export_version_history(self, request): return VersionHistoryExportResultV3(histories=())
-        def retrieve(self, request): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=request.query.query_id))
+        def retrieve(self, request): return RetrievalResultV3(request=request, trace=RetrievalTraceV3(query_id=request.query.query_id))
         def answer(self, query, mode): return AdapterAnswerResultV3(prediction=AnswerPredictionV3(query_id=query.query_id, raw_output="", disposition="unavailable", format_valid=False))
         def close(self): return None
 
