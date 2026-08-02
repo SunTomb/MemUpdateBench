@@ -108,10 +108,10 @@ class AdapterActionResultV3(ImmutableContractModel):
     ) -> ParsedManagerActionV3:
         return ParsedManagerActionV3(
             event_id=self.event_id,
-            operation=self.effective_action.operation,
-            observed_scope=self.effective_action.scope,
-            target_object_keys=self.effective_action.target_object_keys,
-            value=self.effective_action.value,
+            operation=self.requested_action.operation,
+            observed_scope=self.requested_action.scope,
+            target_object_keys=self.requested_action.target_object_keys,
+            value=self.requested_action.value,
             format_valid=format_valid,
             execution_status=self.execution_status,
             fallback_used=fallback_used,

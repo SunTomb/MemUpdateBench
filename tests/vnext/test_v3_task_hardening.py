@@ -69,6 +69,16 @@ def test_unqueried_declared_ledger_must_also_be_nonempty() -> None:
         MemUpdateTaskV3.model_validate(payload)
 
 
+def test_missing_event_anchor_is_a_stable_validation_error() -> None:
+    payload = task_payload()
+    payload["queries"][0].update({
+        "query_type": "point_in_time",
+        "selector": {"kind": "event_anchor", "event_id": "missing-event"},
+    })
+    with pytest.raises(ValidationError, match="unknown event anchor|missing event anchor"):
+        MemUpdateTaskV3.model_validate(payload)
+
+
 def test_task_binds_answer_types_and_evidence_to_selected_version() -> None:
     wrong_type = task_payload()
     wrong_type["queries"][0]["answer_schema"] = "number"
@@ -146,6 +156,34 @@ def test_semantic_hash_ignores_surface_text_and_consistent_local_id_renaming() -
     step["supporting_event_ids"] = [event_map[item] for item in step["supporting_event_ids"]]
     renamed["gold_evidence"][0]["final_derivation_step_id"] = "renamed-step"
     assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(renamed).semantic_hash
+
+
+def test_derivation_hash_uses_ordered_operands_but_not_topological_list_order_or_ids() -> None:
+    base = task_payload()
+    base["gold_evidence"][0]["supporting_event_ids"] = ["e1", "e2"]
+    base["gold_evidence"][0]["derivation_steps"] = [
+        {"step_id": "left", "operation": "read", "supporting_event_ids": ["e2"]},
+        {"step_id": "right", "operation": "read", "supporting_event_ids": ["e1"]},
+        {"step_id": "root", "operation": "subtract", "input_step_ids": ["left", "right"]},
+    ]
+    base["gold_evidence"][0]["final_derivation_step_id"] = "root"
+
+    topological_reorder = deepcopy(base)
+    topological_reorder["gold_evidence"][0]["derivation_steps"][:2] = reversed(
+        topological_reorder["gold_evidence"][0]["derivation_steps"][:2]
+    )
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(topological_reorder).semantic_hash
+
+    renamed = deepcopy(base)
+    for step, new_id in zip(renamed["gold_evidence"][0]["derivation_steps"], ("x", "y", "z")):
+        step["step_id"] = new_id
+    renamed["gold_evidence"][0]["derivation_steps"][2]["input_step_ids"] = ["x", "y"]
+    renamed["gold_evidence"][0]["final_derivation_step_id"] = "z"
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(renamed).semantic_hash
+
+    swapped = deepcopy(base)
+    swapped["gold_evidence"][0]["derivation_steps"][2]["input_step_ids"] = ["right", "left"]
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash != MemUpdateTaskV3.model_validate(swapped).semantic_hash
 
 
 def test_duplicate_semantic_queries_are_rejected_even_with_different_evidence() -> None:

@@ -411,12 +411,6 @@ class MemUpdateTaskV3(ImmutableContractModel):
         query_by_id = {query.query_id: query for query in self.queries}
         if len(query_by_id) != len(self.queries):
             raise ValueError("query IDs must be unique")
-        semantic_queries = [
-            _canonical_bytes(_query_semantic_projection(query, event_position))
-            for query in self.queries
-        ]
-        if len(semantic_queries) != len(set(semantic_queries)):
-            raise ValueError("duplicate semantic query projections are not allowed")
         evidence_by_id = {item.query_id: item for item in self.gold_evidence}
         if set(evidence_by_id) != set(query_by_id):
             raise ValueError("gold evidence must cover queries exactly")
@@ -488,6 +482,12 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 minimum_objects = query.synthesis.minimum_objects
                 if len(targets) < minimum_objects or len(evidence_objects) < minimum_objects:
                     raise ValueError("G derivation does not satisfy minimum_objects")
+        semantic_queries = [
+            _canonical_bytes(_query_semantic_projection(query, event_position))
+            for query in self.queries
+        ]
+        if len(semantic_queries) != len(set(semantic_queries)):
+            raise ValueError("duplicate semantic query projections are not allowed")
         return self
 
     @property
@@ -520,7 +520,12 @@ def _semantic_anchor_projection(anchor: Mapping[str, JsonValue]) -> Mapping[str,
 def _query_semantic_projection(query: MemoryQueryV3, event_index: Mapping[str, int]) -> Mapping[str, JsonValue]:
     selector = _semantic_value(query.selector)
     if isinstance(query.selector, EventAnchorSelector):
-        selector["event_id"] = event_index[query.selector.event_id]
+        try:
+            selector["event_id"] = event_index[query.selector.event_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"query selector references missing event anchor {query.selector.event_id!r}"
+            ) from exc
     if isinstance(query.selector, MultiObjectCurrentSelector):
         selector["object_keys"] = sorted(
             (_semantic_value(key) for key in query.selector.object_keys),
@@ -534,6 +539,42 @@ def _query_semantic_projection(query: MemoryQueryV3, event_index: Mapping[str, i
         "evaluation_mode": query.evaluation_mode.value,
         "synthesis": _semantic_value(query.synthesis),
     }
+
+
+def _derivation_semantic_projection(
+    gold: QueryGoldEvidenceV3,
+    event_index: Mapping[str, int],
+) -> Mapping[str, JsonValue]:
+    steps = {step.step_id: step for step in gold.derivation_steps}
+    memo: dict[str, Mapping[str, JsonValue]] = {}
+    visiting: set[str] = set()
+
+    def project(step_id: str) -> Mapping[str, JsonValue]:
+        if step_id in visiting:
+            raise ValueError("cyclic derivation graph cannot be projected")
+        if step_id in memo:
+            return memo[step_id]
+        try:
+            step = steps[step_id]
+        except KeyError as exc:
+            raise ValueError(f"derivation references missing step {step_id!r}") from exc
+        visiting.add(step_id)
+        node = {
+            "operation": step.operation,
+            "inputs": [project(parent) for parent in step.input_step_ids],
+            "supporting_objects": sorted(
+                (_semantic_value(key) for key in step.supporting_object_keys),
+                key=_canonical_bytes,
+            ),
+            "supporting_event_indices": sorted(
+                event_index[event_id] for event_id in step.supporting_event_ids
+            ),
+        }
+        visiting.remove(step_id)
+        memo[step_id] = node
+        return node
+
+    return project(gold.final_derivation_step_id)
 
 
 def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
@@ -581,18 +622,11 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     histories.sort(key=lambda item: _canonical_bytes(item["object_key"]))
     evidence_by_query = {}
     for gold in task.gold_evidence:
-        step_index = {step.step_id: index for index, step in enumerate(gold.derivation_steps)}
         evidence_by_query[gold.query_id] = {
             "answer": _semantic_value(gold.answer),
             "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
             "supporting_event_indices": sorted(event_ref(event_id) for event_id in gold.supporting_event_ids),
-            "derivation_steps": [{
-                "operation": step.operation,
-                "input_step_indices": sorted(step_index[parent] for parent in step.input_step_ids),
-                "supporting_objects": sorted((_semantic_value(key) for key in step.supporting_object_keys), key=_canonical_bytes),
-                "supporting_event_indices": sorted(event_ref(event_id) for event_id in step.supporting_event_ids),
-            } for step in gold.derivation_steps],
-            "final_step_index": step_index[gold.final_derivation_step_id],
+            "derivation_graph": _derivation_semantic_projection(gold, event_index),
         }
     bundles = [
         {

@@ -106,12 +106,18 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
         AdapterActionPayloadV3(operation="DELETE", scope="object", target_object_keys=(key(),), value="mixed")
 
     parsed = result.to_parsed_manager_action(raw_output="noop", format_valid=True, fallback_used=False)
-    assert parsed.execution_status.value == "no_effect" and parsed.operation.value == "NOOP"
+    assert parsed.execution_status.value == "no_effect" and parsed.operation.value == "UPDATE"
+    assert parsed.value == "requested" and parsed.target_object_keys[0].canonical_id == key().canonical_id
     for status in ("rejected", "not_supported"):
         rejected = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status=status, reason="policy")
         assert rejected.effective_action.operation is None
+        converted = rejected.to_parsed_manager_action(raw_output=status, format_valid=True, fallback_used=False)
+        assert converted.execution_status.value == status
+        assert converted.operation.value == "UPDATE" and converted.value == "requested"
     failed = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status="failed", error={"code": "boom"})
     assert failed.error == {"code": "boom"}
+    failed_parsed = failed.to_parsed_manager_action(raw_output="failed", format_valid=True, fallback_used=False)
+    assert failed_parsed.execution_status.value == "failed" and failed_parsed.operation.value == "UPDATE"
     noop = AdapterActionResultV3(event_id="e0", requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed")
     assert noop.execution_status.value == "executed"
     with pytest.raises(ValidationError):
