@@ -401,7 +401,7 @@ def test_reviewed_catalog_content_matches_canonical_digest() -> None:
     ).encode("utf-8")
 
     assert hashlib.sha256(canonical_catalog_bytes).hexdigest() == (
-        "1e2f97eb04e2688a6a446db5cefefeff8f638adb060c4b48d9e953175234f2c2"
+        "16ad1d2a2cf0bdd5aaea13cb830fc49a062dc01e0ccf8e8e57d7506ef5c39376"
     )
 
 

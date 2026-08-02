@@ -8,8 +8,8 @@ from mub.vnext.generation.catalogs import (
     NAMESPACES,
     RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
-    VALUES,
     select_conflicting_values,
+    values_for_attribute,
 )
 from mub.vnext.generation.config import PilotConfig, RepeatedSameSlotUpdateConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
@@ -87,8 +87,9 @@ def _other_attribute_keys(target: MemoryObjectKey, count: int) -> tuple[MemoryOb
     return tuple(_key(target.namespace, target.entity, alternatives[index]) for index in range(count))
 
 
-def _value_for_axis(config: PilotConfig, axis_index: int) -> str:
-    return VALUES[(config.seed + axis_index) % len(VALUES)]
+def _value_for_axis(config: PilotConfig, axis_index: int, attribute: str) -> str:
+    values = values_for_attribute(attribute)
+    return values[(config.seed + axis_index) % len(values)]
 
 
 def _target_events(
@@ -98,9 +99,10 @@ def _target_events(
     target: MemoryObjectKey,
     depth: int,
 ) -> tuple[CoreEvent, ...]:
-    final_value = _value_for_axis(config, axis_index)
+    values = values_for_attribute(target.attribute)
+    final_value = _value_for_axis(config, axis_index, target.attribute)
     stale_values = select_conflicting_values(
-        VALUES,
+        values,
         final_value,
         depth,
         {
@@ -150,20 +152,7 @@ def _distractor_events(
     configured_other_attribute = getattr(family.same_entity_other_attribute, difficulty.value)
     same_name_keys = _same_name_keys(target, configured_same_name, axis_index)
     other_attribute_keys = _other_attribute_keys(target, configured_other_attribute)
-    all_keys = (*same_name_keys, *other_attribute_keys)
-    values = select_conflicting_values(
-        VALUES,
-        _value_for_axis(config, axis_index),
-        len(all_keys),
-        {
-            "family": _FAMILY_NAME,
-            "seed": config.seed,
-            "core_index": core_index,
-            "axis_index": axis_index,
-            "target": target.canonical_id,
-            "role": "distractor",
-        },
-    )
+    final_value = _value_for_axis(config, axis_index, target.attribute)
     events: list[CoreEvent] = []
     distractor_specs = tuple(
         (key, EventRole.SAME_NAME_OTHER_ENTITY, "same_name")
@@ -172,7 +161,26 @@ def _distractor_events(
         (key, EventRole.SAME_ENTITY_OTHER_ATTRIBUTE, "other_attribute")
         for key in other_attribute_keys
     )
-    for index, ((key, role, kind), value) in enumerate(zip(distractor_specs, values)):
+    for index, (key, role, kind) in enumerate(distractor_specs):
+        candidates = tuple(
+            candidate
+            for candidate in values_for_attribute(key.attribute)
+            if candidate != final_value
+        )
+        value = min(
+            candidates,
+            key=lambda candidate: stable_id(
+                "family_a_distractor_value",
+                {
+                    "seed": config.seed,
+                    "core_index": core_index,
+                    "axis_index": axis_index,
+                    "target": target.canonical_id,
+                    "distractor": key.canonical_id,
+                    "value": candidate,
+                },
+            ),
+        )
         events.append(
             CoreEvent(
                 operation=Operation.ADD,
@@ -195,8 +203,8 @@ def _noop_events(config: PilotConfig, target: MemoryObjectKey, difficulty: Diffi
             role=EventRole.NOOP_NEAR_MISS,
             metadata={
                 "surface_statement": (
-                    f"Near miss {index + 1}: the record mentions "
-                    f"{target.entity} without changing memory."
+                    f"A routine note mentions {target.entity.replace('_', ' ')}, "
+                    "but it contains no new fact to store."
                 ),
                 "near_miss_index": index,
             },

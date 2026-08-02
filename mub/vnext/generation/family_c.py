@@ -22,7 +22,7 @@ from mub.vnext.generation.catalogs import (
     NAMESPACES,
     RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
-    VALUES,
+    values_for_attribute,
 )
 from mub.vnext.generation.config import EntityAttributeGroundingConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
@@ -264,10 +264,14 @@ def _difficulty(entity_condition: str, attribute_condition: str) -> Difficulty:
     return _DIFFICULTIES[level]
 
 
-def _candidate_values(config: PilotConfig, core_index: int) -> tuple[str, str]:
+def _candidate_values(
+    config: PilotConfig,
+    core_index: int,
+    attribute: str,
+) -> tuple[str, str]:
     ordered = tuple(
         sorted(
-            VALUES,
+            values_for_attribute(attribute),
             key=lambda value: stable_id(
                 "family_c_value",
                 {"seed": config.seed, "core_index": core_index, "value": value},
@@ -388,7 +392,7 @@ def _build_core(
         _key(namespace, entity, canonical_attribute)
         for namespace, entity in entity_candidates
     )
-    values = _candidate_values(config, core_index)
+    values = _candidate_values(config, core_index, canonical_attribute)
     candidate_ids = tuple(
         stable_id(
             "candidate",

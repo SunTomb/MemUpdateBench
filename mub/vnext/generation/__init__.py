@@ -6,6 +6,7 @@ from mub.vnext.generation.artifacts import (
 from mub.vnext.generation.build import CompiledPilotTasks, compile_pilot_tasks
 from mub.vnext.generation.catalogs import (
     ALIAS_MAPPINGS,
+    ATTRIBUTE_VALUES,
     CANONICAL_ATTRIBUTES,
     NAMESPACES,
     REFERENCE_CONDITION_LABELS,
@@ -15,6 +16,7 @@ from mub.vnext.generation.catalogs import (
     SURFACE_TEMPLATE_SETS,
     VALUES,
     select_conflicting_values,
+    values_for_attribute,
 )
 from mub.vnext.generation.config import PilotConfig, load_pilot_config
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
@@ -49,6 +51,7 @@ from mub.vnext.generation.splits import (
 
 __all__ = [
     "ALIAS_MAPPINGS",
+    "ATTRIBUTE_VALUES",
     "CANONICAL_ATTRIBUTES",
     "CompiledPilotTasks",
     "CoreEvent",
@@ -69,6 +72,7 @@ __all__ = [
     "SplitBalanceCell",
     "SplitBalanceReport",
     "VALUES",
+    "values_for_attribute",
     "action_id",
     "assign_splits",
     "build_pilot",

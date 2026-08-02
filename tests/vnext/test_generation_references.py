@@ -442,7 +442,8 @@ def test_renderer_makes_all_reviewed_reference_conditions_visible() -> None:
     text = task.queries[0].text
 
     assert all(reference.surface_text in text for reference in references)
-    assert all(label in text.lower() for _, label in _EXPECTED_CONDITION_LABELS)
+    assert "condition=" not in text
+    assert "evidence=" not in text
     assert "object_type" not in text
     assert "candidate_alex" not in text
 

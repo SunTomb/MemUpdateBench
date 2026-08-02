@@ -1619,12 +1619,19 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
     noop_valid = len(noop_records) == noop_count
     for offset, record in enumerate(noop_records):
         action = record["actions"][0] if len(record["actions"]) == 1 else None
-        statement = (
+        natural_statement = (
+            f"A routine note mentions {target_identity[1].replace('_', ' ')}, "
+            "but it contains no new fact to store."
+            if target_identity is not None
+            else None
+        )
+        legacy_statement = (
             f"Near miss {offset + 1}: the record mentions "
             f"{target_identity[1]} without changing memory."
             if target_identity is not None
             else None
         )
+        statement = record["metadata"].get("surface_statement")
         if (
             action is None
             or _enum_value(getattr(action, "operation", None)) != Operation.NOOP.value
@@ -1632,7 +1639,7 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
             or getattr(action, "value", None) is not None
             or bool(_mapping(getattr(action, "expected_effect", None)))
             or _enum_value(record["event"].role) != EventRole.NOOP_NEAR_MISS.value
-            or record["metadata"].get("surface_statement") != statement
+            or statement not in {natural_statement, legacy_statement}
             or not _strict_int_equal(record["metadata"].get("near_miss_index"), offset)
             or not _raw_text_matches_noop_template(
                 statement,
@@ -1647,7 +1654,7 @@ def _family_a_issues(task: MemUpdateTask) -> list[ValidationIssue]:
         issues.append(
             _issue(
                 "family_a_noop_semantics_mismatch",
-                "Family A near misses are canonical visible NOOPs and cannot be rewritten as writes",
+                "Family A near misses must remain visible NOOPs and cannot be rewritten as writes",
                 "events",
             )
         )

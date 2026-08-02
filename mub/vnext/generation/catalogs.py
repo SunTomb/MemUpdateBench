@@ -90,6 +90,58 @@ VALUES = (
     "Willow House",
 )
 
+# The legacy flat ``VALUES`` catalog remains exported for compatibility with
+# older consumers.  Pilot generation must use this attribute-aware catalog so
+# that rendered facts read like plausible facts rather than arbitrary labels.
+ATTRIBUTE_VALUES = {
+    "city": (
+        "Berlin", "Lisbon", "Osaka", "Quito", "Toronto", "Zurich", "Nairobi", "Dublin",
+        "Seoul", "Helsinki", "Prague", "Melbourne", "Montreal", "Kyoto", "Accra", "Tallinn",
+        "Vienna", "Lima", "Taipei", "Denver", "Rabat", "Bergen", "Manila", "Valencia",
+    ),
+    "employer": (
+        "Aster Labs", "Beacon Works", "Cedar Group", "Delta Systems", "Elm Studio", "Fjord Analytics",
+        "Harbor Partners", "Ivory Health", "Juniper Media", "Keystone Robotics", "Lumen Foods", "Meridian Design",
+        "Northstar Energy", "Orchid Logistics", "Pinecrest Legal", "Quartz Finance", "Riverline Transit", "Summit Health",
+        "Tandem Learning", "Umber Textiles", "Verdant Foods", "Westbridge Labs", "Yarrow Books", "Zenith Software",
+    ),
+    "favorite_color": (
+        "amber", "azure", "beige", "black", "blue", "bronze", "coral", "crimson",
+        "emerald", "gold", "green", "indigo", "ivory", "lilac", "maroon", "navy",
+        "olive", "orange", "rose", "silver", "teal", "violet", "white", "yellow",
+    ),
+    "phone_number": tuple(f"+1-202-555-{number:04d}" for number in range(101, 125)),
+    "preferred_cafe": (
+        "Cafe North", "Juniper Corner", "Willow House", "Harbor Coffee", "Maple Roastery", "Orchid Espresso",
+        "Pine & Press", "Quartz Cafe", "Riverside Coffee", "Summit Beans", "Tandem Cafe", "Union Roasters",
+        "Violet Cup", "West End Cafe", "Yellow Finch", "Acorn Coffee", "Birch House", "Copper Kettle",
+        "Daybreak Cafe", "Ember Roasters", "Fern & Foam", "Garden Gate Cafe", "Hearth Coffee", "Ivy Corner",
+    ),
+    "project_code": tuple(f"{prefix}-{number:02d}" for prefix in ("ALPHA", "BETA", "GAMMA") for number in range(1, 9)),
+    "shipping_address": (
+        "101 Cedar Avenue", "22 Harbor Street", "8 Juniper Lane", "47 Willow Road", "315 Maple Drive", "9 Orchard Way",
+        "64 Pine Street", "18 River Road", "203 Summit Avenue", "71 Valley Lane", "56 Meadow Street", "12 Lantern Road",
+        "88 Garden Avenue", "34 Station Road", "190 Lake Street", "7 Market Lane", "42 Bridge Road", "109 Hill Street",
+        "26 Forest Drive", "73 Park Avenue", "15 Clover Lane", "61 College Road", "28 Sunrise Street", "94 Westgate Road",
+    ),
+    "timezone": (
+        "UTC-12:00", "UTC-11:00", "UTC-10:00", "UTC-09:00", "UTC-08:00", "UTC-07:00",
+        "UTC-06:00", "UTC-05:00", "UTC-04:00", "UTC-03:00", "UTC-02:00", "UTC-01:00",
+        "UTC+00:00", "UTC+01:00", "UTC+02:00", "UTC+03:00", "UTC+04:00", "UTC+05:00",
+        "UTC+06:00", "UTC+07:00", "UTC+08:00", "UTC+09:00", "UTC+10:00", "UTC+11:00",
+    ),
+}
+
+
+def values_for_attribute(attribute: str) -> tuple[str, ...]:
+    """Return the reviewed value catalog for one canonical attribute."""
+    if type(attribute) is not str:
+        raise TypeError("attribute must be an exact string")
+    try:
+        return ATTRIBUTE_VALUES[attribute]
+    except KeyError as exc:
+        raise ValueError(f"unsupported canonical attribute: {attribute}") from exc
+
 REFERENCE_CONDITION_LABELS = (
     ("alias", "alias"),
     ("same_name", "same-name"),
@@ -100,24 +152,24 @@ REFERENCE_CONDITION_LABELS = (
 REFERENCE_QUERY_TEMPLATE_SETS = (
     (
         "direct",
-        "Candidate memory objects: $candidates Surface references: $references "
+        "Candidate memory entries: $candidates Reference: $references "
         "$resolution_instruction $abstention_instruction",
-        "Resolve the reference against the candidates and return the current value for the single matching candidate.",
-        "If the reference is ambiguous or has no match, respond with ABSTAIN and do not guess a value.",
+        "Resolve the reference against the entries and return the current value for the one matching entry.",
+        "If it is ambiguous or has no match, respond with ABSTAIN rather than guessing.",
     ),
     (
         "conversational",
-        "Here are the candidate memory objects: $candidates Here are the phrases to resolve: $references "
+        "Here are the candidate memory entries: $candidates Please resolve this reference: $references "
         "$resolution_instruction $abstention_instruction",
-        "Please identify the one matching candidate and report its current value.",
-        "If more than one candidate or no candidate matches, please ABSTAIN rather than guess a value.",
+        "Please identify the one matching entry and report its current value.",
+        "If more than one entry or no entry matches, please ABSTAIN rather than guess a value.",
     ),
     (
         "correction",
-        "Check these candidate memory objects: $candidates Check these reference forms: $references "
+        "Check these candidate memory entries: $candidates Reference: $references "
         "$resolution_instruction $abstention_instruction",
-        "Use the reference evidence to select exactly one candidate before returning its current value.",
-        "When the evidence leaves ambiguity or no match, output ABSTAIN; never guess a value.",
+        "Use the reference to select exactly one entry before returning its current value.",
+        "When it leaves ambiguity or no match, output ABSTAIN; never guess a value.",
     ),
 )
 
@@ -138,7 +190,7 @@ SURFACE_TEMPLATE_SETS = (
     (
         "conversational",
         "Please add $targets as $value to memory.",
-        "Please revise $targets so each value is $value.",
+        "Please revise the stored value for $targets to $value.",
         "Please remove $targets from memory.",
         "$statement Keep memory unchanged.",
         "Can you report the latest value for $targets?",
@@ -215,6 +267,7 @@ def select_conflicting_values(
 
 __all__ = [
     "ALIAS_MAPPINGS",
+    "ATTRIBUTE_VALUES",
     "CANONICAL_ATTRIBUTES",
     "NAMESPACES",
     "REFERENCE_CONDITION_LABELS",
@@ -223,5 +276,6 @@ __all__ = [
     "SAME_NAME_ENTITIES",
     "SURFACE_TEMPLATE_SETS",
     "VALUES",
+    "values_for_attribute",
     "select_conflicting_values",
 ]

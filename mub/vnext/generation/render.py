@@ -38,11 +38,7 @@ from mub.vnext.contracts.task import (
     SurfaceReference,
     TaskMetadata,
 )
-from mub.vnext.generation.catalogs import (
-    REFERENCE_CONDITION_LABELS,
-    REFERENCE_QUERY_TEMPLATE_SETS,
-    SURFACE_TEMPLATE_SETS,
-)
+from mub.vnext.generation.catalogs import REFERENCE_QUERY_TEMPLATE_SETS, SURFACE_TEMPLATE_SETS
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.identity import (
     action_id,
@@ -352,33 +348,15 @@ def _render_query_text(core: SemanticCore, query_template: str) -> str:
 def _render_reference_candidates(core: SemanticCore) -> str:
     rendered = []
     for index, candidate in enumerate(core.reference_candidates, start=1):
-        text = f"{index}. {_atomic_object_reference(candidate.object_key)}"
-        if candidate.evidence is not None:
-            text += f"; evidence={_json_text(candidate.evidence)}"
-        rendered.append(text)
+        rendered.append(f"{index}. {_atomic_object_reference(candidate.object_key)}")
     return " ".join(rendered)
 
 
 def _render_surface_references(core: SemanticCore) -> str:
-    condition_labels = dict(REFERENCE_CONDITION_LABELS)
-    rendered = []
-    for index, reference in enumerate(core.surface_references, start=1):
-        condition = reference.condition_kind
-        condition_label = (
-            condition_labels.get(condition, condition.replace("_", " "))
-            if condition is not None
-            else "unspecified"
-        )
-        evidence = (
-            reference.evidence_kind.replace("_", " ")
-            if reference.evidence_kind is not None
-            else "unspecified"
-        )
-        rendered.append(
-            f"{index}. surface={_json_text(reference.surface_text)}; "
-            f"normalized={_json_text(reference.normalized_text)}; "
-            f"condition={condition_label}; evidence={evidence}."
-        )
+    rendered = [
+        f"{index}. {_json_text(reference.surface_text)}"
+        for index, reference in enumerate(core.surface_references, start=1)
+    ]
     return " ".join(rendered)
 
 

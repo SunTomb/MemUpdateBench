@@ -8,7 +8,7 @@ from mub.vnext.generation.catalogs import (
     NAMESPACES,
     RELATION_QUALIFIED_ENTITIES,
     SAME_NAME_ENTITIES,
-    VALUES,
+    values_for_attribute,
 )
 from mub.vnext.generation.config import NoopWriteDisciplineConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
@@ -74,8 +74,8 @@ def _identity_payload(key: MemoryObjectKey) -> dict[str, str | None]:
 
 def family_d_semantic_near_miss_statement(entity: str, attribute: str) -> str:
     return (
-        f"A hypothetical note mentions {entity}.{attribute}, "
-        "but it does not assert a current-state change."
+        f"A note refers to {entity.replace('_', ' ')}'s {attribute.replace('_', ' ')}, "
+        "but does not state that it has changed."
     )
 
 
@@ -85,16 +85,24 @@ def family_d_duplicate_current_statement(
     current_value: str,
 ) -> str:
     return (
-        f"{entity}.{attribute} remains exactly {current_value}; "
-        "this repeats the exact current target value."
+        f"The record confirms that {entity.replace('_', ' ')}'s "
+        f"{attribute.replace('_', ' ')} is still {current_value}."
     )
 
 
 def family_d_independent_noop_statement(entity: str, note_number: int) -> str:
-    return (
-        f"Background note {note_number} is related to {entity} but "
-        "does not direct any memory change."
+    statements = (
+        "A routine status note concerns {entity}, but contains no new fact to save.",
+        "A brief update mentions {entity} without changing any stored detail.",
+        "A general note about {entity} provides no information that needs to be remembered.",
+        "An informational message refers to {entity} but does not revise a fact.",
+        "A status update names {entity} while leaving all recorded details unchanged.",
+        "A passing mention of {entity} does not add or correct any information.",
+        "The note concerns {entity}, but it gives no instruction to change a record.",
+        "A routine message refers to {entity} and introduces no fact to store.",
+        "An unrelated update mentions {entity} without altering any saved detail.",
     )
+    return statements[note_number % len(statements)].format(entity=entity.replace("_", " "))
 
 
 def _canonical_axis_order(config: PilotConfig) -> tuple[tuple[str, str, str], ...]:
@@ -145,7 +153,7 @@ def _target_for_example(
 
 def _current_value(config: PilotConfig, target: MemoryObjectKey) -> str:
     return min(
-        VALUES,
+        values_for_attribute(target.attribute),
         key=lambda value: stable_id(
             "family_d_current_value",
             {"seed": config.seed, "target": _identity_payload(target), "value": value},
@@ -161,9 +169,12 @@ def _non_target_values(
     count: int,
 ) -> tuple[str, ...]:
     current_value = _current_value(config, target)
+    candidates = values_for_attribute(key.attribute)
+    if key.attribute == target.attribute:
+        candidates = tuple(value for value in candidates if value != current_value)
     ordered = tuple(
         sorted(
-            (value for value in VALUES if value != current_value),
+            candidates,
             key=lambda value: stable_id(
                 "family_d_non_target_value",
                 {

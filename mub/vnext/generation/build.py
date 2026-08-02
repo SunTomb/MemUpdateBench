@@ -311,8 +311,17 @@ def _render_bounded_diagnostics(issues: list[str]) -> str:
         )
         counts[key] += 1
         sample = message[:512]
-        if sample not in groups[key] and len(groups[key]) < 2:
-            groups[key].append(sample)
+        if sample in groups[key]:
+            continue
+        group_samples = groups[key]
+        # Preserve the first root-cause labels and terminal consistency labels.
+        if len(group_samples) < 3:
+            group_samples.append(sample)
+        elif len(group_samples) < 5:
+            group_samples.append(sample)
+        else:
+            group_samples[-2] = group_samples[-1]
+            group_samples[-1] = sample
 
     lines = [
         f"compiled Pilot snapshot failed: total_evidence={len(issues)} "
@@ -526,9 +535,19 @@ def _snapshot_consistency_issues(
     try:
         _validate_split_assignment_result(snapshot.split_assignment)
     except (TypeError, ValueError) as exc:
-        issues.append(
-            f"stage=split_assignment code=inconsistent core=global detail={exc}"
+        detail = str(exc)
+        prefix = "inconsistent split assignment: "
+        details = (
+            detail[len(prefix) :].split("; ")
+            if detail.startswith(prefix)
+            else [detail]
         )
+        for item in details:
+            if item:
+                issues.append(
+                    f"stage=split_assignment code=inconsistent core=global "
+                    f"detail={item}"
+                )
     if (
         type(snapshot.config_sha256) is not str
         or len(snapshot.config_sha256) != 64

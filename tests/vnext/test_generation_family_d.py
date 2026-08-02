@@ -206,8 +206,8 @@ def test_family_d_duplicate_current_is_semantic_noop_at_contract_boundary(cores)
             assert event.metadata["allow_accepted_answer_ambiguity"] is True
             assert core.stratification["duplicate_current_count"] == 1
             statement = event.metadata["surface_statement"]
-            assert target.entity in statement
-            assert target.attribute in statement
+            assert target.entity.replace("_", " ") in statement
+            assert target.attribute.replace("_", " ") in statement
             assert str(core.expected_answer) in statement
         else:
             assert not ambiguity_events

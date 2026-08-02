@@ -8,8 +8,8 @@ from mub.vnext.generation.catalogs import (
     CANONICAL_ATTRIBUTES,
     NAMESPACES,
     RELATION_QUALIFIED_ENTITIES,
-    VALUES,
     select_conflicting_values,
+    values_for_attribute,
 )
 from mub.vnext.generation.config import InterleavedMultiSlotUpdateConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
@@ -117,18 +117,23 @@ def _active_keys(
 def _ordered_final_values(
     config: PilotConfig,
     group_index: int,
-    active_object_count: int,
+    keys: tuple[MemoryObjectKey, ...],
 ) -> tuple[str, ...]:
-    ordered = tuple(
-        sorted(
-            VALUES,
+    return tuple(
+        min(
+            values_for_attribute(key.attribute),
             key=lambda value: stable_id(
                 "family_b_final_value",
-                {"seed": config.seed, "group_index": group_index, "value": value},
+                {
+                    "seed": config.seed,
+                    "group_index": group_index,
+                    "target": key.canonical_id,
+                    "value": value,
+                },
             ),
         )
+        for key in keys
     )
-    return ordered[:active_object_count]
 
 
 def _target_trajectory(
@@ -139,7 +144,7 @@ def _target_trajectory(
     final_value: str,
 ) -> tuple[CoreEvent, ...]:
     stale_values = select_conflicting_values(
-        VALUES,
+        values_for_attribute(target.attribute),
         final_value,
         depth,
         {
@@ -187,7 +192,7 @@ def _non_target_trajectory(
     final_value: str,
 ) -> tuple[CoreEvent, ...]:
     stale_values = select_conflicting_values(
-        VALUES,
+        values_for_attribute(key.attribute),
         final_value,
         update_count,
         {
@@ -231,7 +236,7 @@ def _build_trajectories(
     cross_slot_distractor_count: int,
 ) -> tuple[tuple[CoreEvent, ...], ...]:
     keys = _active_keys(axis, active_object_count)
-    final_values = _ordered_final_values(config, group_index, active_object_count)
+    final_values = _ordered_final_values(config, group_index, keys)
     target = _target_trajectory(
         config,
         group_index,
