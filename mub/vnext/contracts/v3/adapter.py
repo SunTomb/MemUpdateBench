@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from pydantic import Field, JsonValue, model_validator
 from typing_extensions import Self
@@ -9,7 +9,7 @@ from mub.vnext.contracts.adapter import AdapterCapabilities, AdapterInfo
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 from mub.vnext.contracts.enums import ActionScope, Operation
 from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, validate_action_coherence
-from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import MemoryEventV3, MemoryQueryV3
 
 
@@ -75,13 +75,35 @@ class AdapterAnswerResultV3(ImmutableContractModel):
     raw_result: FrozenJsonValue | None = None
 
 
+class ResetResultV3(ImmutableContractModel):
+    success: StrictBool
+    namespace: StrictIdentifier
+    error: FrozenJsonValue | None = None
+
+
+class ExportEntriesResultV3(ImmutableContractModel):
+    entries: tuple[MemoryEntryRecordV3, ...] = ()
+
+
+class ExportStateResultV3(ImmutableContractModel):
+    raw_state: FrozenJsonValue
+
+
+class RetrievalResultV3(ImmutableContractModel):
+    trace: RetrievalTraceV3
+
+
+@runtime_checkable
 class MemoryAdapterV3(Protocol):
     def adapter_info(self) -> AdapterInfoV3: ...
     def capabilities(self) -> AdapterCapabilitiesV3: ...
-    def reset(self, namespace: str, config: dict) -> object: ...
+    def reset(self, namespace: str, config: dict) -> ResetResultV3: ...
     def ingest_event(self, event: MemoryEventV3) -> AdapterActionResultV3: ...
+    def export_entries(self) -> ExportEntriesResultV3: ...
+    def export_raw_state(self) -> ExportStateResultV3: ...
+    def retrieve(self, query: MemoryQueryV3, k: int) -> RetrievalResultV3: ...
     def answer(self, query: MemoryQueryV3, mode: str) -> AdapterAnswerResultV3: ...
     def close(self) -> None: ...
 
 
-__all__ = ["AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3", "MemoryAdapterV3"]
+__all__ = ["AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3", "ExportEntriesResultV3", "ExportStateResultV3", "MemoryAdapterV3", "ResetResultV3", "RetrievalResultV3"]

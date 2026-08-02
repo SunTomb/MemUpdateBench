@@ -5,7 +5,7 @@ from mub.vnext.contracts.common import MemoryObjectKey, MetricFieldSupport
 from mub.vnext.contracts.enums import SupportReason
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3
-from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS, ScoreRecordV3
+from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS, ScoreRecordV3, ScorerConfigV3
 
 
 def key() -> MemoryObjectKey:
@@ -27,6 +27,28 @@ def test_v3_metric_nulls_require_complete_typed_support_map() -> None:
     support = {path: MetricFieldSupport(reason=SupportReason.NOT_SUPPORTED, null_policy="emit_null") for path in CORE_METRIC_FIELD_PATHS}
     score = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support)
     assert set(score.supported_metric_fields) == CORE_METRIC_FIELD_PATHS
+
+
+def test_v3_failure_flags_are_deduplicated_and_use_unified_precedence() -> None:
+    support = {path: MetricFieldSupport(reason=SupportReason.NOT_SUPPORTED, null_policy="emit_null") for path in CORE_METRIC_FIELD_PATHS}
+    score = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support, failure_flags=("stale_copied", "wrong_delete_scope", "system_exception", "stale_copied"))
+    assert len(score.failure_flags) == 3
+    assert score.primary_failure == "system_exception"
+    empty = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support)
+    assert empty.primary_failure == "correct"
+    with pytest.raises(ValidationError):
+        ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support, failure_flags=("stale_copied", "wrong_delete_scope"), primary_failure="stale_copied")
+
+
+def test_scorer_config_v3_accepts_every_core_metric_and_rejects_old_versions() -> None:
+    config = ScorerConfigV3(requested_metric_fields=tuple(reversed(sorted(CORE_METRIC_FIELD_PATHS))))
+    assert config.requested_metric_fields == tuple(sorted(CORE_METRIC_FIELD_PATHS))
+    assert len(config.configuration_hash) == 64
+    assert {path.split(".", 1)[0] for path in config.requested_metric_fields} >= {"deletion_scores", "historical_scores", "synthesis_scores"}
+    with pytest.raises(ValidationError):
+        ScorerConfigV3(scorer_version="2.0.0")
+    with pytest.raises(ValidationError):
+        ScorerConfigV3(requested_metric_fields=("unknown_scores.metric",))
 
 
 def test_v3_capabilities_preserve_levels_and_add_core_features() -> None:

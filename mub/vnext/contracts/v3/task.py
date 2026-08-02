@@ -472,11 +472,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
 
     @property
     def semantic_identity(self) -> Mapping[str, JsonValue]:
-        return {
-            name: _semantic_value(getattr(self, name))
-            for name in self.__class__.model_fields
-            if name not in {"task_id", "metadata"}
-        }
+        return _semantic_task_projection(self)
 
     @property
     def semantic_hash(self) -> str:
@@ -490,6 +486,96 @@ def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
 def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> None:
     if len({_identity(key) for key in keys}) != len(keys):
         raise ValueError(f"{label} must contain unique canonical identities")
+
+
+def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
+    event_index = {event.event_id: index for index, event in enumerate(task.events)}
+    action_index = {action.action_id: index for index, action in enumerate(task.actions)}
+    query_index = {query.query_id: index for index, query in enumerate(task.queries)}
+
+    def event_ref(event_id: str | None):
+        return None if event_id is None else event_index[event_id]
+
+    def selector_projection(selector: SelectorV3):
+        projected = _semantic_value(selector)
+        if isinstance(selector, EventAnchorSelector):
+            projected["event_id"] = event_ref(selector.event_id)
+        if isinstance(selector, MultiObjectCurrentSelector):
+            projected["object_keys"] = sorted((_semantic_value(key) for key in selector.object_keys), key=_canonical_bytes)
+        return projected
+
+    events = []
+    for event in task.events:
+        events.append({
+            "role": event.role.value,
+            "timestamp": event.timestamp,
+            "metadata": _semantic_value(event.metadata),
+            "gold_action_indices": [action_index[action_id] for action_id in event.gold_action_ids],
+        })
+    actions = [{
+        "event_index": event_ref(action.event_id),
+        "operation": action.operation.value,
+        "scope": None if action.scope is None else action.scope.value,
+        "targets": sorted((_semantic_value(key) for key in action.target_object_keys), key=_canonical_bytes),
+        "value": _semantic_value(action.value),
+        "effective_at": action.effective_at,
+        "expected_effect": _semantic_value(action.expected_effect),
+    } for action in task.actions]
+    queries = [{
+        "query_type": query.query_type.value,
+        "selector": selector_projection(query.selector),
+        "targets": sorted((_semantic_value(key) for key in query.target_object_keys), key=_canonical_bytes),
+        "answer_schema": query.answer_schema.value,
+        "evaluation_mode": query.evaluation_mode.value,
+        "synthesis": _semantic_value(query.synthesis),
+    } for query in task.queries]
+    histories = []
+    for ledger in task.version_history:
+        histories.append({
+            "object_key": _semantic_value(ledger.object_key),
+            "entries": [{
+                "version_index": entry.version_index,
+                "status": entry.status.value,
+                "value": _semantic_value(entry.value),
+                "valid_from_event_index": event_ref(entry.valid_from_event_id),
+                "valid_until_event_index": event_ref(entry.valid_until_event_id),
+                "logical_time": entry.logical_time,
+                "source_event_indices": [event_ref(event_id) for event_id in entry.source_event_ids],
+            } for entry in ledger.entries],
+        })
+    histories.sort(key=lambda item: _canonical_bytes(item["object_key"]))
+    evidence = []
+    for gold in task.gold_evidence:
+        step_index = {step.step_id: index for index, step in enumerate(gold.derivation_steps)}
+        evidence.append({
+            "query_index": query_index[gold.query_id],
+            "answer": _semantic_value(gold.answer),
+            "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
+            "supporting_event_indices": [event_ref(event_id) for event_id in gold.supporting_event_ids],
+            "derivation_steps": [{
+                "operation": step.operation,
+                "input_step_indices": [step_index[parent] for parent in step.input_step_ids],
+                "supporting_objects": sorted((_semantic_value(key) for key in step.supporting_object_keys), key=_canonical_bytes),
+                "supporting_event_indices": [event_ref(event_id) for event_id in step.supporting_event_ids],
+            } for step in gold.derivation_steps],
+            "final_step_index": step_index[gold.final_derivation_step_id],
+        })
+    evidence.sort(key=lambda item: item["query_index"])
+    return {
+        "schema_version": task.schema_version,
+        "task_family": task.task_family,
+        "source": {
+            "source_type": task.source.source_type.value,
+            "provenance": _semantic_value(task.source.provenance),
+            "generator": _semantic_value(task.source.generator),
+        },
+        "events": events,
+        "target_objects": sorted((_semantic_value(key) for key in task.target_objects), key=_canonical_bytes),
+        "actions": actions,
+        "queries": queries,
+        "version_history": histories,
+        "gold_evidence": evidence,
+    }
 
 
 def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_position: Mapping[str, int]) -> tuple[VersionHistoryEntry, ...]:

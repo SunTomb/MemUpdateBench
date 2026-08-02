@@ -2,7 +2,17 @@ import pytest
 from pydantic import ValidationError
 
 from mub.vnext.contracts.common import MemoryObjectKey
-from mub.vnext.contracts.v3.adapter import AdapterActionResultV3
+from mub.vnext.contracts.v3.adapter import (
+    AdapterActionResultV3,
+    AdapterAnswerResultV3,
+    AdapterCapabilitiesV3,
+    AdapterInfoV3,
+    ExportEntriesResultV3,
+    ExportStateResultV3,
+    MemoryAdapterV3,
+    ResetResultV3,
+    RetrievalResultV3,
+)
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, ParsedManagerActionV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import (
     CurrentSelector,
@@ -113,6 +123,25 @@ def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
             AdapterActionResultV3(event_id=bad)
         with pytest.raises(ValidationError):
             AnswerPredictionV3(query_id=bad, raw_output="", disposition="unavailable", format_valid=False)
+
+
+def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None:
+    class Fixture:
+        def adapter_info(self): return AdapterInfoV3(adapter_id="a", adapter_version="1", system_name="s", system_version="1", configuration_hash="a" * 64)
+        def capabilities(self): return AdapterCapabilitiesV3(supports_isolated_reset=True, exports_entries=True, exports_raw_state=True, exports_retrieval_ids=True)
+        def reset(self, namespace, config): return ResetResultV3(success=True, namespace=namespace)
+        def ingest_event(self, event): return AdapterActionResultV3(event_id=event.event_id)
+        def export_entries(self): return ExportEntriesResultV3(entries=())
+        def export_raw_state(self): return ExportStateResultV3(raw_state={})
+        def retrieve(self, query, k): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=query.query_id))
+        def answer(self, query, mode): return AdapterAnswerResultV3(prediction=AnswerPredictionV3(query_id=query.query_id, raw_output="", disposition="unavailable", format_valid=False))
+        def close(self): return None
+
+    fixture = Fixture()
+    assert isinstance(fixture, MemoryAdapterV3)
+    assert fixture.reset("n", {}).success
+    assert fixture.export_entries().entries == ()
+    assert fixture.export_raw_state().raw_state == {}
 
 
 def test_derivation_steps_must_be_topologically_ordered() -> None:

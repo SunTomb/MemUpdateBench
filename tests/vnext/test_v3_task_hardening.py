@@ -107,6 +107,36 @@ def test_task_and_gold_json_reject_nonfinite_values_before_hashing() -> None:
             MemUpdateTaskV3.model_validate(gold_json)
 
 
+def test_semantic_hash_ignores_surface_text_and_consistent_local_id_renaming() -> None:
+    base = task_payload()
+    surface = deepcopy(base)
+    surface["events"][0]["raw_text"] = "paraphrased raw surface"
+    surface["events"][0]["normalized_text"] = "paraphrased normalized surface"
+    surface["queries"][0]["text"] = "different question wording"
+    surface["source"]["source_id"] = "surface-source"
+    surface["source"]["normalized_hash"] = "b" * 64
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(surface).semantic_hash
+
+    renamed = deepcopy(base)
+    renamed["task_id"] = "renamed-task"
+    event_map = {"e0": "x0", "e1": "x1", "e2": "x2"}
+    for event in renamed["events"]:
+        event["event_id"] = event_map[event["event_id"]]
+    for entry in renamed["version_history"][0]["entries"]:
+        for field in ("valid_from_event_id", "valid_until_event_id"):
+            if entry.get(field) is not None:
+                entry[field] = event_map[entry[field]]
+        entry["source_event_ids"] = [event_map[item] for item in entry["source_event_ids"]]
+    renamed["queries"][0]["query_id"] = "renamed-query"
+    renamed["gold_evidence"][0]["query_id"] = "renamed-query"
+    renamed["gold_evidence"][0]["supporting_event_ids"] = [event_map[item] for item in renamed["gold_evidence"][0]["supporting_event_ids"]]
+    step = renamed["gold_evidence"][0]["derivation_steps"][0]
+    step["step_id"] = "renamed-step"
+    step["supporting_event_ids"] = [event_map[item] for item in step["supporting_event_ids"]]
+    renamed["gold_evidence"][0]["final_derivation_step_id"] = "renamed-step"
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(renamed).semantic_hash
+
+
 def test_application_object_type_values_remain_semantically_significant() -> None:
     left_data = task_payload()
     left_data["queries"][0]["answer_schema"] = "object"

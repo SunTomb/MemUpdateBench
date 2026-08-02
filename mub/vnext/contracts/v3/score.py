@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
-from pydantic import Field, PlainSerializer, field_validator, model_validator
+from pydantic import Field, PlainSerializer, field_serializer, field_validator, model_validator
 
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, MetricFieldSupport, StrictBool, StrictNonnegativeFloat, StrictNonnegativeInt, freeze_mapping, thaw_json
 from mub.vnext.contracts.enums import CompletionStatus, Difficulty
 from mub.vnext.contracts.score import ActionScores, AnswerScores, AuditScores, ProtocolScores, RetrievalScores, StateScores, StoreScores, SystemScores
-from mub.vnext.failure import FailureFlag
+from mub.vnext.failure import FAILURE_FLAGS, PRIMARY_FAILURE_PRECEDENCE, FailureFlag
 from mub.vnext.contracts.v3.common import StrictIdentifier
 from mub.vnext.contracts.v3.enums import FailureFlagV3
-from mub.vnext.contracts.v3.version import METRIC_REGISTRY_VERSION_V3, SCHEMA_VERSION_V3, SCORER_VERSION_V3
+from mub.vnext.contracts.v3.version import METRIC_REGISTRY_VERSION_V3, PRIMARY_FAILURE_PRECEDENCE_VERSION_V3, SCHEMA_VERSION_V3, SCORER_VERSION_V3
 
 StrictOptionalBool = StrictBool | None
 StrictOptionalRate = Annotated[float, Field(ge=0, le=1, strict=True, allow_inf_nan=False)] | None
@@ -69,10 +71,77 @@ CORE_METRIC_FIELD_PATHS = frozenset(
 )
 
 
+V3_FAILURE_FLAGS = FAILURE_FLAGS + tuple(flag.value for flag in FailureFlagV3)
+V3_PRIMARY_FAILURE_PRECEDENCE = (
+    "system_exception", "invalid_action_format", "unsupported_action",
+    "wrong_operation", "wrong_entity", "wrong_attribute", "wrong_value", "false_write", "missed_update",
+    "wrong_delete_scope", "collateral_mutation", "ttl_violation", "forgotten_value_exposed",
+    "version_confusion", "evidence_linkage_error", "stale_propagation",
+    "collateral_corruption", "deletion_failure", "current_state_missing", "stale_retained",
+    "current_not_retrieved", "stale_retrieved", "distractor_retrieved",
+    "wrong_reference_guess", "unjustified_abstention", "stale_copied", "distractor_copied",
+    "gold_retrieved_wrong_answer", "answer_format_only",
+)
+
+
+def _canonicalize_v3_flags(value) -> tuple[str, ...]:
+    if value is None or type(value) in {str, bytes} or isinstance(value, Mapping):
+        raise ValueError("failure_flags must be a non-string iterable")
+    supplied = []
+    for flag in value:
+        if isinstance(flag, (FailureFlag, FailureFlagV3)):
+            flag = flag.value
+        if type(flag) is not str:
+            raise ValueError("failure flags must be exact built-in strings")
+        supplied.append(flag)
+    unknown = set(supplied) - set(V3_FAILURE_FLAGS)
+    if unknown:
+        raise ValueError(f"unknown failure flags: {sorted(unknown)}")
+    present = set(supplied)
+    return tuple(flag for flag in V3_FAILURE_FLAGS if flag in present)
+
+
+def _v3_primary(flags) -> str:
+    present = {flag.value if isinstance(flag, (FailureFlag, FailureFlagV3)) else flag for flag in flags}
+    return next((flag for flag in V3_PRIMARY_FAILURE_PRECEDENCE if flag in present), "correct")
+
+
+class ScorerConfigV3(ImmutableContractModel):
+    scorer_version: Literal[SCORER_VERSION_V3] = SCORER_VERSION_V3
+    metric_registry_version: Literal[METRIC_REGISTRY_VERSION_V3] = METRIC_REGISTRY_VERSION_V3
+    primary_failure_precedence_version: Literal[PRIMARY_FAILURE_PRECEDENCE_VERSION_V3] = PRIMARY_FAILURE_PRECEDENCE_VERSION_V3
+    value_normalization_profile: Literal["typed_exact_v1"] = "typed_exact_v1"
+    answer_normalization_profile: Literal["normalized_exact_v1"] = "normalized_exact_v1"
+    requested_metric_fields: tuple[str, ...] = ()
+    strict_capability_check: StrictBool = True
+
+    @field_validator("requested_metric_fields", mode="before")
+    @classmethod
+    def _canonical_metrics(cls, value):
+        if type(value) not in {list, tuple, set, frozenset}:
+            raise ValueError("requested_metric_fields must be tuple-like")
+        if any(type(item) is not str for item in value):
+            raise ValueError("metric paths must be exact built-in strings")
+        supplied = tuple(value)
+        if len(supplied) != len(set(supplied)):
+            raise ValueError("requested_metric_fields must be unique")
+        unknown = set(supplied) - CORE_METRIC_FIELD_PATHS
+        if unknown:
+            raise ValueError(f"unknown requested metric fields: {sorted(unknown)}")
+        return tuple(sorted(supplied))
+
+    @property
+    def configuration_hash(self) -> str:
+        payload = self.model_dump(mode="json")
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+
 class ScoreRecordV3(ImmutableContractModel):
     schema_version: Literal[SCHEMA_VERSION_V3] = SCHEMA_VERSION_V3
     scorer_version: Literal[SCORER_VERSION_V3] = SCORER_VERSION_V3
     metric_registry_version: Literal[METRIC_REGISTRY_VERSION_V3] = METRIC_REGISTRY_VERSION_V3
+    primary_failure_precedence_version: Literal[PRIMARY_FAILURE_PRECEDENCE_VERSION_V3] = PRIMARY_FAILURE_PRECEDENCE_VERSION_V3
     task_id: StrictIdentifier
     run_id: StrictIdentifier
     adapter_id: StrictIdentifier
@@ -100,6 +169,15 @@ class ScoreRecordV3(ImmutableContractModel):
             values.setdefault(field, model())
         return cls(**values)
 
+    @field_validator("failure_flags", mode="before")
+    @classmethod
+    def _canonicalize_flags(cls, value):
+        return _canonicalize_v3_flags(value)
+
+    @field_serializer("failure_flags", when_used="always")
+    def _serialize_flags(self, value):
+        return tuple(flag.value if isinstance(flag, (FailureFlag, FailureFlagV3)) else flag for flag in value)
+
     @field_validator("supported_metric_fields")
     @classmethod
     def _freeze_support(cls, value):
@@ -123,9 +201,12 @@ class ScoreRecordV3(ImmutableContractModel):
         missing = null_paths - support_paths
         if missing:
             raise ValueError(f"null metric fields missing support entries: {sorted(missing)}")
-        if self.primary_failure is not None and self.primary_failure not in {str(flag) for flag in self.failure_flags}:
-            raise ValueError("primary_failure must be one of failure_flags")
+        expected_primary = _v3_primary(self.failure_flags)
+        if self.primary_failure is None:
+            object.__setattr__(self, "primary_failure", expected_primary)
+        elif self.primary_failure != expected_primary:
+            raise ValueError(f"primary_failure must equal {expected_primary!r}")
         return self
 
 
-__all__ = ["CORE_METRIC_FIELD_PATHS", "CORE_SCORE_LAYER_TYPES", "DeletionScoresV3", "HistoricalScoresV3", "ScoreRecordV3", "SynthesisScoresV3"]
+__all__ = ["CORE_METRIC_FIELD_PATHS", "CORE_SCORE_LAYER_TYPES", "DeletionScoresV3", "HistoricalScoresV3", "ScoreRecordV3", "ScorerConfigV3", "SynthesisScoresV3", "V3_FAILURE_FLAGS", "V3_PRIMARY_FAILURE_PRECEDENCE"]

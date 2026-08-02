@@ -3,6 +3,7 @@ from typing import Literal
 from mub.vnext.contracts.manifest import RunManifest, TaskManifest
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
 from mub.vnext.contracts.v3.common import StrictIdentifier
+from mub.vnext.contracts.v3.score import ScorerConfigV3
 from mub.vnext.contracts.v3.version import (
     METRIC_REGISTRY_VERSION_V3,
     PROFILE_VERSION_V3,
@@ -30,6 +31,7 @@ class RunManifestV3(RunManifest):
     scorer_version: Literal[SCORER_VERSION_V3] = SCORER_VERSION_V3
     metric_registry_version: Literal[METRIC_REGISTRY_VERSION_V3] = METRIC_REGISTRY_VERSION_V3
     profile_version: Literal[PROFILE_VERSION_V3] = PROFILE_VERSION_V3
+    scorer_config: ScorerConfigV3
     adapter_info: AdapterInfoV3
     adapter_capabilities: AdapterCapabilitiesV3
 
