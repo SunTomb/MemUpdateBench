@@ -210,6 +210,26 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
         ObjectVersionHistoryV3(object_key=key(), versions=(present, present.model_copy(update={"version_index": 2})))
 
 
+def test_history_export_enforces_global_anchor_bijection_across_objects() -> None:
+    shared0 = ExportedEventAnchorV3(event_id="shared", sequence_index=0)
+    shared9 = ExportedEventAnchorV3(event_id="shared", sequence_index=9)
+    other0 = ExportedEventAnchorV3(event_id="other", sequence_index=0)
+
+    def history(entity, anchor):
+        version = ExportedVersionRecordV3(version_index=0, status="present", value=entity, valid_from=anchor, source_anchors=(anchor,))
+        return ObjectVersionHistoryV3(object_key=key(entity), versions=(version,))
+
+    first = history("one", shared0)
+    assert len(VersionHistoryExportResultV3(histories=(first, history("two", shared0))).histories) == 2
+    with pytest.raises(ValidationError, match="global|consistent|event"):
+        VersionHistoryExportResultV3(histories=(first, history("two", shared9)))
+    with pytest.raises(ValidationError, match="sequence_index|global|event"):
+        VersionHistoryExportResultV3(histories=(first, history("two", other0)))
+    shared0_timed = ExportedEventAnchorV3(event_id="shared", sequence_index=0, logical_time="t0")
+    with pytest.raises(ValidationError, match="logical|consistent|global"):
+        VersionHistoryExportResultV3(histories=(first, history("two", shared0_timed)))
+
+
 def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None:
     class Fixture:
         def adapter_info(self): return AdapterInfoV3(adapter_id="a", adapter_version="1", system_name="s", system_version="1", configuration_hash="a" * 64)

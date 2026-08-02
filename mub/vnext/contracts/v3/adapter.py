@@ -223,6 +223,20 @@ class VersionHistoryExportResultV3(ImmutableContractModel):
         identities = [object_identity(history.object_key) for history in self.histories]
         if len(identities) != len(set(identities)):
             raise ValueError("exported histories must have unique object identities")
+        event_bindings: dict[str, tuple[int, str | None]] = {}
+        sequence_bindings: dict[int, str] = {}
+        for history in self.histories:
+            for version in history.versions:
+                for anchor in (version.valid_from, version.valid_until, *version.source_anchors):
+                    if anchor is None:
+                        continue
+                    binding = (anchor.sequence_index, anchor.logical_time)
+                    previous_binding = event_bindings.setdefault(anchor.event_id, binding)
+                    if previous_binding != binding:
+                        raise ValueError("global event anchors must use one consistent sequence_index and logical_time")
+                    previous_event = sequence_bindings.setdefault(anchor.sequence_index, anchor.event_id)
+                    if previous_event != anchor.event_id:
+                        raise ValueError("global sequence_index values must identify exactly one event_id")
         return self
 
 
