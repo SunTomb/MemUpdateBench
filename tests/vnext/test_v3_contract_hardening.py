@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.v3.adapter import (
+    AdapterActionPayloadV3,
     AdapterActionResultV3,
     AdapterAnswerResultV3,
     AdapterCapabilitiesV3,
@@ -79,20 +80,28 @@ def test_runtime_executed_actions_require_coherent_operation_scope_and_payload()
 
 
 def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
-    result = AdapterActionResultV3(event_id="e0", requested_operation="DELETE", effective_operation="DELETE", observed_scope="object", target_object_keys=(key(),), affected_entry_ids=("id",), raw_result={"nested": [1]})
+    requested = AdapterActionPayloadV3(operation="UPDATE", scope="object", target_object_keys=(key(),), value="requested")
+    effective = AdapterActionPayloadV3(operation="NOOP")
+    result = AdapterActionResultV3(event_id="e0", requested_action=requested, effective_action=effective, raw_result={"nested": [1]})
+    assert result.requested_action.operation.value == "UPDATE"
+    assert result.effective_action.operation.value == "NOOP"
     with pytest.raises((TypeError, AttributeError)):
         result.raw_result["nested"].append(2)
-    for changes in (
-        {"event_id": ""},
-        {"affected_entry_ids": ("",)},
-        {"affected_entry_ids": ("id", "id")},
-        {"target_object_keys": (key(), key(object_type="profile"))},
-        {"observed_scope": "object", "target_object_keys": (key(), key("other"))},
-    ):
+    different = AdapterActionResultV3(
+        event_id="e0",
+        requested_action=requested,
+        effective_action=AdapterActionPayloadV3(operation="ADD", scope="object", target_object_keys=(key(),), value="effective"),
+    )
+    assert different.requested_action.value != different.effective_action.value
+    for changes in ({"event_id": ""}, {"affected_entry_ids": ("",)}, {"affected_entry_ids": ("id", "id")}):
         data = result.model_dump(mode="python")
         data.update(changes)
         with pytest.raises(ValidationError):
             AdapterActionResultV3.model_validate(data)
+    with pytest.raises(ValidationError):
+        AdapterActionPayloadV3(operation="NOOP", scope="object", target_object_keys=(key(),))
+    with pytest.raises(ValidationError):
+        AdapterActionPayloadV3(operation="DELETE", scope="object", target_object_keys=(key(),), value="mixed")
 
 
 def test_nonfinite_values_fail_during_contract_construction() -> None:
@@ -199,6 +208,10 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
     logical_a = ExportedVersionRecordV3(version_index=1, status="present", value="y", logical_time="a", source_anchors=(e1,))
     with pytest.raises(ValidationError):
         ObjectVersionHistoryV3(object_key=key(), versions=(logical_z, logical_a))
+    logical_equal_0 = logical_z.model_copy(update={"logical_time": "same"})
+    logical_equal_1 = logical_a.model_copy(update={"logical_time": "same"})
+    with pytest.raises(ValidationError, match="strict|logical"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(logical_equal_0, logical_equal_1))
     with pytest.raises(ValidationError):
         ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=e2, source_anchors=(e1, e0))
     logical_from = ExportedEventAnchorV3(event_id="l0", sequence_index=0, logical_time="b")

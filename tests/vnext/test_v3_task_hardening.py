@@ -115,7 +115,18 @@ def test_semantic_hash_ignores_surface_text_and_consistent_local_id_renaming() -
     surface["queries"][0]["text"] = "different question wording"
     surface["source"]["source_id"] = "surface-source"
     surface["source"]["normalized_hash"] = "b" * 64
+    surface["source"]["provenance"] = {"revision": "different", "seed": 999}
+    surface["source"]["generator"]["seed"] = 999
+    surface["source"]["generator"]["code_revision"] = "different-revision"
+    surface["source"]["generator"]["compiler_version"] = "different-compiler"
+    surface["events"][0]["metadata"] = {"surface_variant": "different"}
     assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(surface).semantic_hash
+
+    anchored = deepcopy(base)
+    anchored["events"][0]["source_anchor"] = {"document_id": "doc", "section_id": "s1", "object_type": "semantic-anchor"}
+    reanchored = deepcopy(anchored)
+    reanchored["events"][0]["source_anchor"]["section_id"] = "s2"
+    assert MemUpdateTaskV3.model_validate(anchored).semantic_hash != MemUpdateTaskV3.model_validate(reanchored).semantic_hash
 
     renamed = deepcopy(base)
     renamed["task_id"] = "renamed-task"
@@ -145,6 +156,6 @@ def test_application_object_type_values_remain_semantically_significant() -> Non
     right_data["gold_evidence"][0]["answer"] = {"object_type": "answer-b"}
     assert MemUpdateTaskV3.model_validate(left_data).semantic_hash != MemUpdateTaskV3.model_validate(right_data).semantic_hash
 
-    provenance_changed = deepcopy(left_data)
-    provenance_changed["source"]["provenance"]["object_type"] = "source-b"
-    assert MemUpdateTaskV3.model_validate(left_data).semantic_hash != MemUpdateTaskV3.model_validate(provenance_changed).semantic_hash
+    ledger_changed = deepcopy(left_data)
+    ledger_changed["version_history"][0]["entries"][-1]["value"] = {"object_type": "ledger-value"}
+    assert MemUpdateTaskV3.model_validate(left_data).semantic_hash != MemUpdateTaskV3.model_validate(ledger_changed).semantic_hash

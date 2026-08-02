@@ -488,6 +488,15 @@ def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> 
         raise ValueError(f"{label} must contain unique canonical identities")
 
 
+def _semantic_anchor_projection(anchor: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    surface_only = {"normalized_text_sha256", "raw_text", "normalized_text", "text"}
+    return {
+        key: _semantic_value(value)
+        for key, value in sorted(anchor.items())
+        if key not in surface_only
+    }
+
+
 def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     event_index = {event.event_id: index for index, event in enumerate(task.events)}
     action_index = {action.action_id: index for index, action in enumerate(task.actions)}
@@ -509,7 +518,7 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
         events.append({
             "role": event.role.value,
             "timestamp": event.timestamp,
-            "metadata": _semantic_value(event.metadata),
+            "source_anchor": _semantic_anchor_projection(event.source_anchor),
             "gold_action_indices": [action_index[action_id] for action_id in event.gold_action_ids],
         })
     actions = [{
@@ -566,8 +575,7 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
         "task_family": task.task_family,
         "source": {
             "source_type": task.source.source_type.value,
-            "provenance": _semantic_value(task.source.provenance),
-            "generator": _semantic_value(task.source.generator),
+            "normalization_version": task.source.normalization_version,
         },
         "events": events,
         "target_objects": sorted((_semantic_value(key) for key in task.target_objects), key=_canonical_bytes),

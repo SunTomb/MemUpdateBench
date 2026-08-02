@@ -41,33 +41,36 @@ class AdapterCapabilitiesV3(AdapterCapabilities):
         }
 
 
-class AdapterActionResultV3(ImmutableContractModel):
-    event_id: StrictIdentifier
-    requested_operation: Operation | None = None
-    effective_operation: Operation | None = None
-    observed_scope: ActionScope | None = None
+class AdapterActionPayloadV3(ImmutableContractModel):
+    operation: Operation | None = None
+    scope: ActionScope | None = None
     target_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     value: FrozenJsonValue | None = None
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        validate_action_coherence(
+            operation=self.operation,
+            scope=self.scope,
+            targets=self.target_object_keys,
+            value=self.value,
+        )
+        return self
+
+
+class AdapterActionResultV3(ImmutableContractModel):
+    event_id: StrictIdentifier
+    requested_action: AdapterActionPayloadV3 = Field(default_factory=AdapterActionPayloadV3)
+    effective_action: AdapterActionPayloadV3 = Field(default_factory=AdapterActionPayloadV3)
     affected_entry_ids: tuple[StrictIdentifier, ...] = ()
     raw_result: FrozenJsonValue | None = None
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:
-        if any(type(item) is not str or not item.strip() for item in self.affected_entry_ids):
-            raise ValueError("affected entry IDs must be nonblank strings")
         if len(self.affected_entry_ids) != len(set(self.affected_entry_ids)):
             raise ValueError("affected entry IDs must be unique")
-        if self.effective_operation is not None and self.requested_operation is None:
-            raise ValueError("effective operation requires requested operation")
-        operations = tuple(
-            operation
-            for operation in (self.requested_operation, self.effective_operation)
-            if operation is not None
-        )
-        if not operations:
-            validate_action_coherence(operation=None, scope=self.observed_scope, targets=self.target_object_keys, value=self.value)
-        for operation in operations:
-            validate_action_coherence(operation=operation, scope=self.observed_scope, targets=self.target_object_keys, value=self.value)
+        if self.effective_action.operation in {None, Operation.NOOP} and self.affected_entry_ids:
+            raise ValueError("effective NOOP actions cannot report affected entries")
         return self
 
 
@@ -210,8 +213,10 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
                 raise ValueError("adjacent validity intervals must be continuous and nonoverlapping")
             previous_logical_time = previous.logical_time or (previous.valid_from.logical_time if previous.valid_from is not None else None)
             current_logical_time = current.logical_time or (current.valid_from.logical_time if current.valid_from is not None else None)
-            if previous_logical_time is not None and current_logical_time is not None and previous_logical_time > current_logical_time:
-                raise ValueError("logical time must be nondecreasing")
+            if previous_logical_time is not None and current_logical_time is not None:
+                logical_only = previous.valid_from is None and current.valid_from is None
+                if previous_logical_time > current_logical_time or (logical_only and previous_logical_time == current_logical_time):
+                    raise ValueError("logical-only histories require strictly increasing logical time")
         return self
 
 
@@ -280,7 +285,7 @@ class MemoryAdapterV3(Protocol):
 
 
 __all__ = [
-    "AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3",
+    "AdapterActionPayloadV3", "AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3",
     "ExportEntriesResultV3", "ExportStateResultV3", "ExportedEventAnchorV3", "ExportedVersionRecordV3", "MemoryAdapterV3",
     "ObjectVersionHistoryV3", "ResetRequestV3", "ResetResultV3", "RetrievalRequestV3", "RetrievalResultV3",
     "VersionHistoryExportRequestV3", "VersionHistoryExportResultV3",

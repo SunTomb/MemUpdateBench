@@ -72,16 +72,20 @@ CORE_METRIC_FIELD_PATHS = frozenset(
 
 
 V3_FAILURE_FLAGS = FAILURE_FLAGS + tuple(flag.value for flag in FailureFlagV3)
-V3_PRIMARY_FAILURE_PRECEDENCE = (
-    "system_exception", "invalid_action_format", "unsupported_action",
-    "wrong_operation", "wrong_entity", "wrong_attribute", "wrong_value", "false_write", "missed_update",
-    "wrong_delete_scope", "collateral_mutation", "ttl_violation", "forgotten_value_exposed",
-    "version_confusion", "evidence_linkage_error", "stale_propagation",
-    "collateral_corruption", "deletion_failure", "current_state_missing", "stale_retained",
-    "current_not_retrieved", "stale_retrieved", "distractor_retrieved",
-    "wrong_reference_guess", "unjustified_abstention", "stale_copied", "distractor_copied",
-    "gold_retrieved_wrong_answer", "answer_format_only",
+V3_PRIMARY_FAILURE_PRECEDENCE_LAYERS = (
+    PRIMARY_FAILURE_PRECEDENCE[0],
+    PRIMARY_FAILURE_PRECEDENCE[1] + ("wrong_delete_scope",),
+    PRIMARY_FAILURE_PRECEDENCE[2] + ("collateral_mutation", "ttl_violation", "forgotten_value_exposed"),
+    PRIMARY_FAILURE_PRECEDENCE[3] + ("version_confusion", "evidence_linkage_error"),
+    PRIMARY_FAILURE_PRECEDENCE[4],
+    PRIMARY_FAILURE_PRECEDENCE[5] + ("stale_propagation",),
+    PRIMARY_FAILURE_PRECEDENCE[6],
 )
+V3_PRIMARY_FAILURE_PRECEDENCE = tuple(
+    flag for layer in V3_PRIMARY_FAILURE_PRECEDENCE_LAYERS for flag in layer
+)
+if len(V3_PRIMARY_FAILURE_PRECEDENCE) != len(set(V3_PRIMARY_FAILURE_PRECEDENCE)) or set(V3_PRIMARY_FAILURE_PRECEDENCE) != set(V3_FAILURE_FLAGS):
+    raise RuntimeError("v3 failure precedence must contain every failure flag exactly once")
 
 
 def _canonicalize_v3_flags(value) -> tuple[str, ...]:
@@ -209,4 +213,4 @@ class ScoreRecordV3(ImmutableContractModel):
         return self
 
 
-__all__ = ["CORE_METRIC_FIELD_PATHS", "CORE_SCORE_LAYER_TYPES", "DeletionScoresV3", "HistoricalScoresV3", "ScoreRecordV3", "ScorerConfigV3", "SynthesisScoresV3", "V3_FAILURE_FLAGS", "V3_PRIMARY_FAILURE_PRECEDENCE"]
+__all__ = ["CORE_METRIC_FIELD_PATHS", "CORE_SCORE_LAYER_TYPES", "DeletionScoresV3", "HistoricalScoresV3", "ScoreRecordV3", "ScorerConfigV3", "SynthesisScoresV3", "V3_FAILURE_FLAGS", "V3_PRIMARY_FAILURE_PRECEDENCE", "V3_PRIMARY_FAILURE_PRECEDENCE_LAYERS"]

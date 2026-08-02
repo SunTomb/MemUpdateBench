@@ -5,7 +5,13 @@ from mub.vnext.contracts.common import MemoryObjectKey, MetricFieldSupport
 from mub.vnext.contracts.enums import SupportReason
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3
-from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS, ScoreRecordV3, ScorerConfigV3
+from mub.vnext.contracts.v3.score import (
+    CORE_METRIC_FIELD_PATHS,
+    ScoreRecordV3,
+    ScorerConfigV3,
+    V3_FAILURE_FLAGS,
+    V3_PRIMARY_FAILURE_PRECEDENCE,
+)
 
 
 def key() -> MemoryObjectKey:
@@ -34,6 +40,10 @@ def test_v3_failure_flags_are_deduplicated_and_use_unified_precedence() -> None:
     score = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support, failure_flags=("stale_copied", "wrong_delete_scope", "system_exception", "stale_copied"))
     assert len(score.failure_flags) == 3
     assert score.primary_failure == "system_exception"
+    assert len(V3_PRIMARY_FAILURE_PRECEDENCE) == len(set(V3_PRIMARY_FAILURE_PRECEDENCE))
+    assert set(V3_PRIMARY_FAILURE_PRECEDENCE) == set(V3_FAILURE_FLAGS)
+    layered = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support, failure_flags=("stale_propagation", "current_state_missing"))
+    assert layered.primary_failure == "current_state_missing"
     empty = ScoreRecordV3.empty(task_id="t", run_id="r", adapter_id="a", task_family="f", difficulty="easy", completion_status="completed", supported_metric_fields=support)
     assert empty.primary_failure == "correct"
     with pytest.raises(ValidationError):
