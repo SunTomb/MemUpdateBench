@@ -98,7 +98,12 @@ def parse_event_text(event: MemoryEvent) -> ParsedEvent:
             _json_value(parsed.get("value", "")),
             True,
         )
-    if operation == "NOOP" or re.match(r"^(?:NOOP|No memory object changes|Keep memory unchanged)\.?$", text, re.I):
+    if operation == "NOOP" or re.search(
+        r"(?:^NOOP|No memory object changes|No memory change is required|"
+        r"Keep memory unchanged|Do not write anything to memory)\.?$",
+        text,
+        re.I,
+    ):
         return ParsedEvent(Operation.NOOP, None, None, True)
 
     key = _atomic_key(text)
@@ -108,7 +113,10 @@ def parse_event_text(event: MemoryEvent) -> ParsedEvent:
             return ParsedEvent(Operation.DELETE, key, None, True)
         if re.search(r"\b(?:update|change|correct|revise)\b", lowered):
             op = Operation.UPDATE
-        elif re.search(r"\b(?:add|create)\b", lowered):
+        elif (
+            re.search(r"\b(?:add|create)\b", lowered)
+            or re.match(r"^remember\b", lowered)
+        ):
             op = Operation.ADD
         else:
             op = None
@@ -333,7 +341,11 @@ class ReferenceAdapter(BaseBuiltinAdapter):
             return AnswerResult(query_id=query.query_id, raw_output=raw, value=value)
         canonical = self._task.gold.canonical_answers.get(query.query_id)
         if canonical is not None and canonical.disposition is AnswerDisposition.ABSTAINED:
-            return AnswerResult(query_id=query.query_id, raw_output="ABSTAIN", disposition=AnswerDisposition.ABSTAINED, error={"reason": canonical.abstention_reason})
+            return AnswerResult(
+                query_id=query.query_id,
+                raw_output="ABSTAIN",
+                disposition=AnswerDisposition.ABSTAINED,
+            )
         if canonical is not None:
             value = canonical.value
             raw = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)

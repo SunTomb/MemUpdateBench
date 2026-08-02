@@ -45,6 +45,8 @@ class RuntimeConfig:
     memory_entry_extractor_version: str = "builtin-entry-extractor-v1"
     object_value_extractor_config_hash: str = "0" * 64
     redaction_policy_version: str = "none-v1"
+    code_revision: str = "unknown"
+    dirty_state: bool = False
     compiler_version: str = "unknown"
     profile_version: str = "unknown"
     schema_version: str = "2.0.0"
@@ -65,6 +67,8 @@ class RuntimeConfig:
             "memory_entry_extractor_version": self.memory_entry_extractor_version,
             "object_value_extractor_config_hash": self.object_value_extractor_config_hash,
             "redaction_policy_version": self.redaction_policy_version,
+            "code_revision": self.code_revision,
+            "dirty_state": self.dirty_state,
             "compiler_version": self.compiler_version,
             "profile_version": self.profile_version,
             "schema_version": self.schema_version,

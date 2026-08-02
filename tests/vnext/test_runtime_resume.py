@@ -108,6 +108,32 @@ def test_run_tasks_flushes_sidecar_and_finalizes_manifest(tmp_path: Path) -> Non
     assert progress["expected_ids"] == [task.task_id]
     assert progress["completed_ids"] == [task.task_id]
     assert result.manifest.completed_task_count == 1
+    assert result.manifest.code_revision == "fixed-test-revision"
+    assert result.manifest.dirty_state is False
+
+
+def test_runtime_provenance_changes_run_identity() -> None:
+    left = _identity(
+        runtime_config=config(
+            code_revision="revision-a",
+            dirty_state=False,
+        ).identity_payload()
+    )
+    right = _identity(
+        runtime_config=config(
+            code_revision="revision-b",
+            dirty_state=False,
+        ).identity_payload()
+    )
+    dirty = _identity(
+        runtime_config=config(
+            code_revision="revision-a",
+            dirty_state=True,
+        ).identity_payload()
+    )
+
+    assert left != right
+    assert left != dirty
 
 
 def test_non_resume_interruption_invalidates_previous_manifest(tmp_path: Path) -> None:

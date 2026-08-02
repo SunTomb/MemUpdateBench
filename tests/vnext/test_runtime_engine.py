@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,8 +15,15 @@ from mub.vnext.contracts import (
     RetrievalResult,
     ResetResult,
 )
-from mub.vnext.contracts.enums import AnswerDisposition, CompletionStatus
+from mub.vnext.contracts.enums import AnswerDisposition, CompletionStatus, Split
 from mub.vnext.contracts.runtime import TaskRunRecord
+from mub.vnext.adapters.reference import ReferenceAdapter
+from mub.vnext.generation import (
+    GenerationContext,
+    generate_family_c_cores,
+    load_pilot_config,
+    render_core,
+)
 from mub.vnext.runtime.engine import RuntimeConfig, execute_task
 from tests.vnext.factories import build_task
 
@@ -119,7 +127,14 @@ class FakeAdapter:
 
 
 def config(**overrides: Any) -> RuntimeConfig:
-    data = {"run_id": "run-test", "retrieval_k": 3, "capture_snapshots": True}
+    data = {
+        "run_id": "run-test",
+        "retrieval_k": 3,
+        "capture_snapshots": True,
+        "code_revision": "fixed-test-revision",
+        "compiler_version": "2.0.0",
+        "profile_version": "2.0.0",
+    }
     data.update(overrides)
     return RuntimeConfig(**data)
 
@@ -188,3 +203,33 @@ def test_execute_task_classifies_unsupported_reset_without_throwing() -> None:
     assert row.completion_status is CompletionStatus.NOT_SUPPORTED
     assert row.exceptions[0]["code"] == "not_supported"
     assert row.parsed_actions == []
+
+
+def test_reference_abstention_is_a_completed_typed_answer() -> None:
+    root = Path(__file__).resolve().parents[2]
+    pilot_config = load_pilot_config(root / "configs" / "vnext" / "pilot.yaml")
+    core = next(
+        item
+        for item in generate_family_c_cores(pilot_config)
+        if item.canonical_answer is not None
+        and item.canonical_answer.disposition is AnswerDisposition.ABSTAINED
+    )
+    task = render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=GenerationContext(
+            config=pilot_config,
+            code_revision="runtime-abstention-test",
+        ),
+    )
+
+    row = execute_task(task, ReferenceAdapter(task), config())
+
+    assert row.completion_status is CompletionStatus.COMPLETED
+    assert row.exceptions == []
+    assert len(row.answer_predictions) == 1
+    prediction = row.answer_predictions[0]
+    assert prediction.disposition is AnswerDisposition.ABSTAINED
+    assert prediction.parsed_answer is None
+    assert prediction.format_valid

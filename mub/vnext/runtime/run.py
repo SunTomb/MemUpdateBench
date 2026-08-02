@@ -133,8 +133,8 @@ def _finalize_manifest(
     return RunManifest(
         run_id=run_config.run_id,
         timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        code_revision=run_config.compiler_version,
-        dirty_state=False,
+        code_revision=run_config.code_revision,
+        dirty_state=run_config.dirty_state,
         task_manifest=ArtifactRef(path="task_manifest.json", sha256=task_manifest_hash, media_type="application/json"),
         adapter_info=adapter_info,
         adapter_capabilities=adapter_capabilities,

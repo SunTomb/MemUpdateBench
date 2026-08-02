@@ -12,6 +12,7 @@ from mub.vnext.adapters import (
     ReferenceAdapter,
 )
 from mub.vnext.contracts.enums import AnswerDisposition, Operation
+from mub.vnext.adapters.reference import parse_event_text
 from mub.vnext.io.canonical import canonical_json_bytes
 
 
@@ -47,6 +48,83 @@ def test_builtin_adapters_reset_link_source_events_and_canonical_entries(make_ta
     assert adapter.export_entries() == []
     adapter.close()
     adapter.close()
+
+
+@pytest.mark.parametrize('adapter_type', [RawAppendAdapter, ExactCrudAdapter])
+def test_builtin_adapters_parse_released_remember_surface(make_task, adapter_type):
+    task = make_task()
+    key = task.target_objects[0]
+    text = (
+        'Remember object(namespace="default", entity="friend:alex", '
+        'attribute="location", subkey=null) with value "Dalian".'
+    )
+    event = task.events[0].model_copy(
+        update={"raw_text": text, "normalized_text": text, "metadata": {}}
+    )
+
+    parsed = parse_event_text(event)
+
+    assert parsed.format_valid
+    assert parsed.operation is Operation.ADD
+    assert parsed.object_key == key
+    assert parsed.value == "Dalian"
+
+    adapter = adapter_type()
+    assert adapter.reset("released-surface", {}).success
+    log = adapter.ingest_event(event)
+    assert log.error is None
+    entries = adapter.export_entries()
+    assert len(entries) == 1
+    assert entries[0].object_key_candidate == key
+    assert entries[0].value_candidate == "Dalian"
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "No memory change is required.",
+        "Keep memory unchanged.",
+        "Do not write anything to memory.",
+    ],
+)
+@pytest.mark.parametrize('adapter_type', [RawAppendAdapter, ExactCrudAdapter])
+def test_builtin_adapters_parse_released_noop_directives(
+    make_task,
+    adapter_type,
+    directive,
+):
+    task = make_task()
+    text = f"A routine note mentions friend Alex without a new fact. {directive}"
+    event = task.events[0].model_copy(
+        update={"raw_text": text, "normalized_text": text, "metadata": {}}
+    )
+
+    parsed = parse_event_text(event)
+
+    assert parsed.format_valid
+    assert parsed.operation is Operation.NOOP
+    assert parsed.object_key is None
+    adapter = adapter_type()
+    assert adapter.reset("released-noop", {}).success
+    log = adapter.ingest_event(event)
+    assert log.error is None
+    assert adapter.export_entries() == []
+
+
+def test_remember_inside_value_does_not_invent_add_operation(make_task):
+    task = make_task()
+    text = (
+        'Store object(namespace="default", entity="friend_alex", '
+        'attribute="location", subkey=null) with value "Remember Dalian".'
+    )
+    event = task.events[0].model_copy(
+        update={"raw_text": text, "normalized_text": text, "metadata": {}}
+    )
+
+    parsed = parse_event_text(event)
+
+    assert not parsed.format_valid
+    assert parsed.operation is None
 
 
 def test_raw_append_rejects_delete_without_mutating_state(make_task):
