@@ -28,6 +28,15 @@ def sha256_model(model: BaseModel) -> str:
     return hashlib.sha256(canonical_json_bytes(model)).hexdigest()
 
 
+def semantic_task_hash_v3(task: BaseModel) -> str:
+    """Return the v3 contract's canonical, object_type-invariant semantic hash."""
+    from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+
+    if not isinstance(task, MemUpdateTaskV3):
+        raise TypeError("semantic_task_hash_v3 requires MemUpdateTaskV3")
+    return task.semantic_hash
+
+
 def semantic_task_hash(task: MemUpdateTask) -> str:
     """Hash the task's ID-independent semantic-core projection.
 

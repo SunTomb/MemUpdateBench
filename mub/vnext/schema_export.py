@@ -11,6 +11,10 @@ from mub.vnext.contracts.manifest import RunManifest, TaskManifest
 from mub.vnext.contracts.runtime import TaskRunRecord
 from mub.vnext.contracts.score import ScoreRecord
 from mub.vnext.contracts.task import MemUpdateTask
+from mub.vnext.contracts.v3.manifest import RunManifestV3, TaskManifestV3
+from mub.vnext.contracts.v3.runtime import TaskRunRecordV3
+from mub.vnext.contracts.v3.score import ScoreRecordV3
+from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 
 DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema"
 
@@ -21,12 +25,34 @@ _TOP_LEVEL_SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("task_manifest.schema.json", TaskManifest),
     ("run_manifest.schema.json", RunManifest),
 )
+_V3_TOP_LEVEL_SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
+    ("mem_update_task.schema.json", MemUpdateTaskV3),
+    ("task_run_record.schema.json", TaskRunRecordV3),
+    ("score_record.schema.json", ScoreRecordV3),
+    ("task_manifest.schema.json", TaskManifestV3),
+    ("run_manifest.schema.json", RunManifestV3),
+)
+SCHEMA_MODEL_REGISTRIES = {
+    "2.0.0": _TOP_LEVEL_SCHEMA_MODELS,
+    "3.0.0": _V3_TOP_LEVEL_SCHEMA_MODELS,
+}
 TOP_LEVEL_SCHEMA_MODELS = _TOP_LEVEL_SCHEMA_MODELS
 
 
-def export_schemas(output_dir: str | Path) -> tuple[Path, ...]:
-    """Atomically export the five deterministic vNext Draft 2020-12 schemas."""
-    registry = _validated_registry(_TOP_LEVEL_SCHEMA_MODELS)
+def export_schemas(
+    output_dir: str | Path,
+    *,
+    version: str = "2.0.0",
+) -> tuple[Path, ...]:
+    """Atomically export five deterministic Draft 2020-12 schemas for one exact version."""
+    if type(version) is not str or version not in SCHEMA_MODEL_REGISTRIES:
+        raise ValueError(f"unsupported schema registry version {version!r}")
+    selected_registry = (
+        _TOP_LEVEL_SCHEMA_MODELS
+        if version == "2.0.0"
+        else _V3_TOP_LEVEL_SCHEMA_MODELS
+    )
+    registry = _validated_registry(selected_registry)
     destination = Path(output_dir)
     resolved_destination = destination.resolve(strict=False)
     exports: list[tuple[Path, type[BaseModel]]] = []
@@ -114,4 +140,9 @@ def _schema_bytes(schema: dict) -> bytes:
     )
 
 
-__all__ = ["DRAFT_2020_12_URI", "TOP_LEVEL_SCHEMA_MODELS", "export_schemas"]
+__all__ = [
+    "DRAFT_2020_12_URI",
+    "SCHEMA_MODEL_REGISTRIES",
+    "TOP_LEVEL_SCHEMA_MODELS",
+    "export_schemas",
+]
