@@ -11,6 +11,17 @@ from mub.vnext.validation.replay import (
     validate_distractors,
     validate_gold_replay,
 )
+from mub.vnext.validation.replay_v3 import (
+    EvidenceEvaluationV3,
+    QueryResolutionV3,
+    ReplayLedgerV3,
+    ReplayResultV3,
+    ReplayVersionV3,
+    evaluate_evidence_v3,
+    replay_actions_v3,
+    replay_task_v3,
+    resolve_query_v3,
+)
 from mub.vnext.validation.split import (
     FAMILY_STRATIFICATION_AXES,
     SliceDefinition,
@@ -43,14 +54,23 @@ def validate_task_semantics(task: MemUpdateTask) -> ValidationReport:
 
 __all__ = [
     "FAMILY_STRATIFICATION_AXES",
+    "EvidenceEvaluationV3",
+    "QueryResolutionV3",
+    "ReplayLedgerV3",
     "ReplayResult",
+    "ReplayResultV3",
+    "ReplayVersionV3",
     "SliceDefinition",
     "SplitException",
     "ValidationIssue",
     "ValidationReport",
     "build_report",
+    "evaluate_evidence_v3",
     "merge_reports",
     "replay_actions",
+    "replay_actions_v3",
+    "replay_task_v3",
+    "resolve_query_v3",
     "validate_distractors",
     "validate_family_a_task",
     "validate_family_b_task",
