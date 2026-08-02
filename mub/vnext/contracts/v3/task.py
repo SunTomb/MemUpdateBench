@@ -546,22 +546,28 @@ def _derivation_semantic_projection(
     event_index: Mapping[str, int],
 ) -> Mapping[str, JsonValue]:
     steps = {step.step_id: step for step in gold.derivation_steps}
-    memo: dict[str, Mapping[str, JsonValue]] = {}
+    canonical_numbers: dict[str, int] = {}
+    records: list[Mapping[str, JsonValue] | None] = []
     visiting: set[str] = set()
 
-    def project(step_id: str) -> Mapping[str, JsonValue]:
+    def discover(step_id: str) -> int:
         if step_id in visiting:
             raise ValueError("cyclic derivation graph cannot be projected")
-        if step_id in memo:
-            return memo[step_id]
+        if step_id in canonical_numbers:
+            return canonical_numbers[step_id]
         try:
             step = steps[step_id]
         except KeyError as exc:
             raise ValueError(f"derivation references missing step {step_id!r}") from exc
+        number = len(records)
+        canonical_numbers[step_id] = number
+        records.append(None)
         visiting.add(step_id)
-        node = {
+        input_numbers = tuple(discover(parent) for parent in step.input_step_ids)
+        visiting.remove(step_id)
+        records[number] = {
             "operation": step.operation,
-            "inputs": [project(parent) for parent in step.input_step_ids],
+            "inputs": input_numbers,
             "supporting_objects": sorted(
                 (_semantic_value(key) for key in step.supporting_object_keys),
                 key=_canonical_bytes,
@@ -570,11 +576,12 @@ def _derivation_semantic_projection(
                 event_index[event_id] for event_id in step.supporting_event_ids
             ),
         }
-        visiting.remove(step_id)
-        memo[step_id] = node
-        return node
+        return number
 
-    return project(gold.final_derivation_step_id)
+    root = discover(gold.final_derivation_step_id)
+    if any(record is None for record in records):
+        raise ValueError("derivation canonicalization left unresolved nodes")
+    return {"root": root, "nodes": records}
 
 
 def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:

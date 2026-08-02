@@ -186,6 +186,38 @@ def test_derivation_hash_uses_ordered_operands_but_not_topological_list_order_or
     assert MemUpdateTaskV3.model_validate(base).semantic_hash != MemUpdateTaskV3.model_validate(swapped).semantic_hash
 
 
+def test_derivation_hash_preserves_shared_dag_identity_without_tree_expansion() -> None:
+    shared = task_payload()
+    shared["gold_evidence"][0]["derivation_steps"] = [
+        {"step_id": "r", "operation": "read", "supporting_event_ids": ["e2"]},
+        {"step_id": "a", "operation": "left", "input_step_ids": ["r"]},
+        {"step_id": "b", "operation": "right", "input_step_ids": ["r"]},
+        {"step_id": "f", "operation": "combine", "input_step_ids": ["a", "b"]},
+    ]
+    shared["gold_evidence"][0]["final_derivation_step_id"] = "f"
+
+    duplicated = deepcopy(shared)
+    duplicated["gold_evidence"][0]["derivation_steps"] = [
+        {"step_id": "r1", "operation": "read", "supporting_event_ids": ["e2"]},
+        {"step_id": "r2", "operation": "read", "supporting_event_ids": ["e2"]},
+        {"step_id": "a", "operation": "left", "input_step_ids": ["r1"]},
+        {"step_id": "b", "operation": "right", "input_step_ids": ["r2"]},
+        {"step_id": "f", "operation": "combine", "input_step_ids": ["a", "b"]},
+    ]
+    assert MemUpdateTaskV3.model_validate(shared).semantic_hash != MemUpdateTaskV3.model_validate(duplicated).semantic_hash
+
+    moderate = task_payload()
+    steps = [
+        {"step_id": "n0", "operation": "seed0", "supporting_event_ids": ["e2"]},
+        {"step_id": "n1", "operation": "seed1", "supporting_event_ids": ["e2"]},
+    ]
+    for index in range(2, 28):
+        steps.append({"step_id": f"n{index}", "operation": "merge", "input_step_ids": [f"n{index - 1}", f"n{index - 2}"]})
+    moderate["gold_evidence"][0]["derivation_steps"] = steps
+    moderate["gold_evidence"][0]["final_derivation_step_id"] = "n27"
+    assert len(MemUpdateTaskV3.model_validate(moderate).semantic_hash) == 64
+
+
 def test_duplicate_semantic_queries_are_rejected_even_with_different_evidence() -> None:
     payload = task_payload()
     duplicate_query = deepcopy(payload["queries"][0])
