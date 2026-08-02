@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.v3.adapter import AdapterActionResultV3
-from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3, RetrievalTraceV3
+from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, ParsedManagerActionV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import (
     CurrentSelector,
     DerivationStepV3,
@@ -87,6 +87,17 @@ def test_nonfinite_values_fail_during_contract_construction() -> None:
             AdapterActionResultV3(event_id="e0", raw_result={"nested": bad})
         with pytest.raises(ValidationError):
             RetrievalTraceV3(query_id="q", scores=(bad,))
+
+
+def test_retrieval_scores_require_exact_builtin_floats() -> None:
+    class HostileFloat(float):
+        pass
+
+    item = MemoryEntryRecordV3(entry_id="id", content="x")
+    for bad in (1, HostileFloat(1.0)):
+        with pytest.raises(ValidationError):
+            RetrievalTraceV3(query_id="q", retrieved_entries=(item,), scores=(bad,))
+    assert RetrievalTraceV3(query_id="q", retrieved_entries=(item,), scores=(1.0,)).scores == (1.0,)
 
 
 def test_identifiers_reject_whitespace_and_string_subclasses() -> None:

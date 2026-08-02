@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import Field, JsonValue, model_validator
 from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool, StrictNonnegativeFloat
 from mub.vnext.contracts.enums import ActionScope, AnswerDisposition, CompletionStatus, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, StrictIdentifier, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, StrictFiniteFloat, StrictIdentifier, validate_action_coherence
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3
 from mub.vnext.contracts.v3.version import RUNTIME_RECORD_VERSION_V3, SCHEMA_VERSION_V3
 
@@ -36,7 +36,7 @@ class MemorySnapshotV3(ImmutableContractModel):
 class RetrievalTraceV3(ImmutableContractModel):
     query_id: StrictIdentifier
     retrieved_entries: tuple[MemoryEntryRecordV3, ...] = ()
-    scores: tuple[Annotated[float, Field(strict=True, allow_inf_nan=False)], ...] = ()
+    scores: tuple[StrictFiniteFloat, ...] = ()
     ranks: tuple[int, ...] = ()
     gold_in_context: StrictBool | None = None
     stale_in_context: StrictBool | None = None

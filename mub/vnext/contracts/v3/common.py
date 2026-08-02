@@ -30,7 +30,16 @@ def _validate_finite_json(value: Any) -> Any:
     return value
 
 
+def _validate_finite_float(value: Any) -> float:
+    if type(value) is not float:
+        raise ValueError("scores must be exact built-in floats")
+    if not math.isfinite(value):
+        raise ValueError("scores must be finite")
+    return value
+
+
 StrictIdentifier = Annotated[str, BeforeValidator(_validate_identifier), Field(strict=True, min_length=1)]
+StrictFiniteFloat = Annotated[float, BeforeValidator(_validate_finite_float), Field(strict=True, allow_inf_nan=False)]
 
 
 def _key_input(value: Any) -> Any:
@@ -141,4 +150,4 @@ def validate_action_coherence(
             raise ValueError("namespace scope targets must share namespace")
 
 
-__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictIdentifier", "object_identity", "validate_action_coherence"]
+__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictFiniteFloat", "StrictIdentifier", "object_identity", "validate_action_coherence"]
