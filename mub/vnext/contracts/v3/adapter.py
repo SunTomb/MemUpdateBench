@@ -9,7 +9,7 @@ from mub.vnext.contracts.adapter import AdapterCapabilities, AdapterInfo
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 from mub.vnext.contracts.enums import ActionScope, Operation
 from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, StrictPositiveInt, object_identity, validate_action_coherence
-from mub.vnext.contracts.v3.enums import ExportedVersionStatusV3
+from mub.vnext.contracts.v3.enums import LedgerEntryStatus
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import MemoryEventV3, MemoryQueryV3
 
@@ -82,7 +82,7 @@ class ResetRequestV3(ImmutableContractModel):
 
 
 class RetrievalRequestV3(ImmutableContractModel):
-    query_id: StrictIdentifier
+    query: MemoryQueryV3
     k: StrictPositiveInt
     filters: FrozenJsonObjectV3 = Field(default_factory=dict)
     options: FrozenJsonObjectV3 = Field(default_factory=dict)
@@ -102,14 +102,27 @@ class VersionHistoryExportRequestV3(ImmutableContractModel):
         return self
 
 
+class ExportedEventAnchorV3(ImmutableContractModel):
+    event_id: StrictIdentifier
+    sequence_index: int = Field(strict=True, ge=0)
+    logical_time: StrictIdentifier | None = None
+
+    @field_validator("sequence_index", mode="before")
+    @classmethod
+    def _exact_sequence_index(cls, value):
+        if type(value) is not int:
+            raise ValueError("sequence_index must be an exact built-in integer")
+        return value
+
+
 class ExportedVersionRecordV3(ImmutableContractModel):
     version_index: int = Field(strict=True, ge=0)
-    status: ExportedVersionStatusV3
+    status: LedgerEntryStatus
     value: FrozenJsonValue | None = None
-    valid_from_event_id: StrictIdentifier | None = None
-    valid_until_event_id: StrictIdentifier | None = None
+    valid_from: ExportedEventAnchorV3 | None = None
+    valid_until: ExportedEventAnchorV3 | None = None
     logical_time: StrictIdentifier | None = None
-    source_event_ids: tuple[StrictIdentifier, ...] = Field(min_length=1)
+    source_anchors: tuple[ExportedEventAnchorV3, ...] = Field(min_length=1)
 
     @field_validator("version_index", mode="before")
     @classmethod
@@ -120,16 +133,28 @@ class ExportedVersionRecordV3(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:
-        if self.status == ExportedVersionStatusV3.PRESENT and self.value is None:
+        if self.status == LedgerEntryStatus.PRESENT and self.value is None:
             raise ValueError("present exported versions require value")
-        if self.status == ExportedVersionStatusV3.DELETED and self.value is not None:
-            raise ValueError("deleted exported versions cannot carry value")
-        if self.valid_from_event_id is None and self.logical_time is None:
-            raise ValueError("exported versions require an event or logical-time anchor")
-        if self.valid_from_event_id is not None and self.valid_from_event_id == self.valid_until_event_id:
-            raise ValueError("validity event interval cannot be empty")
-        if len(self.source_event_ids) != len(set(self.source_event_ids)):
-            raise ValueError("source event IDs must be unique")
+        if self.status == LedgerEntryStatus.TOMBSTONE and self.value is not None:
+            raise ValueError("tombstone exported versions cannot carry value")
+        if (self.valid_from is None) != (self.valid_until is None):
+            raise ValueError("valid_from and valid_until must be supplied together")
+        if self.valid_from is None and self.logical_time is None:
+            raise ValueError("exported versions require an event interval or logical-time anchor")
+        if self.valid_from is not None and self.valid_from.sequence_index >= self.valid_until.sequence_index:
+            raise ValueError("validity interval must be strictly chronological")
+        source_keys = [(anchor.sequence_index, anchor.event_id) for anchor in self.source_anchors]
+        if source_keys != sorted(source_keys) or len(source_keys) != len(set(source_keys)):
+            raise ValueError("source anchors must be ordered and unique")
+        source_logical_times = [anchor.logical_time for anchor in self.source_anchors if anchor.logical_time is not None]
+        if source_logical_times != sorted(source_logical_times):
+            raise ValueError("source anchor logical times must be nondecreasing")
+        if self.valid_from is not None and any(
+            anchor.sequence_index < self.valid_from.sequence_index
+            or anchor.sequence_index >= self.valid_until.sequence_index
+            for anchor in self.source_anchors
+        ):
+            raise ValueError("source anchors must belong to the validity interval")
         return self
 
 
@@ -141,6 +166,26 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
     def _contiguous(self) -> Self:
         if tuple(version.version_index for version in self.versions) != tuple(range(len(self.versions))):
             raise ValueError("exported version history must start at zero and be contiguous")
+        event_positions: dict[str, int] = {}
+        for version in self.versions:
+            for anchor in (version.valid_from, version.valid_until, *version.source_anchors):
+                if anchor is None:
+                    continue
+                previous_position = event_positions.setdefault(anchor.event_id, anchor.sequence_index)
+                if previous_position != anchor.sequence_index:
+                    raise ValueError("event anchors must use one consistent sequence_index")
+        for previous, current in zip(self.versions, self.versions[1:]):
+            if (previous.valid_until is None) != (current.valid_from is None):
+                raise ValueError("adjacent histories cannot mix event and logical-time bounds")
+            if previous.valid_until is not None and (
+                previous.valid_until.event_id != current.valid_from.event_id
+                or previous.valid_until.sequence_index != current.valid_from.sequence_index
+            ):
+                raise ValueError("adjacent validity intervals must be continuous and nonoverlapping")
+            previous_logical_time = previous.logical_time or (previous.valid_from.logical_time if previous.valid_from is not None else None)
+            current_logical_time = current.logical_time or (current.valid_from.logical_time if current.valid_from is not None else None)
+            if previous_logical_time is not None and current_logical_time is not None and previous_logical_time > current_logical_time:
+                raise ValueError("logical time must be nondecreasing")
         return self
 
 
@@ -189,7 +234,7 @@ class MemoryAdapterV3(Protocol):
 
 __all__ = [
     "AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3",
-    "ExportEntriesResultV3", "ExportStateResultV3", "ExportedVersionRecordV3", "MemoryAdapterV3",
+    "ExportEntriesResultV3", "ExportStateResultV3", "ExportedEventAnchorV3", "ExportedVersionRecordV3", "MemoryAdapterV3",
     "ObjectVersionHistoryV3", "ResetRequestV3", "ResetResultV3", "RetrievalRequestV3", "RetrievalResultV3",
     "VersionHistoryExportRequestV3", "VersionHistoryExportResultV3",
 ]

@@ -9,6 +9,7 @@ from mub.vnext.contracts.v3.adapter import (
     AdapterInfoV3,
     ExportEntriesResultV3,
     ExportStateResultV3,
+    ExportedEventAnchorV3,
     ExportedVersionRecordV3,
     MemoryAdapterV3,
     ObjectVersionHistoryV3,
@@ -24,6 +25,7 @@ from mub.vnext.contracts.v3.task import (
     CurrentSelector,
     DerivationStepV3,
     GoldActionV3,
+    MemoryQueryV3,
     QueryGoldEvidenceV3,
     VersionHistoryEntry,
     VersionHistoryLedger,
@@ -138,25 +140,53 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
     reset = ResetRequestV3(namespace="n", config={"nested": [1]})
     with pytest.raises((TypeError, AttributeError)):
         reset.config["nested"].append(2)
+    query = MemoryQueryV3(query_id="q", query_type="update_sensitive_multi_hop", text="question", selector=CurrentSelector(), target_object_keys=(key(),), answer_schema="string", evaluation_mode="state_direct", synthesis={"kind": "update_sensitive_multi_hop", "minimum_hops": 2})
+    request = RetrievalRequestV3(query=query, k=1, options={"nested": [1]})
+    assert request.query.selector.kind == "current"
+    assert request.query.target_object_keys[0].canonical_id == key().canonical_id
+    assert request.query.answer_schema.value == "string"
+    assert request.query.synthesis.kind == "update_sensitive_multi_hop"
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        request.query.text = "mutated"
+    with pytest.raises((TypeError, AttributeError)):
+        request.options["nested"].append(2)
     for bad in (True, 1.0, HostileInt(1)):
         with pytest.raises(ValidationError):
-            RetrievalRequestV3(query_id="q", k=bad)
+            RetrievalRequestV3(query=query, k=bad)
+    bad_query = query.model_dump(mode="python")
+    bad_query["query_id"] = " "
     for model, data in (
         (ResetRequestV3, {"namespace": " ", "config": {}}),
-        (RetrievalRequestV3, {"query_id": " ", "k": 1}),
+        (RetrievalRequestV3, {"query": bad_query, "k": 1}),
         (VersionHistoryExportRequestV3, {"namespace": " "}),
     ):
         with pytest.raises(ValidationError):
             model.model_validate(data)
 
-    present = ExportedVersionRecordV3(version_index=0, status="present", value={"nested": [1]}, valid_from_event_id="e0", source_event_ids=("e0",))
-    deleted = ExportedVersionRecordV3(version_index=1, status="deleted", valid_from_event_id="e1", source_event_ids=("e1",))
-    history = ObjectVersionHistoryV3(object_key=key(), versions=(present, deleted))
+    e0 = ExportedEventAnchorV3(event_id="e0", sequence_index=0)
+    e1 = ExportedEventAnchorV3(event_id="e1", sequence_index=1)
+    e2 = ExportedEventAnchorV3(event_id="e2", sequence_index=2)
+    e3 = ExportedEventAnchorV3(event_id="e3", sequence_index=3)
+    present = ExportedVersionRecordV3(version_index=0, status="present", value={"nested": [1]}, valid_from=e0, valid_until=e1, source_anchors=(e0,))
+    tombstone = ExportedVersionRecordV3(version_index=1, status="tombstone", valid_from=e1, valid_until=e2, source_anchors=(e1,))
+    history = ObjectVersionHistoryV3(object_key=key(), versions=(present, tombstone))
     result = VersionHistoryExportResultV3(histories=(history,))
     with pytest.raises((TypeError, AttributeError)):
         result.histories[0].versions[0].value["nested"].append(2)
     with pytest.raises(ValidationError):
-        ExportedVersionRecordV3(version_index=0, status="deleted", value="forbidden", valid_from_event_id="e0", source_event_ids=("e0",))
+        ExportedVersionRecordV3(version_index=0, status="tombstone", value="forbidden", valid_from=e0, valid_until=e1, source_anchors=(e0,))
+    with pytest.raises(ValidationError):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e2, valid_until=e1, source_anchors=(e1,))
+    with pytest.raises(ValidationError):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, source_anchors=(e0,))
+    with pytest.raises(ValidationError):
+        ObjectVersionHistoryV3(object_key=key(), versions=(present, tombstone.model_copy(update={"valid_from": e2, "valid_until": e3})))
+    logical_z = ExportedVersionRecordV3(version_index=0, status="present", value="x", logical_time="z", source_anchors=(e0,))
+    logical_a = ExportedVersionRecordV3(version_index=1, status="present", value="y", logical_time="a", source_anchors=(e1,))
+    with pytest.raises(ValidationError):
+        ObjectVersionHistoryV3(object_key=key(), versions=(logical_z, logical_a))
+    with pytest.raises(ValidationError):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=e2, source_anchors=(e1, e0))
     with pytest.raises(ValidationError):
         ObjectVersionHistoryV3(object_key=key(), versions=(present, present.model_copy(update={"version_index": 2})))
 
@@ -170,7 +200,7 @@ def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None
         def export_entries(self): return ExportEntriesResultV3(entries=())
         def export_raw_state(self): return ExportStateResultV3(raw_state={})
         def export_version_history(self, request): return VersionHistoryExportResultV3(histories=())
-        def retrieve(self, request): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=request.query_id))
+        def retrieve(self, request): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=request.query.query_id))
         def answer(self, query, mode): return AdapterAnswerResultV3(prediction=AnswerPredictionV3(query_id=query.query_id, raw_output="", disposition="unavailable", format_valid=False))
         def close(self): return None
 
@@ -181,7 +211,8 @@ def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None
     assert fixture.export_entries().entries == ()
     assert fixture.export_raw_state().raw_state == {}
     assert fixture.export_version_history(VersionHistoryExportRequestV3(namespace="n")).histories == ()
-    assert fixture.retrieve(RetrievalRequestV3(query_id="q", k=1)).trace.query_id == "q"
+    query = MemoryQueryV3(query_id="q", query_type="current", text="?", selector=CurrentSelector(), target_object_keys=(key(),), answer_schema="string", evaluation_mode="state_direct")
+    assert fixture.retrieve(RetrievalRequestV3(query=query, k=1)).trace.query_id == "q"
 
 
 def test_derivation_steps_must_be_topologically_ordered() -> None:
