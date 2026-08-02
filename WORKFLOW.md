@@ -974,12 +974,12 @@ Its current authenticated task, generation-manifest, and evidence-bound manifest
 ```text
 tasks.jsonl                  7573b635d8f72481e5f71630dc6101fef58a379fbda73ac81fef6788ce48bd2a
 generation_task_manifest    2fe08afc00a7c6c7e23dc2905a6639c1d56d6cc28f0692898d6a5560c865fed6
-evidence-bound task manifest 0ac271d132256ffa323e94ee0f2735ca10647b0add66e7340404294b2b5d587c
+evidence-bound task manifest b7d7f4169295df5fbcbda0b4be1d2cdc05ad436acb03b6c302137af2a7b59f27
 ```
 
 The evidence-bound manifest is stored in the result checkpoint rather than replacing the immutable generation manifest. It authenticates the exact task bytes, generation config, generation manifest, split balance, both validation reports, audit sample, audit decisions, and audit gate report.
 
-Two independent local release copies matched across all five generation artifacts. The user then supplied a detailed manual remediation review of the original 96-case audit, leading to revised surface rendering while preserving semantic cores, task identities, split assignments, and the four-part object key. The retained regenerated 96 terminal decisions all pass, but their `reviewer` field is `codex-release-audit-20260801-regenerated`; they do not constitute a human-attributed terminal audit artifact. Final release approval remains blocked on that attribution/sign-off.
+Two independent local release copies matched across all five generation artifacts. The user then supplied a detailed manual remediation review of the original 96-case audit, leading to revised surface rendering while preserving semantic cores, task identities, split assignments, and the four-part object key. Human reviewer Ye Shenghao subsequently reviewed all 96 regenerated audit IDs and supplied one terminal decision per ID. All 96 decisions have `verdict=pass`, all four checks true, no malformed, missing, duplicate, or foreign IDs, and `AuditGateReport.release_ready=true`. The human decisions SHA-256 is `eb4f4a1e74ec0fd2e4635664c2776b0875afa3fa9aeab8c80d9aff7aaf04a2df`; the gate report is `2183c579c82a88f70d15f5494b1917f4ce45a60607e983457d3b3b63d428de21`. The task, run, score, summary, release, and root provenance chains were rebound transactionally without changing task bytes, runtime rows, score rows, or metric values.
 
 ### Runtime-integrity corrections
 
@@ -1019,7 +1019,13 @@ The full released-event audit over all 1,440 tasks reported:
 {"operation":0,"key":0,"value":0,"format":0}
 ```
 
-A complete final `tests/vnext` run was not repeated after `ca47df7`; no such claim is made. The focused gates cover the corrected parser, observed-action boundary, runtime, resume identity, formal CLI authentication, scorer capability rules, and manifest contracts.
+The first complete Tang-2 suite after `ca47df7` reported `2699 passed, 6 skipped, 2 failed`. Both failures were stale test assumptions rather than production defects: one hard-coded the old profile version, and one expected an accidental Family B answer overlap that the audited data remediation intentionally removed. The profile test now uses the canonical `PROFILE_VERSION`; the Family B test constructs its overlap adversarially instead of requiring released data to contain a leak. The two corrected tests passed, followed by `133 passed` across both affected files. A fresh complete post-correction Windows suite then reported:
+
+```text
+2697 passed, 10 skipped in 3860.87s (1:04:20)
+```
+
+The ten skips are documented Windows symlink/junction privilege cases; there were zero failures. Together with the Linux suite's coverage of the corresponding platform cases, this closes the complete `tests/vnext` gate without modifying runtime code or formal result bytes.
 
 ### Formal execution and artifacts
 
@@ -1057,7 +1063,7 @@ Every run contains 1,440 unique `TaskRunRecord` rows, an authenticated final run
 
 All 360 unsupported rows for each non-reference method are Family C `answer/multi_object_answer` capability exclusions. There are no parser-driven partial rows and no encoder-related unsupported rows.
 
-Each of the eight run cells was authenticated, scored, and summarized against the evidence-bound task manifest. Every cell contains 1,440 score rows and a six-file summary bundle whose artifact index matches the written bytes. The root `artifact_index.json` binds the release, mechanism, corrupted-control, trace-review, and eight run/score/summary manifest chains; its SHA-256 is `8d2ac9ed678fe38f41e3c9c1968d480a13a2d38591533e8fda55b850638e6eff`. The principal built-in diagnostic metrics are:
+Each of the eight run cells was authenticated, scored, and summarized against the human-rebound evidence manifest. Every cell contains 1,440 score rows and a six-file summary bundle whose artifact index matches the written bytes. Rebinding reproduced all eight `scores.jsonl` files byte-for-byte and preserved every aggregate metric. The root `artifact_index.json` binds the release, mechanism, corrupted-control, trace-review, and eight run/score/summary manifest chains; its final SHA-256 is `d9ef2cebc74a5445863de0ef047c9528cc01eab89354ca93b51917a5f2d0322b`. The release index SHA-256 is `2d2adf8f16d058e5b4d9346829a4f6a48c71aa3140f634a69586c3644951cc3a`. The principal built-in diagnostic metrics are:
 
 | policy | method | current recall@k | stale exposure | final state accuracy | answer EM | final memory size | obsolete versions |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1109,6 +1115,6 @@ The Pilot release and built-in execution path now provide authenticated evidence
 
 This is not external-validity or prompted-answer evidence. Exact and heuristic CRUD are identical on this controlled release because the released atomic object surfaces expose exact keys; MiniLM readiness is verified, but this matrix does not establish a learned semantic-resolution advantage. Raw append's `slot_direct` answer remains correct even in the 27 normal-retrieval misses, so these rows must not be used to claim answer-model robustness. Family C support remains reference-only for the current built-ins and must be reported as capability coverage rather than silently dropped or treated as failure.
 
-An independent final-gate review initially returned `NOT_APPROVED` because the retained audit was not human-attributed, release-level evidence was not fully bound, documentation contained stale pre-regeneration hashes, the complete trace matrix was absent, and the final full suite had not been rerun. The evidence-bound rerun, corrected hashes, nested artifact indices, and retained 48-cell trace review resolved the authentication, documentation, and trace blockers. A focused re-review returned `CONDITIONAL_APPROVAL` with no new claim-safety or engineering blocker.
+An independent final-gate review initially returned `NOT_APPROVED` because the retained audit was not human-attributed, release-level evidence was not fully bound, documentation contained stale pre-regeneration hashes, the complete trace matrix was absent, and the final full suite had not been rerun. The evidence-bound rerun, corrected hashes, nested artifact indices, retained 48-cell trace review, human-attributed 96-case audit, and green complete post-correction suite resolved every blocker. A final independent review returned `CONDITIONAL` with exactly one condition—the fresh complete suite must finish with zero failures—and explicitly found no other release blocker. The `2697 passed, 10 skipped` result satisfied that condition.
 
-Final Pilot approval is still withheld. The retained 96 terminal decisions identify an automated Codex reviewer, so the required one-human-decision-per-audit-ID gate is not yet satisfied. The complete `tests/vnext` run is executing separately and must also finish successfully. After a human-attributed terminal decision artifact is supplied, rebuild the audit/task-manifest binding as needed and request one final independent review. Any later external systems, prompted answer models, APIs, Families E–H, SFT, or RLVR require separate approved scope and must write new result roots rather than modifying this Pilot evidence.
+The Families A–D Pilot is therefore `FINAL_APPROVED` as a bounded benchmark-engineering release. This approval authenticates the released tasks and the built-in deterministic engineering evidence; it does not convert `slot_direct` diagnostics into external-system, prompted-answer, API, SFT, RLVR, or broad benchmark evidence. Any later Core expansion, external systems, prompted answer models, APIs, Families E–H, SFT, or RLVR require a separate approved design/implementation cycle and new result roots. The pre-human-rebind server metadata backup remains retained for rollback until a later explicit cleanup decision.

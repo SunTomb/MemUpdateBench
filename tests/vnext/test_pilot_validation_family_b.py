@@ -603,11 +603,36 @@ def test_family_b_allocation_metadata_is_task_local_not_corpus_policy(family_b_t
 def test_family_b_structured_distractor_overlap_policy_preserves_real_leaks(
     family_b_tasks
 ):
-    intentional = next(
-        task
-        for task in family_b_tasks
-        if "distractor_text_contains_accepted_answer"
-        in _codes(validate_distractors(task))
+    payload = _payload(_family_b_task(family_b_tasks))
+    query_id = payload["queries"][0]["query_id"]
+    target_gold = payload["gold"]["gold_answers"][query_id]
+    action_by_id = {
+        action["action_id"]: action for action in payload["gold"]["actions"]
+    }
+    intentional_event = next(
+        event
+        for event in payload["events"]
+        if event["role"] == EventRole.SAME_ENTITY_OTHER_ATTRIBUTE.value
+        and any(
+            later["sequence_index"] > event["sequence_index"]
+            and action_by_id[later["gold_action_ids"][0]]["target_object_keys"]
+            == action_by_id[event["gold_action_ids"][0]]["target_object_keys"]
+            for later in payload["events"]
+        )
+    )
+    intentional_action = action_by_id[intentional_event["gold_action_ids"][0]]
+    old_value = intentional_action["value"]
+    assert old_value != target_gold
+    intentional_action["value"] = target_gold
+    for field in ("raw_text", "normalized_text"):
+        intentional_event[field] = intentional_event[field].replace(
+            str(old_value), str(target_gold)
+        )
+    _rewrite_replay(payload)
+    intentional = MemUpdateTask.model_validate(payload)
+
+    assert "distractor_text_contains_accepted_answer" in _codes(
+        validate_distractors(intentional)
     )
     specialized = validate_distractors(
         intentional,
@@ -617,8 +642,6 @@ def test_family_b_structured_distractor_overlap_policy_preserves_real_leaks(
     assert validate_family_b_task(intentional).valid
 
     payload = _payload(intentional)
-    query_id = payload["queries"][0]["query_id"]
-    target_gold = payload["gold"]["gold_answers"][query_id]
     leaking_event = next(
         event
         for event in payload["events"]

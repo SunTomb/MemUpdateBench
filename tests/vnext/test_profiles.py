@@ -22,6 +22,7 @@ from mub.vnext.profiles import (
     medium_profile,
     resolve_profile,
 )
+from mub.vnext.version import PROFILE_VERSION
 
 
 class HostileJsonStr(str):
@@ -128,7 +129,7 @@ def test_allowed_override_is_resolved_with_labels_and_bucket():
         "task_family": "family-a",
         "difficulty": "hard",
         "profile_name": "hard",
-        "profile_version": "1.0.0",
+        "profile_version": PROFILE_VERSION,
     }
 
 

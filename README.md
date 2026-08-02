@@ -40,9 +40,9 @@ vNext extends the legacy `(entity, attribute)` diagnostic into a strict four-par
 (namespace, entity, attribute, subkey)
 ```
 
-`object_type` is classification metadata and is excluded from identity. Phase 0 is `FINAL_APPROVED`, and the Families A–D Pilot task release now contains 480 semantic cores and 1,440 rendered tasks across repeated same-slot updates, interleaved multi-slot updates, entity/attribute grounding with explicit abstention, and NOOP/write discipline.
+`object_type` is classification metadata and is excluded from identity. Phase 0 and the bounded Families A–D Pilot release are both `FINAL_APPROVED`. The Pilot contains 480 semantic cores and 1,440 rendered tasks across repeated same-slot updates, interleaved multi-slot updates, entity/attribute grounding with explicit abstention, and NOOP/write discipline.
 
-The authenticated built-in execution checkpoint is bound to revision `ca47df7a6401fabfc25dd4d2151a392439e6c379`. It covers reference, raw append, exact CRUD, and verified MiniLM heuristic CRUD under `normal_topk` and `latest_per_object`. These are deterministic `slot_direct` engineering diagnostics, not prompted answer-model or external-system results.
+The authenticated built-in execution matrix is bound to revision `ca47df7a6401fabfc25dd4d2151a392439e6c379`; its human-rebound root index is `d9ef2cebc74a5445863de0ef047c9528cc01eab89354ca93b51917a5f2d0322b`. It covers reference, raw append, exact CRUD, and verified MiniLM heuristic CRUD under `normal_topk` and `latest_per_object`. These are deterministic `slot_direct` engineering diagnostics, not prompted answer-model or external-system results.
 
 Key vNext entry points:
 

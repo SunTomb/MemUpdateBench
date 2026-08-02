@@ -43,8 +43,8 @@ Publication is transactional: artifacts are staged, re-read, validated, and prom
 
 ## Validation and release boundary
 
-`validation_report.json` records automated structural validation, gold replay, and split/manifest validation. The user supplied a detailed manual remediation review of the original 96-case audit. The retained regenerated terminal decisions all pass, but they identify an automated Codex reviewer; a human-attributed terminal audit artifact is still required before final release approval.
+`validation_report.json` records automated structural validation, gold replay, and split/manifest validation. The user supplied a detailed manual remediation review of the original 96-case audit. Human reviewer Ye Shenghao then supplied one terminal decision per regenerated audit ID; all 96 pass all four checks, and the authenticated `AuditGateReport` is release-ready. The human-rebound evidence manifest and final hashes are recorded in `WORKFLOW.md`.
 
 The released five-file bundle is immutable. Its authenticated task payload contains exactly 480 semantic cores and 1,440 tasks with the declared family and split counts. Runtime, score, summary, corrupted-control, and mechanism-smoke artifacts are separate result evidence and must never overwrite this task release.
 
-The built-in formal matrix at revision `ca47df7a6401fabfc25dd4d2151a392439e6c379` completed its authenticated execution checkpoint. This does not turn deterministic `slot_direct` rows or mechanism-smoke contexts into answer-model, external-system, or paper results; see `WORKFLOW.md` and `results/vnext/pilot/README.md` for the evidence and limitations.
+The built-in formal matrix at revision `ca47df7a6401fabfc25dd4d2151a392439e6c379` and the bounded Pilot release gate are `FINAL_APPROVED`. This does not turn deterministic `slot_direct` rows or mechanism-smoke contexts into answer-model, external-system, or broad paper evidence; see `WORKFLOW.md` and `results/vnext/pilot/README.md` for the evidence and limitations.
