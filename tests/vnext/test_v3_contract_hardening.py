@@ -128,6 +128,38 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
         AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status="failed")
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_operation"),
+    [
+        ({"requested_action": {"operation": "NOOP"}, "effective_action": {"operation": "NOOP"}, "execution_status": "executed"}, "NOOP"),
+        ({"requested_action": {"operation": "ADD", "scope": "object", "target_object_keys": (key(),), "value": "x"}, "effective_action": {"operation": "ADD", "scope": "object", "target_object_keys": (key(),), "value": "x"}, "execution_status": "executed", "affected_entry_ids": ("entry",)}, "ADD"),
+        ({"requested_action": {"operation": "UPDATE", "scope": "object", "target_object_keys": (key(),), "value": "x"}, "effective_action": {"operation": "NOOP"}, "execution_status": "no_effect", "reason": "unchanged"}, "UPDATE"),
+        ({"execution_status": "rejected", "reason": "parse_rejected"}, None),
+        ({"execution_status": "not_supported", "reason": "unsupported"}, None),
+        ({"execution_status": "failed", "error": {"code": "failure"}}, None),
+    ],
+)
+def test_every_accepted_adapter_action_result_converts_to_runtime(payload, expected_operation) -> None:
+    result = AdapterActionResultV3(event_id="e0", **payload)
+    parsed = result.to_parsed_manager_action(
+        raw_output="raw",
+        format_valid=result.execution_status.value in {"executed", "no_effect"},
+        fallback_used=False,
+    )
+    assert parsed.execution_status == result.execution_status
+    assert (None if parsed.operation is None else parsed.operation.value) == expected_operation
+
+
+def test_executed_effect_without_requested_action_is_rejected_at_construction() -> None:
+    with pytest.raises(ValidationError, match="requested"):
+        AdapterActionResultV3(
+            event_id="e0",
+            effective_action={"operation": "ADD", "scope": "object", "target_object_keys": (key(),), "value": "x"},
+            execution_status="executed",
+            affected_entry_ids=("entry",),
+        )
+
+
 def test_nonfinite_values_fail_during_contract_construction() -> None:
     for bad in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValidationError):

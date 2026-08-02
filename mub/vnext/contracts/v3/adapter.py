@@ -78,6 +78,8 @@ class AdapterActionResultV3(ImmutableContractModel):
         if effective in {None, Operation.NOOP} and self.affected_entry_ids:
             raise ValueError("effective None/NOOP actions cannot carry affected_entry_ids")
         if self.execution_status == ExecutionStatusV3.EXECUTED:
+            if requested is None:
+                raise ValueError("executed actions require a nonempty requested_action")
             if effective is None:
                 raise ValueError("executed actions require an effective action")
             if effective == Operation.NOOP and requested != Operation.NOOP:
