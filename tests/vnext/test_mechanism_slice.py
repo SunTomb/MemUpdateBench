@@ -28,7 +28,15 @@ def _tasks():
     config = _config()
     generation = GenerationContext(config=config, code_revision="test-revision")
     cores = generate_family_a_cores(config)
-    selected = [core for core in cores if core.profile["stale_count"] in {1, 16}]
+    selected = [
+        next(
+            core
+            for core in cores
+            if core.profile["stale_count"] == stale_count
+            and core.profile["active_object_count"] > 1
+        )
+        for stale_count in (1, 16)
+    ]
     return tuple(
         render_core(core, split=Split.TEST, surface_variant=0, context=generation)
         for core in selected[:2]
@@ -61,7 +69,7 @@ def test_reverse_order_places_reversed_stale_target_versions_before_current(anno
     assert {task.metadata.resolved_profile["stale_count"] for task in tasks} == {1, 16}
     for task in tasks:
         entries = entries_from_task(task)
-        target_key = task.target_objects[0]
+        target_key = task.queries[0].target_object_keys[0]
         target_entries = [entry for entry in entries if entry.object_key == target_key]
         current = max(
             target_entries,

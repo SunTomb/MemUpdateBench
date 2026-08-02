@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from mub.vnext.contracts import MemUpdateTask, Split, TaskFamily
+from mub.vnext.contracts import MemoryObjectKey, MemUpdateTask, Split, TaskFamily
 from mub.vnext.generation.config import MechanismCondition, PilotConfig
 from mub.vnext.io import semantic_task_hash, sha256_model
 from mub.vnext.mechanisms.context import RenderedContext, entries_from_task, render_context
@@ -73,10 +73,19 @@ def _task_core_id(task: MemUpdateTask) -> str:
     return core_id
 
 
+def _query_target(task: MemUpdateTask) -> MemoryObjectKey:
+    if len(task.queries) != 1 or len(task.queries[0].target_object_keys) != 1:
+        raise ValueError(
+            f"Family A mechanism task {task.task_id} must have one query target"
+        )
+    target = task.queries[0].target_object_keys[0]
+    if target not in task.target_objects:
+        raise ValueError(f"task {task.task_id} query target is not a declared object")
+    return target
+
+
 def _gold_value(task: MemUpdateTask) -> Any:
-    if len(task.target_objects) != 1:
-        raise ValueError(f"Family A mechanism task {task.task_id} must have one target object")
-    target_id = task.target_objects[0].canonical_id
+    target_id = _query_target(task).canonical_id
     if target_id not in task.gold.final_state:
         raise ValueError(f"task {task.task_id} lacks canonical final-state value")
     return task.gold.final_state[target_id]
@@ -112,8 +121,9 @@ def _select_tasks(tasks: tuple[MemUpdateTask, ...], config_hash: str) -> tuple[M
             continue
         semantic_hashes[core_id] = task_semantic_hash
         entries = entries_from_task(task)
+        target = _query_target(task)
         actual_stale = sum(
-            entry.object_key == task.target_objects[0] and entry.version_index < stale
+            entry.object_key == target and entry.version_index < stale
             for entry in entries
         )
         if actual_stale != stale:
