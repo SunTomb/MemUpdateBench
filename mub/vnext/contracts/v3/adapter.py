@@ -75,6 +75,8 @@ class AdapterActionResultV3(ImmutableContractModel):
         requested = self.requested_action.operation
         effective = self.effective_action.operation
         mutation_ops = {Operation.ADD, Operation.UPDATE, Operation.DELETE}
+        if effective in {None, Operation.NOOP} and self.affected_entry_ids:
+            raise ValueError("effective None/NOOP actions cannot carry affected_entry_ids")
         if self.execution_status == ExecutionStatusV3.EXECUTED:
             if effective is None:
                 raise ValueError("executed actions require an effective action")

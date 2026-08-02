@@ -119,7 +119,9 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
     failed_parsed = failed.to_parsed_manager_action(raw_output="failed", format_valid=True, fallback_used=False)
     assert failed_parsed.execution_status.value == "failed" and failed_parsed.operation.value == "UPDATE"
     noop = AdapterActionResultV3(event_id="e0", requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed")
-    assert noop.execution_status.value == "executed"
+    assert noop.execution_status.value == "executed" and noop.affected_entry_ids == ()
+    with pytest.raises(ValidationError, match="affected|NOOP"):
+        AdapterActionResultV3(event_id="e0", requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed", affected_entry_ids=("impossible",))
     with pytest.raises(ValidationError):
         AdapterActionResultV3(event_id="e0", requested_action=requested, effective_action=effective, execution_status="executed")
     with pytest.raises(ValidationError):

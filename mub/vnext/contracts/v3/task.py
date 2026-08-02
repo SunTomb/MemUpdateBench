@@ -412,6 +412,8 @@ class MemUpdateTaskV3(ImmutableContractModel):
         if len(query_by_id) != len(self.queries):
             raise ValueError("query IDs must be unique")
         evidence_by_id = {item.query_id: item for item in self.gold_evidence}
+        if len(evidence_by_id) != len(self.gold_evidence):
+            raise ValueError("duplicate query evidence rows are not allowed")
         if set(evidence_by_id) != set(query_by_id):
             raise ValueError("gold evidence must cover queries exactly")
         for query in self.queries:

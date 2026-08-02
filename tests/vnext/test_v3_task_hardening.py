@@ -218,6 +218,17 @@ def test_derivation_hash_preserves_shared_dag_identity_without_tree_expansion() 
     assert len(MemUpdateTaskV3.model_validate(moderate).semantic_hash) == 64
 
 
+def test_duplicate_gold_evidence_rows_are_rejected_before_overwrite_or_hashing() -> None:
+    payload = task_payload()
+    contradictory = deepcopy(payload["gold_evidence"][0])
+    contradictory["answer"] = "contradictory"
+    contradictory["supporting_event_ids"] = ["unknown-event"]
+    contradictory["derivation_steps"][0]["supporting_event_ids"] = ["unknown-event"]
+    payload["gold_evidence"].insert(0, contradictory)
+    with pytest.raises(ValidationError, match="duplicate.*query evidence|duplicate.*evidence"):
+        MemUpdateTaskV3.model_validate(payload)
+
+
 def test_duplicate_semantic_queries_are_rejected_even_with_different_evidence() -> None:
     payload = task_payload()
     duplicate_query = deepcopy(payload["queries"][0])
