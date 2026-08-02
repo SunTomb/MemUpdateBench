@@ -191,6 +191,12 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
         for version in self.versions[:-1]:
             if version.valid_from is not None and version.valid_until is None:
                 raise ValueError("only the final exported version may have an open event interval")
+        for version in self.versions:
+            if version.valid_from is None:
+                if any(anchor.logical_time is None for anchor in version.source_anchors):
+                    raise ValueError("logical-only history source anchors require logical_time")
+                if any(anchor.logical_time < version.logical_time for anchor in version.source_anchors):
+                    raise ValueError("logical-only source anchors cannot precede their version logical_time")
         event_positions: dict[str, int] = {}
         position_events: dict[int, str] = {}
         for version in self.versions:
@@ -217,6 +223,11 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
                 logical_only = previous.valid_from is None and current.valid_from is None
                 if previous_logical_time > current_logical_time or (logical_only and previous_logical_time == current_logical_time):
                     raise ValueError("logical-only histories require strictly increasing logical time")
+                if logical_only:
+                    if any(anchor.logical_time >= current_logical_time for anchor in previous.source_anchors):
+                        raise ValueError("logical-only source anchors must stay within the half-open version interval")
+                    if max(anchor.sequence_index for anchor in previous.source_anchors) >= min(anchor.sequence_index for anchor in current.source_anchors):
+                        raise ValueError("logical-only source sequence ranges must strictly precede the next version")
         return self
 
 

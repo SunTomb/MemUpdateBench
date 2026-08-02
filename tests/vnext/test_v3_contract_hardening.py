@@ -212,6 +212,20 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
     logical_equal_1 = logical_a.model_copy(update={"logical_time": "same"})
     with pytest.raises(ValidationError, match="strict|logical"):
         ObjectVersionHistoryV3(object_key=key(), versions=(logical_equal_0, logical_equal_1))
+
+    source_a5 = ExportedEventAnchorV3(event_id="sa5", sequence_index=0, logical_time="a5")
+    source_b = ExportedEventAnchorV3(event_id="sb", sequence_index=1, logical_time="b")
+    source_z = ExportedEventAnchorV3(event_id="sz", sequence_index=0, logical_time="z")
+    logical_a0 = ExportedVersionRecordV3(version_index=0, status="present", value="x", logical_time="a", source_anchors=(source_a5,))
+    logical_b0 = ExportedVersionRecordV3(version_index=1, status="present", value="y", logical_time="b", source_anchors=(source_b,))
+    assert len(ObjectVersionHistoryV3(object_key=key(), versions=(logical_a0, logical_b0)).versions) == 2
+    with pytest.raises(ValidationError, match="half-open|logical"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(logical_a0.model_copy(update={"source_anchors": (source_z,)}), logical_b0))
+    with pytest.raises(ValidationError, match="half-open|logical"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(logical_a0.model_copy(update={"source_anchors": (source_b,)}), logical_b0))
+    reversed_next = logical_b0.model_copy(update={"source_anchors": (ExportedEventAnchorV3(event_id="reversed", sequence_index=0, logical_time="b"),)})
+    with pytest.raises(ValidationError, match="sequence|precede"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(logical_a0, reversed_next))
     with pytest.raises(ValidationError):
         ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=e2, source_anchors=(e1, e0))
     logical_from = ExportedEventAnchorV3(event_id="l0", sequence_index=0, logical_time="b")
