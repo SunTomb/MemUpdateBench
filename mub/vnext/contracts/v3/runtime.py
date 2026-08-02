@@ -1,31 +1,31 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool, StrictNonnegativeFloat
 from mub.vnext.contracts.enums import ActionScope, AnswerDisposition, CompletionStatus, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, StrictIdentifier, validate_action_coherence
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3
 from mub.vnext.contracts.v3.version import RUNTIME_RECORD_VERSION_V3, SCHEMA_VERSION_V3
 
 
 class MemoryEntryRecordV3(ImmutableContractModel):
-    entry_id: str = Field(strict=True, min_length=1)
+    entry_id: StrictIdentifier
     content: str = Field(strict=True)
     object_key_candidate: MemoryObjectKeyV3 | None = None
     value_candidate: FrozenJsonValue | None = None
     created_at: str | None = Field(default=None, strict=True)
     updated_at: str | None = Field(default=None, strict=True)
-    source_event_ids: tuple[str, ...] = ()
+    source_event_ids: tuple[StrictIdentifier, ...] = ()
     version_index: int | None = Field(default=None, strict=True, ge=0)
     raw_metadata: FrozenJsonObjectV3 = Field(default_factory=dict)
 
 
 class MemorySnapshotV3(ImmutableContractModel):
-    after_event_id: str | None = Field(default=None, strict=True)
+    after_event_id: StrictIdentifier | None = None
     entries: tuple[MemoryEntryRecordV3, ...] = ()
     state_by_object: FrozenJsonObjectV3 = Field(default_factory=dict)
     store_size: int = Field(strict=True, ge=0)
@@ -34,9 +34,9 @@ class MemorySnapshotV3(ImmutableContractModel):
 
 
 class RetrievalTraceV3(ImmutableContractModel):
-    query_id: str = Field(strict=True, min_length=1)
+    query_id: StrictIdentifier
     retrieved_entries: tuple[MemoryEntryRecordV3, ...] = ()
-    scores: tuple[float, ...] = ()
+    scores: tuple[Annotated[float, Field(strict=True, allow_inf_nan=False)], ...] = ()
     ranks: tuple[int, ...] = ()
     gold_in_context: StrictBool | None = None
     stale_in_context: StrictBool | None = None
@@ -72,7 +72,7 @@ class ParserExtractorProvenanceV3(ImmutableContractModel):
 
 
 class ParsedManagerActionV3(ImmutableContractModel):
-    event_id: str = Field(strict=True, min_length=1)
+    event_id: StrictIdentifier
     operation: Operation | None = None
     observed_scope: ActionScope | None = None
     target_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
@@ -99,14 +99,14 @@ class ParsedManagerActionV3(ImmutableContractModel):
 
 
 class AnswerPredictionV3(ImmutableContractModel):
-    query_id: str = Field(strict=True, min_length=1)
+    query_id: StrictIdentifier
     raw_output: str = Field(strict=True)
     disposition: AnswerDisposition = AnswerDisposition.ANSWERED
     parsed_answer: FrozenJsonValue | None = None
-    cited_event_ids: tuple[str, ...] = ()
-    cited_entry_ids: tuple[str, ...] = ()
+    cited_event_ids: tuple[StrictIdentifier, ...] = ()
+    cited_entry_ids: tuple[StrictIdentifier, ...] = ()
     cited_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
-    cited_derivation_step_ids: tuple[str, ...] = ()
+    cited_derivation_step_ids: tuple[StrictIdentifier, ...] = ()
     format_valid: StrictBool
     error_flags: tuple[str, ...] = ()
     latency_ms: StrictNonnegativeFloat | None = None
@@ -131,9 +131,9 @@ class AnswerPredictionV3(ImmutableContractModel):
 class TaskRunRecordV3(ImmutableContractModel):
     schema_version: Literal[SCHEMA_VERSION_V3] = SCHEMA_VERSION_V3
     runtime_record_version: Literal[RUNTIME_RECORD_VERSION_V3] = RUNTIME_RECORD_VERSION_V3
-    task_id: str = Field(strict=True, min_length=1)
-    adapter_id: str = Field(strict=True, min_length=1)
-    run_id: str = Field(strict=True, min_length=1)
+    task_id: StrictIdentifier
+    adapter_id: StrictIdentifier
+    run_id: StrictIdentifier
     parsed_actions: tuple[ParsedManagerActionV3, ...] = ()
     memory_snapshots: tuple[MemorySnapshotV3, ...] = ()
     retrieval_traces: tuple[RetrievalTraceV3, ...] = ()

@@ -1,12 +1,36 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 from typing import Annotated, Any
 
 from pydantic import AfterValidator, BeforeValidator, Field, JsonValue, PlainSerializer, field_validator
 
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, MemoryObjectKey, StrictNonnegativeInt, freeze_json, freeze_mapping, thaw_json
 from mub.vnext.contracts.enums import ActionScope, Operation
+
+
+def _validate_identifier(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("identifiers must be exact built-in strings")
+    if not value.strip():
+        raise ValueError("identifiers must not be blank")
+    return value
+
+
+def _validate_finite_json(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("v3 JSON cannot contain non-finite floats")
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _validate_finite_json(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_finite_json(item)
+    return value
+
+
+StrictIdentifier = Annotated[str, BeforeValidator(_validate_identifier), Field(strict=True, min_length=1)]
 
 
 def _key_input(value: Any) -> Any:
@@ -25,10 +49,13 @@ class FrozenMemoryObjectKey(ImmutableContractModel):
     @field_validator("object_type", "namespace", "entity", "attribute", "subkey", mode="before")
     @classmethod
     def _normalize_parts(cls, value: Any, info) -> Any:
-        if isinstance(value, str):
-            value = value.strip()
-            if info.field_name == "subkey" and not value:
-                return None
+        if value is None and info.field_name == "subkey":
+            return None
+        if type(value) is not str:
+            raise ValueError("object key parts must be exact built-in strings")
+        value = value.strip()
+        if info.field_name == "subkey" and not value:
+            return None
         return value
 
     @property
@@ -49,11 +76,13 @@ class FrozenMemoryObjectKey(ImmutableContractModel):
 MemoryObjectKeyV3 = Annotated[FrozenMemoryObjectKey, BeforeValidator(_key_input)]
 FrozenJsonValue = Annotated[
     JsonValue,
+    BeforeValidator(_validate_finite_json),
     AfterValidator(freeze_json),
     PlainSerializer(thaw_json, return_type=JsonValue, when_used="always"),
 ]
 FrozenJsonObjectV3 = Annotated[
     Mapping[str, JsonValue],
+    BeforeValidator(_validate_finite_json),
     AfterValidator(freeze_json),
     PlainSerializer(thaw_json, return_type=dict[str, JsonValue], when_used="always"),
 ]
@@ -112,4 +141,4 @@ def validate_action_coherence(
             raise ValueError("namespace scope targets must share namespace")
 
 
-__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "object_identity", "validate_action_coherence"]
+__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictIdentifier", "object_identity", "validate_action_coherence"]

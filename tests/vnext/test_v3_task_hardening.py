@@ -46,7 +46,7 @@ def test_task_rejects_duplicate_empty_inverted_and_partial_ledgers() -> None:
 
     empty = deepcopy(base)
     empty["version_history"][0]["entries"] = []
-    with pytest.raises(ValidationError, match="nonempty"):
+    with pytest.raises(ValidationError, match="at least 1|nonempty"):
         MemUpdateTaskV3.model_validate(empty)
 
     inverted = deepcopy(base)
@@ -58,6 +58,15 @@ def test_task_rejects_duplicate_empty_inverted_and_partial_ledgers() -> None:
     partial["version_history"][0]["entries"][0]["valid_until_event_id"] = None
     with pytest.raises(ValidationError, match="partial"):
         MemUpdateTaskV3.model_validate(partial)
+
+
+def test_unqueried_declared_ledger_must_also_be_nonempty() -> None:
+    payload = task_payload()
+    second = {"object_type": "slot", "namespace": "n", "entity": "other", "attribute": "a", "subkey": None}
+    payload["target_objects"].append(second)
+    payload["version_history"].append({"object_key": second, "entries": []})
+    with pytest.raises(ValidationError, match="at least 1|nonempty"):
+        MemUpdateTaskV3.model_validate(payload)
 
 
 def test_task_binds_answer_types_and_evidence_to_selected_version() -> None:
@@ -83,6 +92,19 @@ def test_g_minimum_hops_is_enforced() -> None:
     payload["gold_evidence"][0]["final_derivation_step_id"] = "answer"
     with pytest.raises(ValidationError, match="minimum_hops"):
         MemUpdateTaskV3.model_validate(payload)
+
+
+def test_task_and_gold_json_reject_nonfinite_values_before_hashing() -> None:
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        task_json = task_payload()
+        task_json["source"]["provenance"] = {"nested": [bad]}
+        with pytest.raises(ValidationError):
+            MemUpdateTaskV3.model_validate(task_json)
+        gold_json = task_payload()
+        gold_json["queries"][0]["answer_schema"] = "object"
+        gold_json["gold_evidence"][0]["answer"] = {"nested": bad}
+        with pytest.raises(ValidationError):
+            MemUpdateTaskV3.model_validate(gold_json)
 
 
 def test_application_object_type_values_remain_semantically_significant() -> None:

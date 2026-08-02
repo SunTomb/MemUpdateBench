@@ -36,7 +36,8 @@ def test_v3_selectors_and_ledger_are_strict_and_frozen() -> None:
 
 
 def test_object_type_does_not_change_v3_ledger_semantic_identity() -> None:
-    left = VersionHistoryLedger(object_key=key("slot"), entries=())
-    right = VersionHistoryLedger(object_key=key("profile"), entries=())
+    entry = VersionHistoryEntry(version_index=0, status=LedgerEntryStatus.PRESENT, value="x", valid_from_event_id="ev", source_event_ids=("ev",))
+    left = VersionHistoryLedger(object_key=key("slot"), entries=(entry,))
+    right = VersionHistoryLedger(object_key=key("profile"), entries=(entry,))
     assert left.semantic_identity == right.semantic_identity
     assert left.semantic_hash == right.semantic_hash

@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.v3.adapter import AdapterActionResultV3
-from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3
+from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import (
     CurrentSelector,
     DerivationStepV3,
@@ -75,6 +75,33 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
         data.update(changes)
         with pytest.raises(ValidationError):
             AdapterActionResultV3.model_validate(data)
+
+
+def test_nonfinite_values_fail_during_contract_construction() -> None:
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            entry(value={"nested": [bad]})
+        with pytest.raises(ValidationError):
+            AnswerPredictionV3(query_id="q", raw_output="x", parsed_answer={"nested": bad}, format_valid=True)
+        with pytest.raises(ValidationError):
+            AdapterActionResultV3(event_id="e0", raw_result={"nested": bad})
+        with pytest.raises(ValidationError):
+            RetrievalTraceV3(query_id="q", scores=(bad,))
+
+
+def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
+    class HostileString(str):
+        pass
+
+    for bad in (" ", HostileString("id")):
+        with pytest.raises(ValidationError):
+            GoldActionV3(action_id=bad, event_id="e0", operation="NOOP")
+        with pytest.raises(ValidationError):
+            ParsedManagerActionV3(event_id=bad, format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
+        with pytest.raises(ValidationError):
+            AdapterActionResultV3(event_id=bad)
+        with pytest.raises(ValidationError):
+            AnswerPredictionV3(query_id=bad, raw_output="", disposition="unavailable", format_valid=False)
 
 
 def test_derivation_steps_must_be_topologically_ordered() -> None:

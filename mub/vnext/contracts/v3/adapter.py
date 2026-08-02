@@ -8,13 +8,19 @@ from typing_extensions import Self
 from mub.vnext.contracts.adapter import AdapterCapabilities, AdapterInfo
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 from mub.vnext.contracts.enums import ActionScope, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, validate_action_coherence
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
 from mub.vnext.contracts.v3.task import MemoryEventV3, MemoryQueryV3
 
 
 class AdapterInfoV3(AdapterInfo):
-    pass
+    adapter_id: StrictIdentifier
+    adapter_version: StrictIdentifier
+    system_name: StrictIdentifier
+    system_version: StrictIdentifier
+    sdk_version: StrictIdentifier | None = None
+    extractor_id: StrictIdentifier | None = None
+    extractor_version: StrictIdentifier | None = None
 
 
 class AdapterCapabilitiesV3(AdapterCapabilities):
@@ -35,13 +41,13 @@ class AdapterCapabilitiesV3(AdapterCapabilities):
 
 
 class AdapterActionResultV3(ImmutableContractModel):
-    event_id: str = Field(strict=True, min_length=1)
+    event_id: StrictIdentifier
     requested_operation: Operation | None = None
     effective_operation: Operation | None = None
     observed_scope: ActionScope | None = None
     target_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     value: FrozenJsonValue | None = None
-    affected_entry_ids: tuple[str, ...] = ()
+    affected_entry_ids: tuple[StrictIdentifier, ...] = ()
     raw_result: FrozenJsonValue | None = None
 
     @model_validator(mode="after")

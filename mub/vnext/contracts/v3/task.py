@@ -11,11 +11,11 @@ from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel
 from mub.vnext.contracts.enums import ActionScope, AnswerSchema, Difficulty, EvaluationMode, EventRole, Operation, SourceType, Split
-from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, object_identity, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, object_identity, validate_action_coherence
 from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3, SynthesisKindV3
 from mub.vnext.contracts.v3.version import SCHEMA_VERSION_V3
 
-StrictString = Annotated[str, Field(strict=True, min_length=1)]
+StrictString = StrictIdentifier
 StrictIndex = Annotated[int, Field(strict=True, ge=0)]
 HashString = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
 
@@ -63,10 +63,10 @@ class SplitKeyV3(ImmutableContractModel):
     semantic_core_id: StrictString
     source_group_id: StrictString
     trajectory_id: StrictString
-    paraphrase_group_id: str | None = None
-    source_document_id: str | None = None
-    version_group_id: str | None = None
-    split_exception_id: str | None = None
+    paraphrase_group_id: StrictIdentifier | None = None
+    source_document_id: StrictIdentifier | None = None
+    version_group_id: StrictIdentifier | None = None
+    split_exception_id: StrictIdentifier | None = None
     split_policy_version: StrictString
 
 
@@ -76,11 +76,11 @@ class LegacyProvenanceV3(ImmutableContractModel):
     legacy_dataset_id: StrictString
     legacy_split_id: StrictString
     legacy_metric_namespace: StrictString
-    legacy_run_condition_id: str | None = None
+    legacy_run_condition_id: StrictIdentifier | None = None
     checkpoint_family: str | None = None
     training_seed: int | None = Field(default=None, strict=True)
     answer_mode: str | None = None
-    memory_trajectory_id: str | None = None
+    memory_trajectory_id: StrictIdentifier | None = None
     source_artifact_path: StrictString
     source_artifact_hash: HashString
     known_caveats: tuple[str, ...] = ()
@@ -257,7 +257,7 @@ class VersionHistoryEntry(ImmutableContractModel):
 
 class VersionHistoryLedger(ImmutableContractModel):
     object_key: MemoryObjectKeyV3
-    entries: tuple[VersionHistoryEntry, ...]
+    entries: tuple[VersionHistoryEntry, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _contiguous(self) -> Self:

@@ -9,6 +9,7 @@ from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, Metri
 from mub.vnext.contracts.enums import CompletionStatus, Difficulty
 from mub.vnext.contracts.score import ActionScores, AnswerScores, AuditScores, ProtocolScores, RetrievalScores, StateScores, StoreScores, SystemScores
 from mub.vnext.failure import FailureFlag
+from mub.vnext.contracts.v3.common import StrictIdentifier
 from mub.vnext.contracts.v3.enums import FailureFlagV3
 from mub.vnext.contracts.v3.version import METRIC_REGISTRY_VERSION_V3, SCHEMA_VERSION_V3, SCORER_VERSION_V3
 
@@ -72,10 +73,10 @@ class ScoreRecordV3(ImmutableContractModel):
     schema_version: Literal[SCHEMA_VERSION_V3] = SCHEMA_VERSION_V3
     scorer_version: Literal[SCORER_VERSION_V3] = SCORER_VERSION_V3
     metric_registry_version: Literal[METRIC_REGISTRY_VERSION_V3] = METRIC_REGISTRY_VERSION_V3
-    task_id: str = Field(strict=True, min_length=1)
-    run_id: str = Field(strict=True, min_length=1)
-    adapter_id: str = Field(strict=True, min_length=1)
-    task_family: str = Field(strict=True, min_length=1)
+    task_id: StrictIdentifier
+    run_id: StrictIdentifier
+    adapter_id: StrictIdentifier
+    task_family: StrictIdentifier
     difficulty: Difficulty
     completion_status: CompletionStatus
     supported_metric_fields: FrozenMetricSupportMap = Field(default_factory=FrozenDict)
