@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import BaseModel
@@ -32,10 +33,27 @@ _V3_TOP_LEVEL_SCHEMA_MODELS: tuple[tuple[str, type[BaseModel]], ...] = (
     ("task_manifest.schema.json", TaskManifestV3),
     ("run_manifest.schema.json", RunManifestV3),
 )
-SCHEMA_MODEL_REGISTRIES = {
-    "2.0.0": _TOP_LEVEL_SCHEMA_MODELS,
-    "3.0.0": _V3_TOP_LEVEL_SCHEMA_MODELS,
-}
+SchemaRegistry = tuple[tuple[str, type[BaseModel]], ...]
+
+
+class _SchemaModelRegistries(Mapping[str, SchemaRegistry]):
+    __slots__ = ()
+
+    def __getitem__(self, version: str) -> SchemaRegistry:
+        if version == "2.0.0":
+            return _TOP_LEVEL_SCHEMA_MODELS
+        if version == "3.0.0":
+            return _V3_TOP_LEVEL_SCHEMA_MODELS
+        raise KeyError(version)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(("2.0.0", "3.0.0"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+SCHEMA_MODEL_REGISTRIES: Mapping[str, SchemaRegistry] = _SchemaModelRegistries()
 TOP_LEVEL_SCHEMA_MODELS = _TOP_LEVEL_SCHEMA_MODELS
 
 
@@ -45,13 +63,12 @@ def export_schemas(
     version: str = "2.0.0",
 ) -> tuple[Path, ...]:
     """Atomically export five deterministic Draft 2020-12 schemas for one exact version."""
-    if type(version) is not str or version not in SCHEMA_MODEL_REGISTRIES:
+    if type(version) is not str:
         raise ValueError(f"unsupported schema registry version {version!r}")
-    selected_registry = (
-        _TOP_LEVEL_SCHEMA_MODELS
-        if version == "2.0.0"
-        else _V3_TOP_LEVEL_SCHEMA_MODELS
-    )
+    try:
+        selected_registry = SCHEMA_MODEL_REGISTRIES[version]
+    except KeyError as exc:
+        raise ValueError(f"unsupported schema registry version {version!r}") from exc
     registry = _validated_registry(selected_registry)
     destination = Path(output_dir)
     resolved_destination = destination.resolve(strict=False)
