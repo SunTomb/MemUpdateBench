@@ -168,6 +168,18 @@ class ExportedEventAnchorV3(ImmutableContractModel):
         return value
 
 
+def _effective_version_logical_time(version) -> str | None:
+    record_time = version.logical_time
+    anchor_time = (
+        version.valid_from.logical_time
+        if version.valid_from is not None
+        else None
+    )
+    if record_time is not None and anchor_time is not None and record_time != anchor_time:
+        raise ValueError("record logical_time must equal valid_from logical_time")
+    return record_time if record_time is not None else anchor_time
+
+
 class ExportedVersionRecordV3(ImmutableContractModel):
     version_index: int = Field(strict=True, ge=0)
     status: LedgerEntryStatus
@@ -196,12 +208,12 @@ class ExportedVersionRecordV3(ImmutableContractModel):
             raise ValueError("exported versions require an event interval or logical-time anchor")
         if self.valid_from is not None and self.valid_until is not None and self.valid_from.sequence_index >= self.valid_until.sequence_index:
             raise ValueError("validity interval must be strictly chronological")
+        effective_logical_time = _effective_version_logical_time(self)
         if (
-            self.valid_from is not None
+            effective_logical_time is not None
             and self.valid_until is not None
-            and self.valid_from.logical_time is not None
             and self.valid_until.logical_time is not None
-            and self.valid_from.logical_time > self.valid_until.logical_time
+            and effective_logical_time > self.valid_until.logical_time
         ):
             raise ValueError("validity logical-time bounds must be ordered")
         source_keys = [(anchor.sequence_index, anchor.event_id) for anchor in self.source_anchors]
@@ -216,7 +228,7 @@ class ExportedVersionRecordV3(ImmutableContractModel):
             for anchor in self.source_anchors
         ):
             raise ValueError("source anchors must belong to the validity interval")
-        logical_lower = self.valid_from.logical_time if self.valid_from is not None else self.logical_time
+        logical_lower = effective_logical_time
         logical_upper = self.valid_until.logical_time if self.valid_until is not None else None
         if any(
             anchor.logical_time is not None
@@ -267,8 +279,8 @@ class ObjectVersionHistoryV3(ImmutableContractModel):
                 or previous.valid_until.sequence_index != current.valid_from.sequence_index
             ):
                 raise ValueError("adjacent validity intervals must be continuous and nonoverlapping")
-            previous_logical_time = previous.logical_time or (previous.valid_from.logical_time if previous.valid_from is not None else None)
-            current_logical_time = current.logical_time or (current.valid_from.logical_time if current.valid_from is not None else None)
+            previous_logical_time = _effective_version_logical_time(previous)
+            current_logical_time = _effective_version_logical_time(current)
             if previous_logical_time is not None and current_logical_time is not None:
                 logical_only = previous.valid_from is None and current.valid_from is None
                 if previous_logical_time > current_logical_time or (logical_only and previous_logical_time == current_logical_time):

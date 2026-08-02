@@ -269,6 +269,28 @@ def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
     with pytest.raises(ValidationError, match="strict|logical"):
         ObjectVersionHistoryV3(object_key=key(), versions=(logical_equal_0, logical_equal_1))
 
+    logical_from_a = ExportedEventAnchorV3(event_id="ta", sequence_index=0, logical_time="a")
+    logical_until_z = ExportedEventAnchorV3(event_id="tz", sequence_index=2, logical_time="z")
+    logical_source_a = ExportedEventAnchorV3(event_id="ts", sequence_index=1, logical_time="a")
+    with pytest.raises(ValidationError, match="equal|logical_time"):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=logical_from_a, valid_until=logical_until_z, logical_time="z", source_anchors=(logical_source_a,))
+    assert ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=logical_from_a, valid_until=logical_until_z, source_anchors=(logical_source_a,)).logical_time is None
+    only_record = ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=e2, logical_time="a", source_anchors=(e0,))
+    assert only_record.logical_time == "a"
+    equal_dual = ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=logical_from_a, valid_until=logical_until_z, logical_time="a", source_anchors=(logical_source_a,))
+    assert equal_dual.logical_time == logical_from_a.logical_time
+    source_before_effective = ExportedEventAnchorV3(event_id="before", sequence_index=1, logical_time="a")
+    with pytest.raises(ValidationError, match="logical-time interval"):
+        ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=e0, valid_until=logical_until_z, logical_time="b", source_anchors=(source_before_effective,))
+
+    adjacent_start = ExportedEventAnchorV3(event_id="adj0", sequence_index=0)
+    adjacent_boundary = ExportedEventAnchorV3(event_id="adj1", sequence_index=2)
+    first_source = ExportedEventAnchorV3(event_id="adj-source", sequence_index=1, logical_time="z")
+    first_adjacent = ExportedVersionRecordV3(version_index=0, status="present", value="x", valid_from=adjacent_start, valid_until=adjacent_boundary, logical_time="z", source_anchors=(first_source,))
+    second_adjacent = ExportedVersionRecordV3(version_index=1, status="present", value="y", valid_from=adjacent_boundary, logical_time="a", source_anchors=(ExportedEventAnchorV3(event_id="adj1", sequence_index=2, logical_time="a"),))
+    with pytest.raises(ValidationError, match="logical"):
+        ObjectVersionHistoryV3(object_key=key(), versions=(first_adjacent, second_adjacent))
+
     source_a5 = ExportedEventAnchorV3(event_id="sa5", sequence_index=0, logical_time="a5")
     source_b = ExportedEventAnchorV3(event_id="sb", sequence_index=1, logical_time="b")
     source_z = ExportedEventAnchorV3(event_id="sz", sequence_index=0, logical_time="z")
