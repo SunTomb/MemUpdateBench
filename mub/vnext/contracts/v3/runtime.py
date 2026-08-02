@@ -5,19 +5,78 @@ from typing import Literal
 from pydantic import Field, JsonValue, model_validator
 from typing_extensions import Self
 
-from mub.vnext.contracts.common import ImmutableContractModel, MemoryObjectKey, StrictBool, StrictNonnegativeFloat
+from mub.vnext.contracts.common import ImmutableContractModel, StrictBool, StrictNonnegativeFloat
 from mub.vnext.contracts.enums import ActionScope, AnswerDisposition, CompletionStatus, Operation
-from mub.vnext.contracts.runtime import MemorySnapshot, ParserExtractorProvenance, RetrievalTrace
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, validate_action_coherence
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3
 from mub.vnext.contracts.v3.version import RUNTIME_RECORD_VERSION_V3, SCHEMA_VERSION_V3
+
+
+class MemoryEntryRecordV3(ImmutableContractModel):
+    entry_id: str = Field(strict=True, min_length=1)
+    content: str = Field(strict=True)
+    object_key_candidate: MemoryObjectKeyV3 | None = None
+    value_candidate: FrozenJsonValue | None = None
+    created_at: str | None = Field(default=None, strict=True)
+    updated_at: str | None = Field(default=None, strict=True)
+    source_event_ids: tuple[str, ...] = ()
+    version_index: int | None = Field(default=None, strict=True, ge=0)
+    raw_metadata: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+
+class MemorySnapshotV3(ImmutableContractModel):
+    after_event_id: str | None = Field(default=None, strict=True)
+    entries: tuple[MemoryEntryRecordV3, ...] = ()
+    state_by_object: FrozenJsonObjectV3 = Field(default_factory=dict)
+    store_size: int = Field(strict=True, ge=0)
+    raw_adapter_state: FrozenJsonValue | None = None
+    snapshot_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
+
+
+class RetrievalTraceV3(ImmutableContractModel):
+    query_id: str = Field(strict=True, min_length=1)
+    retrieved_entries: tuple[MemoryEntryRecordV3, ...] = ()
+    scores: tuple[float, ...] = ()
+    ranks: tuple[int, ...] = ()
+    gold_in_context: StrictBool | None = None
+    stale_in_context: StrictBool | None = None
+    distractor_in_context: StrictBool | None = None
+    retrieval_policy: str | None = None
+    context_order: str | None = None
+    version_metadata: FrozenJsonObjectV3 = Field(default_factory=dict)
+    prompt_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
+
+    @model_validator(mode="after")
+    def _lengths(self) -> Self:
+        if self.scores and len(self.scores) != len(self.retrieved_entries):
+            raise ValueError("scores length must match retrieved_entries length")
+        if self.ranks and len(self.ranks) != len(self.retrieved_entries):
+            raise ValueError("ranks length must match retrieved_entries length")
+        if any(type(score) is not float for score in self.scores):
+            raise ValueError("scores must be exact finite floats")
+        if any(type(rank) is not int or isinstance(rank, bool) or rank <= 0 for rank in self.ranks):
+            raise ValueError("ranks must be exact positive integers")
+        return self
+
+
+class ParserExtractorProvenanceV3(ImmutableContractModel):
+    action_parser_version: str = Field(strict=True, min_length=1)
+    answer_parser_version: str = Field(strict=True, min_length=1)
+    memory_entry_extractor_version: str = Field(strict=True, min_length=1)
+    object_value_extractor_config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
+    redaction_policy_version: str = Field(strict=True, min_length=1)
+    raw_provider_artifact_path: str | None = None
+    raw_provider_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
+    raw_adapter_state_path: str | None = None
+    raw_adapter_state_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
 
 
 class ParsedManagerActionV3(ImmutableContractModel):
     event_id: str = Field(strict=True, min_length=1)
     operation: Operation | None = None
     observed_scope: ActionScope | None = None
-    target_object_keys: tuple[MemoryObjectKey, ...] = ()
-    value: JsonValue | None = None
+    target_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
+    value: FrozenJsonValue | None = None
     format_valid: StrictBool
     execution_status: ExecutionStatusV3
     fallback_used: StrictBool
@@ -27,14 +86,13 @@ class ParsedManagerActionV3(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _validate_scope(self) -> Self:
-        if self.operation == Operation.NOOP:
-            if self.observed_scope is not None or self.target_object_keys or self.value is not None:
-                raise ValueError("NOOP cannot carry scope, targets, or value")
-        elif self.operation is not None:
-            if self.observed_scope is None or not self.target_object_keys:
-                raise ValueError("observed operations require scope and target objects")
-        if len({key.canonical_id for key in self.target_object_keys}) != len(self.target_object_keys):
-            raise ValueError("target object identities must be unique")
+        validate_action_coherence(
+            operation=self.operation,
+            scope=self.observed_scope,
+            targets=self.target_object_keys,
+            value=self.value,
+            executed=self.execution_status == ExecutionStatusV3.EXECUTED,
+        )
         if self.execution_status == ExecutionStatusV3.EXECUTED and not self.format_valid:
             raise ValueError("executed actions must be format-valid")
         return self
@@ -44,15 +102,15 @@ class AnswerPredictionV3(ImmutableContractModel):
     query_id: str = Field(strict=True, min_length=1)
     raw_output: str = Field(strict=True)
     disposition: AnswerDisposition = AnswerDisposition.ANSWERED
-    parsed_answer: JsonValue | None = None
+    parsed_answer: FrozenJsonValue | None = None
     cited_event_ids: tuple[str, ...] = ()
     cited_entry_ids: tuple[str, ...] = ()
-    cited_object_keys: tuple[MemoryObjectKey, ...] = ()
+    cited_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     cited_derivation_step_ids: tuple[str, ...] = ()
     format_valid: StrictBool
     error_flags: tuple[str, ...] = ()
     latency_ms: StrictNonnegativeFloat | None = None
-    usage: dict[str, int] = Field(default_factory=dict)
+    usage: FrozenUsageMap = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_prediction(self) -> Self:
@@ -77,12 +135,12 @@ class TaskRunRecordV3(ImmutableContractModel):
     adapter_id: str = Field(strict=True, min_length=1)
     run_id: str = Field(strict=True, min_length=1)
     parsed_actions: tuple[ParsedManagerActionV3, ...] = ()
-    memory_snapshots: tuple[MemorySnapshot, ...] = ()
-    retrieval_traces: tuple[RetrievalTrace, ...] = ()
+    memory_snapshots: tuple[MemorySnapshotV3, ...] = ()
+    retrieval_traces: tuple[RetrievalTraceV3, ...] = ()
     answer_predictions: tuple[AnswerPredictionV3, ...] = ()
-    system_events: tuple[dict[str, JsonValue], ...] = ()
-    parser_extractor_provenance: ParserExtractorProvenance
-    exceptions: tuple[dict[str, JsonValue], ...] = ()
+    system_events: tuple[FrozenJsonObjectV3, ...] = ()
+    parser_extractor_provenance: ParserExtractorProvenanceV3
+    exceptions: tuple[FrozenJsonObjectV3, ...] = ()
     completion_status: CompletionStatus
 
     @model_validator(mode="after")
@@ -96,4 +154,4 @@ class TaskRunRecordV3(ImmutableContractModel):
         return self
 
 
-__all__ = ["AnswerPredictionV3", "ParsedManagerActionV3", "TaskRunRecordV3"]
+__all__ = ["AnswerPredictionV3", "MemoryEntryRecordV3", "MemorySnapshotV3", "ParsedManagerActionV3", "ParserExtractorProvenanceV3", "RetrievalTraceV3", "TaskRunRecordV3"]

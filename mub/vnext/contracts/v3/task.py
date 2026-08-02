@@ -3,19 +3,115 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 from typing_extensions import Self
 
-from mub.vnext.contracts.common import ImmutableContractModel, MemoryObjectKey, SourceRecord
-from mub.vnext.contracts.enums import AnswerSchema, Difficulty, EvaluationMode
-from mub.vnext.contracts.task import GoldAction, MemoryEvent, TaskMetadata
+from mub.vnext.contracts.common import ImmutableContractModel
+from mub.vnext.contracts.enums import ActionScope, AnswerSchema, Difficulty, EvaluationMode, EventRole, Operation, SourceType, Split
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, object_identity, validate_action_coherence
 from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3, SynthesisKindV3
 from mub.vnext.contracts.v3.version import SCHEMA_VERSION_V3
 
 StrictString = Annotated[str, Field(strict=True, min_length=1)]
 StrictIndex = Annotated[int, Field(strict=True, ge=0)]
+HashString = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
+
+
+class GeneratorProvenanceV3(ImmutableContractModel):
+    generator_name: StrictString
+    seed: Annotated[int, Field(strict=True)]
+    config_sha256: HashString
+    code_revision: StrictString
+    compiler_version: StrictString
+
+
+class SourceRecordV3(ImmutableContractModel):
+    source_id: StrictString
+    source_type: SourceType
+    source_uri: str | None
+    license_or_privacy: StrictString
+    raw_hash: HashString | None
+    normalized_hash: HashString
+    normalization_version: StrictString
+    provenance: FrozenJsonObjectV3 = Field(default_factory=dict)
+    generator: GeneratorProvenanceV3 | None = None
+
+    @model_validator(mode="after")
+    def _synthetic_generator(self) -> Self:
+        if self.source_type == SourceType.SYNTHETIC and self.generator is None:
+            raise ValueError("synthetic sources require generator provenance")
+        return self
+
+
+class MemoryEventV3(ImmutableContractModel):
+    event_id: StrictString
+    sequence_index: StrictIndex
+    timestamp: str | None = Field(default=None, strict=True)
+    raw_text: str = Field(strict=True)
+    normalized_text: str = Field(strict=True)
+    speaker: str | None = Field(default=None, strict=True)
+    gold_action_ids: tuple[StrictString, ...] = ()
+    role: EventRole
+    source_anchor: FrozenJsonObjectV3 = Field(default_factory=dict)
+    metadata: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+
+class SplitKeyV3(ImmutableContractModel):
+    semantic_core_id: StrictString
+    source_group_id: StrictString
+    trajectory_id: StrictString
+    paraphrase_group_id: str | None = None
+    source_document_id: str | None = None
+    version_group_id: str | None = None
+    split_exception_id: str | None = None
+    split_policy_version: StrictString
+
+
+class LegacyProvenanceV3(ImmutableContractModel):
+    legacy_family_id: StrictString
+    legacy_phase: StrictString
+    legacy_dataset_id: StrictString
+    legacy_split_id: StrictString
+    legacy_metric_namespace: StrictString
+    legacy_run_condition_id: str | None = None
+    checkpoint_family: str | None = None
+    training_seed: int | None = Field(default=None, strict=True)
+    answer_mode: str | None = None
+    memory_trajectory_id: str | None = None
+    source_artifact_path: StrictString
+    source_artifact_hash: HashString
+    known_caveats: tuple[str, ...] = ()
+
+
+class TaskMetadataV3(ImmutableContractModel):
+    split: Split
+    split_key: SplitKeyV3
+    profile_name: Difficulty
+    resolved_profile: FrozenJsonObjectV3 = Field(default_factory=dict)
+    generation_config_hash: HashString
+    compiler_version: StrictString
+    tags: tuple[str, ...] = ()
+    legacy_provenance: LegacyProvenanceV3 | None = None
+    extra: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+
+class GoldActionV3(ImmutableContractModel):
+    action_id: StrictString
+    event_id: StrictString
+    operation: Operation
+    scope: ActionScope | None = None
+    target_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
+    value: FrozenJsonValue | None = None
+    effective_at: str | None = Field(default=None, strict=True)
+    expected_effect: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        validate_action_coherence(operation=self.operation, scope=self.scope, targets=self.target_object_keys, value=self.value)
+        return self
 
 
 class CurrentSelector(ImmutableContractModel):
@@ -67,7 +163,7 @@ class OrderedHistorySelector(ImmutableContractModel):
 
 class MultiObjectCurrentSelector(ImmutableContractModel):
     kind: Literal["multi_object_current"] = "multi_object_current"
-    object_keys: tuple[MemoryObjectKey, ...] = Field(min_length=2)
+    object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=2)
 
     @model_validator(mode="after")
     def _unique(self) -> Self:
@@ -103,7 +199,7 @@ class MemoryQueryV3(ImmutableContractModel):
     query_type: QueryTypeV3
     text: Annotated[str, Field(strict=True)]
     selector: SelectorV3
-    target_object_keys: tuple[MemoryObjectKey, ...] = Field(min_length=1)
+    target_object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
     answer_schema: AnswerSchema
     evaluation_mode: EvaluationMode
     synthesis: SynthesisSpecV3 | None = None
@@ -140,7 +236,7 @@ class MemoryQueryV3(ImmutableContractModel):
 class VersionHistoryEntry(ImmutableContractModel):
     version_index: StrictIndex
     status: LedgerEntryStatus
-    value: JsonValue | None = None
+    value: FrozenJsonValue | None = None
     valid_from_event_id: StrictString | None = None
     valid_until_event_id: StrictString | None = None
     logical_time: StrictString | None = None
@@ -160,7 +256,7 @@ class VersionHistoryEntry(ImmutableContractModel):
 
 
 class VersionHistoryLedger(ImmutableContractModel):
-    object_key: MemoryObjectKey
+    object_key: MemoryObjectKeyV3
     entries: tuple[VersionHistoryEntry, ...]
 
     @model_validator(mode="after")
@@ -175,22 +271,21 @@ class VersionHistoryLedger(ImmutableContractModel):
 
     @property
     def semantic_hash(self) -> str:
-        payload = {"identity": self.semantic_identity, "entries": self.model_dump(mode="json")["entries"]}
-        return hashlib.sha256(_canonical_bytes(_without_object_type(payload))).hexdigest()
+        return hashlib.sha256(_canonical_bytes(_semantic_value(self))).hexdigest()
 
 
 class DerivationStepV3(ImmutableContractModel):
     step_id: StrictString
     operation: StrictString
     input_step_ids: tuple[StrictString, ...] = ()
-    supporting_object_keys: tuple[MemoryObjectKey, ...] = ()
+    supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     supporting_event_ids: tuple[StrictString, ...] = ()
 
 
 class QueryGoldEvidenceV3(ImmutableContractModel):
     query_id: StrictString
-    answer: JsonValue
-    supporting_object_keys: tuple[MemoryObjectKey, ...] = Field(min_length=1)
+    answer: FrozenJsonValue
+    supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
     supporting_event_ids: tuple[StrictString, ...] = Field(min_length=1)
     derivation_steps: tuple[DerivationStepV3, ...] = Field(min_length=1)
     final_derivation_step_id: StrictString
@@ -202,6 +297,7 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
             raise ValueError("derivation step IDs must be unique")
         if self.final_derivation_step_id not in steps:
             raise ValueError("final derivation step is unknown")
+        positions = {step.step_id: index for index, step in enumerate(self.derivation_steps)}
         for step in self.derivation_steps:
             if set(step.input_step_ids) - steps.keys():
                 raise ValueError("derivation references unknown input step")
@@ -220,6 +316,9 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
         visit(self.final_derivation_step_id)
         if reached != set(steps):
             raise ValueError("disconnected derivation graph")
+        for step in self.derivation_steps:
+            if any(positions[parent] >= positions[step.step_id] for parent in step.input_step_ids):
+                raise ValueError("derivation steps must be in topological order")
         return self
 
 
@@ -228,14 +327,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
     schema_version: Literal[SCHEMA_VERSION_V3] = SCHEMA_VERSION_V3
     task_family: StrictString
     difficulty: Difficulty
-    source: SourceRecord
-    events: tuple[MemoryEvent, ...]
-    target_objects: tuple[MemoryObjectKey, ...] = Field(min_length=1)
-    actions: tuple[GoldAction, ...] = ()
+    source: SourceRecordV3
+    events: tuple[MemoryEventV3, ...]
+    target_objects: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
+    actions: tuple[GoldActionV3, ...] = ()
     queries: tuple[MemoryQueryV3, ...] = Field(min_length=1)
     version_history: tuple[VersionHistoryLedger, ...] = Field(min_length=1)
     gold_evidence: tuple[QueryGoldEvidenceV3, ...] = Field(min_length=1)
-    metadata: TaskMetadata
+    metadata: TaskMetadataV3
 
     @model_validator(mode="after")
     def _validate_structure(self) -> Self:
@@ -246,14 +345,27 @@ class MemUpdateTaskV3(ImmutableContractModel):
         if len(declared) != len(self.target_objects):
             raise ValueError("target object identities must be unique")
         histories = {_identity(item.object_key): item for item in self.version_history}
+        if len(histories) != len(self.version_history):
+            raise ValueError("duplicate canonical version ledgers are not allowed")
         if set(histories) != declared:
             raise ValueError("version histories must cover declared targets exactly")
+        event_position = {event_id: index for index, event_id in enumerate(event_ids)}
+        action_by_id = {action.action_id: action for action in self.actions}
+        if len(action_by_id) != len(self.actions):
+            raise ValueError("action IDs must be unique")
+        for event in self.events:
+            if len(event.gold_action_ids) != len(set(event.gold_action_ids)):
+                raise ValueError("event gold action IDs must be unique")
+            for action_id in event.gold_action_ids:
+                if action_id not in action_by_id or action_by_id[action_id].event_id != event.event_id:
+                    raise ValueError("event references missing or mismatched action")
         for action in self.actions:
             if action.event_id not in event_ids:
                 raise ValueError("action references unknown event")
+            if action.action_id not in self.events[event_position[action.event_id]].gold_action_ids:
+                raise ValueError("action is not owned by its source event")
             if {_identity(key) for key in action.target_object_keys} - declared:
                 raise ValueError("action targets undeclared object")
-        event_position = {event_id: index for index, event_id in enumerate(event_ids)}
         for ledger in self.version_history:
             for index, entry in enumerate(ledger.entries):
                 anchors = {entry.valid_from_event_id, entry.valid_until_event_id} - {None}
@@ -261,10 +373,27 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("version history references unknown event anchor")
                 if entry.valid_from_event_id is not None and entry.valid_until_event_id is not None and event_position[entry.valid_from_event_id] >= event_position[entry.valid_until_event_id]:
                     raise ValueError("version validity event interval must be ordered")
+                source_positions = [event_position[event_id] for event_id in entry.source_event_ids]
+                if source_positions != sorted(source_positions):
+                    raise ValueError("version source events must be chronological")
+                if entry.valid_from_event_id is not None and any(position < event_position[entry.valid_from_event_id] for position in source_positions):
+                    raise ValueError("source event precedes version validity")
+                if entry.valid_until_event_id is not None and any(position >= event_position[entry.valid_until_event_id] for position in source_positions):
+                    raise ValueError("source event falls outside version validity")
                 if index + 1 < len(ledger.entries):
                     following = ledger.entries[index + 1]
-                    if entry.valid_until_event_id is not None and following.valid_from_event_id is not None and entry.valid_until_event_id != following.valid_from_event_id:
+                    event_boundary = (entry.valid_until_event_id, following.valid_from_event_id)
+                    if (event_boundary[0] is None) != (event_boundary[1] is None):
+                        raise ValueError("adjacent partial event intervals are not allowed")
+                    if event_boundary[0] is not None and event_boundary[0] != event_boundary[1]:
                         raise ValueError("adjacent version validity intervals must be contiguous")
+                    logical_boundary = (entry.logical_time, following.logical_time)
+                    if (logical_boundary[0] is None) != (logical_boundary[1] is None):
+                        raise ValueError("adjacent partial logical-time intervals are not allowed")
+                    if logical_boundary[0] is not None and logical_boundary[0] >= logical_boundary[1]:
+                        raise ValueError("logical-time anchors must be strictly increasing")
+                    if event_boundary == (None, None) and logical_boundary == (None, None):
+                        raise ValueError("adjacent versions require event or logical-time continuity")
         query_by_id = {query.query_id: query for query in self.queries}
         if len(query_by_id) != len(self.queries):
             raise ValueError("query IDs must be unique")
@@ -275,6 +404,8 @@ class MemUpdateTaskV3(ImmutableContractModel):
             targets = {_identity(key) for key in query.target_object_keys}
             if not targets <= declared:
                 raise ValueError("query targets undeclared object")
+            if any(not histories[target].entries for target in targets):
+                raise ValueError("query selectors require nonempty version histories")
             selector = query.selector
             if isinstance(selector, EventAnchorSelector):
                 if selector.event_id not in event_ids or any(
@@ -312,41 +443,116 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 raise ValueError("answer evidence is not coherent with query targets")
             if set(evidence.supporting_event_ids) - set(event_ids):
                 raise ValueError("gold evidence references unknown event")
+            _validate_answer_schema(evidence.answer, query.answer_schema)
+            selected_entries = [
+                entry
+                for target in targets
+                for entry in _selector_entries(query.selector, histories[target], event_position)
+            ]
+            if not selected_entries:
+                raise ValueError("selector does not resolve any version history entries")
+            required_events = {event_id for entry in selected_entries for event_id in entry.source_event_ids}
+            if not required_events <= set(evidence.supporting_event_ids):
+                raise ValueError("evidence does not support selector-selected versions")
             step_ids = {step.step_id for step in evidence.derivation_steps}
             for step in evidence.derivation_steps:
                 if {_identity(key) for key in step.supporting_object_keys} - evidence_objects:
                     raise ValueError("derivation uses object outside evidence scope")
                 if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
                     raise ValueError("derivation uses event outside evidence scope")
-            if query.query_type in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}:
-                if len(step_ids) < 2:
-                    raise ValueError("G derivations require multiple connected steps")
+            if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
+                minimum_hops = query.synthesis.minimum_hops
+                if _derivation_depth(evidence) < minimum_hops:
+                    raise ValueError("G derivation does not satisfy minimum_hops")
+            if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
+                minimum_objects = query.synthesis.minimum_objects
+                if len(targets) < minimum_objects or len(evidence_objects) < minimum_objects:
+                    raise ValueError("G derivation does not satisfy minimum_objects")
         return self
 
     @property
     def semantic_identity(self) -> Mapping[str, JsonValue]:
-        payload = self.model_dump(mode="json", exclude={"task_id", "metadata"})
-        return _without_object_type(payload)
+        return {
+            name: _semantic_value(getattr(self, name))
+            for name in self.__class__.model_fields
+            if name not in {"task_id", "metadata"}
+        }
 
     @property
     def semantic_hash(self) -> str:
         return hashlib.sha256(_canonical_bytes(self.semantic_identity)).hexdigest()
 
 
-def _identity(key: MemoryObjectKey) -> tuple[str, str, str, str | None]:
+def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
     return key.namespace, key.entity, key.attribute, key.subkey
 
 
-def _require_unique_objects(keys: tuple[MemoryObjectKey, ...], label: str) -> None:
+def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> None:
     if len({_identity(key) for key in keys}) != len(keys):
         raise ValueError(f"{label} must contain unique canonical identities")
 
 
-def _without_object_type(value):
-    if isinstance(value, dict):
-        return {key: _without_object_type(item) for key, item in value.items() if key != "object_type"}
+def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_position: Mapping[str, int]) -> tuple[VersionHistoryEntry, ...]:
+    entries = ledger.entries
+    if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
+        return entries[-1:]
+    if isinstance(selector, PreviousSelector):
+        return entries[-2:-1]
+    if isinstance(selector, ExactVersionSelector):
+        return (entries[selector.version_index],)
+    if isinstance(selector, TransitionSelector):
+        return (entries[selector.from_version_index], entries[selector.to_version_index])
+    if isinstance(selector, OrderedHistorySelector):
+        start = selector.start_version_index or 0
+        end = selector.end_version_index if selector.end_version_index is not None else len(entries) - 1
+        return entries[start : end + 1]
+    if isinstance(selector, LogicalTimeAnchorSelector):
+        return tuple(entry for entry in entries if entry.logical_time == selector.logical_time)
+    if isinstance(selector, EventAnchorSelector):
+        anchor = event_position[selector.event_id]
+        return tuple(
+            entry for entry in entries
+            if selector.event_id in entry.source_event_ids
+            or (
+                entry.valid_from_event_id is not None
+                and event_position[entry.valid_from_event_id] <= anchor
+                and (entry.valid_until_event_id is None or anchor < event_position[entry.valid_until_event_id])
+            )
+        )
+    raise TypeError("unknown selector")
+
+
+def _validate_answer_schema(answer, schema: AnswerSchema) -> None:
+    valid = {
+        AnswerSchema.STRING: type(answer) is str,
+        AnswerSchema.NUMBER: type(answer) in {int, float},
+        AnswerSchema.BOOLEAN: type(answer) is bool,
+        AnswerSchema.LIST: isinstance(answer, tuple),
+        AnswerSchema.OBJECT: isinstance(answer, Mapping),
+    }[schema]
+    if not valid:
+        raise ValueError(f"gold answer does not match answer_schema={schema.value}")
+
+
+def _derivation_depth(evidence: QueryGoldEvidenceV3) -> int:
+    depths: dict[str, int] = {}
+    for step in evidence.derivation_steps:
+        depths[step.step_id] = 1 + max((depths[parent] for parent in step.input_step_ids), default=0)
+    return depths[evidence.final_derivation_step_id]
+
+
+def _semantic_value(value):
+    if hasattr(value, "namespace") and hasattr(value, "entity") and hasattr(value, "attribute") and hasattr(value, "subkey") and hasattr(value, "object_type"):
+        namespace, entity, attribute, subkey = object_identity(value)
+        return {"namespace": namespace, "entity": entity, "attribute": attribute, "subkey": subkey}
+    if isinstance(value, BaseModel):
+        return {name: _semantic_value(getattr(value, name)) for name in value.__class__.model_fields}
+    if isinstance(value, Mapping):
+        return {key: _semantic_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_without_object_type(item) for item in value]
+        return [_semantic_value(item) for item in value]
+    if isinstance(value, Enum):
+        return value.value
     return value
 
 
@@ -366,10 +572,10 @@ VersionLedgerV3 = VersionHistoryLedger
 
 __all__ = [
     "CurrentSelector", "DerivationStepV3", "EventAnchorSelector", "ExactVersionIndexSelector", "ExactVersionSelector",
-    "GoldEvidenceV3", "HistorySelector",
-    "LedgerEntryStatus", "LogicalTimeAnchorSelector", "LogicalTimeSelector", "MemUpdateTaskV3", "MemoryQueryV3",
+    "GeneratorProvenanceV3", "GoldActionV3", "GoldEvidenceV3", "HistorySelector",
+    "LedgerEntryStatus", "LegacyProvenanceV3", "LogicalTimeAnchorSelector", "LogicalTimeSelector", "MemUpdateTaskV3", "MemoryEventV3", "MemoryQueryV3",
     "MultiObjectCurrentConsistencySynthesis", "MultiObjectCurrentSelector", "MultiObjectCurrentStateSelector", "OrderedHistorySelector",
-    "PreviousSelector", "QueryGoldEvidenceV3", "SelectorV3", "SynthesisSpecV3",
+    "PreviousSelector", "QueryGoldEvidenceV3", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "SynthesisSpecV3", "TaskMetadataV3",
     "TransitionSelector", "UpdateSensitiveMultiHopSynthesis", "VersionHistoryEntry", "VersionHistoryLedger",
     "VersionIndexSelector", "VersionLedgerEntryV3", "VersionLedgerV3",
 ]
