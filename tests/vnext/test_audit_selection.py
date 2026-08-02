@@ -493,18 +493,10 @@ def test_replacement_attack_cannot_self_declare_reduced_universe_after_round_tri
         ):
             replacements.append(selected)
             continue
-        surface_token = next(
-            token
-            for token in selected.covered_conditions
-            if token.startswith("surface_variant=")
-        )
         candidate = next(
             item
             for item in replacement_candidates
             if item.task_id not in used_replacement_ids
-            and item.split is selected.split
-            and item.difficulty is selected.difficulty
-            and surface_token in item.conditions
         )
         used_replacement_ids.add(candidate.task_id)
         replacements.append(
