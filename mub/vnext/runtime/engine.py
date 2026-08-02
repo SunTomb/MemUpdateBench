@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,7 @@ from mub.vnext.contracts.runtime import (
     RetrievalTrace,
     TaskRunRecord,
 )
+from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.task import MemUpdateTask, MemoryEvent, MemoryQuery
 from mub.vnext.io.canonical import semantic_task_hash
 
@@ -127,17 +129,39 @@ def _adapter_capabilities(adapter: MemoryAdapter) -> AdapterCapabilities:
         return AdapterCapabilities()
 
 
-def _gold_action(task: MemUpdateTask, event_id: str):
-    order = {action_id: index for index, action_id in enumerate(task.gold.action_sequence)}
-    candidates = [action for action in task.gold.actions if action.event_id == event_id]
-    return min(candidates, key=lambda item: order[item.action_id]) if candidates else None
-
-
-def _normalize_action(task: MemUpdateTask, event: MemoryEvent, log: AdapterActionLog, capture_timing: bool) -> ParsedManagerAction:
-    action = _gold_action(task, event.event_id)
-    operation = log.effective_operation or log.requested_operation or (action.operation if action else None)
-    key = action.target_object_keys[0] if action and action.target_object_keys else None
-    value = action.value if action and operation in {Operation.ADD, Operation.UPDATE} else None
+def _normalize_action(
+    event: MemoryEvent,
+    log: AdapterActionLog,
+    capture_timing: bool,
+) -> ParsedManagerAction:
+    operation = log.effective_operation or log.requested_operation
+    object_key = None
+    value = None
+    format_valid = operation is not None
+    raw_output = str(
+        log.raw_action if log.raw_action is not None else event.raw_text
+    )
+    if isinstance(log.raw_action, Mapping):
+        raw_operation = log.raw_action.get("operation")
+        if operation is None and isinstance(raw_operation, str):
+            try:
+                operation = Operation(raw_operation)
+            except ValueError:
+                operation = None
+        key_payload = log.raw_action.get("target_object_key")
+        if key_payload is not None:
+            try:
+                object_key = MemoryObjectKey.model_validate(key_payload)
+            except (TypeError, ValueError):
+                object_key = None
+                format_valid = False
+        value = log.raw_action.get("value")
+        supplied_valid = log.raw_action.get("format_valid")
+        if type(supplied_valid) is bool:
+            format_valid = format_valid and supplied_valid
+        text = log.raw_action.get("text")
+        if isinstance(text, str):
+            raw_output = text
     error_flags: list[str] = []
     if isinstance(log.error, dict):
         flags = log.error.get("failure_flags")
@@ -145,16 +169,18 @@ def _normalize_action(task: MemUpdateTask, event: MemoryEvent, log: AdapterActio
             error_flags.extend(str(item) for item in flags)
         if log.error.get("code"):
             error_flags.append(str(log.error["code"]))
+    if not format_valid and "invalid_action_format" not in error_flags:
+        error_flags.append("invalid_action_format")
     return ParsedManagerAction(
         event_id=event.event_id,
         operation=operation,
-        target_object_key=key,
+        target_object_key=object_key,
         value=value,
-        format_valid=operation is not None,
+        format_valid=format_valid,
         execution_status="failed" if log.error else "succeeded",
         fallback_used=False,
         error_flags=error_flags,
-        raw_output=str(log.raw_action if log.raw_action is not None else event.raw_text),
+        raw_output=raw_output,
         latency_ms=log.latency_ms if capture_timing else None,
     )
 
@@ -276,7 +302,9 @@ def execute_task(task: MemUpdateTask, adapter: MemoryAdapter, run_config: Runtim
                 try:
                     log = adapter.ingest_event(event)
                     log = log if isinstance(log, AdapterActionLog) else AdapterActionLog.model_validate(log)
-                    parsed_actions.append(_normalize_action(task, event, log, run_config.capture_timing))
+                    parsed_actions.append(
+                        _normalize_action(event, log, run_config.capture_timing)
+                    )
                     if run_config.capture_snapshots:
                         snapshots.append(_snapshot(adapter, event.event_id, run_config.capture_timing))
                     if log.error:

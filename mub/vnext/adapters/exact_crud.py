@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mub.vnext.contracts import AdapterActionLog, MemoryEntryRecord, MemoryEvent, Operation
-from mub.vnext.adapters.reference import BaseBuiltinAdapter, ParsedEvent, parse_event_text, _entry_content
+from mub.vnext.adapters.reference import BaseBuiltinAdapter, ParsedEvent, _action_payload, parse_event_text, _entry_content
 
 
 class ExactCrudAdapter(BaseBuiltinAdapter):
@@ -53,12 +53,12 @@ class ExactCrudAdapter(BaseBuiltinAdapter):
             raise TypeError("event must be a MemoryEvent")
         parsed = parse_event_text(event)
         if not parsed.format_valid:
-            return AdapterActionLog(event_id=event.event_id, raw_action=event.raw_text, error={"code": "invalid_action_format", "reason": parsed.error})
+            return AdapterActionLog(event_id=event.event_id, raw_action=_action_payload(event, parsed), error={"code": "invalid_action_format", "reason": parsed.error})
         if parsed.operation is Operation.NOOP:
             self._actions.append({"event_id": event.event_id, "operation": "NOOP", "target_object_keys": []})
-            return AdapterActionLog(event_id=event.event_id, requested_operation=Operation.NOOP, effective_operation=Operation.NOOP, raw_action=event.raw_text)
+            return AdapterActionLog(event_id=event.event_id, requested_operation=Operation.NOOP, effective_operation=Operation.NOOP, raw_action=_action_payload(event, parsed))
         if parsed.object_key is None:
-            return AdapterActionLog(event_id=event.event_id, raw_action=event.raw_text, error={"code": "invalid_action_format", "reason": "object_key_required"})
+            return AdapterActionLog(event_id=event.event_id, raw_action=_action_payload(event, parsed), error={"code": "invalid_action_format", "reason": "object_key_required"})
         object_id = parsed.object_key.canonical_id
         if parsed.operation in {Operation.ADD, Operation.UPDATE}:
             self._history.setdefault(object_id, []).append(parsed.value)
@@ -71,7 +71,7 @@ class ExactCrudAdapter(BaseBuiltinAdapter):
             entry = self._write_current(event, parsed)
             affected = [entry.entry_id]
         self._actions.append({"event_id": event.event_id, "operation": parsed.operation.value, "target_object_keys": [object_id], "entry_ids": affected})
-        return AdapterActionLog(event_id=event.event_id, requested_operation=parsed.operation, effective_operation=parsed.operation, affected_entry_ids=affected, raw_action=event.raw_text)
+        return AdapterActionLog(event_id=event.event_id, requested_operation=parsed.operation, effective_operation=parsed.operation, affected_entry_ids=affected, raw_action=_action_payload(event, parsed))
 
 
 __all__ = ["ExactCrudAdapter"]

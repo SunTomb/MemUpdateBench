@@ -4,7 +4,7 @@ import json
 from typing import Any, ClassVar
 
 from mub.vnext.adapters.exact_crud import ExactCrudAdapter
-from mub.vnext.adapters.reference import ParsedEvent, parse_event_text
+from mub.vnext.adapters.reference import ParsedEvent, _action_payload, parse_event_text
 from mub.vnext.contracts import (
     AdapterActionLog,
     AnswerDisposition,
@@ -194,7 +194,7 @@ class CorruptedControlAdapter(ExactCrudAdapter):
                 event_id=event.event_id,
                 requested_operation=Operation.NOOP,
                 effective_operation=Operation.NOOP,
-                raw_action=event.raw_text,
+                raw_action=_action_payload(event, parsed),
             )
         if key is None or parsed.operation is None:
             return self._invalid(event)
@@ -222,7 +222,7 @@ class CorruptedControlAdapter(ExactCrudAdapter):
             requested_operation=parsed.operation,
             effective_operation=parsed.operation,
             affected_entry_ids=affected,
-            raw_action=event.raw_text,
+            raw_action=_action_payload(event, parsed),
         )
 
     def _apply_append(self, event: MemoryEvent, parsed: ParsedEvent, *, flags: tuple[str, ...] = ()) -> AdapterActionLog:
@@ -232,7 +232,7 @@ class CorruptedControlAdapter(ExactCrudAdapter):
                 event_id=event.event_id,
                 requested_operation=Operation.NOOP,
                 effective_operation=Operation.NOOP,
-                raw_action=event.raw_text,
+                raw_action=_action_payload(event, parsed),
             )
         if parsed.operation not in {Operation.ADD, Operation.UPDATE} or parsed.object_key is None:
             return self._invalid(event)
@@ -252,7 +252,7 @@ class CorruptedControlAdapter(ExactCrudAdapter):
             requested_operation=parsed.operation,
             effective_operation=parsed.operation,
             affected_entry_ids=[entry.entry_id],
-            raw_action=event.raw_text,
+            raw_action=_action_payload(event, parsed),
         )
 
     def ingest_event(self, event: MemoryEvent) -> AdapterActionLog:

@@ -73,10 +73,66 @@ def test_builtin_adapters_parse_released_remember_surface(make_task, adapter_typ
     assert adapter.reset("released-surface", {}).success
     log = adapter.ingest_event(event)
     assert log.error is None
+    assert log.raw_action["target_object_key"] == key.model_dump(mode="json")
+    assert log.raw_action["value"] == "Dalian"
     entries = adapter.export_entries()
     assert len(entries) == 1
     assert entries[0].object_key_candidate == key
     assert entries[0].value_candidate == "Dalian"
+
+
+@pytest.mark.parametrize(
+    ("text", "operation"),
+    [
+        (
+            'Remember object(namespace="default", entity="friend:alex", '
+            'attribute="location", subkey=null) with value "Dalian".',
+            Operation.ADD,
+        ),
+        (
+            'Change object(namespace="default", entity="friend:alex", '
+            'attribute="location", subkey=null) to "Dalian".',
+            Operation.UPDATE,
+        ),
+        (
+            'Please add object(namespace="default", entity="friend:alex", '
+            'attribute="location", subkey=null) as "Dalian" to memory.',
+            Operation.ADD,
+        ),
+        (
+            'Please revise the stored value for object(namespace="default", '
+            'entity="friend:alex", attribute="location", subkey=null) to "Dalian".',
+            Operation.UPDATE,
+        ),
+        (
+            'Please revise object(namespace="default", entity="friend:alex", '
+            'attribute="location", subkey=null) so each value is "Dalian".',
+            Operation.UPDATE,
+        ),
+        (
+            'Create a memory entry for object(namespace="default", '
+            'entity="friend:alex", attribute="location", subkey=null): "Dalian".',
+            Operation.ADD,
+        ),
+        (
+            'Correct the stored value for object(namespace="default", '
+            'entity="friend:alex", attribute="location", subkey=null) to "Dalian".',
+            Operation.UPDATE,
+        ),
+    ],
+)
+def test_parse_released_atomic_write_surfaces(make_task, text, operation):
+    task = make_task()
+    event = task.events[0].model_copy(
+        update={"raw_text": text, "normalized_text": text, "metadata": {}}
+    )
+
+    parsed = parse_event_text(event)
+
+    assert parsed.format_valid
+    assert parsed.operation is operation
+    assert parsed.object_key == task.target_objects[0]
+    assert parsed.value == "Dalian"
 
 
 @pytest.mark.parametrize(

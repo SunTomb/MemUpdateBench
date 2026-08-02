@@ -148,6 +148,8 @@ def test_execute_task_success_captures_actions_snapshots_retrieval_and_answer() 
     assert isinstance(row, TaskRunRecord)
     assert row.completion_status is CompletionStatus.COMPLETED
     assert len(row.parsed_actions) == len(task.events)
+    assert all(action.target_object_key is None for action in row.parsed_actions)
+    assert all(action.value is None for action in row.parsed_actions)
     assert len(row.memory_snapshots) == len(task.events)
     assert [trace.query_id for trace in row.retrieval_traces] == ["query_0"]
     assert row.answer_predictions[0].parsed_answer == "Qingdao"

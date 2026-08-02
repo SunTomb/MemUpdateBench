@@ -81,6 +81,20 @@ class ParsedEvent:
     error: str | None = None
 
 
+def _action_payload(event: MemoryEvent, parsed: ParsedEvent) -> dict[str, Any]:
+    return {
+        "text": event.raw_text,
+        "operation": parsed.operation.value if parsed.operation else None,
+        "target_object_key": (
+            parsed.object_key.model_dump(mode="json")
+            if parsed.object_key is not None
+            else None
+        ),
+        "value": parsed.value,
+        "format_valid": parsed.format_valid,
+    }
+
+
 def parse_event_text(event: MemoryEvent) -> ParsedEvent:
     """Parse constrained-slot syntax plus the canonical atomic object rendering."""
     text = event.raw_text.strip() or event.normalized_text.strip()
@@ -120,12 +134,22 @@ def parse_event_text(event: MemoryEvent) -> ParsedEvent:
             op = Operation.ADD
         else:
             op = None
-        value_match = (
-            re.search(r"with\s+value\s+(.+?)(?:\.|$)", text, re.I | re.S)
-            or re.search(r"(?:as|to)\s+(.+?)\s+to\s+memory(?:\.|$)", text, re.I | re.S)
-            or re.search(r"(?:as|to|:)\s*(.+?)(?:\.|$)", text, re.I | re.S)
+        object_match = re.search(
+            r"object\s*\((.*?)\)", text, re.IGNORECASE | re.DOTALL
         )
-        return ParsedEvent(op, key, _json_value(value_match.group(1)) if value_match else None, op is not None)
+        suffix = text[object_match.end():].strip() if object_match else ""
+        value_match = (
+            re.match(r"^with\s+value\s+(.+)$", suffix, re.I | re.S)
+            or re.match(r"^as\s+(.+)\s+to\s+memory\.?$", suffix, re.I | re.S)
+            or re.match(r"^to\s+(.+)$", suffix, re.I | re.S)
+            or re.match(r"^so\s+each\s+value\s+is\s+(.+)$", suffix, re.I | re.S)
+            or re.match(r"^:\s*(.+)$", suffix, re.I | re.S)
+        )
+        value = _json_value(value_match.group(1)) if value_match else None
+        format_valid = op is not None and (
+            op is Operation.DELETE or value_match is not None
+        )
+        return ParsedEvent(op, key, value, format_valid)
 
     metadata_op = event.metadata.get("operation")
     metadata_key = event.metadata.get("object_key") or event.metadata.get("target_object_key")
@@ -397,7 +421,33 @@ class ReferenceAdapter(BaseBuiltinAdapter):
                     self._state.pop(object_id, None)
                     self._entries[:] = [entry for entry in self._entries if entry.object_key_candidate is None or entry.object_key_candidate.canonical_id != object_id]
         self._actions.append({"event_id": event.event_id, "operation": effective.value if effective else None, "target_object_keys": affected, "source_event_ids": [event.event_id]})
-        return AdapterActionLog(event_id=event.event_id, requested_operation=effective, effective_operation=effective, affected_entry_ids=affected, raw_action=event.raw_text)
+        if len(event_actions) == 1:
+            action = event_actions[0]
+            observed_key = (
+                action.target_object_keys[0]
+                if len(action.target_object_keys) == 1
+                else None
+            )
+            observed_value = (
+                action.value
+                if action.operation in {Operation.ADD, Operation.UPDATE}
+                else None
+            )
+            observed = ParsedEvent(
+                action.operation,
+                observed_key,
+                observed_value,
+                True,
+            )
+        else:
+            observed = ParsedEvent(effective, None, None, effective is not None)
+        return AdapterActionLog(
+            event_id=event.event_id,
+            requested_operation=effective,
+            effective_operation=effective,
+            affected_entry_ids=affected,
+            raw_action=_action_payload(event, observed),
+        )
 
 
 __all__ = ["BaseBuiltinAdapter", "ParsedEvent", "ReferenceAdapter", "parse_event_text"]
