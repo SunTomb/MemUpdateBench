@@ -82,7 +82,7 @@ def test_runtime_executed_actions_require_coherent_operation_scope_and_payload()
 def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
     requested = AdapterActionPayloadV3(operation="UPDATE", scope="object", target_object_keys=(key(),), value="requested")
     effective = AdapterActionPayloadV3(operation="NOOP")
-    result = AdapterActionResultV3(event_id="e0", requested_action=requested, effective_action=effective, raw_result={"nested": [1]})
+    result = AdapterActionResultV3(event_id="e0", requested_action=requested, effective_action=effective, execution_status="no_effect", reason="adapter_no_effect", raw_result={"nested": [1]})
     assert result.requested_action.operation.value == "UPDATE"
     assert result.effective_action.operation.value == "NOOP"
     with pytest.raises((TypeError, AttributeError)):
@@ -91,6 +91,8 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
         event_id="e0",
         requested_action=requested,
         effective_action=AdapterActionPayloadV3(operation="ADD", scope="object", target_object_keys=(key(),), value="effective"),
+        execution_status="executed",
+        affected_entry_ids=("entry",),
     )
     assert different.requested_action.value != different.effective_action.value
     for changes in ({"event_id": ""}, {"affected_entry_ids": ("",)}, {"affected_entry_ids": ("id", "id")}):
@@ -103,6 +105,20 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
     with pytest.raises(ValidationError):
         AdapterActionPayloadV3(operation="DELETE", scope="object", target_object_keys=(key(),), value="mixed")
 
+    parsed = result.to_parsed_manager_action(raw_output="noop", format_valid=True, fallback_used=False)
+    assert parsed.execution_status.value == "no_effect" and parsed.operation.value == "NOOP"
+    for status in ("rejected", "not_supported"):
+        rejected = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status=status, reason="policy")
+        assert rejected.effective_action.operation is None
+    failed = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status="failed", error={"code": "boom"})
+    assert failed.error == {"code": "boom"}
+    noop = AdapterActionResultV3(event_id="e0", requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed")
+    assert noop.execution_status.value == "executed"
+    with pytest.raises(ValidationError):
+        AdapterActionResultV3(event_id="e0", requested_action=requested, effective_action=effective, execution_status="executed")
+    with pytest.raises(ValidationError):
+        AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status="failed")
+
 
 def test_nonfinite_values_fail_during_contract_construction() -> None:
     for bad in (float("nan"), float("inf"), float("-inf")):
@@ -111,7 +127,7 @@ def test_nonfinite_values_fail_during_contract_construction() -> None:
         with pytest.raises(ValidationError):
             AnswerPredictionV3(query_id="q", raw_output="x", parsed_answer={"nested": bad}, format_valid=True)
         with pytest.raises(ValidationError):
-            AdapterActionResultV3(event_id="e0", raw_result={"nested": bad})
+            AdapterActionResultV3(event_id="e0", execution_status="failed", error="failure", raw_result={"nested": bad})
         with pytest.raises(ValidationError):
             RetrievalTraceV3(query_id="q", scores=(bad,))
 
@@ -137,7 +153,7 @@ def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
         with pytest.raises(ValidationError):
             ParsedManagerActionV3(event_id=bad, format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
         with pytest.raises(ValidationError):
-            AdapterActionResultV3(event_id=bad)
+            AdapterActionResultV3(event_id=bad, execution_status="failed", error="failure")
         with pytest.raises(ValidationError):
             AnswerPredictionV3(query_id=bad, raw_output="", disposition="unavailable", format_valid=False)
 
@@ -262,7 +278,7 @@ def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None
         def adapter_info(self): return AdapterInfoV3(adapter_id="a", adapter_version="1", system_name="s", system_version="1", configuration_hash="a" * 64)
         def capabilities(self): return AdapterCapabilitiesV3(supports_isolated_reset=True, exports_entries=True, exports_raw_state=True, exports_retrieval_ids=True, exports_version_history=True)
         def reset(self, request): return ResetResultV3(success=True, namespace=request.namespace)
-        def ingest_event(self, event): return AdapterActionResultV3(event_id=event.event_id)
+        def ingest_event(self, event): return AdapterActionResultV3(event_id=event.event_id, requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed")
         def export_entries(self): return ExportEntriesResultV3(entries=())
         def export_raw_state(self): return ExportStateResultV3(raw_state={})
         def export_version_history(self, request): return VersionHistoryExportResultV3(histories=())

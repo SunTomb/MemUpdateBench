@@ -148,6 +148,37 @@ def test_semantic_hash_ignores_surface_text_and_consistent_local_id_renaming() -
     assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(renamed).semantic_hash
 
 
+def test_semantic_hash_canonicalizes_query_and_support_sets_but_preserves_ledger_order() -> None:
+    base = task_payload()
+    second_query = deepcopy(base["queries"][0])
+    second_query.update({"query_id": "q2", "query_type": "previous", "selector": {"kind": "previous"}})
+    second_evidence = deepcopy(base["gold_evidence"][0])
+    second_evidence.update({"query_id": "q2", "answer": "v1", "supporting_event_ids": ["e1"]})
+    second_evidence["derivation_steps"][0]["supporting_event_ids"] = ["e1"]
+    base["queries"].append(second_query)
+    base["gold_evidence"].append(second_evidence)
+    base["gold_evidence"][0]["supporting_event_ids"] = ["e2", "e1"]
+    base["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"] = ["e2", "e1"]
+
+    reordered = deepcopy(base)
+    reordered["queries"].reverse()
+    reordered["gold_evidence"].reverse()
+    reordered["gold_evidence"][1]["supporting_event_ids"].reverse()
+    reordered["gold_evidence"][1]["derivation_steps"][0]["supporting_event_ids"].reverse()
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(reordered).semantic_hash
+
+    duplicated = deepcopy(base)
+    duplicated["gold_evidence"][0]["supporting_event_ids"] = ["e2", "e2"]
+    with pytest.raises(ValidationError, match="unique"):
+        MemUpdateTaskV3.model_validate(duplicated)
+
+    semantic_order = deepcopy(base)
+    semantic_order["version_history"][0]["entries"][0]["value"], semantic_order["version_history"][0]["entries"][1]["value"] = (
+        semantic_order["version_history"][0]["entries"][1]["value"], semantic_order["version_history"][0]["entries"][0]["value"],
+    )
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash != MemUpdateTaskV3.model_validate(semantic_order).semantic_hash
+
+
 def test_application_object_type_values_remain_semantically_significant() -> None:
     left_data = task_payload()
     left_data["queries"][0]["answer_schema"] = "object"

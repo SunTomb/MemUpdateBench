@@ -9,8 +9,8 @@ from mub.vnext.contracts.adapter import AdapterCapabilities, AdapterInfo
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 from mub.vnext.contracts.enums import ActionScope, Operation
 from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, StrictPositiveInt, object_identity, validate_action_coherence
-from mub.vnext.contracts.v3.enums import LedgerEntryStatus
-from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
+from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus
+from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, ParsedManagerActionV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import MemoryEventV3, MemoryQueryV3
 
 
@@ -62,6 +62,9 @@ class AdapterActionResultV3(ImmutableContractModel):
     event_id: StrictIdentifier
     requested_action: AdapterActionPayloadV3 = Field(default_factory=AdapterActionPayloadV3)
     effective_action: AdapterActionPayloadV3 = Field(default_factory=AdapterActionPayloadV3)
+    execution_status: ExecutionStatusV3
+    reason: StrictIdentifier | None = None
+    error: FrozenJsonValue | None = None
     affected_entry_ids: tuple[StrictIdentifier, ...] = ()
     raw_result: FrozenJsonValue | None = None
 
@@ -69,9 +72,52 @@ class AdapterActionResultV3(ImmutableContractModel):
     def _coherent(self) -> Self:
         if len(self.affected_entry_ids) != len(set(self.affected_entry_ids)):
             raise ValueError("affected entry IDs must be unique")
-        if self.effective_action.operation in {None, Operation.NOOP} and self.affected_entry_ids:
-            raise ValueError("effective NOOP actions cannot report affected entries")
+        requested = self.requested_action.operation
+        effective = self.effective_action.operation
+        mutation_ops = {Operation.ADD, Operation.UPDATE, Operation.DELETE}
+        if self.execution_status == ExecutionStatusV3.EXECUTED:
+            if effective is None:
+                raise ValueError("executed actions require an effective action")
+            if effective == Operation.NOOP and requested != Operation.NOOP:
+                raise ValueError("mutation-to-NOOP outcomes require status=no_effect")
+            if effective in mutation_ops and not self.affected_entry_ids:
+                raise ValueError("executed mutations require affected_entry_ids")
+            if self.reason is not None or self.error is not None:
+                raise ValueError("executed actions cannot carry reason or error")
+        elif self.execution_status == ExecutionStatusV3.NO_EFFECT:
+            if requested not in mutation_ops or effective != Operation.NOOP or self.affected_entry_ids:
+                raise ValueError("no_effect requires requested mutation, effective NOOP, and no affected entries")
+            if self.reason is None or self.error is not None:
+                raise ValueError("no_effect requires reason and cannot carry error")
+        elif self.execution_status in {ExecutionStatusV3.REJECTED, ExecutionStatusV3.NOT_SUPPORTED}:
+            if effective is not None or self.affected_entry_ids or self.reason is None:
+                raise ValueError("rejected/not_supported actions require reason and no effective action")
+            if self.error is not None:
+                raise ValueError("rejected/not_supported actions cannot carry error")
+        elif self.execution_status == ExecutionStatusV3.FAILED:
+            if effective is not None or self.affected_entry_ids or self.error is None:
+                raise ValueError("failed actions require error and no effective action")
         return self
+
+    def to_parsed_manager_action(
+        self,
+        *,
+        raw_output: str,
+        format_valid: bool,
+        fallback_used: bool,
+    ) -> ParsedManagerActionV3:
+        return ParsedManagerActionV3(
+            event_id=self.event_id,
+            operation=self.effective_action.operation,
+            observed_scope=self.effective_action.scope,
+            target_object_keys=self.effective_action.target_object_keys,
+            value=self.effective_action.value,
+            format_valid=format_valid,
+            execution_status=self.execution_status,
+            fallback_used=fallback_used,
+            error_flags=(() if self.reason is None else (self.reason,)),
+            raw_output=raw_output,
+        )
 
 
 class AdapterAnswerResultV3(ImmutableContractModel):

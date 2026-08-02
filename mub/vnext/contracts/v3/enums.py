@@ -24,6 +24,7 @@ class LedgerEntryStatus(StringEnum):
 
 class ExecutionStatusV3(StringEnum):
     EXECUTED = "executed"
+    NO_EFFECT = "no_effect"
     REJECTED = "rejected"
     NOT_SUPPORTED = "not_supported"
     FAILED = "failed"

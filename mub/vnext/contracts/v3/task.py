@@ -281,6 +281,16 @@ class DerivationStepV3(ImmutableContractModel):
     supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     supporting_event_ids: tuple[StrictString, ...] = ()
 
+    @model_validator(mode="after")
+    def _unique_support(self) -> Self:
+        if len(self.input_step_ids) != len(set(self.input_step_ids)):
+            raise ValueError("derivation input step IDs must be unique")
+        if len(self.supporting_event_ids) != len(set(self.supporting_event_ids)):
+            raise ValueError("derivation supporting event IDs must be unique")
+        if len({_identity(key) for key in self.supporting_object_keys}) != len(self.supporting_object_keys):
+            raise ValueError("derivation supporting object identities must be unique")
+        return self
+
 
 class QueryGoldEvidenceV3(ImmutableContractModel):
     query_id: StrictString
@@ -292,6 +302,10 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _validate_graph(self) -> Self:
+        if len(self.supporting_event_ids) != len(set(self.supporting_event_ids)):
+            raise ValueError("gold supporting event IDs must be unique")
+        if len({_identity(key) for key in self.supporting_object_keys}) != len(self.supporting_object_keys):
+            raise ValueError("gold supporting object identities must be unique")
         steps = {step.step_id: step for step in self.derivation_steps}
         if len(steps) != len(self.derivation_steps):
             raise ValueError("derivation step IDs must be unique")
@@ -500,7 +514,6 @@ def _semantic_anchor_projection(anchor: Mapping[str, JsonValue]) -> Mapping[str,
 def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     event_index = {event.event_id: index for index, event in enumerate(task.events)}
     action_index = {action.action_id: index for index, action in enumerate(task.actions)}
-    query_index = {query.query_id: index for index, query in enumerate(task.queries)}
 
     def event_ref(event_id: str | None):
         return None if event_id is None else event_index[event_id]
@@ -519,7 +532,7 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
             "role": event.role.value,
             "timestamp": event.timestamp,
             "source_anchor": _semantic_anchor_projection(event.source_anchor),
-            "gold_action_indices": [action_index[action_id] for action_id in event.gold_action_ids],
+            "gold_action_indices": sorted(action_index[action_id] for action_id in event.gold_action_ids),
         })
     actions = [{
         "event_index": event_ref(action.event_id),
@@ -530,14 +543,17 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
         "effective_at": action.effective_at,
         "expected_effect": _semantic_value(action.expected_effect),
     } for action in task.actions]
-    queries = [{
+    query_pairs = [(query.query_id, {
         "query_type": query.query_type.value,
         "selector": selector_projection(query.selector),
         "targets": sorted((_semantic_value(key) for key in query.target_object_keys), key=_canonical_bytes),
         "answer_schema": query.answer_schema.value,
         "evaluation_mode": query.evaluation_mode.value,
         "synthesis": _semantic_value(query.synthesis),
-    } for query in task.queries]
+    }) for query in task.queries]
+    query_pairs.sort(key=lambda pair: _canonical_bytes(pair[1]))
+    queries = [projection for _, projection in query_pairs]
+    query_index = {query_id: index for index, (query_id, _) in enumerate(query_pairs)}
     histories = []
     for ledger in task.version_history:
         histories.append({
@@ -560,12 +576,12 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
             "query_index": query_index[gold.query_id],
             "answer": _semantic_value(gold.answer),
             "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
-            "supporting_event_indices": [event_ref(event_id) for event_id in gold.supporting_event_ids],
+            "supporting_event_indices": sorted(event_ref(event_id) for event_id in gold.supporting_event_ids),
             "derivation_steps": [{
                 "operation": step.operation,
-                "input_step_indices": [step_index[parent] for parent in step.input_step_ids],
+                "input_step_indices": sorted(step_index[parent] for parent in step.input_step_ids),
                 "supporting_objects": sorted((_semantic_value(key) for key in step.supporting_object_keys), key=_canonical_bytes),
-                "supporting_event_indices": [event_ref(event_id) for event_id in step.supporting_event_ids],
+                "supporting_event_indices": sorted(event_ref(event_id) for event_id in step.supporting_event_ids),
             } for step in gold.derivation_steps],
             "final_step_index": step_index[gold.final_derivation_step_id],
         })
