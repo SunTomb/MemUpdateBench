@@ -411,6 +411,12 @@ class MemUpdateTaskV3(ImmutableContractModel):
         query_by_id = {query.query_id: query for query in self.queries}
         if len(query_by_id) != len(self.queries):
             raise ValueError("query IDs must be unique")
+        semantic_queries = [
+            _canonical_bytes(_query_semantic_projection(query, event_position))
+            for query in self.queries
+        ]
+        if len(semantic_queries) != len(set(semantic_queries)):
+            raise ValueError("duplicate semantic query projections are not allowed")
         evidence_by_id = {item.query_id: item for item in self.gold_evidence}
         if set(evidence_by_id) != set(query_by_id):
             raise ValueError("gold evidence must cover queries exactly")
@@ -511,20 +517,31 @@ def _semantic_anchor_projection(anchor: Mapping[str, JsonValue]) -> Mapping[str,
     }
 
 
+def _query_semantic_projection(query: MemoryQueryV3, event_index: Mapping[str, int]) -> Mapping[str, JsonValue]:
+    selector = _semantic_value(query.selector)
+    if isinstance(query.selector, EventAnchorSelector):
+        selector["event_id"] = event_index[query.selector.event_id]
+    if isinstance(query.selector, MultiObjectCurrentSelector):
+        selector["object_keys"] = sorted(
+            (_semantic_value(key) for key in query.selector.object_keys),
+            key=_canonical_bytes,
+        )
+    return {
+        "query_type": query.query_type.value,
+        "selector": selector,
+        "targets": sorted((_semantic_value(key) for key in query.target_object_keys), key=_canonical_bytes),
+        "answer_schema": query.answer_schema.value,
+        "evaluation_mode": query.evaluation_mode.value,
+        "synthesis": _semantic_value(query.synthesis),
+    }
+
+
 def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     event_index = {event.event_id: index for index, event in enumerate(task.events)}
     action_index = {action.action_id: index for index, action in enumerate(task.actions)}
 
     def event_ref(event_id: str | None):
         return None if event_id is None else event_index[event_id]
-
-    def selector_projection(selector: SelectorV3):
-        projected = _semantic_value(selector)
-        if isinstance(selector, EventAnchorSelector):
-            projected["event_id"] = event_ref(selector.event_id)
-        if isinstance(selector, MultiObjectCurrentSelector):
-            projected["object_keys"] = sorted((_semantic_value(key) for key in selector.object_keys), key=_canonical_bytes)
-        return projected
 
     events = []
     for event in task.events:
@@ -543,17 +560,10 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
         "effective_at": action.effective_at,
         "expected_effect": _semantic_value(action.expected_effect),
     } for action in task.actions]
-    query_pairs = [(query.query_id, {
-        "query_type": query.query_type.value,
-        "selector": selector_projection(query.selector),
-        "targets": sorted((_semantic_value(key) for key in query.target_object_keys), key=_canonical_bytes),
-        "answer_schema": query.answer_schema.value,
-        "evaluation_mode": query.evaluation_mode.value,
-        "synthesis": _semantic_value(query.synthesis),
-    }) for query in task.queries]
-    query_pairs.sort(key=lambda pair: _canonical_bytes(pair[1]))
-    queries = [projection for _, projection in query_pairs]
-    query_index = {query_id: index for index, (query_id, _) in enumerate(query_pairs)}
+    query_projection_by_id = {
+        query.query_id: _query_semantic_projection(query, event_index)
+        for query in task.queries
+    }
     histories = []
     for ledger in task.version_history:
         histories.append({
@@ -569,11 +579,10 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
             } for entry in ledger.entries],
         })
     histories.sort(key=lambda item: _canonical_bytes(item["object_key"]))
-    evidence = []
+    evidence_by_query = {}
     for gold in task.gold_evidence:
         step_index = {step.step_id: index for index, step in enumerate(gold.derivation_steps)}
-        evidence.append({
-            "query_index": query_index[gold.query_id],
+        evidence_by_query[gold.query_id] = {
             "answer": _semantic_value(gold.answer),
             "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
             "supporting_event_indices": sorted(event_ref(event_id) for event_id in gold.supporting_event_ids),
@@ -584,8 +593,20 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
                 "supporting_event_indices": sorted(event_ref(event_id) for event_id in step.supporting_event_ids),
             } for step in gold.derivation_steps],
             "final_step_index": step_index[gold.final_derivation_step_id],
-        })
-    evidence.sort(key=lambda item: item["query_index"])
+        }
+    bundles = [
+        {
+            "query": query_projection_by_id[query.query_id],
+            "evidence": evidence_by_query[query.query_id],
+        }
+        for query in task.queries
+    ]
+    bundles.sort(key=_canonical_bytes)
+    queries = [bundle["query"] for bundle in bundles]
+    evidence = [
+        {"query_index": index, **bundle["evidence"]}
+        for index, bundle in enumerate(bundles)
+    ]
     return {
         "schema_version": task.schema_version,
         "task_family": task.task_family,

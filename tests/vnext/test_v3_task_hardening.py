@@ -148,13 +148,26 @@ def test_semantic_hash_ignores_surface_text_and_consistent_local_id_renaming() -
     assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(renamed).semantic_hash
 
 
+def test_duplicate_semantic_queries_are_rejected_even_with_different_evidence() -> None:
+    payload = task_payload()
+    duplicate_query = deepcopy(payload["queries"][0])
+    duplicate_query["query_id"] = "q2"
+    duplicate_evidence = deepcopy(payload["gold_evidence"][0])
+    duplicate_evidence["query_id"] = "q2"
+    duplicate_evidence["answer"] = "different-but-valid"
+    payload["queries"].append(duplicate_query)
+    payload["gold_evidence"].append(duplicate_evidence)
+    with pytest.raises(ValidationError, match="duplicate semantic query"):
+        MemUpdateTaskV3.model_validate(payload)
+
+
 def test_semantic_hash_canonicalizes_query_and_support_sets_but_preserves_ledger_order() -> None:
     base = task_payload()
     second_query = deepcopy(base["queries"][0])
     second_query.update({"query_id": "q2", "query_type": "previous", "selector": {"kind": "previous"}})
     second_evidence = deepcopy(base["gold_evidence"][0])
-    second_evidence.update({"query_id": "q2", "answer": "v1", "supporting_event_ids": ["e1"]})
-    second_evidence["derivation_steps"][0]["supporting_event_ids"] = ["e1"]
+    second_evidence.update({"query_id": "q2", "answer": "v1", "supporting_event_ids": ["e1", "e2"]})
+    second_evidence["derivation_steps"][0]["supporting_event_ids"] = ["e1", "e2"]
     base["queries"].append(second_query)
     base["gold_evidence"].append(second_evidence)
     base["gold_evidence"][0]["supporting_event_ids"] = ["e2", "e1"]
@@ -166,6 +179,12 @@ def test_semantic_hash_canonicalizes_query_and_support_sets_but_preserves_ledger
     reordered["gold_evidence"][1]["supporting_event_ids"].reverse()
     reordered["gold_evidence"][1]["derivation_steps"][0]["supporting_event_ids"].reverse()
     assert MemUpdateTaskV3.model_validate(base).semantic_hash == MemUpdateTaskV3.model_validate(reordered).semantic_hash
+
+    reassociated = deepcopy(base)
+    reassociated["gold_evidence"][0]["query_id"], reassociated["gold_evidence"][1]["query_id"] = (
+        reassociated["gold_evidence"][1]["query_id"], reassociated["gold_evidence"][0]["query_id"],
+    )
+    assert MemUpdateTaskV3.model_validate(base).semantic_hash != MemUpdateTaskV3.model_validate(reassociated).semantic_hash
 
     duplicated = deepcopy(base)
     duplicated["gold_evidence"][0]["supporting_event_ids"] = ["e2", "e2"]
