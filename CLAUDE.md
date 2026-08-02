@@ -78,7 +78,9 @@ Recent mechanism lock:
 
 ## vNext Status
 
-MemUpdateBench vNext Phase 0 is `FINAL_APPROVED`. It establishes the reusable contract, validation, scoring, provenance, legacy-compatibility, and transactional-publication foundation; it does not add Pilot examples, model results, external-validity evidence, benchmark metrics, or paper claims.
+MemUpdateBench vNext Phase 0 is `FINAL_APPROVED`. It establishes the reusable contract, validation, scoring, provenance, legacy-compatibility, and transactional-publication foundation.
+
+The 1,440-task Families A–D Pilot has completed task release, built-in runtime, scoring, summaries, corrupted-control checks, mechanism-smoke construction, and trace inspection. Its current checkpoint is `FORMAL_RUNS_COMPLETE_PENDING_FINAL_REVIEW`, not a final benchmark publication. The user supplied a detailed manual remediation review of the original 96-case audit, but the retained regenerated terminal decisions identify an automated Codex reviewer; a human-attributed terminal audit artifact remains the final release blocker. The immutable task release is under `data/vnext/pilot`; the authenticated cluster result root is `/NAS/yesh/MemUpdateBench/results/vnext/pilot_ca47df7_evidence_bound`, bound to clean runtime revision `ca47df7a6401fabfc25dd4d2151a392439e6c379`. Runtime outputs at `0a7d72d` and `2ab4e93` are invalidated diagnostics and must not be interpreted; `0a7d72d` remains valid task-generation provenance.
 
 Canonical vNext memory-object identity is exactly:
 
@@ -98,7 +100,7 @@ docs/vnext/legacy_bridge.md
 WORKFLOW.md
 ```
 
-The approved next engineering milestone is the 1,440-task Families A–D Pilot, which must reuse the Phase 0 contracts rather than introduce parallel task, runtime, score, capability, or manifest dictionaries. Pilot status remains `NOT_STARTED`; beginning it requires a separate explicit instruction. Files under `tests/vnext/fixtures/legacy/` are immutable authenticated regression inputs and must not be edited during Pilot work.
+The Pilot consumes the Phase 0 contracts without introducing parallel task, runtime, score, capability, or manifest dictionaries. Its built-in checkpoint uses deterministic `slot_direct`; it is not external-system or prompted-answer evidence. Reference covers all 1,440 tasks; raw append, exact CRUD, and heuristic CRUD explicitly mark the 360 Family C multi-object-answer tasks unsupported. Files under `tests/vnext/fixtures/legacy/` remain immutable authenticated regression inputs.
 
 ## Important Local Files
 
@@ -339,7 +341,7 @@ Workflow entries should include:
 
 ## Recommended Next Work
 
-After Phase 0 `FINAL_APPROVED`, the primary engineering milestone is the approved vNext Pilot. It must consume the Phase 0 contracts and preserve the exact four-part object identity; do not start it without a separate explicit instruction. Paper production and narrative clarification remain a bounded parallel track, and broad new experiments should still be added only to resolve named reviewer or benchmark-engineering gaps. The next group-meeting material should follow the paper logic rather than mechanically listing experiment tables.
+The immediate engineering step is to replace or supplement the regenerated 96 terminal audit decisions with a human-attributed decision artifact, rebuild the evidence binding as needed, and request the final release review. The independent re-review has already conditionally approved artifact authentication, formal provenance, metrics, controls, mechanism evidence, trace coverage, and claim safety. Do not start a Core expansion or add Families E–H, external adapters, prompted answer-model runs, APIs, SFT, or RLVR without a separate approved design/implementation cycle. Paper production and narrative clarification remain a bounded parallel track, and broad new experiments should still be added only to resolve named reviewer or benchmark-engineering gaps. The next group-meeting material should follow the paper logic rather than mechanically listing experiment tables.
 
 Default priority order:
 

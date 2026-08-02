@@ -956,3 +956,159 @@ Each implementation task passed a specification review and a code-quality review
 ### Conclusion and next step
 
 The generic v2 contract can represent and score explicit unresolved-reference abstention without changing ordinary query semantics or rewriting v1 evidence. Family C remains not yet implemented at this checkpoint; the next step is the reviewed 120-core Family C grid, followed by its own structural, replay, hash, runtime, scoring, and audit gates.
+
+## vNext Families A–D Pilot release and authenticated built-in runs
+
+### Motivation and fixed scope
+
+The approved Pilot implements Families A–D only: 480 semantic cores, three deterministic surfaces per core, and 1,440 tasks split 1,008/144/288 across train/dev/test. It reuses the Phase 0 v2 contracts and preserves exact object identity as `(namespace, entity, attribute, subkey)`; `object_type` remains classification metadata only. This phase uses no live API, external memory system, SFT, RLVR, LLM judge, or Families E–H.
+
+The released task bundle is immutable at:
+
+```text
+/NAS/yesh/MemUpdateBench/data/vnext/pilot
+```
+
+Its current authenticated task, generation-manifest, and evidence-bound manifest hashes are:
+
+```text
+tasks.jsonl                  7573b635d8f72481e5f71630dc6101fef58a379fbda73ac81fef6788ce48bd2a
+generation_task_manifest    2fe08afc00a7c6c7e23dc2905a6639c1d56d6cc28f0692898d6a5560c865fed6
+evidence-bound task manifest 0ac271d132256ffa323e94ee0f2735ca10647b0add66e7340404294b2b5d587c
+```
+
+The evidence-bound manifest is stored in the result checkpoint rather than replacing the immutable generation manifest. It authenticates the exact task bytes, generation config, generation manifest, split balance, both validation reports, audit sample, audit decisions, and audit gate report.
+
+Two independent local release copies matched across all five generation artifacts. The user then supplied a detailed manual remediation review of the original 96-case audit, leading to revised surface rendering while preserving semantic cores, task identities, split assignments, and the four-part object key. The retained regenerated 96 terminal decisions all pass, but their `reviewer` field is `codex-release-audit-20260801-regenerated`; they do not constitute a human-attributed terminal audit artifact. Final release approval remains blocked on that attribution/sign-off.
+
+### Runtime-integrity corrections
+
+The first authenticated execution exposed defects that smaller tests had not reached. Runtime outputs produced at `0a7d72d` and `2ab4e93` are diagnostic artifacts only and must not be interpreted as benchmark results. The task release's `code_revision=0a7d72d` remains valid generation provenance; it is distinct from the invalidated runtime behavior. The corrections were committed in this order:
+
+```text
+d676f8c  fix: unblock authenticated Pilot runs
+2ab4e93  test: stabilize audit replacement regression
+99be0f2  fix: bind mechanism slice to query target
+ca47df7  fix: preserve observed Pilot actions
+```
+
+The final `ca47df7a6401fabfc25dd4d2151a392439e6c379` correction:
+
+- parses values only from the suffix after the canonical `object(...)` span, preventing `to`, `as`, or `:` substrings inside entity names and prose from being mistaken for values;
+- supports every released atomic-write surface, including `so each value is ...`;
+- records structured observed operation/key/value/format evidence in `AdapterActionLog.raw_action`;
+- removes runtime fallback to gold key/value during action normalization;
+- retains correct typed Family C abstention as a completed answer rather than an adapter error;
+- binds run identity and manifest provenance to an exact clean Git revision;
+- loads one reviewed offline MiniLM encoder for heuristic CRUD; and
+- binds the Family A mechanism slice to the query target rather than rejecting legitimate distractor objects in `task.target_objects`.
+
+Focused verification on the final source included:
+
+```text
+194 focused adapter/runtime/resume/CLI/scoring tests passed
+SMOKE TEST: 31/31 passed
+7 mechanism-slice tests passed
+py_compile passed
+git diff --check passed
+```
+
+The full released-event audit over all 1,440 tasks reported:
+
+```json
+{"operation":0,"key":0,"value":0,"format":0}
+```
+
+A complete final `tests/vnext` run was not repeated after `ca47df7`; no such claim is made. The focused gates cover the corrected parser, observed-action boundary, runtime, resume identity, formal CLI authentication, scorer capability rules, and manifest contracts.
+
+### Formal execution and artifacts
+
+The exact clean source revision was deployed to:
+
+```text
+/NAS/yesh/MemUpdateBench/.vnext-experiment-source
+```
+
+The new revision-qualified result root is:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/pilot_ca47df7_evidence_bound
+```
+
+The built-in matrix contains four methods under both `normal_topk` and `latest_per_object`:
+
+```text
+reference
+raw_add
+exact_crud
+heuristic_crud
+```
+
+The verified heuristic encoder is the local `all-MiniLM-L6-v2` snapshot at reviewed revision `c9745ed1d9f207416be6d2e6f8de32d1f16199bf`. Its capability probe returned dimension 384 with finite, nonzero embeddings. Song-2's shared project path entered an uninterruptible NFS wait, so the authenticated jobs were executed from a healthy client of the same approved NAS project path; this was a storage-path issue, not a model or GPU-memory substitution.
+
+Every run contains 1,440 unique `TaskRunRecord` rows, an authenticated final run manifest, exact revision `ca47df7...`, and `dirty_state=false`. Status counts are:
+
+| method | normal completed / unsupported / failed | latest completed / unsupported / failed |
+| --- | ---: | ---: |
+| reference | 1440 / 0 / 0 | 1440 / 0 / 0 |
+| raw_add | 1080 / 360 / 0 | 1080 / 360 / 0 |
+| exact_crud | 1080 / 360 / 0 | 1080 / 360 / 0 |
+| heuristic_crud | 1080 / 360 / 0 | 1080 / 360 / 0 |
+
+All 360 unsupported rows for each non-reference method are Family C `answer/multi_object_answer` capability exclusions. There are no parser-driven partial rows and no encoder-related unsupported rows.
+
+Each of the eight run cells was authenticated, scored, and summarized against the evidence-bound task manifest. Every cell contains 1,440 score rows and a six-file summary bundle whose artifact index matches the written bytes. The root `artifact_index.json` binds the release, mechanism, corrupted-control, trace-review, and eight run/score/summary manifest chains; its SHA-256 is `8d2ac9ed678fe38f41e3c9c1968d480a13a2d38591533e8fda55b850638e6eff`. The principal built-in diagnostic metrics are:
+
+| policy | method | current recall@k | stale exposure | final state accuracy | answer EM | final memory size | obsolete versions |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| normal | raw_add | 0.975 | 1.000 | 1.000 | 1.000 | 10.6000 | 8.6375 |
+| latest per object | raw_add | 1.000 | 0.000 | 1.000 | 1.000 | 10.6000 | 8.6375 |
+| normal | exact_crud | 1.000 | 0.000 | 1.000 | 1.000 | 4.6750 | 0.0000 |
+| latest per object | exact_crud | 1.000 | 0.000 | 1.000 | 1.000 | 4.6750 | 0.0000 |
+| normal | heuristic_crud | 1.000 | 0.000 | 1.000 | 1.000 | 4.6750 | 0.0000 |
+| latest per object | heuristic_crud | 1.000 | 0.000 | 1.000 | 1.000 | 4.6750 | 0.0000 |
+
+These values use deterministic `slot_direct`, not a prompted answer model. The `reference` adapter is intentionally excluded from leaderboard aggregation as `oracle_smoke_only`; its underlying score records independently verify action exact match 1.000 over 1,440 tasks, final-state accuracy 1.000 over 1,440, answer EM 1.000 over 1,080 ordinary-answer tasks, and reference-resolution accuracy 1.000 over all 360 Family C tasks.
+
+Representative trace inspection found 27 Raw-append `normal_topk` current-retrieval misses: 12 medium and 15 hard Family B tasks. In each inspected miss, normal retrieval returned stale versions of the queried object while omitting the current value; `latest_per_object` preserved the query target, inserted the current value, and removed stale exposure. A Family C reference trace showed typed `ABSTAINED`, `format_valid=true`, and `completion_status=completed`; the corresponding non-reference trace showed the declared `multi_object_answer` capability exclusion. Family D traces preserved natural NOOPs as observed `NOOP` actions with null key/value and correctly parsed later writes.
+
+The retained `trace_review/trace_review.json` expands this check to all 48 method × family × difficulty cells under normal retrieval, with the same task's latest-per-object counterpart attached whenever a failure-flag example exists. It contains outcome-correct examples for 39 cells and failure-flag examples for 42 cells. The nine missing correct cells are exactly the three Family C capability-exclusion cells for each non-reference method; missing failure examples occur only when no failure-flag row exists in that cell. The review artifact and its task input are authenticated by `trace_review/artifact_index.json`.
+
+### Scorer controls and mechanism slice
+
+Eight corrupted controls were run and retained on the deterministic 12-task, four-core no-network smoke release under:
+
+```text
+results/vnext/pilot_ca47df7_evidence_bound/corrupted_controls
+```
+
+All eight expected scorer failures were detected from observed output rather than gold-filled actions. Each control retains its own run manifest, score manifest, and summary artifact index; `corrupted_controls/artifact_index.json` binds those manifest chains and the consolidated check report:
+
+```text
+false_write
+missed_update
+current_not_retrieved
+gold_retrieved_wrong_answer
+invalid_action_format
+stale_copied
+wrong_attribute
+wrong_entity
+```
+
+The corrected mechanism slice is stored under:
+
+```text
+results/vnext/pilot_ca47df7_evidence_bound/mechanism_slice
+```
+
+It contains 48 deterministic smoke contexts: six conditions, eight examples per condition, stale counts 1 and 16, chronological/reverse order, and optional latest/outdated labels. It is explicitly marked `smoke_only=true`, `not_model_result=true`, and `answer_model=deterministic_reference_smoke`. `mechanism_slice/artifact_index.json` binds both `contexts.jsonl` and `condition_manifest.json`.
+
+### Conclusions and limitations
+
+The Pilot release and built-in execution path now provide authenticated evidence that the task, runtime, scoring, capability, summary, control, and mechanism contracts compose correctly. The Raw-append retrieval comparison demonstrates the intended diagnostic separation: latest-per-object changes retrieval exposure without compacting the underlying append-only store.
+
+This is not external-validity or prompted-answer evidence. Exact and heuristic CRUD are identical on this controlled release because the released atomic object surfaces expose exact keys; MiniLM readiness is verified, but this matrix does not establish a learned semantic-resolution advantage. Raw append's `slot_direct` answer remains correct even in the 27 normal-retrieval misses, so these rows must not be used to claim answer-model robustness. Family C support remains reference-only for the current built-ins and must be reported as capability coverage rather than silently dropped or treated as failure.
+
+An independent final-gate review initially returned `NOT_APPROVED` because the retained audit was not human-attributed, release-level evidence was not fully bound, documentation contained stale pre-regeneration hashes, the complete trace matrix was absent, and the final full suite had not been rerun. The evidence-bound rerun, corrected hashes, nested artifact indices, and retained 48-cell trace review resolved the authentication, documentation, and trace blockers. A focused re-review returned `CONDITIONAL_APPROVAL` with no new claim-safety or engineering blocker.
+
+Final Pilot approval is still withheld. The retained 96 terminal decisions identify an automated Codex reviewer, so the required one-human-decision-per-audit-ID gate is not yet satisfied. The complete `tests/vnext` run is executing separately and must also finish successfully. After a human-attributed terminal decision artifact is supplied, rebuild the audit/task-manifest binding as needed and request one final independent review. Any later external systems, prompted answer models, APIs, Families E–H, SFT, or RLVR require separate approved scope and must write new result roots rather than modifying this Pilot evidence.

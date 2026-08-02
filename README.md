@@ -32,6 +32,35 @@ Core package:
 mub/
 ```
 
+## vNext benchmark engineering
+
+vNext extends the legacy `(entity, attribute)` diagnostic into a strict four-part memory-object identity:
+
+```text
+(namespace, entity, attribute, subkey)
+```
+
+`object_type` is classification metadata and is excluded from identity. Phase 0 is `FINAL_APPROVED`, and the Families A–D Pilot task release now contains 480 semantic cores and 1,440 rendered tasks across repeated same-slot updates, interleaved multi-slot updates, entity/attribute grounding with explicit abstention, and NOOP/write discipline.
+
+The authenticated built-in execution checkpoint is bound to revision `ca47df7a6401fabfc25dd4d2151a392439e6c379`. It covers reference, raw append, exact CRUD, and verified MiniLM heuristic CRUD under `normal_topk` and `latest_per_object`. These are deterministic `slot_direct` engineering diagnostics, not prompted answer-model or external-system results.
+
+Key vNext entry points:
+
+```text
+docs/specs/memupdatebench_vnext_benchmark_design.md
+docs/superpowers/plans/2026-07-20-memupdatebench-vnext-pilot.md
+data/vnext/pilot/README.md
+results/vnext/pilot/README.md
+scripts/vnext_generate_pilot.py
+scripts/vnext_validate_pilot.py
+scripts/vnext_run_pilot.py
+scripts/vnext_score_pilot.py
+scripts/vnext_summarize_pilot.py
+scripts/vnext_build_mechanism_slice.py
+```
+
+Exact release hashes, formal status counts, diagnostic metrics, scorer-control evidence, trace review, and limitations are recorded in `WORKFLOW.md`.
+
 ## Reproduce P6.3 summary
 
 ```bash
