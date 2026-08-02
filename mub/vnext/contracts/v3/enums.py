@@ -22,6 +22,11 @@ class LedgerEntryStatus(StringEnum):
     TOMBSTONE = "tombstone"
 
 
+class ExportedVersionStatusV3(StringEnum):
+    PRESENT = "present"
+    DELETED = "deleted"
+
+
 class ExecutionStatusV3(StringEnum):
     EXECUTED = "executed"
     REJECTED = "rejected"
@@ -39,4 +44,4 @@ class FailureFlagV3(StringEnum):
     STALE_PROPAGATION = "stale_propagation"
 
 
-__all__ = ["ExecutionStatusV3", "FailureFlagV3", "LedgerEntryStatus", "QueryTypeV3", "SynthesisKindV3"]
+__all__ = ["ExecutionStatusV3", "ExportedVersionStatusV3", "FailureFlagV3", "LedgerEntryStatus", "QueryTypeV3", "SynthesisKindV3"]

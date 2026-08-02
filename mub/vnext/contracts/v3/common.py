@@ -30,6 +30,14 @@ def _validate_finite_json(value: Any) -> Any:
     return value
 
 
+def _validate_positive_int(value: Any) -> int:
+    if type(value) is not int:
+        raise ValueError("value must be an exact built-in integer")
+    if value <= 0:
+        raise ValueError("value must be positive")
+    return value
+
+
 def _validate_finite_float(value: Any) -> float:
     if type(value) is not float:
         raise ValueError("scores must be exact built-in floats")
@@ -39,6 +47,7 @@ def _validate_finite_float(value: Any) -> float:
 
 
 StrictIdentifier = Annotated[str, BeforeValidator(_validate_identifier), Field(strict=True, min_length=1)]
+StrictPositiveInt = Annotated[int, BeforeValidator(_validate_positive_int), Field(strict=True, gt=0)]
 StrictFiniteFloat = Annotated[float, BeforeValidator(_validate_finite_float), Field(strict=True, allow_inf_nan=False)]
 
 
@@ -150,4 +159,4 @@ def validate_action_coherence(
             raise ValueError("namespace scope targets must share namespace")
 
 
-__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictFiniteFloat", "StrictIdentifier", "object_identity", "validate_action_coherence"]
+__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictFiniteFloat", "StrictIdentifier", "StrictPositiveInt", "object_identity", "validate_action_coherence"]

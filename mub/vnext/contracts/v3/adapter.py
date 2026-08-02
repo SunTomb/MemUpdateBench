@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 from typing_extensions import Self
 
 from mub.vnext.contracts.adapter import AdapterCapabilities, AdapterInfo
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool
 from mub.vnext.contracts.enums import ActionScope, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, StrictPositiveInt, object_identity, validate_action_coherence
+from mub.vnext.contracts.v3.enums import ExportedVersionStatusV3
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import MemoryEventV3, MemoryQueryV3
 
@@ -75,6 +76,85 @@ class AdapterAnswerResultV3(ImmutableContractModel):
     raw_result: FrozenJsonValue | None = None
 
 
+class ResetRequestV3(ImmutableContractModel):
+    namespace: StrictIdentifier
+    config: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+
+class RetrievalRequestV3(ImmutableContractModel):
+    query_id: StrictIdentifier
+    k: StrictPositiveInt
+    filters: FrozenJsonObjectV3 = Field(default_factory=dict)
+    options: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+
+class VersionHistoryExportRequestV3(ImmutableContractModel):
+    namespace: StrictIdentifier
+    object_keys: tuple[MemoryObjectKeyV3, ...] = ()
+    filters: FrozenJsonObjectV3 = Field(default_factory=dict)
+    options: FrozenJsonObjectV3 = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _unique_keys(self) -> Self:
+        identities = [object_identity(key) for key in self.object_keys]
+        if len(identities) != len(set(identities)):
+            raise ValueError("history request object keys must be unique")
+        return self
+
+
+class ExportedVersionRecordV3(ImmutableContractModel):
+    version_index: int = Field(strict=True, ge=0)
+    status: ExportedVersionStatusV3
+    value: FrozenJsonValue | None = None
+    valid_from_event_id: StrictIdentifier | None = None
+    valid_until_event_id: StrictIdentifier | None = None
+    logical_time: StrictIdentifier | None = None
+    source_event_ids: tuple[StrictIdentifier, ...] = Field(min_length=1)
+
+    @field_validator("version_index", mode="before")
+    @classmethod
+    def _exact_index(cls, value):
+        if type(value) is not int:
+            raise ValueError("version_index must be an exact built-in integer")
+        return value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.status == ExportedVersionStatusV3.PRESENT and self.value is None:
+            raise ValueError("present exported versions require value")
+        if self.status == ExportedVersionStatusV3.DELETED and self.value is not None:
+            raise ValueError("deleted exported versions cannot carry value")
+        if self.valid_from_event_id is None and self.logical_time is None:
+            raise ValueError("exported versions require an event or logical-time anchor")
+        if self.valid_from_event_id is not None and self.valid_from_event_id == self.valid_until_event_id:
+            raise ValueError("validity event interval cannot be empty")
+        if len(self.source_event_ids) != len(set(self.source_event_ids)):
+            raise ValueError("source event IDs must be unique")
+        return self
+
+
+class ObjectVersionHistoryV3(ImmutableContractModel):
+    object_key: MemoryObjectKeyV3
+    versions: tuple[ExportedVersionRecordV3, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _contiguous(self) -> Self:
+        if tuple(version.version_index for version in self.versions) != tuple(range(len(self.versions))):
+            raise ValueError("exported version history must start at zero and be contiguous")
+        return self
+
+
+class VersionHistoryExportResultV3(ImmutableContractModel):
+    histories: tuple[ObjectVersionHistoryV3, ...] = ()
+
+    @model_validator(mode="after")
+    def _unique_histories(self) -> Self:
+        identities = [object_identity(history.object_key) for history in self.histories]
+        if len(identities) != len(set(identities)):
+            raise ValueError("exported histories must have unique object identities")
+        return self
+
+
 class ResetResultV3(ImmutableContractModel):
     success: StrictBool
     namespace: StrictIdentifier
@@ -97,13 +177,19 @@ class RetrievalResultV3(ImmutableContractModel):
 class MemoryAdapterV3(Protocol):
     def adapter_info(self) -> AdapterInfoV3: ...
     def capabilities(self) -> AdapterCapabilitiesV3: ...
-    def reset(self, namespace: str, config: dict) -> ResetResultV3: ...
+    def reset(self, request: ResetRequestV3) -> ResetResultV3: ...
     def ingest_event(self, event: MemoryEventV3) -> AdapterActionResultV3: ...
     def export_entries(self) -> ExportEntriesResultV3: ...
     def export_raw_state(self) -> ExportStateResultV3: ...
-    def retrieve(self, query: MemoryQueryV3, k: int) -> RetrievalResultV3: ...
+    def export_version_history(self, request: VersionHistoryExportRequestV3) -> VersionHistoryExportResultV3: ...
+    def retrieve(self, request: RetrievalRequestV3) -> RetrievalResultV3: ...
     def answer(self, query: MemoryQueryV3, mode: str) -> AdapterAnswerResultV3: ...
     def close(self) -> None: ...
 
 
-__all__ = ["AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3", "ExportEntriesResultV3", "ExportStateResultV3", "MemoryAdapterV3", "ResetResultV3", "RetrievalResultV3"]
+__all__ = [
+    "AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3",
+    "ExportEntriesResultV3", "ExportStateResultV3", "ExportedVersionRecordV3", "MemoryAdapterV3",
+    "ObjectVersionHistoryV3", "ResetRequestV3", "ResetResultV3", "RetrievalRequestV3", "RetrievalResultV3",
+    "VersionHistoryExportRequestV3", "VersionHistoryExportResultV3",
+]

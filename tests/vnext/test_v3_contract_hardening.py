@@ -9,9 +9,15 @@ from mub.vnext.contracts.v3.adapter import (
     AdapterInfoV3,
     ExportEntriesResultV3,
     ExportStateResultV3,
+    ExportedVersionRecordV3,
     MemoryAdapterV3,
+    ObjectVersionHistoryV3,
+    ResetRequestV3,
     ResetResultV3,
+    RetrievalRequestV3,
     RetrievalResultV3,
+    VersionHistoryExportRequestV3,
+    VersionHistoryExportResultV3,
 )
 from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, ParsedManagerActionV3, RetrievalTraceV3
 from mub.vnext.contracts.v3.task import (
@@ -125,23 +131,57 @@ def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
             AnswerPredictionV3(query_id=bad, raw_output="", disposition="unavailable", format_valid=False)
 
 
+def test_adapter_requests_and_exported_history_are_strict_and_frozen() -> None:
+    class HostileInt(int):
+        pass
+
+    reset = ResetRequestV3(namespace="n", config={"nested": [1]})
+    with pytest.raises((TypeError, AttributeError)):
+        reset.config["nested"].append(2)
+    for bad in (True, 1.0, HostileInt(1)):
+        with pytest.raises(ValidationError):
+            RetrievalRequestV3(query_id="q", k=bad)
+    for model, data in (
+        (ResetRequestV3, {"namespace": " ", "config": {}}),
+        (RetrievalRequestV3, {"query_id": " ", "k": 1}),
+        (VersionHistoryExportRequestV3, {"namespace": " "}),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(data)
+
+    present = ExportedVersionRecordV3(version_index=0, status="present", value={"nested": [1]}, valid_from_event_id="e0", source_event_ids=("e0",))
+    deleted = ExportedVersionRecordV3(version_index=1, status="deleted", valid_from_event_id="e1", source_event_ids=("e1",))
+    history = ObjectVersionHistoryV3(object_key=key(), versions=(present, deleted))
+    result = VersionHistoryExportResultV3(histories=(history,))
+    with pytest.raises((TypeError, AttributeError)):
+        result.histories[0].versions[0].value["nested"].append(2)
+    with pytest.raises(ValidationError):
+        ExportedVersionRecordV3(version_index=0, status="deleted", value="forbidden", valid_from_event_id="e0", source_event_ids=("e0",))
+    with pytest.raises(ValidationError):
+        ObjectVersionHistoryV3(object_key=key(), versions=(present, present.model_copy(update={"version_index": 2})))
+
+
 def test_memory_adapter_v3_protocol_exposes_all_typed_capability_paths() -> None:
     class Fixture:
         def adapter_info(self): return AdapterInfoV3(adapter_id="a", adapter_version="1", system_name="s", system_version="1", configuration_hash="a" * 64)
-        def capabilities(self): return AdapterCapabilitiesV3(supports_isolated_reset=True, exports_entries=True, exports_raw_state=True, exports_retrieval_ids=True)
-        def reset(self, namespace, config): return ResetResultV3(success=True, namespace=namespace)
+        def capabilities(self): return AdapterCapabilitiesV3(supports_isolated_reset=True, exports_entries=True, exports_raw_state=True, exports_retrieval_ids=True, exports_version_history=True)
+        def reset(self, request): return ResetResultV3(success=True, namespace=request.namespace)
         def ingest_event(self, event): return AdapterActionResultV3(event_id=event.event_id)
         def export_entries(self): return ExportEntriesResultV3(entries=())
         def export_raw_state(self): return ExportStateResultV3(raw_state={})
-        def retrieve(self, query, k): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=query.query_id))
+        def export_version_history(self, request): return VersionHistoryExportResultV3(histories=())
+        def retrieve(self, request): return RetrievalResultV3(trace=RetrievalTraceV3(query_id=request.query_id))
         def answer(self, query, mode): return AdapterAnswerResultV3(prediction=AnswerPredictionV3(query_id=query.query_id, raw_output="", disposition="unavailable", format_valid=False))
         def close(self): return None
 
     fixture = Fixture()
     assert isinstance(fixture, MemoryAdapterV3)
-    assert fixture.reset("n", {}).success
+    reset_request = ResetRequestV3(namespace="n", config={"nested": [1]})
+    assert fixture.reset(reset_request).success
     assert fixture.export_entries().entries == ()
     assert fixture.export_raw_state().raw_state == {}
+    assert fixture.export_version_history(VersionHistoryExportRequestV3(namespace="n")).histories == ()
+    assert fixture.retrieve(RetrievalRequestV3(query_id="q", k=1)).trace.query_id == "q"
 
 
 def test_derivation_steps_must_be_topologically_ordered() -> None:
