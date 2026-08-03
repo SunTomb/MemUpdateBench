@@ -87,6 +87,85 @@ def authenticated_context(task, run, info, caps, config=None):
     )
 
 
+
+
+def current_structured_payload(value, answer_schema):
+    changed = payload()
+    changed["queries"][0] = {"query_id": "q", "query_type": "current", "text": "?", "selector": {"kind": "current"}, "target_object_keys": changed["target_objects"], "answer_schema": answer_schema, "evaluation_mode": "state_direct"}
+    changed["actions"][3]["value"] = value
+    changed["version_history"][0]["entries"][3]["value"] = value
+    changed["gold_evidence"][0] = {"query_id": "q", "answer": value, "supporting_object_keys": changed["target_objects"], "supporting_event_ids": ["e3"], "derivation_steps": [{"step_id": "read", "operation": "read", "supporting_object_keys": changed["target_objects"], "supporting_event_ids": ["e3"]}], "final_derivation_step_id": "read"}
+    return changed
+
+
+def test_authenticated_context_uses_canonical_unicode_model_hashes():
+    from mub.vnext.io import sha256_model
+    from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    run = TaskRunRecordV3(task_id="t", adapter_id="adapter", run_id="unicode", parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"), completion_status="failed", exceptions=({"type": "boom"},))
+    info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="你好", system_version="1", configuration_hash=H)
+    manifests = authenticated_manifests(task, run, info, AdapterCapabilitiesV3(), ScorerConfigV3())
+    task_manifest, run_manifest, task_artifact, run_artifact = manifests[:4]
+    context = VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=run_manifest, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=sha256_model(task_manifest), authenticated_run_manifest_sha256=sha256_model(run_manifest))
+    assert context.adapter_info.system_name == "你好"
+
+
+@pytest.mark.parametrize(("value", "answer_schema"), [(["nested", 1], "list"), ({"x": [1]}, "object")])
+def test_replay_accepts_already_frozen_structured_values(value, answer_schema):
+    task = MemUpdateTaskV3.model_validate(current_structured_payload(value, answer_schema))
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    assert replay.current_state[task.target_objects[0].canonical_id].value == task.gold_evidence[0].answer
+
+
+@pytest.mark.parametrize("corruption", [True, 1.0])
+def test_nested_leaf_types_are_exact_in_replay_and_entry_matching(corruption):
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+    from mub.vnext.scoring.scorer_v3 import _entry_matches_version
+
+    good = current_structured_payload({"x": [1]}, "object")
+    task = MemUpdateTaskV3.model_validate(good)
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    entry = MemoryEntryRecordV3(entry_id="nested-corrupt", content="bad", object_key_candidate=task.target_objects[0], value_candidate={"x": [corruption]}, version_index=3, source_event_ids=("e3",))
+    assert not _entry_matches_version(entry, replay.ledgers[0].versions[3])
+
+    forged = deepcopy(good)
+    forged["version_history"][0]["entries"][3]["value"] = {"x": [corruption]}
+    forged_replay = replay_task_v3(MemUpdateTaskV3.model_validate(forged))
+    assert {issue.code for issue in forged_replay.issues} == {"replay_version_history_mismatch"}
+
+
+def test_event_anchor_does_not_look_ahead_at_equal_timestamp():
+    changed = payload()
+    changed["events"][0]["timestamp"] = "001"
+    changed["events"][1]["timestamp"] = "001"
+    changed["queries"][0] = {"query_id": "q", "query_type": "point_in_time", "text": "?", "selector": {"kind": "event_anchor", "event_id": "e0"}, "target_object_keys": changed["target_objects"], "answer_schema": "string", "evaluation_mode": "state_direct"}
+    changed["gold_evidence"][0] = {"query_id": "q", "answer": "v0", "supporting_object_keys": changed["target_objects"], "supporting_event_ids": ["e0"], "derivation_steps": [{"step_id": "read", "operation": "read", "supporting_object_keys": changed["target_objects"], "supporting_event_ids": ["e0"]}], "final_derivation_step_id": "read"}
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+    assert resolution.answer == "v0"
+    assert resolution.selected_event_ids == ("e0",)
+
+
+def test_metric_family_aliases_include_canonical_letters_registry_wide():
+    from mub.vnext.scoring.registry_v3 import metric_applies_v3
+
+    aliases = {"deletion_forgetting": "E", "current_historical_query": "F", "long_horizon_memory_synthesis": "G"}
+    for descriptor in CORE_METRIC_REGISTRY_V3.values():
+        for alias, canonical in aliases.items():
+            if alias in descriptor.applicable_task_families:
+                query_kinds = {
+                    "current"
+                    if descriptor.applicable_query_kinds == ("*",)
+                    else descriptor.applicable_query_kinds[0]
+                }
+                assert metric_applies_v3(descriptor, canonical, query_kinds), descriptor.field_path
+
+
 def test_replay_preserves_tombstone_history_and_relearn_current_state():
     task = MemUpdateTaskV3.model_validate(payload())
     replay = replay_task_v3(task)

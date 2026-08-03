@@ -92,15 +92,37 @@ class FrozenMemoryObjectKey(ImmutableContractModel):
 
 
 MemoryObjectKeyV3 = Annotated[FrozenMemoryObjectKey, BeforeValidator(_key_input)]
+def _prepare_frozen_json(value: Any) -> Any:
+    _validate_finite_json(value)
+    return thaw_json(value)
+
+
+def typed_json_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        if set(left) != set(right):
+            return False
+        return all(typed_json_equal(left[key], right[key]) for key in left)
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+            return False
+        return len(left) == len(right) and all(
+            typed_json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return type(left) is type(right) and left == right
+
+
 FrozenJsonValue = Annotated[
     JsonValue,
-    BeforeValidator(_validate_finite_json),
+    BeforeValidator(_prepare_frozen_json),
     AfterValidator(freeze_json),
     PlainSerializer(thaw_json, return_type=JsonValue, when_used="always"),
 ]
 FrozenJsonObjectV3 = Annotated[
     Mapping[str, JsonValue],
-    BeforeValidator(_validate_finite_json),
+    BeforeValidator(_prepare_frozen_json),
     AfterValidator(freeze_json),
     PlainSerializer(thaw_json, return_type=dict[str, JsonValue], when_used="always"),
 ]
@@ -159,4 +181,4 @@ def validate_action_coherence(
             raise ValueError("namespace scope targets must share namespace")
 
 
-__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictFiniteFloat", "StrictIdentifier", "StrictPositiveInt", "object_identity", "validate_action_coherence"]
+__all__ = ["FrozenJsonObjectV3", "FrozenJsonValue", "FrozenMemoryObjectKey", "FrozenUsageMap", "MemoryObjectKeyV3", "StrictFiniteFloat", "StrictIdentifier", "StrictPositiveInt", "object_identity", "typed_json_equal", "validate_action_coherence"]

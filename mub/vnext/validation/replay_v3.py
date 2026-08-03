@@ -7,7 +7,7 @@ from pydantic import Field, field_validator
 
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, freeze_mapping
 from mub.vnext.contracts.enums import AnswerSchema, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, object_identity
+from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.task import (
     CurrentSelector,
@@ -117,16 +117,8 @@ def _issue(code: str, message: str, path: str) -> ValidationIssue:
     return ValidationIssue(code=code, message=message, path=path, severity="error")
 
 
-def _plain(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_plain(item) for item in value]
-    return value
-
-
 def _same(left: Any, right: Any) -> bool:
-    return type(_plain(left)) is type(_plain(right)) and _plain(left) == _plain(right)
+    return typed_json_equal(left, right)
 
 
 def _action_time(action, event_index: int) -> str | None:
@@ -277,8 +269,14 @@ def replay_actions_v3(task: MemUpdateTaskV3) -> ReplayResultV3:
 
 
 def _shape(values: list[Any], keys, schema) -> Any:
-    if len(values) == 1 and schema not in {AnswerSchema.LIST, AnswerSchema.OBJECT}:
-        return values[0]
+    if len(values) == 1:
+        value = values[0]
+        if schema == AnswerSchema.LIST and isinstance(value, (list, tuple)):
+            return value
+        if schema == AnswerSchema.OBJECT and isinstance(value, Mapping):
+            return value
+        if schema not in {AnswerSchema.LIST, AnswerSchema.OBJECT}:
+            return value
     if schema == AnswerSchema.LIST:
         return values
     if schema == AnswerSchema.OBJECT:
@@ -305,13 +303,28 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times
         anchor = event_positions.get(selector.event_id)
         if anchor is None:
             return ()
+        matched = [
+            version
+            for version in versions
+            if version.valid_from_event_id is not None
+            and event_positions[version.valid_from_event_id] <= anchor
+            and (
+                version.valid_until_event_id is None
+                or anchor < event_positions[version.valid_until_event_id]
+            )
+        ]
         event_time = event_times.get(selector.event_id)
-        if event_time is not None:
-            eligible = [version for version in versions if version.logical_time is not None and version.logical_time <= event_time]
-            if eligible:
-                return (max(eligible, key=lambda version: version.version_index),)
-        matched = [version for version in versions if version.valid_from_event_id is not None and event_positions[version.valid_from_event_id] <= anchor and (version.valid_until_event_id is None or anchor < event_positions[version.valid_until_event_id])]
-        return tuple(matched)
+        scheduled = [
+            version
+            for version in versions
+            if version.valid_from_event_id is None
+            and version.logical_time is not None
+            and event_time is not None
+            and version.logical_time <= event_time
+            and all(event_positions[event_id] <= anchor for event_id in version.source_event_ids)
+        ]
+        eligible = (*matched, *scheduled)
+        return () if not eligible else (max(eligible, key=lambda version: version.version_index),)
     if isinstance(selector, LogicalTimeAnchorSelector):
         eligible = [version for version in versions if version.logical_time is not None and version.logical_time <= selector.logical_time]
         if not eligible:

@@ -157,8 +157,21 @@ def validate_metric_registry_v3(registry: Mapping[str, object]) -> FrozenDict:
 CORE_METRIC_REGISTRY_V3 = validate_metric_registry_v3({path: _descriptor(path) for path in sorted(CORE_METRIC_FIELD_PATHS)})
 
 
+_FAMILY_ALIASES = {
+    "E": frozenset({"E", "deletion_forgetting"}),
+    "deletion_forgetting": frozenset({"E", "deletion_forgetting"}),
+    "F": frozenset({"F", "current_historical_query"}),
+    "current_historical_query": frozenset({"F", "current_historical_query"}),
+    "G": frozenset({"G", "long_horizon_memory_synthesis"}),
+    "long_horizon_memory_synthesis": frozenset({"G", "long_horizon_memory_synthesis"}),
+}
+
+
 def metric_applies_v3(descriptor: MetricDescriptorV3, family: str, query_kinds: set[str]) -> bool:
-    family_ok = ALL_FAMILIES in descriptor.applicable_task_families or family in descriptor.applicable_task_families
+    family_names = _FAMILY_ALIASES.get(family, frozenset({family}))
+    family_ok = ALL_FAMILIES in descriptor.applicable_task_families or bool(
+        family_names & set(descriptor.applicable_task_families)
+    )
     query_ok = ALL_QUERY_KINDS in descriptor.applicable_query_kinds or bool(query_kinds & set(descriptor.applicable_query_kinds))
     return family_ok and query_ok
 

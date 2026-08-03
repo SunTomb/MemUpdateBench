@@ -6,6 +6,7 @@ from pydantic import field_validator
 
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, StrictNonnegativeFloat, StrictNonnegativeInt, freeze_mapping
 from mub.vnext.contracts.enums import CompletionStatus, Operation, TaskFamily
+from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.score import ScoreRecordV3, V3_FAILURE_FLAGS
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
@@ -18,8 +19,7 @@ def _plain(value):
 
 
 def _same(left, right):
-    left, right = _plain(left), _plain(right)
-    return type(left) is type(right) and left == right
+    return typed_json_equal(left, right)
 
 
 def _contains_value(output, candidate):

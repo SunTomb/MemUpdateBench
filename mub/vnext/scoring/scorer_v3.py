@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import Counter
 from collections.abc import Mapping
 from typing import Any
@@ -11,12 +9,13 @@ from pydantic import field_validator, model_validator
 from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel, MetricFieldSupport
 from mub.vnext.contracts.enums import CompletionStatus, Operation, SupportReason
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
-from mub.vnext.contracts.v3.common import StrictIdentifier, object_identity
+from mub.vnext.contracts.v3.common import StrictIdentifier, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.manifest import RunManifestV3, TaskManifestV3
 from mub.vnext.contracts.v3.runtime import TaskRunRecordV3
 from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, ScorerConfigV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.io import sha256_model
 from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2, missing_capabilities as missing_capabilities_v2
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3, metric_applies_v3, missing_capabilities_v3
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
@@ -25,8 +24,7 @@ _NULL_POLICY = "serialize_null_exclude_from_aggregation"
 
 
 def _contract_hash(value) -> str:
-    raw = json.dumps(value.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    return hashlib.sha256(raw).hexdigest()
+    return sha256_model(value)
 
 
 class VerifiedScoringContextV3(ImmutableContractModel):
@@ -163,8 +161,7 @@ def _plain(value):
 
 
 def _same(left, right) -> bool:
-    left, right = _plain(left), _plain(right)
-    return type(left) is type(right) and left == right
+    return typed_json_equal(left, right)
 
 
 def _mean(values):
