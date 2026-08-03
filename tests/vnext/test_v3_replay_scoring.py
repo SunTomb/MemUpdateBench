@@ -983,6 +983,55 @@ def g_difference_payload():
     return changed
 
 
+@pytest.mark.parametrize("family", ["multi_hop", "consistency"])
+@pytest.mark.parametrize("location", ["primary", "stale"])
+@pytest.mark.parametrize("laundering", ["mixed_read", "unused_top_level"])
+def test_g_evidence_rejects_unrelated_or_unused_event_support(family, location, laundering):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    if family == "multi_hop":
+        valid = g_stale_payload()
+    else:
+        common_event = "e3" if location == "primary" else "e1"
+        valid = replayable_multi_object_consistency_payload(common_event)
+        evidence = valid["gold_evidence"][0]
+        if location == "stale":
+            first, second = evidence["supporting_object_keys"]
+            evidence["stale_alternative"] = {
+                "answer": False, "supporting_object_keys": [first, second],
+                "supporting_event_ids": ["e1"],
+                "derivation_steps": [
+                    {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                    {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e1"]},
+                    {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second"]},
+                ],
+                "final_derivation_step_id": "equals",
+            }
+    valid["events"].append({
+        "event_id": "e-noop", "sequence_index": len(valid["events"]),
+        "raw_text": "unrelated", "normalized_text": "unrelated", "role": "neutral",
+        "gold_action_ids": ["a-noop"],
+    })
+    valid["actions"].append({"action_id": "a-noop", "event_id": "e-noop", "operation": "NOOP"})
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+    corrupted = deepcopy(valid)
+    evidence = corrupted["gold_evidence"][0]
+    item = evidence if location == "primary" else evidence["stale_alternative"]
+    item["supporting_event_ids"].append("e-noop")
+    if laundering == "mixed_read":
+        item["derivation_steps"][0]["supporting_event_ids"].append("e-noop")
+    with pytest.raises(ValueError, match="support|event|provenance"):
+        MemUpdateTaskV3.model_validate(corrupted)
+
+
 @pytest.mark.parametrize("location", ["primary", "stale"])
 def test_update_sensitive_multi_hop_rejects_unbound_selector_or_stale_provenance(location):
     from mub.vnext.validation.replay_v3 import evaluate_evidence_v3

@@ -609,6 +609,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     targets,
                     histories,
                     selected_entries_by_target,
+                    require_exact_event_coverage=True,
                 )
                 if alternative is not None:
                     stale_read_count, stale_read_objects = _derivation_read_support(alternative, targets)
@@ -647,7 +648,7 @@ def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
     return key.namespace, key.entity, key.attribute, key.subkey
 
 
-def _resolve_derivation_read_versions(step, ledgers, version_rows):
+def _resolve_derivation_read_support(step, ledgers, version_rows):
     supporting_events = set(step.supporting_event_ids)
     if step.supporting_object_keys:
         resolved = []
@@ -663,16 +664,30 @@ def _resolve_derivation_read_versions(step, ledgers, version_rows):
             if len(candidates) != 1:
                 raise ValueError("derivation read support is missing or ambiguous")
             resolved.append(candidates[0])
-        return tuple(resolved)
-    candidates = tuple(
-        version
-        for ledger in ledgers.values()
-        for version in version_rows(ledger)
-        if set(version.source_event_ids) & supporting_events
-    )
-    if len(candidates) != 1:
-        raise ValueError("derivation event support is missing or ambiguous")
-    return candidates
+        versions = tuple(resolved)
+    else:
+        candidates = tuple(
+            version
+            for ledger in ledgers.values()
+            for version in version_rows(ledger)
+            if set(version.source_event_ids) & supporting_events
+        )
+        if len(candidates) != 1:
+            raise ValueError("derivation event support is missing or ambiguous")
+        versions = candidates
+    authenticated_events = {
+        event_id
+        for version in versions
+        for event_id in version.source_event_ids
+        if event_id in supporting_events
+    }
+    if authenticated_events != supporting_events:
+        raise ValueError("derivation read lists event support unrelated to its resolved versions")
+    return versions, authenticated_events
+
+
+def _resolve_derivation_read_versions(step, ledgers, version_rows):
+    return _resolve_derivation_read_support(step, ledgers, version_rows)[0]
 
 
 def _validate_derivation_read_bindings(evidence, histories, include_implicit=False) -> None:
@@ -700,7 +715,7 @@ def _validate_multi_hop_read_eligibility(
     for step in evidence.derivation_steps:
         if not _derivation_step_reads_support(step):
             continue
-        versions = _resolve_derivation_read_versions(step, ledgers, version_rows)
+        versions, authenticated_events = _resolve_derivation_read_support(step, ledgers, version_rows)
         if step.supporting_object_keys:
             components = zip((_identity(key) for key in step.supporting_object_keys), versions)
         else:
@@ -718,7 +733,7 @@ def _validate_multi_hop_read_eligibility(
         for identity, version in components:
             if identity in targets:
                 resolved_versions.add((identity, version.version_index))
-        consumed_events.update(step.supporting_event_ids)
+        consumed_events.update(authenticated_events)
     selected_versions = {
         (identity, version.version_index)
         for identity, versions in selected_by_target.items()
@@ -756,17 +771,18 @@ def _validate_consistency_read_eligibility(
         identity = _identity(step.supporting_object_keys[0])
         if identity not in targets:
             continue
-        version = _resolve_derivation_read_versions(
+        versions, authenticated_events = _resolve_derivation_read_support(
             step,
             ledgers,
             version_rows,
-        )[0]
+        )
+        version = versions[0]
         if selected_by_target is not None and all(
             version.version_index != selected.version_index
             for selected in selected_by_target[identity]
         ):
             raise ValueError("derivation read provenance is not eligible for the query selector")
-        consumed_events.update(step.supporting_event_ids)
+        consumed_events.update(authenticated_events)
     if require_exact_event_coverage and consumed_events != set(evidence.supporting_event_ids):
         raise ValueError("derivation read provenance is not eligible for authenticated evidence support")
 

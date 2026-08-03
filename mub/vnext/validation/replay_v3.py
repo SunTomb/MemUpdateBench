@@ -471,6 +471,7 @@ def evaluate_evidence_v3(
                     targets,
                     replay.ledger_by_identity,
                     selected_by_target,
+                    require_exact_event_coverage=True,
                     version_rows=lambda ledger: ledger.versions,
                 )
                 if stale_alternative is not None:
