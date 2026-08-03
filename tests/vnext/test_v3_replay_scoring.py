@@ -634,6 +634,10 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     value, detail = _metric_value("answer_scores.distractor_copied", task, run, None, replay, {}, evidence, {"q": correct}, {"q": overlap_trace}, [])
     assert detail is None
     assert value == 0.0
+    format_only_overlap = AnswerPredictionV3(query_id="q", raw_output="bad-format", parsed_answer=["v0", "v1", None, "v2"], format_valid=False)
+    flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (format_only_overlap,), "retrieval_traces": (overlap_trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": format_only_overlap}, traces={"q": overlap_trace}, evidence=evidence)
+    assert "answer_format_only" in flags
+    assert "distractor_copied" not in flags
 
 
 def g_stale_payload():
