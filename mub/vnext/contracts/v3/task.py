@@ -643,8 +643,10 @@ def _validate_consistency_read_eligibility(
         version_rows = lambda ledger: ledger.entries
     consumed_events = set()
     for step in evidence.derivation_steps:
-        if not _derivation_step_reads_support(step) or len(step.supporting_object_keys) != 1:
+        if not _derivation_step_reads_support(step):
             continue
+        if len(step.supporting_object_keys) != 1:
+            raise ValueError("multi-key consistency reads cannot represent eligible per-target provenance")
         identity = _identity(step.supporting_object_keys[0])
         if identity not in targets:
             continue
