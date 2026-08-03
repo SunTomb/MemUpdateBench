@@ -394,6 +394,22 @@ def _entry_obsolete_status(entry, replay):
     return bool(obsolete)
 
 
+def _obsolete_entry_conflicts_with_current(entry, replay):
+    ledger = replay.ledger_by_identity[_identity(entry.object_key_candidate)]
+    current = replay.active_versions(ledger)[-1]
+    entry_status = (
+        LedgerEntryStatus.TOMBSTONE
+        if entry.value_candidate is None
+        else LedgerEntryStatus.PRESENT
+    )
+    if entry_status != current.status:
+        return True
+    return (
+        entry_status == LedgerEntryStatus.PRESENT
+        and not typed_json_equal(entry.value_candidate, current.value)
+    )
+
+
 def _entry_forgotten_status(entry, replay):
     if entry.object_key_candidate is None:
         return False
@@ -476,7 +492,7 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             return None, "version identity is ambiguous for repeated-value store entries"
         stale = [entry for entry, status in zip(entries, statuses) if status is True]
         if leaf == "obsolete_version_count": return len(stale), None
-        if leaf == "stale_conflicting_value_count": return len(stale), None
+        if leaf == "stale_conflicting_value_count": return sum(_obsolete_entry_conflicts_with_current(entry, replay) for entry in stale), None
         if leaf == "duplicate_current_count": return sum(max(0, sum(_entry_matches_version(entry, version) for entry in entries) - 1) for version in current_versions), None
     if layer == "retrieval_scores":
         if not traces: return None, "retrieval traces are missing"

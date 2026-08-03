@@ -687,9 +687,182 @@ def test_same_value_different_version_is_not_current_entry_match():
     assert detail is None
     assert value == 1.0
     explicit_run = run.model_copy(update={"memory_snapshots": (MemorySnapshotV3(after_event_id="e3", entries=(stale_v0,), store_size=1),)})
-    value, detail = _metric_value("store_scores.stale_conflicting_value_count", task, explicit_run, None, replay, {}, evidence, {}, {}, _action_facts(task, explicit_run))
+    obsolete, detail = _metric_value("store_scores.obsolete_version_count", task, explicit_run, None, replay, {}, evidence, {}, {}, _action_facts(task, explicit_run))
     assert detail is None
-    assert value == 1
+    assert obsolete == 1
+    conflict, detail = _metric_value("store_scores.stale_conflicting_value_count", task, explicit_run, None, replay, {}, evidence, {}, {}, _action_facts(task, explicit_run))
+    assert detail is None
+    assert conflict == 0
+
+
+def _store_metric_value(path, task, replay, *entries):
+    from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
+    from mub.vnext.scoring.scorer_v3 import _metric_value
+
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="a",
+        run_id="store-metric",
+        memory_snapshots=(
+            MemorySnapshotV3(
+                after_event_id=task.events[-1].event_id,
+                entries=entries,
+                store_size=len(entries),
+            ),
+        ),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    return _metric_value(path, task, run, None, replay, {}, {}, {}, {}, [])
+
+
+def test_store_stale_conflict_counts_typed_different_obsolete_value():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    replay = replay_task_v3(task)
+    stale = MemoryEntryRecordV3(
+        entry_id="stale-different",
+        content="v0",
+        object_key_candidate=task.target_objects[0],
+        value_candidate="v0",
+        version_index=0,
+        source_event_ids=("e0",),
+    )
+    obsolete, obsolete_detail = _store_metric_value(
+        "store_scores.obsolete_version_count", task, replay, stale,
+    )
+    conflict, conflict_detail = _store_metric_value(
+        "store_scores.stale_conflicting_value_count", task, replay, stale,
+    )
+    assert (obsolete, obsolete_detail) == (1, None)
+    assert (conflict, conflict_detail) == (1, None)
+
+
+def test_store_stale_conflict_counts_retained_present_value_against_current_tombstone():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = payload()
+    changed["events"] = changed["events"][:3]
+    changed["actions"] = changed["actions"][:3]
+    changed["version_history"][0]["entries"] = changed["version_history"][0]["entries"][:3]
+    changed["version_history"][0]["entries"][-1].pop("valid_until_event_id", None)
+    changed["gold_evidence"][0]["answer"] = ["v0", "v1", None]
+    changed["gold_evidence"][0]["supporting_event_ids"] = ["e0", "e1", "e2"]
+    changed["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"] = ["e0", "e1", "e2"]
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    stale = MemoryEntryRecordV3(
+        entry_id="stale-before-tombstone",
+        content="v1",
+        object_key_candidate=task.target_objects[0],
+        value_candidate="v1",
+        version_index=1,
+        source_event_ids=("e1",),
+    )
+    obsolete, obsolete_detail = _store_metric_value(
+        "store_scores.obsolete_version_count", task, replay, stale,
+    )
+    conflict, conflict_detail = _store_metric_value(
+        "store_scores.stale_conflicting_value_count", task, replay, stale,
+    )
+    assert (obsolete, obsolete_detail) == (1, None)
+    assert (conflict, conflict_detail) == (1, None)
+
+
+@pytest.mark.parametrize(
+    ("current_value", "expected_conflict"),
+    [
+        ({"items": [True, {"n": 1}]}, 0),
+        ({"items": [1, {"n": 1}]}, 1),
+    ],
+)
+def test_store_stale_conflict_uses_structured_typed_equality(
+    current_value, expected_conflict,
+):
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    stale_value = {"items": [True, {"n": 1}]}
+    changed = current_structured_payload(current_value, "object")
+    changed["actions"][0]["value"] = stale_value
+    changed["version_history"][0]["entries"][0]["value"] = stale_value
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    stale = MemoryEntryRecordV3(
+        entry_id="stale-structured",
+        content="structured",
+        object_key_candidate=task.target_objects[0],
+        value_candidate=stale_value,
+        version_index=0,
+        source_event_ids=("e0",),
+    )
+    obsolete, obsolete_detail = _store_metric_value(
+        "store_scores.obsolete_version_count", task, replay, stale,
+    )
+    conflict, conflict_detail = _store_metric_value(
+        "store_scores.stale_conflicting_value_count", task, replay, stale,
+    )
+    assert (obsolete, obsolete_detail) == (1, None)
+    assert (conflict, conflict_detail) == (expected_conflict, None)
+
+
+def test_store_stale_conflict_uses_horizon_active_current_version():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = ttl_horizon_payload("005", "v1")
+    changed["actions"][0]["value"] = "v1"
+    changed["version_history"][0]["entries"][0]["value"] = "v1"
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    stale = MemoryEntryRecordV3(
+        entry_id="stale-before-future-tombstone",
+        content="v1",
+        object_key_candidate=task.target_objects[0],
+        value_candidate="v1",
+        version_index=0,
+        source_event_ids=("e0",),
+    )
+    obsolete, obsolete_detail = _store_metric_value(
+        "store_scores.obsolete_version_count", task, replay, stale,
+    )
+    conflict, conflict_detail = _store_metric_value(
+        "store_scores.stale_conflicting_value_count", task, replay, stale,
+    )
+    assert (obsolete, obsolete_detail) == (1, None)
+    assert (conflict, conflict_detail) == (0, None)
+
+
+def test_store_stale_conflict_preserves_repeated_value_ambiguity_null():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = payload()
+    changed["actions"][0]["value"] = "x"
+    changed["actions"][1]["value"] = "y"
+    changed["actions"][3]["value"] = "x"
+    changed["version_history"][0]["entries"][0]["value"] = "x"
+    changed["version_history"][0]["entries"][1]["value"] = "y"
+    changed["version_history"][0]["entries"][3]["value"] = "x"
+    changed["gold_evidence"][0]["answer"] = ["x", "y", None, "x"]
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    ambiguous = MemoryEntryRecordV3(
+        entry_id="ambiguous-repeat",
+        content="x",
+        object_key_candidate=task.target_objects[0],
+        value_candidate="x",
+    )
+    for path in (
+        "store_scores.obsolete_version_count",
+        "store_scores.stale_conflicting_value_count",
+    ):
+        value, detail = _store_metric_value(path, task, replay, ambiguous)
+        assert value is None
+        assert "version identity is ambiguous" in detail
 
 
 def future_ttl_payload():
