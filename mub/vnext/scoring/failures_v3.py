@@ -125,6 +125,7 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
                 candidates = tuple(
                     candidate
                     for entry in trace.retrieved_entries
+                    if entry.raw_metadata.get("is_distractor") is True or entry.raw_metadata.get("role") == "distractor"
                     for candidate in (entry.value_candidate, entry.content)
                     if candidate is not None
                 )

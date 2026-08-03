@@ -83,6 +83,10 @@ class VerifiedScoringContextV3(ImmutableContractModel):
             raise ValueError("run_id mismatch with authenticated run manifest")
         if run.adapter_id != run_manifest.adapter_info.adapter_id:
             raise ValueError("adapter_id mismatch with authenticated run manifest")
+        if authenticated_task_manifest_sha256 != _contract_hash(task_manifest):
+            raise ValueError("authenticated task manifest hash does not match canonical manifest payload")
+        if authenticated_run_manifest_sha256 != _contract_hash(run_manifest):
+            raise ValueError("authenticated run manifest hash does not match canonical manifest payload")
         return cls(
             task_manifest=task_manifest, run_manifest=run_manifest,
             task_artifact=task_artifact, run_artifact=run_artifact,
@@ -165,6 +169,30 @@ def _normalized(value):
     return value
 
 
+def _answer_contains(output, candidate):
+    if _same(output, candidate):
+        return True
+    output = _plain(output)
+    candidate = _plain(candidate)
+    if isinstance(output, str) and isinstance(candidate, str):
+        return bool(candidate) and candidate.casefold() in output.casefold()
+    if isinstance(output, Mapping):
+        return any(_answer_contains(value, candidate) for value in output.values())
+    if isinstance(output, list):
+        return any(_answer_contains(value, candidate) for value in output)
+    return False
+
+
+def _distractor_candidates(trace):
+    return tuple(
+        candidate
+        for entry in trace.retrieved_entries
+        if entry.raw_metadata.get("is_distractor") is True or entry.raw_metadata.get("role") == "distractor"
+        for candidate in (entry.value_candidate, entry.content)
+        if candidate is not None
+    )
+
+
 def _token_f1(predicted, gold):
     predicted_tokens = str(_plain(predicted)).casefold().split()
     gold_tokens = str(_plain(gold)).casefold().split()
@@ -190,12 +218,18 @@ def _identity(key):
     return object_identity(key)
 
 
-def _final_snapshot(run):
-    return run.memory_snapshots[-1] if run.memory_snapshots else None
+def _final_snapshot(run, task=None):
+    if not run.memory_snapshots:
+        return None
+    if task is None:
+        return run.memory_snapshots[-1]
+    positions = {event.event_id: event.sequence_index for event in task.events}
+    anchored = [snapshot for snapshot in run.memory_snapshots if snapshot.after_event_id in positions]
+    return max(anchored, key=lambda snapshot: positions[snapshot.after_event_id]) if anchored else run.memory_snapshots[-1]
 
 
-def _snapshot_state(run):
-    snapshot = _final_snapshot(run)
+def _snapshot_state(run, task=None):
+    snapshot = _final_snapshot(run, task)
     return {} if snapshot is None else dict(snapshot.state_by_object)
 
 
@@ -322,8 +356,8 @@ def _entry_forgotten_status(entry, replay):
 
 def _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts):
     layer, leaf = path.split(".", 1)
-    snapshot = _final_snapshot(run)
-    state = _snapshot_state(run)
+    snapshot = _final_snapshot(run, task)
+    state = _snapshot_state(run, task)
     expected_state = {key: version.value for key, version in replay.current_state.items()}
     answers = list(predictions.values())
     actions = [fact[1] for fact in action_facts if fact[1] is not None]
@@ -414,8 +448,8 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "structured_field_accuracy": return _mean([_structured_accuracy(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
         if leaf == "answer_state_consistency": return _mean([float(item.format_valid and _same(item.parsed_answer, resolutions[item.query_id].answer)) for item in predictions.values()]), None
         obsolete = replay.obsolete_present_values
-        if leaf == "stale_copied": return _mean([float(any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
-        if leaf == "distractor_copied": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
+        if leaf == "stale_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
+        if leaf == "distractor_copied": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
         if leaf == "gold_retrieved_wrong_answer": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].gold_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
         if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
     if layer == "system_scores":

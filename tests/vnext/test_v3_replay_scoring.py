@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+import hashlib
+import json
 import pytest
 
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
@@ -45,7 +47,6 @@ def payload():
 def authenticated_manifests(task, run, info, caps, config):
     task_artifact = {"path": "tasks.jsonl", "sha256": "b" * 64, "media_type": "application/jsonl", "record_count": 1}
     run_artifact = {"path": "runs.jsonl", "sha256": "c" * 64, "media_type": "application/jsonl", "record_count": 1}
-    task_manifest_sha256 = "d" * 64
     task_manifest = TaskManifestV3(
         data_release_id="release", split_policy_version="3", compiler_versions={"core": "3"},
         source_manifest_paths_and_hashes=(), generation_configs_and_hashes=(),
@@ -53,6 +54,7 @@ def authenticated_manifests(task, run, info, caps, config):
         task_file_paths_and_hashes=(task_artifact,), leakage_check_summary={}, human_audit_artifacts=(),
         created_at="2026-08-02T00:00:00Z", code_revision="r",
     )
+    task_manifest_sha256 = hashlib.sha256(json.dumps(task_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     run_manifest = RunManifestV3(
         run_id=run.run_id, timestamp="2026-08-02T00:00:00Z", code_revision="r", dirty_state=False,
         task_manifest={"path": "task-manifest.json", "sha256": task_manifest_sha256, "media_type": "application/json"},
@@ -67,7 +69,8 @@ def authenticated_manifests(task, run, info, caps, config):
         raw_provider_response_artifacts=(), raw_adapter_state_artifacts=(), normalized_runtime_artifacts=(run_artifact,),
         score_artifacts=(), native_vs_extracted_field_summary={},
     )
-    return task_manifest, run_manifest, task_artifact, run_artifact, task_manifest_sha256, "f" * 64
+    run_manifest_sha256 = hashlib.sha256(json.dumps(run_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return task_manifest, run_manifest, task_artifact, run_artifact, task_manifest_sha256, run_manifest_sha256
 
 
 def authenticated_context(task, run, info, caps, config=None):
@@ -145,13 +148,15 @@ def test_authenticated_scoring_context_rejects_manifest_capability_config_and_ta
     task_manifest, run_manifest, task_artifact, run_artifact, task_manifest_sha256, run_manifest_sha256 = bundle
     wrong_binding = run_manifest.model_copy(update={"task_manifest": run_manifest.task_manifest.model_copy(update={"sha256": "0" * 64})})
     from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3
-    with pytest.raises(ValueError, match="task manifest"):
+    with pytest.raises(ValueError, match="manifest"):
         VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=wrong_binding, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=task_manifest_sha256, authenticated_run_manifest_sha256=run_manifest_sha256)
     with pytest.raises(ValueError, match="unauthenticated"):
         VerifiedScoringContextV3.create_verified(adapter_info=info, capabilities=caps, scorer_config=ScorerConfigV3(), run_id="run")
     unavailable = run_manifest.model_copy(update={"capability_verification_artifact": None})
-    with pytest.raises(ValueError, match="capability verification"):
+    with pytest.raises(ValueError, match="manifest|capability verification"):
         VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=unavailable, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=task_manifest_sha256, authenticated_run_manifest_sha256=run_manifest_sha256)
+    with pytest.raises(ValueError, match="authenticated run manifest hash"):
+        VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=run_manifest, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=task_manifest_sha256, authenticated_run_manifest_sha256="0" * 64)
 
 
 def test_scorer_module_exposes_verified_context_and_rejects_identity_mismatch():
@@ -413,6 +418,11 @@ def test_same_value_different_version_is_not_current_entry_match():
     value, detail = _metric_value("retrieval_scores.current_recall_at_k", current_task, run.model_copy(update={"retrieval_traces": (ambiguous_trace,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {}, {"q": ambiguous_trace}, [])
     assert value is None
     assert "version identity" in detail
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    correct_x = AnswerPredictionV3(query_id="q", raw_output="x", parsed_answer="x", format_valid=True)
+    value, detail = _metric_value("answer_scores.stale_copied", current_task, run.model_copy(update={"answer_predictions": (correct_x,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {"q": correct_x}, {}, [])
+    assert detail is None
+    assert value == 0.0
 
     from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
     evidence = {item.query_id: item for item in task.gold_evidence}
@@ -512,6 +522,16 @@ def test_ttl_horizon_keeps_future_expiry_pending_until_query_reaches_boundary():
     assert key.canonical_id not in boundary.current_state
 
 
+def test_current_query_contract_uses_pre_expiry_horizon_not_future_tombstone():
+    changed = ttl_horizon_payload("005", "v1")
+    changed["queries"][0]["query_type"] = "current"
+    changed["queries"][0]["selector"] = {"kind": "current"}
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    assert resolve_query_v3(task.queries[0], replay, task.events).answer == "v1"
+
+
 def test_ttl_scorer_uses_expiry_snapshot_not_scheduling_snapshot():
     from mub.vnext.contracts.v3.runtime import MemorySnapshotV3, ParsedManagerActionV3
     from mub.vnext.scoring.scorer_v3 import _action_facts, _metric_value
@@ -531,6 +551,9 @@ def test_ttl_scorer_uses_expiry_snapshot_not_scheduling_snapshot():
         parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"), completion_status="completed",
     )
     value, issue = _metric_value("deletion_scores.ttl_compliance_rate", task, run, None, replay, {}, {}, {}, {}, _action_facts(task, run))
+    assert issue is None
+    assert value == 1.0
+    value, issue = _metric_value("state_scores.final_state_accuracy", task, run, None, replay, {}, {}, {}, {}, _action_facts(task, run))
     assert issue is None
     assert value == 1.0
 
@@ -588,12 +611,16 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (format_only,)}), replay=replay, layer_values=empty_layers, predictions={"q": format_only}, traces={}, evidence=evidence)
     assert "answer_format_only" in flags
 
-    distractor = MemoryEntryRecordV3(entry_id="d", content="distractor", value_candidate="distractor")
+    distractor = MemoryEntryRecordV3(entry_id="d", content="distractor", value_candidate="distractor", raw_metadata={"is_distractor": True})
     trace = RetrievalTraceV3(query_id="q", retrieved_entries=(distractor,), distractor_in_context=True)
     wrong = AnswerPredictionV3(query_id="q", raw_output="other", parsed_answer="other", format_valid=True)
     flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (wrong,), "retrieval_traces": (trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": wrong}, traces={"q": trace}, evidence=evidence)
     assert "distractor_retrieved" in flags
     assert "distractor_copied" not in flags
+    from mub.vnext.scoring.scorer_v3 import _metric_value
+    value, detail = _metric_value("answer_scores.distractor_copied", task, run, None, replay, {}, evidence, {"q": wrong}, {"q": trace}, [])
+    assert detail is None
+    assert value == 0.0
 
     copied = AnswerPredictionV3(query_id="q", raw_output="distractor", parsed_answer="distractor", format_valid=True)
     flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (copied,), "retrieval_traces": (trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": copied}, traces={"q": trace}, evidence=evidence)
@@ -638,6 +665,12 @@ def test_g_gold_contract_registers_strict_stale_alternative_derivation():
     assert evaluation.stale_required_step_ids == ("stale-read", "stale-answer")
     with pytest.raises(Exception):
         alternative.derivation_steps[0].operation = "eval"
+    shallow = g_stale_payload()
+    shallow_alt = shallow["gold_evidence"][0]["stale_alternative"]
+    shallow_alt["derivation_steps"] = [shallow_alt["derivation_steps"][0]]
+    shallow_alt["final_derivation_step_id"] = "stale-read"
+    with pytest.raises(Exception, match="stale alternative.*minimum_hops"):
+        MemUpdateTaskV3.model_validate(shallow)
 
 
 def test_stale_propagation_uses_registered_alternative_not_any_obsolete_value():

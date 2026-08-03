@@ -425,6 +425,18 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         raise ValueError("logical-time anchors must be strictly increasing")
                     if event_boundary == (None, None) and logical_boundary == (None, None):
                         raise ValueError("adjacent versions require event or logical-time continuity")
+        horizon_candidates = [event.timestamp for event in self.events if event.timestamp is not None]
+        horizon_candidates.extend(
+            action.effective_at
+            for action in self.actions
+            if action.effective_at is not None and not (action.operation == Operation.DELETE and action.scope == ActionScope.TTL)
+        )
+        horizon_candidates.extend(
+            query.selector.logical_time
+            for query in self.queries
+            if isinstance(query.selector, LogicalTimeAnchorSelector)
+        )
+        task_horizon = max(horizon_candidates) if horizon_candidates else None
         query_by_id = {query.query_id: query for query in self.queries}
         if len(query_by_id) != len(self.queries):
             raise ValueError("query IDs must be unique")
@@ -480,7 +492,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
             selected_entries = [
                 entry
                 for target in targets
-                for entry in _selector_entries(query.selector, histories[target], event_position)
+                for entry in _selector_entries(query.selector, histories[target], event_position, task_horizon)
             ]
             if not selected_entries:
                 raise ValueError("selector does not resolve any version history entries")
@@ -512,10 +524,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
                     raise ValueError("G derivation does not satisfy minimum_hops")
+                if alternative is not None and _derivation_depth(alternative) < minimum_hops:
+                    raise ValueError("stale alternative does not satisfy minimum_hops")
             if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
                 minimum_objects = query.synthesis.minimum_objects
                 if len(targets) < minimum_objects or len(evidence_objects) < minimum_objects:
                     raise ValueError("G derivation does not satisfy minimum_objects")
+                if alternative is not None and len({_identity(key) for key in alternative.supporting_object_keys}) < minimum_objects:
+                    raise ValueError("stale alternative does not satisfy minimum_objects")
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
             for query in self.queries
@@ -705,12 +721,13 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     }
 
 
-def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_position: Mapping[str, int]) -> tuple[VersionHistoryEntry, ...]:
+def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_position: Mapping[str, int], horizon: str | None = None) -> tuple[VersionHistoryEntry, ...]:
     entries = ledger.entries
+    active_entries = entries if horizon is None else tuple(entry for entry in entries if entry.logical_time is None or entry.logical_time <= horizon)
     if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
-        return entries[-1:]
+        return active_entries[-1:]
     if isinstance(selector, PreviousSelector):
-        return entries[-2:-1]
+        return active_entries[-2:-1]
     if isinstance(selector, ExactVersionSelector):
         return (entries[selector.version_index],)
     if isinstance(selector, TransitionSelector):
