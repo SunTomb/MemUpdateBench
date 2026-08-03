@@ -212,6 +212,24 @@ def test_retrieval_scores_require_exact_builtin_floats() -> None:
     assert RetrievalTraceV3(query_id="q", retrieved_entries=(item,), scores=(1.0,)).scores == (1.0,)
 
 
+@pytest.mark.parametrize("bad_rank", [1.0, True, "1", 0, -1])
+def test_retrieval_ranks_require_exact_positive_builtin_int(bad_rank) -> None:
+    item = MemoryEntryRecordV3(entry_id="id", content="x")
+
+    with pytest.raises(ValidationError):
+        RetrievalTraceV3(
+            query_id="q",
+            retrieved_entries=(item,),
+            ranks=(bad_rank,),
+        )
+
+    assert RetrievalTraceV3(
+        query_id="q",
+        retrieved_entries=(item,),
+        ranks=(7,),
+    ).ranks == (7,)
+
+
 def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
     class HostileString(str):
         pass

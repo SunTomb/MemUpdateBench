@@ -7,7 +7,7 @@ from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel, StrictBool, StrictNonnegativeFloat
 from mub.vnext.contracts.enums import ActionScope, AnswerDisposition, CompletionStatus, Operation
-from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, StrictFiniteFloat, StrictIdentifier, validate_action_coherence
+from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, FrozenUsageMap, MemoryObjectKeyV3, StrictFiniteFloat, StrictIdentifier, StrictPositiveInt, validate_action_coherence
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3
 from mub.vnext.contracts.v3.version import RUNTIME_RECORD_VERSION_V3, SCHEMA_VERSION_V3
 
@@ -37,7 +37,7 @@ class RetrievalTraceV3(ImmutableContractModel):
     query_id: StrictIdentifier
     retrieved_entries: tuple[MemoryEntryRecordV3, ...] = ()
     scores: tuple[StrictFiniteFloat, ...] = ()
-    ranks: tuple[int, ...] = ()
+    ranks: tuple[StrictPositiveInt, ...] = ()
     gold_in_context: StrictBool | None = None
     stale_in_context: StrictBool | None = None
     distractor_in_context: StrictBool | None = None

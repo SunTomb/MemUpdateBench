@@ -732,6 +732,53 @@ def test_current_mrr_missing_ranks_is_missing_artifact():
     ].reason is SupportReason.MISSING_ARTIFACT
 
 
+@pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
+@pytest.mark.parametrize("bad_rank", [1.0, True, "1", 0, -1])
+def test_current_mrr_scorer_rejects_non_exact_positive_rank(bad_rank):
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    current = _current_mrr_entry(task, "current", "v2", 3, "e3")
+    task, trace, run, _, _ = _current_mrr_fixture(current, ranks=(1,))
+    run = run.model_copy(
+        update={
+            "answer_predictions": (
+                AnswerPredictionV3(
+                    query_id="q",
+                    raw_output="v2",
+                    parsed_answer="v2",
+                    format_valid=True,
+                ),
+            ),
+        },
+    )
+    info = AdapterInfoV3(
+        adapter_id="a",
+        adapter_version="1",
+        system_name="test",
+        system_version="1",
+        configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_retrieval_ids=True,
+        exports_retrieval_scores=True,
+    )
+    config = ScorerConfigV3(
+        requested_metric_fields=("retrieval_scores.current_mrr",),
+    )
+    context = authenticated_context(task, run, info, caps, config)
+    corrupted_trace = RetrievalTraceV3.model_construct(
+        **{**trace.__dict__, "ranks": (bad_rank,)}
+    )
+    corrupted_run = TaskRunRecordV3.model_construct(
+        **{**run.__dict__, "retrieval_traces": (corrupted_trace,)}
+    )
+
+    with pytest.raises(ValidationError):
+        score_task_v3(task, corrupted_run, context)
+
+
 def test_current_mrr_uses_rank_when_tuple_order_disagrees():
     task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
     stale = _current_mrr_entry(task, "stale", "v1", 1, "e1")
