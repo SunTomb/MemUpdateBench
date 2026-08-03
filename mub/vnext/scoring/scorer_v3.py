@@ -513,10 +513,24 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             return None, "version identity is ambiguous for repeated-value current retrieval entries"
         if leaf == "current_recall_at_k": return (_mean([float(any(status is True for status in current_statuses[q.query_id])) for q, trace in current_rows]), None) if current_rows else (None, "no current retrieval rows")
         if leaf == "current_mrr":
+            if any(
+                trace.retrieved_entries
+                and len(trace.ranks) != len(trace.retrieved_entries)
+                for _, trace in current_rows
+            ):
+                return None, "retrieval rank artifact is missing or not aligned"
             reciprocal = []
             for query, trace in current_rows:
-                hit = next((index + 1 for index, status in enumerate(current_statuses[query.query_id]) if status is True), None)
-                reciprocal.append(0.0 if hit is None else 1.0 / hit)
+                matching_ranks = [
+                    rank
+                    for rank, status in zip(
+                        trace.ranks, current_statuses[query.query_id]
+                    )
+                    if status is True
+                ]
+                reciprocal.append(
+                    0.0 if not matching_ranks else 1.0 / min(matching_ranks)
+                )
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
         classified = {
             trace.query_id: tuple(_entry_obsolete_status(entry, replay) for entry in trace.retrieved_entries)

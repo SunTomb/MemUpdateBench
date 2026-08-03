@@ -611,6 +611,152 @@ def test_supported_stale_count_metric_executes_without_dead_branch_name_error():
     assert value == 1
 
 
+def _current_mrr_fixture(*entries, ranks=()):
+    from mub.vnext.contracts.v3.runtime import RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import _metric_value
+
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    replay = replay_task_v3(task)
+    query = task.queries[0]
+    trace = RetrievalTraceV3(
+        query_id=query.query_id,
+        retrieved_entries=entries,
+        ranks=ranks,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="a",
+        run_id="mrr",
+        retrieval_traces=(trace,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    value, detail = _metric_value(
+        "retrieval_scores.current_mrr",
+        task,
+        run,
+        None,
+        replay,
+        {query.query_id: resolve_query_v3(query, replay, task.events)},
+        {item.query_id: item for item in task.gold_evidence},
+        {},
+        {query.query_id: trace},
+        [],
+    )
+    return task, trace, run, value, detail
+
+
+def _current_mrr_entry(task, entry_id, value, version_index, event_id):
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    return MemoryEntryRecordV3(
+        entry_id=entry_id,
+        content=str(value),
+        object_key_candidate=task.target_objects[0],
+        value_candidate=value,
+        version_index=version_index,
+        source_event_ids=(event_id,),
+    )
+
+
+def test_current_mrr_uses_supplied_rank_for_first_current_entry():
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    current = _current_mrr_entry(task, "current", "v2", 3, "e3")
+
+    _, _, _, value, detail = _current_mrr_fixture(current, ranks=(7,))
+
+    assert detail is None
+    assert value == pytest.approx(1 / 7)
+
+
+def test_current_mrr_uses_minimum_supplied_rank_across_matching_entries():
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    current_a = _current_mrr_entry(task, "current-a", "v2", 3, "e3")
+    current_b = _current_mrr_entry(task, "current-b", "v2", 3, "e3")
+
+    _, _, _, value, detail = _current_mrr_fixture(
+        current_a, current_b, ranks=(9, 3),
+    )
+
+    assert detail is None
+    assert value == pytest.approx(1 / 3)
+
+
+def test_current_mrr_missing_ranks_is_missing_artifact():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    current = _current_mrr_entry(task, "current", "v2", 3, "e3")
+    task, trace, run, _, _ = _current_mrr_fixture(current)
+    run = run.model_copy(
+        update={
+            "answer_predictions": (
+                AnswerPredictionV3(
+                    query_id="q",
+                    raw_output="v2",
+                    parsed_answer="v2",
+                    format_valid=True,
+                ),
+            ),
+        },
+    )
+    info = AdapterInfoV3(
+        adapter_id="a",
+        adapter_version="1",
+        system_name="test",
+        system_version="1",
+        configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_retrieval_ids=True,
+        exports_retrieval_scores=True,
+    )
+    config = ScorerConfigV3(
+        requested_metric_fields=("retrieval_scores.current_mrr",),
+    )
+
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+    assert trace.retrieved_entries
+    assert trace.ranks == ()
+    assert score.retrieval_scores.current_mrr is None
+    assert score.supported_metric_fields[
+        "retrieval_scores.current_mrr"
+    ].reason is SupportReason.MISSING_ARTIFACT
+
+
+def test_current_mrr_uses_rank_when_tuple_order_disagrees():
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    stale = _current_mrr_entry(task, "stale", "v1", 1, "e1")
+    current = _current_mrr_entry(task, "current", "v2", 3, "e3")
+
+    _, _, _, value, detail = _current_mrr_fixture(stale, current, ranks=(2, 9))
+
+    assert detail is None
+    assert value == pytest.approx(1 / 9)
+
+
+def test_current_mrr_ignores_ranks_of_nonmatching_entries():
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    wrong_value = _current_mrr_entry(task, "wrong", "not-v2", 3, "e3")
+    stale = _current_mrr_entry(task, "stale", "v1", 1, "e1")
+    current = _current_mrr_entry(task, "current", "v2", 3, "e3")
+
+    _, _, _, value, detail = _current_mrr_fixture(
+        wrong_value, stale, current, ranks=(1, 2, 11),
+    )
+
+    assert detail is None
+    assert value == pytest.approx(1 / 11)
+
+
 def test_same_value_different_version_is_not_current_entry_match():
     from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
     from mub.vnext.scoring.scorer_v3 import _entry_matches_version
