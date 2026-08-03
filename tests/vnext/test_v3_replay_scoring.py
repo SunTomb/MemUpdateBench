@@ -2154,6 +2154,175 @@ def _failure_flags_for_actions(task, parsed_actions, run_id):
     )
 
 
+def _multi_target_delete_task():
+    changed = payload()
+    first = {**changed["target_objects"][0], "subkey": "first"}
+    second = {**first, "subkey": "second"}
+    third = {**first, "entity": "other", "attribute": "b", "subkey": None}
+    changed["target_objects"] = [first, second, third]
+    changed["events"][0]["gold_action_ids"] = ["a0", "a0-second", "a0-third"]
+    changed["actions"][0]["target_object_keys"] = [first]
+    changed["actions"][1]["target_object_keys"] = [first]
+    changed["actions"][2].update(
+        {"scope": "namespace", "target_object_keys": [first, second, third]}
+    )
+    changed["actions"][3]["target_object_keys"] = [first]
+    changed["actions"][1:1] = [
+        {
+            "action_id": "a0-second", "event_id": "e0", "operation": "ADD",
+            "scope": "object", "target_object_keys": [second], "value": "second-v0",
+            "effective_at": "000",
+        },
+        {
+            "action_id": "a0-third", "event_id": "e0", "operation": "ADD",
+            "scope": "object", "target_object_keys": [third], "value": "third-v0",
+            "effective_at": "000",
+        },
+    ]
+    changed["version_history"][0]["object_key"] = first
+    for entry in changed["version_history"][0]["entries"]:
+        entry["source_event_ids"] = [entry["valid_from_event_id"]]
+    changed["version_history"].extend(
+        {
+            "object_key": key,
+            "entries": [
+                {
+                    "version_index": 0, "status": "present", "value": value,
+                    "valid_from_event_id": "e0", "valid_until_event_id": "e2",
+                    "logical_time": "000", "source_event_ids": ["e0"],
+                },
+                {
+                    "version_index": 1, "status": "tombstone",
+                    "valid_from_event_id": "e2", "logical_time": "002",
+                    "source_event_ids": ["e2"],
+                },
+            ],
+        }
+        for key, value in ((second, "second-v0"), (third, "third-v0"))
+    )
+    changed["queries"][0]["target_object_keys"] = [first]
+    changed["gold_evidence"][0]["supporting_object_keys"] = [first]
+    changed["gold_evidence"][0]["derivation_steps"][0]["supporting_object_keys"] = [first]
+    return MemUpdateTaskV3.model_validate(changed)
+
+
+def _action_score(task, run, metric):
+    from mub.vnext.scoring.scorer_v3 import _action_facts, _metric_value
+
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    value, detail = _metric_value(
+        f"action_scores.{metric}", task, run, None, replay, {}, {}, {}, {},
+        _action_facts(task, run),
+    )
+    assert detail is None
+    return value
+
+
+def test_multi_target_delete_reordering_is_semantically_exact_without_key_flags():
+    task = _multi_target_delete_task()
+    delete = next(action for action in task.actions if action.operation.value == "DELETE")
+    reversed_targets = tuple(reversed(delete.target_object_keys))
+    parsed_actions = tuple(
+        _parsed_action_for(action).model_copy(update={"target_object_keys": reversed_targets})
+        if action.action_id == delete.action_id
+        else _parsed_action_for(action)
+        for action in task.actions
+    )
+    run = _run_with_parsed_actions(parsed_actions, "reversed-multi-target-delete")
+
+    assert {
+        metric: _action_score(task, run, metric)
+        for metric in (
+            "object_key_accuracy", "entity_accuracy", "attribute_accuracy",
+            "full_action_exact_match",
+        )
+    } == {
+        "object_key_accuracy": 1.0,
+        "entity_accuracy": 1.0,
+        "attribute_accuracy": 1.0,
+        "full_action_exact_match": 1.0,
+    }
+    assert tuple(
+        action.target_object_keys
+        for action in run.parsed_actions
+        if action.action_id == delete.action_id
+    )[0] == reversed_targets
+    flags = _failure_flags_for_actions(task, parsed_actions, "reversed-multi-target-delete")
+    assert not {"wrong_object_key", "wrong_entity", "wrong_attribute"} & set(flags)
+
+
+@pytest.mark.parametrize(
+    ("component", "expected_related_flags", "expected_entity", "expected_attribute"),
+    [
+        ("namespace", {"wrong_object_key"}, 1.0, 1.0),
+        ("subkey", {"wrong_object_key"}, 1.0, 1.0),
+        ("entity", {"wrong_object_key", "wrong_entity"}, 0.0, 1.0),
+        ("attribute", {"wrong_object_key", "wrong_attribute"}, 1.0, 0.0),
+    ],
+)
+def test_multi_target_delete_identity_component_controls_still_fail(
+    component, expected_related_flags, expected_entity, expected_attribute,
+):
+    task = _multi_target_delete_task()
+    delete = next(action for action in task.actions if action.operation.value == "DELETE")
+    targets = list(delete.target_object_keys)
+    if component == "namespace":
+        targets = [key.model_copy(update={"namespace": "other-ns"}) for key in targets]
+    elif component == "subkey":
+        targets[0] = targets[0].model_copy(update={"subkey": "changed"})
+    elif component == "entity":
+        targets[0] = targets[0].model_copy(update={"entity": targets[2].entity})
+    else:
+        targets[0] = targets[0].model_copy(update={"attribute": targets[2].attribute})
+    observed = _parsed_action_for(delete).model_copy(update={"target_object_keys": tuple(targets)})
+    parsed_actions = tuple(
+        observed if action.action_id == delete.action_id else _parsed_action_for(action)
+        for action in task.actions
+    )
+    run = _run_with_parsed_actions(parsed_actions, f"changed-{component}")
+
+    incorrect_rate = (len(task.actions) - 1) / len(task.actions)
+    assert _action_score(task, run, "object_key_accuracy") == incorrect_rate
+    assert _action_score(task, run, "entity_accuracy") == (
+        1.0 if expected_entity == 1.0 else incorrect_rate
+    )
+    assert _action_score(task, run, "attribute_accuracy") == (
+        1.0 if expected_attribute == 1.0 else incorrect_rate
+    )
+    assert _action_score(task, run, "full_action_exact_match") == incorrect_rate
+    related = {"wrong_object_key", "wrong_entity", "wrong_attribute"}
+    assert set(_failure_flags_for_actions(task, parsed_actions, f"changed-{component}")) & related == expected_related_flags
+
+
+@pytest.mark.parametrize("projection", ["entity", "attribute"])
+def test_multi_target_projection_comparison_preserves_duplicate_multiplicity(projection):
+    task = _multi_target_delete_task()
+    delete = next(action for action in task.actions if action.operation.value == "DELETE")
+    targets = list(delete.target_object_keys)
+    targets[0] = targets[0].model_copy(
+        update={projection: getattr(targets[2], projection)}
+    )
+    assert {
+        getattr(key, projection) for key in targets
+    } == {
+        getattr(key, projection) for key in delete.target_object_keys
+    }
+    observed = _parsed_action_for(delete).model_copy(update={"target_object_keys": tuple(targets)})
+    parsed_actions = tuple(
+        observed if action.action_id == delete.action_id else _parsed_action_for(action)
+        for action in task.actions
+    )
+    run = _run_with_parsed_actions(parsed_actions, f"duplicate-{projection}")
+
+    assert _action_score(task, run, f"{projection}_accuracy") == (
+        len(task.actions) - 1
+    ) / len(task.actions)
+    assert f"wrong_{projection}" in _failure_flags_for_actions(
+        task, parsed_actions, f"duplicate-{projection}",
+    )
+
+
 def test_failure_flags_bind_both_correct_same_event_actions_independently():
     task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e3"))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 
 from pydantic import field_validator
@@ -101,12 +102,18 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
             flags.add("wrong_operation")
             if gold.operation == Operation.DELETE: flags.add("deletion_failure")
         if observed.observed_scope != gold.scope and gold.operation == Operation.DELETE: flags.add("wrong_delete_scope")
-        gold_ids = [key.canonical_id for key in gold.target_object_keys]
-        observed_ids = [key.canonical_id for key in observed.target_object_keys]
+        gold_ids = Counter(
+            (key.namespace, key.entity, key.attribute, key.subkey)
+            for key in gold.target_object_keys
+        )
+        observed_ids = Counter(
+            (key.namespace, key.entity, key.attribute, key.subkey)
+            for key in observed.target_object_keys
+        )
         if observed_ids != gold_ids:
             flags.add("wrong_object_key")
-            if tuple(key.entity for key in observed.target_object_keys) != tuple(key.entity for key in gold.target_object_keys): flags.add("wrong_entity")
-            if tuple(key.attribute for key in observed.target_object_keys) != tuple(key.attribute for key in gold.target_object_keys): flags.add("wrong_attribute")
+            if Counter(key.entity for key in observed.target_object_keys) != Counter(key.entity for key in gold.target_object_keys): flags.add("wrong_entity")
+            if Counter(key.attribute for key in observed.target_object_keys) != Counter(key.attribute for key in gold.target_object_keys): flags.add("wrong_attribute")
             if gold.operation == Operation.DELETE: flags.add("wrong_delete_scope")
         if not _same(observed.value, gold.value): flags.add("wrong_value")
         if gold.operation == Operation.NOOP and observed.operation not in {None, Operation.NOOP}: flags.add("false_write")

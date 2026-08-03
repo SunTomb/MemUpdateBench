@@ -291,7 +291,7 @@ def _validate_bindings(task, run, context):
 def _action_facts(task, run):
     rows = bind_action_pairs_v3(task, run)
     def exact_target(left, right):
-        return tuple(_identity(key) for key in left) == tuple(_identity(key) for key in right)
+        return Counter(_identity(key) for key in left) == Counter(_identity(key) for key in right)
     facts = []
     for expected, observed in rows:
         op = observed is not None and observed.operation == expected.operation
@@ -442,8 +442,8 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         indexes = {"operation_accuracy": 2, "object_key_accuracy": 4, "value_accuracy": 5}
         if leaf in indexes: return _mean([float(fact[indexes[leaf]]) for fact in action_facts]), None
         if leaf == "full_action_exact_match": return _mean([float(all(fact[index] for index in (2, 3, 4, 5)) and fact[6]) for fact in action_facts]), None
-        if leaf == "entity_accuracy": return _mean([float(fact[1] is not None and tuple(key.entity for key in fact[1].target_object_keys) == tuple(key.entity for key in fact[0].target_object_keys)) for fact in action_facts]), None
-        if leaf == "attribute_accuracy": return _mean([float(fact[1] is not None and tuple(key.attribute for key in fact[1].target_object_keys) == tuple(key.attribute for key in fact[0].target_object_keys)) for fact in action_facts]), None
+        if leaf == "entity_accuracy": return _mean([float(fact[1] is not None and Counter(key.entity for key in fact[1].target_object_keys) == Counter(key.entity for key in fact[0].target_object_keys)) for fact in action_facts]), None
+        if leaf == "attribute_accuracy": return _mean([float(fact[1] is not None and Counter(key.attribute for key in fact[1].target_object_keys) == Counter(key.attribute for key in fact[0].target_object_keys)) for fact in action_facts]), None
         if leaf == "false_write_rate": return _mean([float(fact[0].operation == Operation.NOOP and fact[1] is not None and fact[1].operation != Operation.NOOP) for fact in action_facts]), None
         if leaf == "missed_write_rate": return _mean([float(fact[0].operation != Operation.NOOP and not fact[6]) for fact in action_facts]), None
         if leaf == "wrong_object_write_rate": return _mean([float(fact[1] is not None and fact[1].operation != Operation.NOOP and not fact[4]) for fact in action_facts]), None
