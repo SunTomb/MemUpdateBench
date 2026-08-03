@@ -683,8 +683,15 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     if any(result.issues for result in resolutions.values()):
         raise ValueError("typed query resolution failed")
     evidence = {item.query_id: item for item in task.gold_evidence}
+    query_by_id = {query.query_id: query for query in task.queries}
     for item in task.gold_evidence:
-        evaluated = evaluate_evidence_v3(item, replay, item.stale_alternative)
+        evaluated = evaluate_evidence_v3(
+            item,
+            replay,
+            item.stale_alternative,
+            query_by_id[item.query_id],
+            task.events,
+        )
         # Non-G derivation operation vocabularies are descriptive and need not execute.
         if any(query.query_id == item.query_id and query.query_type in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY} for query in task.queries) and evaluated.issues:
             raise ValueError(f"G evidence replay failed: {evaluated.issues[0].code}")

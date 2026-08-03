@@ -488,10 +488,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
             if set(evidence.supporting_event_ids) - set(event_ids):
                 raise ValueError("gold evidence references unknown event")
             _validate_answer_schema(evidence.answer, query.answer_schema)
+            selected_entries_by_target = {
+                target: _selector_entries(query.selector, histories[target], event_position, event_times, task_horizon)
+                for target in targets
+            }
             selected_entries = [
                 entry
-                for target in targets
-                for entry in _selector_entries(query.selector, histories[target], event_position, event_times, task_horizon)
+                for entries in selected_entries_by_target.values()
+                for entry in entries
             ]
             if not selected_entries:
                 raise ValueError("selector does not resolve any version history entries")
@@ -532,10 +536,22 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 read_count, read_objects = _derivation_read_support(evidence, targets)
                 if len(targets) < minimum_objects or read_count < minimum_objects or len(read_objects) < minimum_objects:
                     raise ValueError("G derivation does not satisfy minimum_objects")
+                _validate_consistency_read_eligibility(
+                    evidence,
+                    targets,
+                    histories,
+                    selected_entries_by_target,
+                )
                 if alternative is not None:
                     stale_read_count, stale_read_objects = _derivation_read_support(alternative, targets)
                     if stale_read_count < minimum_objects or len(stale_read_objects) < minimum_objects:
                         raise ValueError("stale alternative does not satisfy minimum_objects")
+                    _validate_consistency_read_eligibility(
+                        alternative,
+                        targets,
+                        histories,
+                        require_exact_event_coverage=True,
+                    )
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
             for query in self.queries
@@ -589,6 +605,38 @@ def _validate_derivation_read_bindings(evidence, histories) -> None:
     for step in evidence.derivation_steps:
         if step.operation in _DERIVATION_READ_OPERATIONS:
             _resolve_derivation_read_versions(step, histories, lambda ledger: ledger.entries)
+
+
+def _validate_consistency_read_eligibility(
+    evidence,
+    targets,
+    ledgers,
+    selected_by_target=None,
+    require_exact_event_coverage=False,
+    version_rows=None,
+) -> None:
+    if version_rows is None:
+        version_rows = lambda ledger: ledger.entries
+    consumed_events = set()
+    for step in evidence.derivation_steps:
+        if step.operation not in _DERIVATION_READ_OPERATIONS or len(step.supporting_object_keys) != 1:
+            continue
+        identity = _identity(step.supporting_object_keys[0])
+        if identity not in targets:
+            continue
+        version = _resolve_derivation_read_versions(
+            step,
+            ledgers,
+            version_rows,
+        )[0]
+        if selected_by_target is not None and all(
+            version.version_index != selected.version_index
+            for selected in selected_by_target[identity]
+        ):
+            raise ValueError("derivation read provenance is not eligible for the query selector")
+        consumed_events.update(step.supporting_event_ids)
+    if require_exact_event_coverage and consumed_events != set(evidence.supporting_event_ids):
+        raise ValueError("derivation read provenance is not eligible for authenticated evidence support")
 
 
 def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> None:
