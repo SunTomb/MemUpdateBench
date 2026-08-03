@@ -1052,7 +1052,15 @@ def test_g_gold_contract_registers_strict_stale_alternative_derivation():
             {"step_id": "second-current", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
             {"step_id": "both", "operation": "equals", "input_step_ids": ["first-current", "second-current"]},
         ], "final_derivation_step_id": "both",
-        "stale_alternative": {"answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e1"], "derivation_steps": [{"step_id": "one", "operation": "equals", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]}], "final_derivation_step_id": "one"},
+        "stale_alternative": {
+            "answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e1"],
+            "derivation_steps": [
+                {"step_id": "one-a", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "one-b", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "one", "operation": "equals", "input_step_ids": ["one-a", "one-b"]},
+            ],
+            "final_derivation_step_id": "one",
+        },
     }
     with pytest.raises(Exception, match="stale alternative.*minimum_objects"):
         MemUpdateTaskV3.model_validate(multi)
@@ -1089,29 +1097,59 @@ def multi_object_consistency_payload():
     return changed
 
 
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_task_contract_rejects_unary_equals_after_two_valid_target_reads(location):
+    changed = multi_object_consistency_payload()
+    evidence = changed["gold_evidence"][0]
+    if location == "primary":
+        evidence["derivation_steps"] = [
+            *evidence["derivation_steps"][:2],
+            {"step_id": "both", "operation": "collect", "input_step_ids": ["first", "second"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["both"]},
+        ]
+    else:
+        first, second = evidence["supporting_object_keys"]
+        evidence["stale_alternative"] = {
+            "answer": True, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e0", "e1"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+                {"step_id": "both", "operation": "collect", "input_step_ids": ["first-stale", "second"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["both"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    with pytest.raises(ValueError, match="equals requires at least two operands"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
 @pytest.mark.parametrize("location", ["primary-no-input", "primary-one-input", "stale-no-input"])
 def test_multi_object_consistency_requires_two_distinct_reachable_read_operands(location):
     changed = multi_object_consistency_payload()
     evidence = changed["gold_evidence"][0]
+    first, second = evidence["supporting_object_keys"]
     if location == "primary-no-input":
-        evidence["derivation_steps"] = [{
-            "step_id": "equals", "operation": "equals",
-            "supporting_object_keys": evidence["supporting_object_keys"],
-            "supporting_event_ids": evidence["supporting_event_ids"],
-        }]
+        evidence["derivation_steps"] = [
+            {"step_id": "first-seed", "operation": "seed0", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "second-seed", "operation": "seed1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-seed", "second-seed"]},
+        ]
     elif location == "primary-one-input":
-        evidence["derivation_steps"] = [evidence["derivation_steps"][0], {
-            "step_id": "equals", "operation": "equals", "input_step_ids": ["first"],
-        }]
+        evidence["derivation_steps"] = [
+            evidence["derivation_steps"][0],
+            {"step_id": "second-seed", "operation": "seed0", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "second-seed"]},
+        ]
     else:
         evidence["stale_alternative"] = {
             "answer": True, "supporting_object_keys": evidence["supporting_object_keys"],
             "supporting_event_ids": ["e0", "e1"],
-            "derivation_steps": [{
-                "step_id": "stale-equals", "operation": "equals",
-                "supporting_object_keys": evidence["supporting_object_keys"],
-                "supporting_event_ids": ["e0", "e1"],
-            }],
+            "derivation_steps": [
+                {"step_id": "first-seed", "operation": "seed0", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second-seed", "operation": "seed1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+                {"step_id": "stale-equals", "operation": "equals", "input_step_ids": ["first-seed", "second-seed"]},
+            ],
             "final_derivation_step_id": "stale-equals",
         }
     with pytest.raises(ValueError, match="minimum_objects"):
@@ -1161,18 +1199,26 @@ def test_evidence_evaluator_rejects_vacuous_equals(operand_count):
 
     task = MemUpdateTaskV3.model_validate(payload())
     key = task.target_objects[0]
-    steps = []
-    input_ids = []
-    if operand_count:
-        steps.append({
-            "step_id": "read", "operation": "read",
-            "supporting_object_keys": [key], "supporting_event_ids": ["e3"],
-        })
-        input_ids.append("read")
-    steps.append({"step_id": "equals", "operation": "equals", "input_step_ids": input_ids})
-    evidence = QueryGoldEvidenceV3(
+    valid = QueryGoldEvidenceV3(
         query_id="vacuous", answer=True, supporting_object_keys=(key,), supporting_event_ids=("e3",),
-        derivation_steps=steps, final_derivation_step_id="equals",
+        derivation_steps=(
+            {"step_id": "read-a", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e3"]},
+            {"step_id": "read-b", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e3"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["read-a", "read-b"]},
+        ),
+        final_derivation_step_id="equals",
+    )
+    equals = valid.derivation_steps[-1].model_copy(
+        update={"input_step_ids": () if operand_count == 0 else ("read-a",)}
+    )
+    evidence = QueryGoldEvidenceV3.model_construct(
+        query_id=valid.query_id,
+        answer=valid.answer,
+        supporting_object_keys=valid.supporting_object_keys,
+        supporting_event_ids=valid.supporting_event_ids,
+        derivation_steps=(equals,) if operand_count == 0 else (valid.derivation_steps[0], equals),
+        final_derivation_step_id=valid.final_derivation_step_id,
+        stale_alternative=None,
     )
     evaluation = evaluate_evidence_v3(evidence, replay_task_v3(task))
     assert evaluation.answer is None

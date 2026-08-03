@@ -304,6 +304,8 @@ def _validate_derivation_graph(evidence):
         raise ValueError("final derivation step is unknown")
     positions = {step.step_id: index for index, step in enumerate(evidence.derivation_steps)}
     for step in evidence.derivation_steps:
+        if step.operation == "equals" and len(step.input_step_ids) < 2:
+            raise ValueError("equals requires at least two operands")
         if set(step.input_step_ids) - steps.keys():
             raise ValueError("derivation references unknown input step")
     visiting: set[str] = set()
