@@ -21,7 +21,7 @@ from mub.vnext.contracts.v3.task import (
     PreviousSelector,
     QueryGoldEvidenceV3,
     TransitionSelector,
-    _DERIVATION_READ_OPERATIONS,
+    _derivation_step_reads_support,
     _resolve_derivation_read_versions,
     _validate_consistency_read_eligibility,
 )
@@ -413,7 +413,7 @@ def evaluate_evidence_v3(
         for step in item.derivation_steps:
             operands = [values[parent] for parent in step.input_step_ids]
             operation = step.operation
-            if operation in _DERIVATION_READ_OPERATIONS:
+            if _derivation_step_reads_support(step):
                 value = _read_step_value(step, replay)
             elif operation in {"identity", "answer", "left", "right"}:
                 if len(operands) != 1:

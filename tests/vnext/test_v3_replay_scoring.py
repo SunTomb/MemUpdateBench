@@ -1217,6 +1217,61 @@ def test_multi_object_consistency_rejects_same_value_wrong_version_provenance(lo
 
 
 @pytest.mark.parametrize("location", ["primary", "stale"])
+@pytest.mark.parametrize(
+    ("operation", "binding"),
+    (("seed0", "missing"), ("collect", "ambiguous"), ("consistency", "missing"), ("ordered_history", "ambiguous")),
+)
+def test_implicit_read_operations_require_unambiguous_binding(location, operation, binding):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    common_event = "e3" if location == "primary" else "e1"
+    valid = replayable_multi_object_consistency_payload(common_event)
+    evidence = valid["gold_evidence"][0]
+    first, second = evidence["supporting_object_keys"]
+    implicit_graph = [
+        {"step_id": "first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+        {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": [common_event]},
+        {"step_id": "implicit", "operation": operation, "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+        {"step_id": "left", "operation": "collect", "input_step_ids": ["first", "implicit"]},
+        {"step_id": "right", "operation": "collect", "input_step_ids": ["second", "implicit"]},
+        {"step_id": "equals", "operation": "equals", "input_step_ids": ["left", "right"]},
+    ]
+    if location == "primary":
+        evidence.update(
+            answer=False,
+            supporting_event_ids=[common_event],
+            derivation_steps=implicit_graph,
+            final_derivation_step_id="equals",
+        )
+    else:
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": [common_event],
+            "derivation_steps": implicit_graph,
+            "final_derivation_step_id": "equals",
+        }
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+    invalid = deepcopy(valid)
+    invalid_evidence = invalid["gold_evidence"][0]
+    item = invalid_evidence if location == "primary" else invalid_evidence["stale_alternative"]
+    if binding == "missing":
+        item["derivation_steps"][2]["supporting_event_ids"] = []
+    else:
+        item["supporting_event_ids"] = ["e0", "e1", "e3"] if location == "primary" else ["e0", "e1"]
+        item["derivation_steps"][2]["supporting_event_ids"] = ["e0", "e1"]
+    with pytest.raises(ValueError, match="read support is missing or ambiguous"):
+        MemUpdateTaskV3.model_validate(invalid)
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
 def test_task_contract_rejects_unary_equals_after_two_valid_target_reads(location):
     changed = multi_object_consistency_payload()
     evidence = changed["gold_evidence"][0]
@@ -1279,14 +1334,14 @@ def test_multi_object_consistency_requires_two_distinct_reachable_read_operands(
     first, second = evidence["supporting_object_keys"]
     if location == "primary-no-input":
         evidence["derivation_steps"] = [
-            {"step_id": "first-seed", "operation": "seed0", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
-            {"step_id": "second-seed", "operation": "seed1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "first-seed", "operation": "constant0", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "second-seed", "operation": "constant1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
             {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-seed", "second-seed"]},
         ]
     elif location == "primary-one-input":
         evidence["derivation_steps"] = [
             evidence["derivation_steps"][0],
-            {"step_id": "second-seed", "operation": "seed0", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "second-seed", "operation": "constant0", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
             {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "second-seed"]},
         ]
     else:
@@ -1294,8 +1349,8 @@ def test_multi_object_consistency_requires_two_distinct_reachable_read_operands(
             "answer": True, "supporting_object_keys": evidence["supporting_object_keys"],
             "supporting_event_ids": ["e0", "e1"],
             "derivation_steps": [
-                {"step_id": "first-seed", "operation": "seed0", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
-                {"step_id": "second-seed", "operation": "seed1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+                {"step_id": "first-seed", "operation": "constant0", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second-seed", "operation": "constant1", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
                 {"step_id": "stale-equals", "operation": "equals", "input_step_ids": ["first-seed", "second-seed"]},
             ],
             "final_derivation_step_id": "stale-equals",

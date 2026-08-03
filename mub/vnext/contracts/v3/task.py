@@ -19,6 +19,19 @@ StrictString = StrictIdentifier
 StrictIndex = Annotated[int, Field(strict=True, ge=0)]
 HashString = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
 _DERIVATION_READ_OPERATIONS = frozenset({"read", "read_current", "read_version"})
+_DERIVATION_SEED_OPERATIONS = frozenset({"seed0", "seed1"})
+_DERIVATION_COLLECTION_OPERATIONS = frozenset({
+    "list", "ordered_history", "collect", "combine", "merge",
+    "object", "multi_object", "consistency",
+})
+
+
+def _derivation_step_reads_support(step) -> bool:
+    if step.operation in _DERIVATION_READ_OPERATIONS:
+        return True
+    if step.operation in _DERIVATION_SEED_OPERATIONS:
+        return len(step.input_step_ids) != 1
+    return step.operation in _DERIVATION_COLLECTION_OPERATIONS and not step.input_step_ids
 
 
 class GeneratorProvenanceV3(ImmutableContractModel):
@@ -508,7 +521,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("derivation uses object outside evidence scope")
                 if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
                     raise ValueError("derivation uses event outside evidence scope")
-            _validate_derivation_read_bindings(evidence, histories)
+            _validate_derivation_read_bindings(
+                evidence,
+                histories,
+                include_implicit=query.query_type in {
+                    QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+                    QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+                },
+            )
             alternative = evidence.stale_alternative
             if alternative is not None:
                 if query.query_type not in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}:
@@ -524,7 +544,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         raise ValueError("stale derivation uses object outside alternative scope")
                     if set(step.supporting_event_ids) - set(alternative.supporting_event_ids):
                         raise ValueError("stale derivation uses event outside alternative scope")
-                _validate_derivation_read_bindings(alternative, histories)
+                _validate_derivation_read_bindings(alternative, histories, include_implicit=True)
             if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
@@ -601,9 +621,13 @@ def _resolve_derivation_read_versions(step, ledgers, version_rows):
     return candidates
 
 
-def _validate_derivation_read_bindings(evidence, histories) -> None:
+def _validate_derivation_read_bindings(evidence, histories, include_implicit=False) -> None:
     for step in evidence.derivation_steps:
-        if step.operation in _DERIVATION_READ_OPERATIONS:
+        reads_support = (
+            step.operation in _DERIVATION_READ_OPERATIONS
+            or include_implicit and _derivation_step_reads_support(step)
+        )
+        if reads_support:
             _resolve_derivation_read_versions(step, histories, lambda ledger: ledger.entries)
 
 
@@ -619,7 +643,7 @@ def _validate_consistency_read_eligibility(
         version_rows = lambda ledger: ledger.entries
     consumed_events = set()
     for step in evidence.derivation_steps:
-        if step.operation not in _DERIVATION_READ_OPERATIONS or len(step.supporting_object_keys) != 1:
+        if not _derivation_step_reads_support(step) or len(step.supporting_object_keys) != 1:
             continue
         identity = _identity(step.supporting_object_keys[0])
         if identity not in targets:
@@ -890,7 +914,7 @@ def _derivation_read_support(
 ) -> tuple[int, set[tuple[str, str, str, str | None]]]:
     read_units = set()
     for step in evidence.derivation_steps:
-        if step.operation not in _DERIVATION_READ_OPERATIONS:
+        if not _derivation_step_reads_support(step):
             continue
         identities = {_identity(key) for key in step.supporting_object_keys}
         if len(identities) == 1:
