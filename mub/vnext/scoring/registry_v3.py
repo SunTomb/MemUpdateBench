@@ -87,6 +87,7 @@ _FAMILY_BY_LAYER = {
     "synthesis_scores": ("G", "long_horizon_memory_synthesis"),
 }
 _QUERY_BY_LEAF = {
+    "answer_state_consistency": ("current", "multi_object_current"),
     "current_state_accuracy": ("current",),
     "previous_state_accuracy": ("previous",),
     "point_in_time_accuracy": ("point_in_time",),

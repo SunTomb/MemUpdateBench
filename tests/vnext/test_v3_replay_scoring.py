@@ -765,6 +765,73 @@ def g_stale_payload():
     return changed
 
 
+def g_difference_payload():
+    changed = payload()
+    changed["task_family"] = "G"
+    changed["events"] = changed["events"][:2]
+    changed["actions"] = changed["actions"][:2]
+    changed["actions"][0]["value"] = 2
+    changed["actions"][1]["value"] = 3
+    changed["version_history"][0]["entries"] = [
+        {"version_index": 0, "status": "present", "value": 2, "valid_from_event_id": "e0", "valid_until_event_id": "e1", "logical_time": "000", "source_event_ids": ["e0"]},
+        {"version_index": 1, "status": "present", "value": 3, "valid_from_event_id": "e1", "logical_time": "001", "source_event_ids": ["e1"]},
+    ]
+    key = changed["target_objects"][0]
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "update_sensitive_multi_hop", "text": "?",
+        "selector": {"kind": "current"}, "target_object_keys": [key], "answer_schema": "number",
+        "evaluation_mode": "state_direct", "synthesis": {"kind": "update_sensitive_multi_hop", "minimum_hops": 2},
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": 1, "supporting_object_keys": [key], "supporting_event_ids": ["e0", "e1"],
+        "derivation_steps": [
+            {"step_id": "previous", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e0"]},
+            {"step_id": "current", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e1"]},
+            {"step_id": "difference", "operation": "subtract", "input_step_ids": ["current", "previous"]},
+        ],
+        "final_derivation_step_id": "difference",
+    }
+    return changed
+
+
+def test_transformed_g_answer_state_consistency_is_typed_not_applicable():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(g_difference_payload())
+    prediction = AnswerPredictionV3(query_id="q", raw_output="1", parsed_answer=1, format_valid=True)
+    run = TaskRunRecordV3(task_id="t", adapter_id="adapter", run_id="g-difference", answer_predictions=(prediction,), parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"), completion_status="completed")
+    info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="system", system_version="1", configuration_hash=H)
+    caps = AdapterCapabilitiesV3(exports_entries=True, exports_object_keys=True, exports_values=True, supports_isolated_reset=True)
+    config = ScorerConfigV3(requested_metric_fields=("answer_scores.answer_state_consistency",))
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+    assert score.answer_scores.answer_state_consistency is None
+    assert score.supported_metric_fields["answer_scores.answer_state_consistency"].reason.value == "not_applicable"
+
+
+def test_evidence_metrics_tag_identifier_domains_before_overlap():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    changed = g_stale_payload()
+    changed["task_family"] = "G"
+    changed["gold_evidence"][0]["derivation_steps"][0]["step_id"] = "e3"
+    changed["gold_evidence"][0]["derivation_steps"][1]["input_step_ids"] = ["e3"]
+    task = MemUpdateTaskV3.model_validate(changed)
+    key = task.target_objects[0]
+    prediction = AnswerPredictionV3(
+        query_id="q", raw_output="v2", parsed_answer="v2", format_valid=True,
+        cited_event_ids=("e3",), cited_object_keys=(key,), cited_derivation_step_ids=("answer",),
+    )
+    run = TaskRunRecordV3(task_id="t", adapter_id="adapter", run_id="g-collision", answer_predictions=(prediction,), parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"), completion_status="completed")
+    info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="system", system_version="1", configuration_hash=H)
+    caps = AdapterCapabilitiesV3(exports_evidence_linkage=True)
+    config = ScorerConfigV3(requested_metric_fields=("synthesis_scores.evidence_recall", "synthesis_scores.evidence_f1"))
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+    assert score.synthesis_scores.evidence_recall == 0.75
+    assert score.synthesis_scores.evidence_f1 == pytest.approx(6 / 7)
+
+
 def test_g_gold_contract_registers_strict_stale_alternative_derivation():
     task = MemUpdateTaskV3.model_validate(g_stale_payload())
     alternative = task.gold_evidence[0].stale_alternative

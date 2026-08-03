@@ -591,8 +591,16 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             if not cited: return None, "evidence citations missing"
             ps, rs = [], []
             for q, prediction in cited:
-                required = set(evidence[q.query_id].supporting_event_ids) | {key.canonical_id for key in evidence[q.query_id].supporting_object_keys} | {step.step_id for step in evidence[q.query_id].derivation_steps}
-                observed = set(prediction.cited_event_ids) | {key.canonical_id for key in prediction.cited_object_keys} | set(prediction.cited_derivation_step_ids)
+                required = (
+                    {("event", event_id) for event_id in evidence[q.query_id].supporting_event_ids}
+                    | {("object", key.canonical_id) for key in evidence[q.query_id].supporting_object_keys}
+                    | {("step", step.step_id) for step in evidence[q.query_id].derivation_steps}
+                )
+                observed = (
+                    {("event", event_id) for event_id in prediction.cited_event_ids}
+                    | {("object", key.canonical_id) for key in prediction.cited_object_keys}
+                    | {("step", step_id) for step_id in prediction.cited_derivation_step_ids}
+                )
                 overlap = len(required & observed); ps.append(overlap / len(observed) if observed else 0.0); rs.append(overlap / len(required))
             p, r = _mean(ps), _mean(rs)
             return ({"evidence_precision": p, "evidence_recall": r, "evidence_f1": 0.0 if p + r == 0 else 2 * p * r / (p + r)}[leaf], None)
