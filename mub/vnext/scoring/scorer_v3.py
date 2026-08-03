@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,7 @@ from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, Q
 from mub.vnext.contracts.v3.runtime import TaskRunRecordV3
 from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, ScorerConfigV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2, missing_capabilities as missing_capabilities_v2
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3, metric_applies_v3, missing_capabilities_v3
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
 
@@ -71,6 +73,37 @@ def _same(left, right) -> bool:
 
 def _mean(values):
     return sum(values) / len(values) if values else None
+
+
+def _normalized(value):
+    if type(value) is str:
+        return " ".join(value.casefold().split())
+    if isinstance(value, Mapping):
+        return {key: _normalized(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalized(item) for item in value]
+    return value
+
+
+def _token_f1(predicted, gold):
+    predicted_tokens = str(_plain(predicted)).casefold().split()
+    gold_tokens = str(_plain(gold)).casefold().split()
+    if not predicted_tokens or not gold_tokens:
+        return float(predicted_tokens == gold_tokens)
+    overlap = sum((Counter(predicted_tokens) & Counter(gold_tokens)).values())
+    precision = overlap / len(predicted_tokens)
+    recall = overlap / len(gold_tokens)
+    return 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
+
+
+def _structured_accuracy(predicted, gold):
+    predicted, gold = _plain(predicted), _plain(gold)
+    if isinstance(gold, Mapping) and isinstance(predicted, Mapping):
+        return _mean([float(key in predicted and _same(predicted[key], value)) for key, value in gold.items()]) if gold else float(not predicted)
+    if isinstance(gold, list) and isinstance(predicted, list):
+        size = max(len(gold), len(predicted))
+        return 1.0 if size == 0 else sum(index < len(gold) and index < len(predicted) and _same(predicted[index], gold[index]) for index in range(size)) / size
+    return float(_same(predicted, gold))
 
 
 def _identity(key):
@@ -205,18 +238,21 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
                 hit = next((index + 1 for index, entry in enumerate(trace.retrieved_entries) if any(_entry_matches_version(entry, version) for version in resolutions[query.query_id].selected_versions)), None)
                 reciprocal.append(0.0 if hit is None else 1.0 / hit)
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
-        forgotten = _forgotten_values(replay)
-        exposed = [any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()]
+        obsolete = replay.obsolete_present_values
+        exposed = [any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in trace.retrieved_entries) for trace in traces.values()]
         if leaf == "stale_exposure_rate": return _mean([float(value) for value in exposed]), None
         if leaf == "stale_count_in_context": return sum(sum(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()), None
         if leaf == "distractor_exposure_rate": return _mean([float(trace.distractor_in_context is True) for trace in traces.values()]), None
     if layer == "answer_scores":
         if not predictions: return None, "answer predictions are missing"
         exacts = [float(predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in task.queries if q.query_id in predictions]
-        if leaf in {"exact_match", "normalized_match", "structured_field_accuracy", "answer_state_consistency"}: return _mean(exacts), None
-        if leaf == "token_f1": return _mean(exacts), None
-        forgotten = _forgotten_values(replay)
-        if leaf == "stale_copied": return _mean([float(any(_same(item.parsed_answer, value) for value in forgotten)) for item in predictions.values()]), None
+        if leaf == "exact_match": return _mean(exacts), None
+        if leaf == "normalized_match": return _mean([float(item.format_valid and _normalized(item.parsed_answer) == _normalized(evidence[item.query_id].answer)) for item in predictions.values()]), None
+        if leaf == "token_f1": return _mean([_token_f1(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
+        if leaf == "structured_field_accuracy": return _mean([_structured_accuracy(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
+        if leaf == "answer_state_consistency": return _mean([float(item.format_valid and _same(item.parsed_answer, resolutions[item.query_id].answer)) for item in predictions.values()]), None
+        obsolete = replay.obsolete_present_values
+        if leaf == "stale_copied": return _mean([float(any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
         if leaf == "distractor_copied": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
         if leaf == "gold_retrieved_wrong_answer": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].gold_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
         if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
@@ -242,11 +278,22 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "delete_scope_accuracy": return _mean([float(fact[3] and fact[4]) for fact in deletes]), None
         if leaf == "collateral_damage_rate":
             if snapshot is None: return None, "final state missing"
-            protected = [key.canonical_id for key in replay.protected_collateral]
-            return (_mean([float(key not in state) for key in protected]), None) if protected else (0.0, None)
+            protected = [key for key in replay.protected_collateral if key.canonical_id in replay.current_state]
+            return (_mean([float(key.canonical_id not in state or not _same(state[key.canonical_id], replay.current_state[key.canonical_id].value)) for key in protected]), None) if protected else (0.0, None)
         if leaf == "ttl_compliance_rate":
             ttl = [fact for fact in deletes if fact[0].scope.value == "ttl"]
-            return (_mean([float(fact[6] and fact[3] and fact[4]) for fact in ttl]), None) if ttl else (None, "no TTL actions")
+            if not ttl: return None, "no TTL actions"
+            observations = []
+            for fact in ttl:
+                target_ids = [key.canonical_id for key in fact[0].target_object_keys]
+                observed_snapshot = next((item for item in run.memory_snapshots if item.after_event_id == fact[0].event_id), None)
+                if observed_snapshot is None:
+                    observed_snapshot = snapshot
+                if observed_snapshot is None:
+                    return None, "TTL state snapshot missing"
+                observed_state = dict(observed_snapshot.state_by_object)
+                observations.append(float(fact[6] and fact[3] and fact[4] and all(target not in observed_state for target in target_ids)))
+            return _mean(observations), None
         if leaf == "relearn_accuracy":
             relearn = [ledger for ledger in replay.ledgers if any(v.status == LedgerEntryStatus.TOMBSTONE for v in ledger.versions[:-1]) and ledger.versions[-1].status == LedgerEntryStatus.PRESENT]
             return (_mean([float(ledger.object_key.canonical_id in state and _same(state[ledger.object_key.canonical_id], ledger.versions[-1].value)) for ledger in relearn]), None) if relearn and snapshot is not None else (None, "no observable relearn sequence")
@@ -267,19 +314,19 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             rows = [q for q in task.queries if q.query_type in kinds[leaf]]
             if not rows: return None, "query kind not present"
             if not all(q.query_id in predictions for q in rows): return None, "answer prediction missing"
-            return _mean([float(_same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in rows]), None
+            return _mean([float(predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in rows]), None
         historical = [q for q in task.queries if q.query_type in {QueryTypeV3.PREVIOUS, QueryTypeV3.POINT_IN_TIME, QueryTypeV3.TRANSITION, QueryTypeV3.ORDERED_HISTORY}]
         if not historical: return None, "no historical query"
         if leaf == "version_confusion_rate": return _mean([float(q.query_id in predictions and any(_same(predictions[q.query_id].parsed_answer, replay.current_state.get(key.canonical_id).value if replay.current_state.get(key.canonical_id) else None) for key in q.target_object_keys) and not _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in historical]), None
         if leaf == "historical_support_recall":
             rows = [q for q in historical if q.query_id in traces]
             return (_mean([len(set(evidence[q.query_id].supporting_event_ids) & {event for entry in traces[q.query_id].retrieved_entries for event in entry.source_event_ids}) / len(evidence[q.query_id].supporting_event_ids) for q in rows]), None) if rows else (None, "historical retrieval support missing")
-        if leaf == "historical_distance_accuracy": return _mean([float(q.query_id in predictions and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in historical]), None
+        if leaf == "historical_distance_accuracy": return _mean([float(q.query_id in predictions and predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in historical]), None
     if layer == "synthesis_scores":
         multi_hop = [q for q in task.queries if q.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP]
         multi_object = [q for q in task.queries if q.query_type in {QueryTypeV3.MULTI_OBJECT_CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}]
-        if leaf == "multi_hop_accuracy": return (_mean([float(q.query_id in predictions and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in multi_hop]), None) if multi_hop else (None, "no multi-hop query")
-        if leaf == "multi_object_accuracy": return (_mean([float(q.query_id in predictions and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in multi_object]), None) if multi_object else (None, "no multi-object query")
+        if leaf == "multi_hop_accuracy": return (_mean([float(q.query_id in predictions and predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in multi_hop]), None) if multi_hop else (None, "no multi-hop query")
+        if leaf == "multi_object_accuracy": return (_mean([float(q.query_id in predictions and predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in multi_object]), None) if multi_object else (None, "no multi-object query")
         g = [q for q in task.queries if q.query_type in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}]
         cited = [(q, predictions[q.query_id]) for q in g if q.query_id in predictions]
         if leaf in {"evidence_precision", "evidence_recall", "evidence_f1"}:
@@ -294,7 +341,10 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "reasoning_support_accuracy":
             rows = [(q, traces[q.query_id]) for q in g if q.query_id in traces]
             return (_mean([len(set(evidence[q.query_id].supporting_event_ids) & {event for entry in trace.retrieved_entries for event in entry.source_event_ids}) / len(evidence[q.query_id].supporting_event_ids) for q, trace in rows]), None) if rows else (None, "reasoning retrieval support missing")
-        if leaf == "stale_propagation_rate": return 0.0, None
+        if leaf == "stale_propagation_rate":
+            rows = [predictions[q.query_id] for q in g if q.query_id in predictions]
+            obsolete = replay.obsolete_present_values
+            return (_mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in rows]), None) if rows else (None, "G answer predictions missing")
     return None, "metric artifact is unavailable"
 
 
@@ -331,13 +381,17 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
             support[path] = _support(SupportReason.NOT_APPLICABLE, "Metric was not requested.")
             continue
         # A runtime failure dominates missing capabilities for every otherwise-applicable metric.
-        if runtime_failed and layer not in {"system_scores", "audit_scores"}:
+        if runtime_failed and layer not in {"protocol_scores", "system_scores", "audit_scores"}:
             support[path] = _support(SupportReason.RUNTIME_FAILED, f"Task completion status is {run.completion_status.value}.")
             continue
         if run.completion_status == CompletionStatus.NOT_SUPPORTED:
             support[path] = _support(SupportReason.NOT_SUPPORTED, "Run completion status is not_supported.")
             continue
-        missing = missing_capabilities_v3(descriptor, context.capabilities)
+        missing = (
+            missing_capabilities_v2(METRIC_REGISTRY_V2[path], context.capabilities)
+            if path in METRIC_REGISTRY_V2
+            else missing_capabilities_v3(descriptor, context.capabilities)
+        )
         if missing:
             support[path] = _support(SupportReason.NOT_SUPPORTED, f"Verified adapter lacks capabilities: {', '.join(missing)}.")
             continue

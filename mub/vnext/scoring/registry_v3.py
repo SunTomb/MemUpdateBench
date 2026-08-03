@@ -8,6 +8,7 @@ from pydantic import Field, StrictBool, StrictStr, field_validator, model_valida
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel
 from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS
 from mub.vnext.contracts.v3.version import SCORER_VERSION_V3
+from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2
 
 ALL_FAMILIES = "*"
 ALL_QUERY_KINDS = "*"
@@ -110,9 +111,10 @@ _CAPS_BY_LEAF = {
 
 def _descriptor(path: str) -> MetricDescriptorV3:
     layer, leaf = path.split(".", 1)
-    families = _FAMILY_BY_LAYER.get(layer, (ALL_FAMILIES,))
+    legacy = METRIC_REGISTRY_V2.get(path)
+    families = tuple(legacy.applicable_task_families) if legacy is not None else _FAMILY_BY_LAYER.get(layer, (ALL_FAMILIES,))
     query_kinds = _QUERY_BY_LEAF.get(leaf, (ALL_QUERY_KINDS,))
-    caps = _CAPS_BY_LEAF.get(leaf, _CAPS_BY_LAYER.get(layer, ()))
+    caps = tuple(legacy.required_adapter_capabilities) if legacy is not None else _CAPS_BY_LEAF.get(leaf, _CAPS_BY_LAYER.get(layer, ()))
     count = leaf in _COUNT_LEAVES
     return MetricDescriptorV3(
         field_path=path,

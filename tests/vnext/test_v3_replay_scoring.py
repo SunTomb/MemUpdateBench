@@ -215,3 +215,48 @@ def test_reference_shaped_completed_run_is_perfect_on_supported_principal_metric
         observed += 1
         assert value == (0.0 if descriptor.direction == "lower" else 1.0), path
     assert observed >= 4
+
+
+def test_event_anchored_replay_does_not_invent_logical_time():
+    changed = payload()
+    for action in changed["actions"]:
+        action.pop("effective_at", None)
+    for entry in changed["version_history"][0]["entries"]:
+        entry.pop("logical_time", None)
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    assert all(version.logical_time is None for version in replay.ledgers[0].versions)
+
+
+def test_current_selector_resolves_tombstone_as_structured_absence():
+    changed = payload()
+    changed["events"] = changed["events"][:3]
+    changed["actions"] = changed["actions"][:3]
+    changed["version_history"][0]["entries"] = changed["version_history"][0]["entries"][:3]
+    changed["version_history"][0]["entries"][-1].pop("valid_until_event_id", None)
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "current", "text": "?", "selector": {"kind": "current"},
+        "target_object_keys": changed["target_objects"], "answer_schema": "list", "evaluation_mode": "state_direct",
+    }
+    changed["gold_evidence"][0]["answer"] = [None]
+    changed["gold_evidence"][0]["supporting_event_ids"] = ["e2"]
+    changed["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"] = ["e2"]
+    task = MemUpdateTaskV3.model_validate(changed)
+    resolution = resolve_query_v3(task.queries[0], replay_task_v3(task), task.events)
+    assert resolution.issues == ()
+    assert resolution.answer == (None,)
+
+
+def test_replay_fails_closed_when_f_answer_disagrees_with_typed_selector():
+    changed = payload()
+    changed["gold_evidence"][0]["answer"] = ["forged"]
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    assert replay.current_state == {}
+    assert replay.issues[0].code == "query_gold_answer_mismatch"
+
+
+def test_replay_exposes_update_superseded_values_as_obsolete():
+    replay = replay_task_v3(MemUpdateTaskV3.model_validate(payload()))
+    assert replay.obsolete_present_values == ("v0", "v1")

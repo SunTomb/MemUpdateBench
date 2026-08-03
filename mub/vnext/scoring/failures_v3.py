@@ -67,10 +67,28 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     if deletion.get("ttl_compliance_rate") not in {None, 1.0}: flags.add("ttl_violation")
     if deletion.get("relearn_accuracy") not in {None, 1.0}: flags.add("current_state_missing")
     forgotten = _forgotten_values(replay)
+    obsolete = replay.obsolete_present_values
     final_snapshot = run.memory_snapshots[-1] if run.memory_snapshots else None
-    if final_snapshot and any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in final_snapshot.entries): flags.add("stale_retained")
-    if any(any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()): flags.update(("forgotten_value_exposed", "stale_retrieved"))
-    if any(any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.update(("forgotten_value_exposed", "stale_copied"))
+    if final_snapshot and any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in final_snapshot.entries): flags.add("stale_retained")
+    if any(trace.stale_in_context is True or any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("stale_retrieved")
+    if any(any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")
+    if any(any(_same(prediction.parsed_answer, value) for value in obsolete) for prediction in predictions.values()): flags.add("stale_copied")
+    if any(any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.add("forgotten_value_exposed")
+    for query_id, prediction in predictions.items():
+        trace = traces.get(query_id)
+        gold_answer = evidence[query_id].answer
+        wrong = not prediction.format_valid or not _same(prediction.parsed_answer, gold_answer)
+        if not prediction.format_valid:
+            flags.add("answer_format_only")
+        if trace is not None:
+            if trace.gold_in_context is False:
+                flags.add("current_not_retrieved")
+            if trace.gold_in_context is True and wrong:
+                flags.add("gold_retrieved_wrong_answer")
+            if trace.distractor_in_context is True:
+                flags.add("distractor_retrieved")
+                if wrong:
+                    flags.add("distractor_copied")
     if historical.get("version_confusion_rate") not in {None, 0.0}: flags.add("version_confusion")
     if any(historical.get(field) not in {None, 1.0} for field in ("previous_state_accuracy", "point_in_time_accuracy", "transition_accuracy", "ordered_history_accuracy", "historical_distance_accuracy")): flags.add("version_confusion")
     if historical.get("historical_support_recall") not in {None, 1.0}: flags.update(("evidence_linkage_error", "current_not_retrieved"))

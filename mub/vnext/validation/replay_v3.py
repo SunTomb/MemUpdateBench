@@ -8,7 +8,7 @@ from pydantic import Field, field_validator
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, freeze_mapping
 from mub.vnext.contracts.enums import AnswerSchema, Operation
 from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, object_identity
-from mub.vnext.contracts.v3.enums import LedgerEntryStatus
+from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.task import (
     CurrentSelector,
     EventAnchorSelector,
@@ -40,7 +40,7 @@ class ReplayVersionV3(ImmutableContractModel):
     value: FrozenJsonValue | None = None
     source_action_id: str
     source_event_ids: tuple[str, ...]
-    logical_time: str
+    logical_time: str | None = None
     valid_from_event_id: str | None = None
     valid_until_event_id: str | None = None
 
@@ -67,6 +67,16 @@ class ReplayResultV3(ImmutableContractModel):
     @property
     def valid(self) -> bool:
         return not self.issues
+
+    @property
+    def obsolete_present_values(self) -> tuple[Any, ...]:
+        values = []
+        for ledger in self.ledgers:
+            current = ledger.versions[-1] if ledger.versions else None
+            for version in ledger.versions[:-1]:
+                if version.status == LedgerEntryStatus.PRESENT and (current is None or current.status != LedgerEntryStatus.PRESENT or not _same(version.value, current.value)):
+                    values.append(version.value)
+        return tuple(values)
 
     @property
     def ledger_by_identity(self) -> Mapping[tuple[str, str, str, str | None], ReplayLedgerV3]:
@@ -116,8 +126,8 @@ def _same(left: Any, right: Any) -> bool:
     return type(_plain(left)) is type(_plain(right)) and _plain(left) == _plain(right)
 
 
-def _action_time(action, event_index: int) -> str:
-    return action.effective_at if action.effective_at is not None else f"event:{event_index:012d}"
+def _action_time(action, event_index: int) -> str | None:
+    return action.effective_at
 
 
 def _build_replay(task: MemUpdateTaskV3) -> ReplayResultV3:
@@ -158,12 +168,18 @@ def _build_replay(task: MemUpdateTaskV3) -> ReplayResultV3:
     for action_index, action in enumerate(task.actions):
         event = events[action.event_id]
         now = _action_time(action, event.sequence_index)
-        expire_due(now)
+        if now is not None:
+            expire_due(now)
         targets = tuple(action.target_object_keys)
         if action.operation == Operation.NOOP:
             continue
         if action.operation == Operation.DELETE and action.scope is not None and action.scope.value == "ttl":
-            pending_ttl.append((now, action_index, action))
+            if now is None:
+                identity = _identity(action.target_object_keys[0])
+                if identity in state:
+                    append_version(action, action.target_object_keys[0], LedgerEntryStatus.TOMBSTONE, None, None, action.event_id)
+            else:
+                pending_ttl.append((now, action_index, action))
             continue
         for key in targets:
             identity = _identity(key)
@@ -217,6 +233,14 @@ def replay_task_v3(task: MemUpdateTaskV3) -> ReplayResultV3:
         return ReplayResultV3(current_state={}, ledgers=(), expected_present=(), expected_absent=(), protected_collateral=(), mutation_count=0, issues=(_issue("gold_replay_error", str(exc), "actions"),))
     if not _declared_matches(task, replay):
         return ReplayResultV3(current_state={}, ledgers=(), expected_present=(), expected_absent=(), protected_collateral=(), mutation_count=0, issues=(_issue("replay_version_history_mismatch", "replayed lifecycle ledger does not equal declared version_history", "version_history"),))
+    evidence = {item.query_id: item for item in task.gold_evidence}
+    synthesis_kinds = {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}
+    for query in task.queries:
+        if query.query_type in synthesis_kinds:
+            continue
+        resolved = resolve_query_v3(query, replay, task.events)
+        if resolved.issues or not _same(resolved.answer, evidence[query.query_id].answer):
+            return ReplayResultV3(current_state={}, ledgers=(), expected_present=(), expected_absent=(), protected_collateral=(), mutation_count=0, issues=(_issue("query_gold_answer_mismatch", "typed selector answer does not equal declared gold evidence answer", f"gold_evidence.{query.query_id}.answer"),))
     return replay
 
 
@@ -237,7 +261,7 @@ def _shape(values: list[Any], keys, schema) -> Any:
 def _selected_for(ledger: ReplayLedgerV3, selector, event_positions) -> tuple[ReplayVersionV3, ...]:
     versions = ledger.versions
     if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
-        return versions[-1:] if versions and versions[-1].status == LedgerEntryStatus.PRESENT else ()
+        return versions[-1:]
     if isinstance(selector, PreviousSelector):
         return versions[-2:-1]
     if isinstance(selector, ExactVersionSelector):
@@ -255,7 +279,7 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions) -> tuple[Re
         matched = [version for version in versions if version.valid_from_event_id is not None and event_positions[version.valid_from_event_id] <= anchor and (version.valid_until_event_id is None or anchor < event_positions[version.valid_until_event_id])]
         return tuple(matched)
     if isinstance(selector, LogicalTimeAnchorSelector):
-        eligible = [version for version in versions if version.logical_time <= selector.logical_time]
+        eligible = [version for version in versions if version.logical_time is not None and version.logical_time <= selector.logical_time]
         if not eligible:
             return ()
         latest = max(version.logical_time for version in eligible)
@@ -292,7 +316,11 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
             answers = [[item.value for item in items] for _, items in selected_by_object]
         else:
             answers = [items[-1].value for _, items in selected_by_object]
-        answer = answers[0] if len(answers) == 1 else _shape(answers, [key for key, _ in selected_by_object], query.answer_schema)
+        keys = [key for key, _ in selected_by_object]
+        if isinstance(query.selector, (TransitionSelector, OrderedHistorySelector)):
+            answer = answers[0] if len(answers) == 1 else _shape(answers, keys, query.answer_schema)
+        else:
+            answer = _shape(answers, keys, query.answer_schema)
     except Exception as exc:
         return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_answer_shape_error", str(exc), f"queries.{query.query_id}.answer_schema"),))
     versions = tuple(item for _, selected in selected_by_object for item in selected)
