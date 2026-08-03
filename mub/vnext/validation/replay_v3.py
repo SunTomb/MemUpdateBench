@@ -21,6 +21,8 @@ from mub.vnext.contracts.v3.task import (
     PreviousSelector,
     QueryGoldEvidenceV3,
     TransitionSelector,
+    _DERIVATION_READ_OPERATIONS,
+    _resolve_derivation_read_versions,
 )
 from mub.vnext.validation.issues import ValidationIssue
 
@@ -386,22 +388,12 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
 
 
 def _read_step_value(step, replay: ReplayResultV3):
-    values = []
-    ledgers = replay.ledger_by_identity
-    for key in step.supporting_object_keys:
-        ledger = ledgers.get(_identity(key))
-        if ledger is None:
-            raise ValueError("derivation support object is missing")
-        candidates = [version for version in ledger.versions if set(version.source_event_ids) & set(step.supporting_event_ids)]
-        if len(candidates) != 1:
-            raise ValueError("derivation read support is missing or ambiguous")
-        values.append(candidates[0].value)
-    if not values:
-        # Event-only reads bind to the unique replay version carrying that event.
-        candidates = [version for ledger in replay.ledgers for version in ledger.versions if set(version.source_event_ids) & set(step.supporting_event_ids)]
-        if len(candidates) != 1:
-            raise ValueError("derivation event support is missing or ambiguous")
-        values.append(candidates[0].value)
+    versions = _resolve_derivation_read_versions(
+        step,
+        replay.ledger_by_identity,
+        lambda ledger: ledger.versions,
+    )
+    values = [version.value for version in versions]
     return values[0] if len(values) == 1 else values
 
 
@@ -414,7 +406,7 @@ def evaluate_evidence_v3(evidence: QueryGoldEvidenceV3, replay: ReplayResultV3, 
         for step in item.derivation_steps:
             operands = [values[parent] for parent in step.input_step_ids]
             operation = step.operation
-            if operation in {"read", "read_current", "read_version"}:
+            if operation in _DERIVATION_READ_OPERATIONS:
                 value = _read_step_value(step, replay)
             elif operation in {"identity", "answer", "left", "right"}:
                 if len(operands) != 1:

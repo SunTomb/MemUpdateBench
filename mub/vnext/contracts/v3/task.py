@@ -18,6 +18,7 @@ from mub.vnext.contracts.v3.version import SCHEMA_VERSION_V3
 StrictString = StrictIdentifier
 StrictIndex = Annotated[int, Field(strict=True, ge=0)]
 HashString = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
+_DERIVATION_READ_OPERATIONS = frozenset({"read", "read_current", "read_version"})
 
 
 class GeneratorProvenanceV3(ImmutableContractModel):
@@ -503,6 +504,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("derivation uses object outside evidence scope")
                 if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
                     raise ValueError("derivation uses event outside evidence scope")
+            _validate_derivation_read_bindings(evidence, histories)
             alternative = evidence.stale_alternative
             if alternative is not None:
                 if query.query_type not in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}:
@@ -518,6 +520,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         raise ValueError("stale derivation uses object outside alternative scope")
                     if set(step.supporting_event_ids) - set(alternative.supporting_event_ids):
                         raise ValueError("stale derivation uses event outside alternative scope")
+                _validate_derivation_read_bindings(alternative, histories)
             if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
@@ -552,6 +555,40 @@ class MemUpdateTaskV3(ImmutableContractModel):
 
 def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
     return key.namespace, key.entity, key.attribute, key.subkey
+
+
+def _resolve_derivation_read_versions(step, ledgers, version_rows):
+    supporting_events = set(step.supporting_event_ids)
+    if step.supporting_object_keys:
+        resolved = []
+        for key in step.supporting_object_keys:
+            ledger = ledgers.get(_identity(key))
+            if ledger is None:
+                raise ValueError("derivation support object is missing")
+            candidates = tuple(
+                version
+                for version in version_rows(ledger)
+                if set(version.source_event_ids) & supporting_events
+            )
+            if len(candidates) != 1:
+                raise ValueError("derivation read support is missing or ambiguous")
+            resolved.append(candidates[0])
+        return tuple(resolved)
+    candidates = tuple(
+        version
+        for ledger in ledgers.values()
+        for version in version_rows(ledger)
+        if set(version.source_event_ids) & supporting_events
+    )
+    if len(candidates) != 1:
+        raise ValueError("derivation event support is missing or ambiguous")
+    return candidates
+
+
+def _validate_derivation_read_bindings(evidence, histories) -> None:
+    for step in evidence.derivation_steps:
+        if step.operation in _DERIVATION_READ_OPERATIONS:
+            _resolve_derivation_read_versions(step, histories, lambda ledger: ledger.entries)
 
 
 def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> None:
@@ -806,7 +843,7 @@ def _derivation_read_support(
     read_steps = tuple(
         step
         for step in evidence.derivation_steps
-        if step.operation in {"read", "read_current", "read_version"}
+        if step.operation in _DERIVATION_READ_OPERATIONS
         and any(_identity(key) in allowed_objects for key in step.supporting_object_keys)
     )
     return len(read_steps), {

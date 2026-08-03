@@ -1124,6 +1124,35 @@ def test_task_contract_rejects_unary_equals_after_two_valid_target_reads(locatio
         MemUpdateTaskV3.model_validate(changed)
 
 
+@pytest.mark.parametrize("location", ["primary", "stale"])
+@pytest.mark.parametrize("binding", ["missing", "ambiguous"])
+def test_task_contract_requires_unambiguous_read_version_binding(location, binding):
+    changed = multi_object_consistency_payload()
+    evidence = changed["gold_evidence"][0]
+    first, second = evidence["supporting_object_keys"]
+    first_events = [] if binding == "missing" else ["e0", "e1"]
+    if location == "primary":
+        evidence["supporting_event_ids"] = ["e0", "e1", "e3"]
+        evidence["derivation_steps"] = [
+            {"step_id": "first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": first_events},
+            {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "second"]},
+        ]
+    else:
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e0", "e1"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": first_events},
+                {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    with pytest.raises(ValueError, match="read support is missing or ambiguous"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
 @pytest.mark.parametrize("location", ["primary-no-input", "primary-one-input", "stale-no-input"])
 def test_multi_object_consistency_requires_two_distinct_reachable_read_operands(location):
     changed = multi_object_consistency_payload()

@@ -248,10 +248,12 @@ def test_semantic_hash_canonicalizes_query_and_support_sets_but_preserves_ledger
     second_query.update({"query_id": "q2", "query_type": "previous", "selector": {"kind": "previous"}})
     second_evidence = deepcopy(base["gold_evidence"][0])
     second_evidence.update({"query_id": "q2", "answer": "v1", "supporting_event_ids": ["e1", "e2"]})
+    second_evidence["derivation_steps"][0]["operation"] = "collect"
     second_evidence["derivation_steps"][0]["supporting_event_ids"] = ["e1", "e2"]
     base["queries"].append(second_query)
     base["gold_evidence"].append(second_evidence)
     base["gold_evidence"][0]["supporting_event_ids"] = ["e2", "e1"]
+    base["gold_evidence"][0]["derivation_steps"][0]["operation"] = "collect"
     base["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"] = ["e2", "e1"]
 
     reordered = deepcopy(base)
