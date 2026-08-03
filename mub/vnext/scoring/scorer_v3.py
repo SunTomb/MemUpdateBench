@@ -83,6 +83,12 @@ class VerifiedScoringContextV3(ImmutableContractModel):
             raise ValueError("run_id mismatch with authenticated run manifest")
         if run.adapter_id != run_manifest.adapter_info.adapter_id:
             raise ValueError("adapter_id mismatch with authenticated run manifest")
+        if set(task_manifest.task_record_hashes) != set(run_manifest.run_record_hashes):
+            raise ValueError("task and run record hash mappings must cover identical task IDs")
+        if task.task_id not in task_manifest.task_record_hashes or task_manifest.task_record_hashes[task.task_id] != _contract_hash(task):
+            raise ValueError("authenticated task record membership proof mismatch")
+        if run.task_id not in run_manifest.run_record_hashes or run_manifest.run_record_hashes[run.task_id] != _contract_hash(run):
+            raise ValueError("authenticated run record membership proof mismatch")
         if authenticated_task_manifest_sha256 != _contract_hash(task_manifest):
             raise ValueError("authenticated task manifest hash does not match canonical manifest payload")
         if authenticated_run_manifest_sha256 != _contract_hash(run_manifest):
@@ -123,6 +129,12 @@ class VerifiedScoringContextV3(ImmutableContractModel):
             raise ValueError("run artifact is not authenticated by run manifest")
         if self.run_manifest.capability_verification_artifact is None:
             raise ValueError("capability verification artifact is required")
+        if set(self.task_manifest.task_record_hashes) != set(self.run_manifest.run_record_hashes):
+            raise ValueError("authenticated record mappings have missing or extra task IDs")
+        if self.task_manifest.task_record_hashes.get(self.task_id) != self.task_payload_sha256:
+            raise ValueError("authenticated task record membership changed")
+        if self.run_manifest.run_record_hashes.get(self.task_id) != self.run_payload_sha256:
+            raise ValueError("authenticated run record membership changed")
         if self.task_manifest_payload_sha256 != _contract_hash(self.task_manifest):
             raise ValueError("authenticated task manifest substitution detected")
         if self.run_manifest_payload_sha256 != _contract_hash(self.run_manifest):
@@ -296,21 +308,42 @@ def _forgotten_values(replay):
     return values
 
 
+def _entry_value_status(entry, version):
+    if version.status == LedgerEntryStatus.TOMBSTONE:
+        tombstone_marker = entry.raw_metadata.get("is_tombstone") is True or entry.raw_metadata.get("status") == "tombstone"
+        if entry.value_candidate is not None:
+            return False
+        return True if tombstone_marker else None
+    if entry.value_candidate is None:
+        return None
+    return _same(entry.value_candidate, version.value)
+
+
 def _entry_matches_version(entry, version):
     if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
         return False
-    if entry.version_index is not None:
-        return entry.version_index == version.version_index
-    if entry.source_event_ids:
-        return bool(set(entry.source_event_ids) & set(version.source_event_ids))
-    return _same(entry.value_candidate, version.value)
+    if entry.version_index is not None and entry.version_index != version.version_index:
+        return False
+    if entry.source_event_ids and not (set(entry.source_event_ids) & set(version.source_event_ids)):
+        return False
+    if entry.version_index is None and not entry.source_event_ids and not _same(entry.value_candidate, version.value):
+        return False
+    return _entry_value_status(entry, version) is True
 
 
 def _entry_current_match_status(entry, version, replay):
     if entry.version_index is not None or entry.source_event_ids:
-        return _entry_matches_version(entry, version)
+        if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
+            return False
+        if entry.version_index is not None and entry.version_index != version.version_index:
+            return False
+        if entry.source_event_ids and not (set(entry.source_event_ids) & set(version.source_event_ids)):
+            return False
+        return _entry_value_status(entry, version)
     if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
         return False
+    if entry.value_candidate is None:
+        return None
     ledger = replay.ledger_by_identity.get(_identity(version.object_key))
     same_value_versions = [] if ledger is None else [candidate for candidate in ledger.versions if candidate.status == LedgerEntryStatus.PRESENT and _same(candidate.value, entry.value_candidate)]
     if len(same_value_versions) > 1:
@@ -325,12 +358,24 @@ def _entry_obsolete_status(entry, replay):
     if ledger is None or not ledger.versions:
         return False
     if entry.version_index is not None:
+        if entry.version_index >= len(ledger.versions):
+            return False
+        matched = ledger.versions[entry.version_index]
+        value_status = _entry_value_status(entry, matched)
+        if value_status is not True:
+            return value_status
         return entry.version_index < ledger.versions[-1].version_index
     if entry.source_event_ids:
+        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
+        if matched is None:
+            return False
+        value_status = _entry_value_status(entry, matched)
+        if value_status is not True:
+            return value_status
         current_sources = set(ledger.versions[-1].source_event_ids)
         if set(entry.source_event_ids) & current_sources:
             return False
-        return any(set(entry.source_event_ids) & set(version.source_event_ids) for version in ledger.versions[:-1])
+        return matched.version_index < ledger.versions[-1].version_index
     current = ledger.versions[-1]
     obsolete = [version for version in ledger.versions[:-1] if version.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, version.value)]
     if obsolete and current.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, current.value):
@@ -351,6 +396,9 @@ def _entry_forgotten_status(entry, replay):
         matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
     if matched is None:
         return None
+    value_status = _entry_value_status(entry, matched)
+    if value_status is not True:
+        return value_status
     return any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[matched.version_index + 1:])
 
 
@@ -402,6 +450,8 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         current_versions = tuple(replay.current_state.values())
         statuses = tuple(_entry_obsolete_status(entry, replay) for entry in entries)
         if any(status is None for status in statuses) and leaf in {"obsolete_version_count", "stale_conflicting_value_count", "duplicate_current_count"}:
+            if any(status is None and entry.value_candidate is None for entry, status in zip(entries, statuses)):
+                return None, "value evidence is missing for version-bearing store entries"
             return None, "version identity is ambiguous for repeated-value store entries"
         stale = [entry for entry, status in zip(entries, statuses) if status is True]
         if leaf == "obsolete_version_count": return len(stale), None
@@ -421,6 +471,8 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             for query, trace in current_rows
         }
         if leaf in {"current_recall_at_k", "current_mrr"} and any(status is None for statuses in current_statuses.values() for status in statuses):
+            if any(entry.value_candidate is None for _, trace in current_rows for entry in trace.retrieved_entries):
+                return None, "value evidence is missing for version-bearing current retrieval entries"
             return None, "version identity is ambiguous for repeated-value current retrieval entries"
         if leaf == "current_recall_at_k": return (_mean([float(any(status is True for status in current_statuses[q.query_id])) for q, trace in current_rows]), None) if current_rows else (None, "no current retrieval rows")
         if leaf == "current_mrr":
@@ -470,6 +522,8 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
     if layer == "deletion_scores":
         deletes = [fact for fact in action_facts if fact[0].operation == Operation.DELETE]
         if not deletes: return None, "no DELETE actions"
+        if leaf in {"deletion_accuracy", "delete_scope_accuracy", "ttl_compliance_rate"} and any(fact[1] is None for fact in deletes):
+            return None, "DELETE action trace is missing"
         if leaf == "deletion_accuracy": return _mean([float(all(fact[i] for i in (2, 3, 4)) and fact[6]) for fact in deletes]), None
         if leaf == "delete_scope_accuracy": return _mean([float(fact[3] and fact[4]) for fact in deletes]), None
         if leaf == "collateral_damage_rate":

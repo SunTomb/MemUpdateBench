@@ -96,11 +96,17 @@ _QUERY_BY_LEAF = {
     "multi_object_accuracy": ("multi_object_current", "multi_object_current_consistency"),
 }
 _CAPS_BY_LAYER = {
-    "deletion_scores": ("supports_scoped_delete",),
     "historical_scores": ("supports_historical_query",),
     "synthesis_scores": ("supports_multi_object_query",),
 }
 _CAPS_BY_LEAF = {
+    "deletion_accuracy": ("supports_delete", "exports_action_trace"),
+    "delete_scope_accuracy": ("supports_delete", "supports_scoped_delete", "exports_action_trace"),
+    "collateral_damage_rate": ("supports_delete", "supports_isolated_reset", "exports_entries", "exports_object_keys", "exports_values"),
+    "ttl_compliance_rate": ("supports_ttl", "exports_action_trace", "exports_entries", "exports_object_keys", "exports_values"),
+    "relearn_accuracy": ("supports_delete", "exports_entries", "exports_object_keys", "exports_values"),
+    "forgotten_exposure_rate": ("supports_delete", "exports_retrieval_ids", "exports_object_keys", "exports_values"),
+    "forgotten_value_leakage_rate": ("supports_delete", "supports_native_answer"),
     "historical_support_recall": ("exports_version_history", "exports_retrieval_ids"),
     "reasoning_support_accuracy": ("exports_evidence_linkage", "exports_retrieval_ids"),
     "evidence_precision": ("exports_evidence_linkage",),

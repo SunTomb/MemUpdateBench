@@ -51,7 +51,8 @@ def authenticated_manifests(task, run, info, caps, config):
         data_release_id="release", split_policy_version="3", compiler_versions={"core": "3"},
         source_manifest_paths_and_hashes=(), generation_configs_and_hashes=(),
         split_counts={"test": 1}, family_difficulty_counts={"F.easy": 1}, semantic_core_counts={"c": 1},
-        task_file_paths_and_hashes=(task_artifact,), leakage_check_summary={}, human_audit_artifacts=(),
+        task_file_paths_and_hashes=(task_artifact,), task_record_hashes={task.task_id: hashlib.sha256(json.dumps(task.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
+        leakage_check_summary={}, human_audit_artifacts=(),
         created_at="2026-08-02T00:00:00Z", code_revision="r",
     )
     task_manifest_sha256 = hashlib.sha256(json.dumps(task_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -67,6 +68,7 @@ def authenticated_manifests(task, run, info, caps, config):
         failed_task_count=int(run.completion_status.value in {"failed", "partial"}),
         not_supported_task_count=int(run.completion_status.value == "not_supported"),
         raw_provider_response_artifacts=(), raw_adapter_state_artifacts=(), normalized_runtime_artifacts=(run_artifact,),
+        run_record_hashes={run.task_id: hashlib.sha256(json.dumps(run.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
         score_artifacts=(), native_vs_extracted_field_summary={},
     )
     run_manifest_sha256 = hashlib.sha256(json.dumps(run_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -114,6 +116,47 @@ def test_v3_registry_exactly_covers_all_score_fields_and_principal_policies():
             assert descriptor.denominator_definition.strip()
 
 
+def test_e_metric_registry_has_exact_leaf_capabilities_and_support_precedence():
+    from mub.vnext.scoring.registry_v3 import missing_capabilities_v3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+
+    expected = {
+        "deletion_scores.deletion_accuracy": {"supports_delete", "exports_action_trace"},
+        "deletion_scores.delete_scope_accuracy": {"supports_delete", "supports_scoped_delete", "exports_action_trace"},
+        "deletion_scores.collateral_damage_rate": {"supports_delete", "supports_isolated_reset", "exports_entries", "exports_object_keys", "exports_values"},
+        "deletion_scores.ttl_compliance_rate": {"supports_ttl", "exports_action_trace", "exports_entries", "exports_object_keys", "exports_values"},
+        "deletion_scores.relearn_accuracy": {"supports_delete", "exports_entries", "exports_object_keys", "exports_values"},
+        "deletion_scores.forgotten_exposure_rate": {"supports_delete", "exports_retrieval_ids", "exports_object_keys", "exports_values"},
+        "deletion_scores.forgotten_value_leakage_rate": {"supports_delete", "supports_native_answer"},
+    }
+    for path, required in expected.items():
+        assert set(CORE_METRIC_REGISTRY_V3[path].required_capabilities) == required
+        assert set(missing_capabilities_v3(CORE_METRIC_REGISTRY_V3[path], AdapterCapabilitiesV3())) == required
+
+    changed = payload()
+    changed["task_family"] = "E"
+    task = MemUpdateTaskV3.model_validate(changed)
+    prediction = AnswerPredictionV3(query_id="q", raw_output="ok", parsed_answer=["v0", "v1", None, "v2"], format_valid=True)
+    run = TaskRunRecordV3(task_id="t", adapter_id="adapter", run_id="e-caps", answer_predictions=(prediction,), parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"), completion_status="completed")
+    info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="system", system_version="1", configuration_hash=H)
+    config = ScorerConfigV3(requested_metric_fields=("deletion_scores.deletion_accuracy",))
+    score = score_task_v3(task, run, authenticated_context(task, run, info, AdapterCapabilitiesV3(), config))
+    assert score.supported_metric_fields["deletion_scores.deletion_accuracy"].reason.value == "not_supported"
+    declared = AdapterCapabilitiesV3(supports_delete=True, exports_action_trace=True)
+    score = score_task_v3(task, run, authenticated_context(task, run, info, declared, config))
+    assert score.supported_metric_fields["deletion_scores.deletion_accuracy"].reason.value == "missing_artifact"
+
+    family_f = MemUpdateTaskV3.model_validate(payload())
+    family_f_run = run.model_copy(update={"task_id": family_f.task_id})
+    score = score_task_v3(family_f, family_f_run, authenticated_context(family_f, family_f_run, info, AdapterCapabilitiesV3(), config))
+    assert score.supported_metric_fields["deletion_scores.deletion_accuracy"].reason.value == "not_applicable"
+
+    failed = run.model_copy(update={"completion_status": "failed", "answer_predictions": (), "exceptions": ({"type": "boom"},)})
+    score = score_task_v3(task, failed, authenticated_context(task, failed, info, AdapterCapabilitiesV3(), config))
+    assert score.supported_metric_fields["deletion_scores.deletion_accuracy"].reason.value == "runtime_failed"
+
+
 def test_authenticated_scoring_context_rejects_manifest_capability_config_and_task_substitution():
     from mub.vnext.scoring.scorer_v3 import score_task_v3
 
@@ -157,6 +200,44 @@ def test_authenticated_scoring_context_rejects_manifest_capability_config_and_ta
         VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=unavailable, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=task_manifest_sha256, authenticated_run_manifest_sha256=run_manifest_sha256)
     with pytest.raises(ValueError, match="authenticated run manifest hash"):
         VerifiedScoringContextV3.from_authenticated_manifests(task=task, run=run, task_manifest=task_manifest, run_manifest=run_manifest, task_artifact=task_artifact, run_artifact=run_artifact, authenticated_task_manifest_sha256=task_manifest_sha256, authenticated_run_manifest_sha256="0" * 64)
+
+
+def test_manifest_record_hashes_require_exact_multi_record_coverage_and_membership():
+    from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3
+
+    task1 = MemUpdateTaskV3.model_validate(payload())
+    task2 = task1.model_copy(update={"task_id": "t2"})
+    provenance = ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1")
+    run1 = TaskRunRecordV3(task_id="t", adapter_id="adapter", run_id="run", parser_extractor_provenance=provenance, completion_status="failed", exceptions=({"type": "boom"},))
+    run2 = TaskRunRecordV3(task_id="t2", adapter_id="adapter", run_id="run", parser_extractor_provenance=provenance, completion_status="failed", exceptions=({"type": "boom"},))
+    info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="system", system_version="1", configuration_hash=H)
+    caps = AdapterCapabilitiesV3()
+    base_task_manifest, base_run_manifest, task_artifact, run_artifact, _, _ = authenticated_manifests(task1, run1, info, caps, ScorerConfigV3())
+    task_hashes = {item.task_id: hashlib.sha256(json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest() for item in (task1, task2)}
+    run_hashes = {item.task_id: hashlib.sha256(json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest() for item in (run1, run2)}
+    task_data = base_task_manifest.model_dump(mode="python")
+    task_data.update(split_counts={"test": 2}, family_difficulty_counts={"F.easy": 2}, semantic_core_counts={"c": 2}, task_record_hashes=task_hashes, task_file_paths_and_hashes=({**task_artifact, "record_count": 2},))
+    task_manifest = TaskManifestV3.model_validate(task_data)
+    task_manifest_hash = hashlib.sha256(json.dumps(task_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    run_data = base_run_manifest.model_dump(mode="python")
+    run_data.update(task_manifest={"path": "task-manifest.json", "sha256": task_manifest_hash, "media_type": "application/json"}, expected_task_count=2, completed_task_count=0, failed_task_count=2, not_supported_task_count=0, run_record_hashes=run_hashes, normalized_runtime_artifacts=({**run_artifact, "record_count": 2},))
+    run_manifest = RunManifestV3.model_validate(run_data)
+    run_manifest_hash = hashlib.sha256(json.dumps(run_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    context = VerifiedScoringContextV3.from_authenticated_manifests(task=task1, run=run1, task_manifest=task_manifest, run_manifest=run_manifest, task_artifact=task_manifest.task_file_paths_and_hashes[0], run_artifact=run_manifest.normalized_runtime_artifacts[0], authenticated_task_manifest_sha256=task_manifest_hash, authenticated_run_manifest_sha256=run_manifest_hash)
+    assert context.task_id == "t"
+
+    swapped_data = run_manifest.model_dump(mode="python")
+    swapped_data["run_record_hashes"] = {"t": run_hashes["t2"], "t2": run_hashes["t"]}
+    swapped = RunManifestV3.model_validate(swapped_data)
+    swapped_hash = hashlib.sha256(json.dumps(swapped.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with pytest.raises(ValueError, match="run record membership"):
+        VerifiedScoringContextV3.from_authenticated_manifests(task=task1, run=run1, task_manifest=task_manifest, run_manifest=swapped, task_artifact=task_manifest.task_file_paths_and_hashes[0], run_artifact=swapped.normalized_runtime_artifacts[0], authenticated_task_manifest_sha256=task_manifest_hash, authenticated_run_manifest_sha256=swapped_hash)
+
+    for hashes in ({"t": run_hashes["t"]}, {**run_hashes, "extra": H}):
+        invalid = run_manifest.model_dump(mode="python")
+        invalid["run_record_hashes"] = hashes
+        with pytest.raises(Exception, match="cover expected tasks exactly"):
+            RunManifestV3.model_validate(invalid)
 
 
 def test_scorer_module_exposes_verified_context_and_rejects_identity_mismatch():
@@ -423,6 +504,23 @@ def test_same_value_different_version_is_not_current_entry_match():
     value, detail = _metric_value("answer_scores.stale_copied", current_task, run.model_copy(update={"answer_predictions": (correct_x,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {"q": correct_x}, {}, [])
     assert detail is None
     assert value == 0.0
+
+    wrong_value_v3 = MemoryEntryRecordV3(entry_id="wrong-v3", content="wrong", object_key_candidate=current_task.target_objects[0], value_candidate="wrong", version_index=3, source_event_ids=("e3",))
+    assert not _entry_matches_version(wrong_value_v3, current_replay.ledgers[0].versions[3])
+    wrong_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(wrong_value_v3,))
+    value, detail = _metric_value("retrieval_scores.current_recall_at_k", current_task, run.model_copy(update={"retrieval_traces": (wrong_trace,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {}, {"q": wrong_trace}, [])
+    assert detail is None
+    assert value == 0.0
+
+    missing_value_v3 = MemoryEntryRecordV3(entry_id="missing-v3", content="missing", object_key_candidate=current_task.target_objects[0], version_index=3, source_event_ids=("e3",))
+    missing_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(missing_value_v3,))
+    value, detail = _metric_value("retrieval_scores.current_recall_at_k", current_task, run.model_copy(update={"retrieval_traces": (missing_trace,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {}, {"q": missing_trace}, [])
+    assert value is None
+    assert "value evidence" in detail
+    missing_store = run.model_copy(update={"memory_snapshots": (MemorySnapshotV3(after_event_id="e3", entries=(missing_value_v3,), store_size=1),)})
+    value, detail = _metric_value("store_scores.stale_conflicting_value_count", current_task, missing_store, None, current_replay, {}, {"q": current_task.gold_evidence[0]}, {}, {}, [])
+    assert value is None
+    assert "value evidence" in detail
 
     from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
     evidence = {item.query_id: item for item in task.gold_evidence}
