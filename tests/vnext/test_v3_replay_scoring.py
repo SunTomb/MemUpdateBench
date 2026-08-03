@@ -1260,7 +1260,7 @@ def multi_object_consistency_payload():
 def replayable_multi_object_consistency_payload(second_event_id):
     changed = multi_object_consistency_payload()
     second = changed["target_objects"][1]
-    event_time = {"e0": "000", "e1": "001", "e3": "003"}[second_event_id]
+    event_time = {"e0": "000", "e1": "001", "e2": "002", "e3": "003"}[second_event_id]
     second_action = {
         "action_id": "a-second", "event_id": second_event_id, "operation": "ADD", "scope": "object",
         "target_object_keys": [second], "value": "z", "effective_at": event_time,
@@ -1269,9 +1269,15 @@ def replayable_multi_object_consistency_payload(second_event_id):
         changed["actions"].insert(1, second_action)
     elif second_event_id == "e1":
         changed["actions"].insert(2, second_action)
+    elif second_event_id == "e2":
+        changed["actions"].insert(2, second_action)
     else:
         changed["actions"].append(second_action)
-    next(event for event in changed["events"] if event["event_id"] == second_event_id)["gold_action_ids"].append("a-second")
+    event = next(event for event in changed["events"] if event["event_id"] == second_event_id)
+    if second_event_id == "e2":
+        event["gold_action_ids"].insert(0, "a-second")
+    else:
+        event["gold_action_ids"].append("a-second")
     second_entry = changed["version_history"][1]["entries"][0]
     second_entry.update(
         valid_from_event_id=second_event_id,
@@ -2128,6 +2134,101 @@ def _run_with_parsed_actions(parsed_actions, run_id):
         task_id="t", adapter_id="a", run_id=run_id, parsed_actions=tuple(parsed_actions),
         parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
         completion_status="completed",
+    )
+
+
+def _failure_flags_for_actions(task, parsed_actions, run_id):
+    from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
+
+    run = _run_with_parsed_actions(parsed_actions, run_id)
+    replay = replay_task_v3(task)
+    assert replay.issues == ()
+    return derive_failure_flags_v3(
+        task=task,
+        run=run,
+        replay=replay,
+        layer_values={"deletion_scores": {}, "historical_scores": {}, "synthesis_scores": {}},
+        predictions={},
+        traces={},
+        evidence={item.query_id: item for item in task.gold_evidence},
+    )
+
+
+def test_failure_flags_bind_both_correct_same_event_actions_independently():
+    task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e3"))
+
+    flags = _failure_flags_for_actions(
+        task,
+        (_parsed_action_for(action) for action in task.actions),
+        "failure-both-correct",
+    )
+
+    assert flags == ()
+
+
+def test_failure_flags_attribute_wrong_second_same_event_action_only_to_second():
+    task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e3"))
+    second = next(action for action in task.actions if action.action_id == "a-second")
+    parsed_actions = [
+        _parsed_action_for(action).model_copy(update={"value": "wrong"})
+        if action.action_id == second.action_id
+        else _parsed_action_for(action)
+        for action in task.actions
+    ]
+
+    flags = _failure_flags_for_actions(task, parsed_actions, "failure-second-wrong")
+
+    assert flags == ("wrong_value",)
+
+
+def test_failure_flags_attribute_one_missing_same_event_deletion_once():
+    task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e2"))
+    same_event = [action for action in task.actions if action.event_id == "e2"]
+    missing = same_event[1]
+    assert missing.operation.value == "DELETE"
+
+    flags = _failure_flags_for_actions(
+        task,
+        (_parsed_action_for(action) for action in task.actions if action.action_id != missing.action_id),
+        "failure-second-missing",
+    )
+
+    assert flags == ("missed_update", "deletion_failure")
+    assert flags.count("missed_update") == 1
+    assert flags.count("deletion_failure") == 1
+
+
+def test_failure_flags_reject_unknown_action_id_with_scorer_message():
+    from mub.vnext.scoring.scorer_v3 import _action_facts
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    observed = _parsed_action_for(task.actions[0], action_id="unknown-action")
+    run = _run_with_parsed_actions((observed,), "failure-unknown-id")
+
+    with pytest.raises(ValueError) as scorer_error:
+        _action_facts(task, run)
+    with pytest.raises(ValueError) as failure_error:
+        _failure_flags_for_actions(task, (observed,), "failure-unknown-id")
+
+    assert str(failure_error.value) == str(scorer_error.value)
+    assert str(failure_error.value) == "runtime contains unknown observed action_id values: ['unknown-action']"
+
+
+def test_failure_flags_reject_known_action_id_with_wrong_event_using_scorer_message():
+    from mub.vnext.scoring.scorer_v3 import _action_facts
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    observed = _parsed_action_for(task.actions[0], event_id=task.actions[1].event_id)
+    run = _run_with_parsed_actions((observed,), "failure-wrong-event")
+
+    with pytest.raises(ValueError) as scorer_error:
+        _action_facts(task, run)
+    with pytest.raises(ValueError) as failure_error:
+        _failure_flags_for_actions(task, (observed,), "failure-wrong-event")
+
+    assert str(failure_error.value) == str(scorer_error.value)
+    assert str(failure_error.value) == (
+        "observed action event_id mismatch for action_id 'a0': expected 'e0', got 'e1'"
     )
 
 

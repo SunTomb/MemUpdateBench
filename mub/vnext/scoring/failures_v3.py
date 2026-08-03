@@ -9,6 +9,7 @@ from mub.vnext.contracts.enums import CompletionStatus, Operation, TaskFamily
 from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.score import ScoreRecordV3, V3_FAILURE_FLAGS
+from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
 
 
@@ -88,9 +89,7 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     flags: set[str] = set()
     if run.exceptions or run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL}:
         flags.add("system_exception")
-    by_event = {item.event_id: item for item in run.parsed_actions}
-    for gold in task.actions:
-        observed = by_event.get(gold.event_id)
+    for gold, observed in bind_action_pairs_v3(task, run):
         if observed is None:
             if gold.operation != Operation.NOOP:
                 flags.add("missed_update")
