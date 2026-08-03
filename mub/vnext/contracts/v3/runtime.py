@@ -72,6 +72,7 @@ class ParserExtractorProvenanceV3(ImmutableContractModel):
 
 
 class ParsedManagerActionV3(ImmutableContractModel):
+    action_id: StrictIdentifier
     event_id: StrictIdentifier
     operation: Operation | None = None
     observed_scope: ActionScope | None = None
@@ -147,10 +148,12 @@ class TaskRunRecordV3(ImmutableContractModel):
     def _status_semantics(self) -> Self:
         if self.completion_status == CompletionStatus.COMPLETED and self.exceptions:
             raise ValueError("completed records cannot carry exceptions")
-        for values, label in ((self.parsed_actions, "action event IDs"), (self.answer_predictions, "prediction query IDs")):
-            ids = [item.event_id if hasattr(item, "event_id") else item.query_id for item in values]
-            if len(ids) != len(set(ids)):
-                raise ValueError(f"duplicate {label}")
+        action_ids = [action.action_id for action in self.parsed_actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise ValueError("duplicate action IDs")
+        prediction_ids = [prediction.query_id for prediction in self.answer_predictions]
+        if len(prediction_ids) != len(set(prediction_ids)):
+            raise ValueError("duplicate prediction query IDs")
         return self
 
 

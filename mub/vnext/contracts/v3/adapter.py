@@ -106,11 +106,13 @@ class AdapterActionResultV3(ImmutableContractModel):
     def to_parsed_manager_action(
         self,
         *,
+        action_id: StrictIdentifier,
         raw_output: str,
         format_valid: bool,
         fallback_used: bool,
     ) -> ParsedManagerActionV3:
         return ParsedManagerActionV3(
+            action_id=action_id,
             event_id=self.event_id,
             operation=self.requested_action.operation,
             observed_scope=self.requested_action.scope,

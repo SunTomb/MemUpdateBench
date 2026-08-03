@@ -4,7 +4,12 @@ from pydantic import ValidationError
 from mub.vnext.contracts.common import MemoryObjectKey, MetricFieldSupport
 from mub.vnext.contracts.enums import SupportReason
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3
-from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3
+from mub.vnext.contracts.v3.runtime import (
+    AnswerPredictionV3,
+    ParsedManagerActionV3,
+    ParserExtractorProvenanceV3,
+    TaskRunRecordV3,
+)
 from mub.vnext.contracts.v3.score import (
     CORE_METRIC_FIELD_PATHS,
     ScoreRecordV3,
@@ -18,11 +23,77 @@ def key() -> MemoryObjectKey:
     return MemoryObjectKey(object_type="slot", namespace="n", entity="e", attribute="a")
 
 
+def parsed_action(action_id: str, event_id: str) -> ParsedManagerActionV3:
+    return ParsedManagerActionV3(
+        action_id=action_id,
+        event_id=event_id,
+        operation="NOOP",
+        format_valid=True,
+        execution_status="executed",
+        fallback_used=False,
+        raw_output="NOOP",
+    )
+
+
+def provenance() -> ParserExtractorProvenanceV3:
+    return ParserExtractorProvenanceV3(
+        action_parser_version="1",
+        answer_parser_version="1",
+        memory_entry_extractor_version="1",
+        redaction_policy_version="1",
+    )
+
+
+def test_parsed_manager_action_v3_requires_action_id() -> None:
+    with pytest.raises(ValidationError, match="action_id"):
+        ParsedManagerActionV3(event_id="ev", format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
+
+
+def test_parsed_manager_action_v3_rejects_invalid_action_ids() -> None:
+    class HostileString(str):
+        pass
+
+    for bad, message in (
+        (" ", "identifiers must not be blank"),
+        (1, "identifiers must be exact built-in strings"),
+        (HostileString("action"), "identifiers must be exact built-in strings"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            ParsedManagerActionV3(action_id=bad, event_id="ev", format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
+
+
+def test_task_run_record_v3_accepts_distinct_action_ids_for_same_event() -> None:
+    actions = (parsed_action("action-1", "ev"), parsed_action("action-2", "ev"))
+    record = TaskRunRecordV3(
+        task_id="task",
+        adapter_id="adapter",
+        run_id="run",
+        parsed_actions=actions,
+        parser_extractor_provenance=provenance(),
+        completion_status="completed",
+    )
+    assert tuple(action.action_id for action in record.parsed_actions) == ("action-1", "action-2")
+
+
+@pytest.mark.parametrize("event_ids", [("ev", "ev"), ("ev-1", "ev-2")])
+def test_task_run_record_v3_rejects_duplicate_action_ids(event_ids: tuple[str, str]) -> None:
+    actions = (parsed_action("duplicate", event_ids[0]), parsed_action("duplicate", event_ids[1]))
+    with pytest.raises(ValidationError, match="duplicate action IDs"):
+        TaskRunRecordV3(
+            task_id="task",
+            adapter_id="adapter",
+            run_id="run",
+            parsed_actions=actions,
+            parser_extractor_provenance=provenance(),
+            completion_status="completed",
+        )
+
+
 def test_runtime_v3_validates_multi_target_scope_and_citations() -> None:
-    action = ParsedManagerActionV3(event_id="ev", operation="DELETE", observed_scope="entity", target_object_keys=(key(),), format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
+    action = ParsedManagerActionV3(action_id="action", event_id="ev", operation="DELETE", observed_scope="entity", target_object_keys=(key(),), format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
     assert action.target_object_keys == (key(),)
     with pytest.raises(ValidationError):
-        ParsedManagerActionV3(event_id="ev", operation="DELETE", observed_scope="entity", target_object_keys=(), format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
+        ParsedManagerActionV3(action_id="action", event_id="ev", operation="DELETE", observed_scope="entity", target_object_keys=(), format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
     with pytest.raises(ValidationError):
         AnswerPredictionV3(query_id="q", raw_output="x", parsed_answer="x", format_valid=True, cited_object_keys=(key(),), cited_derivation_step_ids=("",))
 

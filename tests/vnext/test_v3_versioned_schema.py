@@ -32,6 +32,14 @@ def test_v3_schema_export_is_deterministic_and_separate(tmp_path: Path) -> None:
     assert all(b'"$schema":"https://json-schema.org/draft/2020-12/schema"' in path.read_bytes() for path in first)
 
 
+def test_v3_task_run_schema_requires_action_id(tmp_path: Path) -> None:
+    exported = {path.name: path for path in export_schemas(tmp_path / "v3", version="3.0.0")}
+    schema = json.loads(exported["task_run_record.schema.json"].read_text(encoding="utf-8"))
+    parsed_action_schema = schema["$defs"]["ParsedManagerActionV3"]
+    assert "action_id" in parsed_action_schema["properties"]
+    assert "action_id" in parsed_action_schema["required"]
+
+
 def test_v3_manifest_record_hash_schema_rejects_blank_property_names(tmp_path: Path) -> None:
     exported = {path.name: path for path in export_schemas(tmp_path / "v3", version="3.0.0")}
     for filename, field in (("task_manifest.schema.json", "task_record_hashes"), ("run_manifest.schema.json", "run_record_hashes")):

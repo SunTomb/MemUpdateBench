@@ -72,11 +72,39 @@ def test_gold_actions_use_immutable_targets_and_shared_scope_rules() -> None:
 
 
 def test_runtime_executed_actions_require_coherent_operation_scope_and_payload() -> None:
-    common = dict(event_id="e0", format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
+    common = dict(action_id="action-0", event_id="e0", format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
     with pytest.raises(ValidationError):
         ParsedManagerActionV3(**common)
     with pytest.raises(ValidationError):
         ParsedManagerActionV3(**common, operation="DELETE", observed_scope="namespace", target_object_keys=(key(), key("other")), value="forbidden")
+
+
+def test_adapter_action_conversion_requires_explicit_action_id() -> None:
+    result = AdapterActionResultV3(
+        event_id="e0",
+        requested_action={"operation": "NOOP"},
+        effective_action={"operation": "NOOP"},
+        execution_status="executed",
+    )
+    with pytest.raises(TypeError):
+        result.to_parsed_manager_action(raw_output="NOOP", format_valid=True, fallback_used=False)
+
+
+def test_adapter_action_conversion_preserves_action_id() -> None:
+    result = AdapterActionResultV3(
+        event_id="e0",
+        requested_action={"operation": "NOOP"},
+        effective_action={"operation": "NOOP"},
+        execution_status="executed",
+    )
+    parsed = result.to_parsed_manager_action(
+        action_id="action-0",
+        raw_output="NOOP",
+        format_valid=True,
+        fallback_used=False,
+    )
+    assert parsed.action_id == "action-0"
+    assert "action_id" not in AdapterActionResultV3.model_fields
 
 
 def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
@@ -105,18 +133,18 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
     with pytest.raises(ValidationError):
         AdapterActionPayloadV3(operation="DELETE", scope="object", target_object_keys=(key(),), value="mixed")
 
-    parsed = result.to_parsed_manager_action(raw_output="noop", format_valid=True, fallback_used=False)
+    parsed = result.to_parsed_manager_action(action_id="action-no-effect", raw_output="noop", format_valid=True, fallback_used=False)
     assert parsed.execution_status.value == "no_effect" and parsed.operation.value == "UPDATE"
     assert parsed.value == "requested" and parsed.target_object_keys[0].canonical_id == key().canonical_id
     for status in ("rejected", "not_supported"):
         rejected = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status=status, reason="policy")
         assert rejected.effective_action.operation is None
-        converted = rejected.to_parsed_manager_action(raw_output=status, format_valid=True, fallback_used=False)
+        converted = rejected.to_parsed_manager_action(action_id=f"action-{status}", raw_output=status, format_valid=True, fallback_used=False)
         assert converted.execution_status.value == status
         assert converted.operation.value == "UPDATE" and converted.value == "requested"
     failed = AdapterActionResultV3(event_id="e0", requested_action=requested, execution_status="failed", error={"code": "boom"})
     assert failed.error == {"code": "boom"}
-    failed_parsed = failed.to_parsed_manager_action(raw_output="failed", format_valid=True, fallback_used=False)
+    failed_parsed = failed.to_parsed_manager_action(action_id="action-failed", raw_output="failed", format_valid=True, fallback_used=False)
     assert failed_parsed.execution_status.value == "failed" and failed_parsed.operation.value == "UPDATE"
     noop = AdapterActionResultV3(event_id="e0", requested_action={"operation": "NOOP"}, effective_action={"operation": "NOOP"}, execution_status="executed")
     assert noop.execution_status.value == "executed" and noop.affected_entry_ids == ()
@@ -142,6 +170,7 @@ def test_adapter_action_result_is_strict_frozen_and_coherent() -> None:
 def test_every_accepted_adapter_action_result_converts_to_runtime(payload, expected_operation) -> None:
     result = AdapterActionResultV3(event_id="e0", **payload)
     parsed = result.to_parsed_manager_action(
+        action_id="action-0",
         raw_output="raw",
         format_valid=result.execution_status.value in {"executed", "no_effect"},
         fallback_used=False,
@@ -191,7 +220,7 @@ def test_identifiers_reject_whitespace_and_string_subclasses() -> None:
         with pytest.raises(ValidationError):
             GoldActionV3(action_id=bad, event_id="e0", operation="NOOP")
         with pytest.raises(ValidationError):
-            ParsedManagerActionV3(event_id=bad, format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
+            ParsedManagerActionV3(action_id="action", event_id=bad, format_valid=False, execution_status="failed", fallback_used=False, raw_output="")
         with pytest.raises(ValidationError):
             AdapterActionResultV3(event_id=bad, execution_status="failed", error="failure")
         with pytest.raises(ValidationError):

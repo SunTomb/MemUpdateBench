@@ -505,6 +505,7 @@ def test_reference_shaped_completed_run_is_perfect_on_supported_principal_metric
     info = AdapterInfoV3(adapter_id="adapter", adapter_version="1", system_name="system", system_version="1", configuration_hash=H)
     parsed_actions = tuple(
         ParsedManagerActionV3(
+            action_id=action.action_id,
             event_id=action.event_id, operation=action.operation, observed_scope=action.scope,
             target_object_keys=action.target_object_keys, value=action.value, format_valid=True,
             execution_status="executed", fallback_used=False, raw_output="ok",
@@ -853,7 +854,7 @@ def test_ttl_scorer_uses_expiry_snapshot_not_scheduling_snapshot():
     task = MemUpdateTaskV3.model_validate(future_ttl_payload())
     replay = replay_task_v3(task)
     ttl = next(action for action in task.actions if action.scope is not None and action.scope.value == "ttl")
-    parsed = ParsedManagerActionV3(event_id=ttl.event_id, operation=ttl.operation, observed_scope=ttl.scope, target_object_keys=ttl.target_object_keys, format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
+    parsed = ParsedManagerActionV3(action_id=ttl.action_id, event_id=ttl.event_id, operation=ttl.operation, observed_scope=ttl.scope, target_object_keys=ttl.target_object_keys, format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok")
     key = task.target_objects[0]
     run = TaskRunRecordV3(
         task_id="t", adapter_id="a", run_id="r", parsed_actions=(parsed,),
@@ -1953,7 +1954,7 @@ def test_every_v3_metric_path_executes_its_dispatch_without_exception():
     task = MemUpdateTaskV3.model_validate(payload())
     replay = replay_task_v3(task)
     key = task.target_objects[0]
-    parsed_actions = tuple(ParsedManagerActionV3(event_id=action.event_id, operation=action.operation, observed_scope=action.scope, target_object_keys=action.target_object_keys, value=action.value, format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok") for action in task.actions)
+    parsed_actions = tuple(ParsedManagerActionV3(action_id=action.action_id, event_id=action.event_id, operation=action.operation, observed_scope=action.scope, target_object_keys=action.target_object_keys, value=action.value, format_valid=True, execution_status="executed", fallback_used=False, raw_output="ok") for action in task.actions)
     entry = MemoryEntryRecordV3(entry_id="current", content="v2", object_key_candidate=key, value_candidate="v2", version_index=3, source_event_ids=("e3",))
     trace = RetrievalTraceV3(query_id="q", retrieved_entries=(entry,), ranks=(1,), gold_in_context=True, stale_in_context=False, distractor_in_context=False)
     prediction = AnswerPredictionV3(query_id="q", raw_output="ok", parsed_answer=["v0", "v1", None, "v2"], format_valid=True)
@@ -1983,11 +1984,11 @@ def test_each_new_v3_failure_flag_has_a_targeted_corrupted_run():
     cases = []
 
     delete = next(action for action in base_task.actions if action.operation.value == "DELETE")
-    wrong_scope_action = ParsedManagerActionV3(event_id=delete.event_id, operation="DELETE", observed_scope="namespace", target_object_keys=delete.target_object_keys, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-scope")
+    wrong_scope_action = ParsedManagerActionV3(action_id=delete.action_id, event_id=delete.event_id, operation="DELETE", observed_scope="namespace", target_object_keys=delete.target_object_keys, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-scope")
     cases.append(("wrong_delete_scope", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="scope", parsed_actions=(wrong_scope_action,), parser_extractor_provenance=provenance, completion_status="completed"), empty, {}, {}, base_evidence, base_replay))
     add = base_task.actions[0]
     wrong_key = add.target_object_keys[0].model_copy(update={"namespace": "other"})
-    wrong_key_action = ParsedManagerActionV3(event_id=add.event_id, operation=add.operation, observed_scope=add.scope, target_object_keys=(wrong_key,), value=add.value, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-key")
+    wrong_key_action = ParsedManagerActionV3(action_id=add.action_id, event_id=add.event_id, operation=add.operation, observed_scope=add.scope, target_object_keys=(wrong_key,), value=add.value, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-key")
     cases.append(("wrong_object_key", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="object-key", parsed_actions=(wrong_key_action,), parser_extractor_provenance=provenance, completion_status="completed"), empty, {}, {}, base_evidence, base_replay))
     cases.append(("collateral_mutation", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="collateral", parser_extractor_provenance=provenance, completion_status="completed"), {"deletion_scores": {"collateral_damage_rate": 1.0}, "historical_scores": {}, "synthesis_scores": {}}, {}, {}, base_evidence, base_replay))
     cases.append(("ttl_violation", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="ttl", parser_extractor_provenance=provenance, completion_status="completed"), {"deletion_scores": {"ttl_compliance_rate": 0.0}, "historical_scores": {}, "synthesis_scores": {}}, {}, {}, base_evidence, base_replay))
@@ -2092,6 +2093,7 @@ def test_namespace_or_subkey_target_mismatch_has_object_key_failure_flag():
     gold = task.actions[0]
     wrong_key = gold.target_object_keys[0].model_copy(update={"namespace": "other", "subkey": "wrong"})
     observed = ParsedManagerActionV3(
+        action_id=gold.action_id,
         event_id=gold.event_id, operation=gold.operation, observed_scope=gold.scope,
         target_object_keys=(wrong_key,), value=gold.value, format_valid=True,
         execution_status="executed", fallback_used=False, raw_output="wrong-key",
@@ -2116,6 +2118,7 @@ def test_action_facts_reject_runtime_actions_for_unknown_events():
     task = MemUpdateTaskV3.model_validate(payload())
     gold = task.actions[0]
     extra = ParsedManagerActionV3(
+        action_id="unknown-action",
         event_id="unknown", operation=gold.operation, observed_scope=gold.scope,
         target_object_keys=gold.target_object_keys, value=gold.value, format_valid=True,
         execution_status="executed", fallback_used=False, raw_output="extra",
