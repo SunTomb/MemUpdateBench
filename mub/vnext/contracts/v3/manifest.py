@@ -35,7 +35,10 @@ class TaskManifestV3(TaskManifest):
     task_schema_version: Literal[SCHEMA_VERSION_V3] = SCHEMA_VERSION_V3
     data_release_id: StrictIdentifier
     task_record_hashes: FrozenStringMap = Field(
-        json_schema_extra={"additionalProperties": {"type": "string", "pattern": SHA256_PATTERN}}
+        json_schema_extra={
+            "additionalProperties": {"type": "string", "pattern": SHA256_PATTERN},
+            "propertyNames": {"pattern": r"\S"},
+        }
     )
 
     @field_validator("task_record_hashes")
@@ -64,7 +67,10 @@ class RunManifestV3(RunManifest):
     adapter_info: AdapterInfoV3
     adapter_capabilities: AdapterCapabilitiesV3
     run_record_hashes: FrozenStringMap = Field(
-        json_schema_extra={"additionalProperties": {"type": "string", "pattern": SHA256_PATTERN}}
+        json_schema_extra={
+            "additionalProperties": {"type": "string", "pattern": SHA256_PATTERN},
+            "propertyNames": {"pattern": r"\S"},
+        }
     )
 
     @field_validator("run_record_hashes")

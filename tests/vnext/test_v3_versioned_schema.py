@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -29,3 +30,10 @@ def test_v3_schema_export_is_deterministic_and_separate(tmp_path: Path) -> None:
     assert [path.name for path in first] == [path.name for path in second]
     assert [path.read_bytes() for path in first] == [path.read_bytes() for path in second]
     assert all(b'"$schema":"https://json-schema.org/draft/2020-12/schema"' in path.read_bytes() for path in first)
+
+
+def test_v3_manifest_record_hash_schema_rejects_blank_property_names(tmp_path: Path) -> None:
+    exported = {path.name: path for path in export_schemas(tmp_path / "v3", version="3.0.0")}
+    for filename, field in (("task_manifest.schema.json", "task_record_hashes"), ("run_manifest.schema.json", "run_record_hashes")):
+        schema = json.loads(exported[filename].read_text(encoding="utf-8"))
+        assert schema["properties"][field]["propertyNames"]["pattern"] == r"\S"
