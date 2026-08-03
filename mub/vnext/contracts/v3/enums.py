@@ -31,6 +31,7 @@ class ExecutionStatusV3(StringEnum):
 
 
 class FailureFlagV3(StringEnum):
+    WRONG_OBJECT_KEY = "wrong_object_key"
     WRONG_DELETE_SCOPE = "wrong_delete_scope"
     COLLATERAL_MUTATION = "collateral_mutation"
     TTL_VIOLATION = "ttl_violation"

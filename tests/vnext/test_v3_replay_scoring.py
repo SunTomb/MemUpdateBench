@@ -1008,6 +1008,10 @@ def test_each_new_v3_failure_flag_has_a_targeted_corrupted_run():
     delete = next(action for action in base_task.actions if action.operation.value == "DELETE")
     wrong_scope_action = ParsedManagerActionV3(event_id=delete.event_id, operation="DELETE", observed_scope="namespace", target_object_keys=delete.target_object_keys, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-scope")
     cases.append(("wrong_delete_scope", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="scope", parsed_actions=(wrong_scope_action,), parser_extractor_provenance=provenance, completion_status="completed"), empty, {}, {}, base_evidence, base_replay))
+    add = base_task.actions[0]
+    wrong_key = add.target_object_keys[0].model_copy(update={"namespace": "other"})
+    wrong_key_action = ParsedManagerActionV3(event_id=add.event_id, operation=add.operation, observed_scope=add.scope, target_object_keys=(wrong_key,), value=add.value, format_valid=True, execution_status="executed", fallback_used=False, raw_output="wrong-key")
+    cases.append(("wrong_object_key", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="object-key", parsed_actions=(wrong_key_action,), parser_extractor_provenance=provenance, completion_status="completed"), empty, {}, {}, base_evidence, base_replay))
     cases.append(("collateral_mutation", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="collateral", parser_extractor_provenance=provenance, completion_status="completed"), {"deletion_scores": {"collateral_damage_rate": 1.0}, "historical_scores": {}, "synthesis_scores": {}}, {}, {}, base_evidence, base_replay))
     cases.append(("ttl_violation", base_task, TaskRunRecordV3(task_id="t", adapter_id="a", run_id="ttl", parser_extractor_provenance=provenance, completion_status="completed"), {"deletion_scores": {"ttl_compliance_rate": 0.0}, "historical_scores": {}, "synthesis_scores": {}}, {}, {}, base_evidence, base_replay))
     forgotten_entry = MemoryEntryRecordV3(entry_id="forgotten", content="v1", object_key_candidate=base_task.target_objects[0], value_candidate="v1", version_index=1, source_event_ids=("e1",))
@@ -1055,3 +1059,122 @@ def test_failure_coverage_matrix_uses_exact_approved_denominator_and_keeps_zero_
     assert tuple(report.by_family) == ("E", "F", "G")
     assert report.by_family["E"].denominator == 0
     assert report.by_family["G"].denominator == 0
+
+
+def test_snapshot_anchors_reject_duplicates_unknowns_and_mixed_unanchored_rows():
+    from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
+    from mub.vnext.scoring.scorer_v3 import _final_snapshot
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    key = task.target_objects[0]
+    provenance = ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1")
+    correct = MemorySnapshotV3(after_event_id="e3", state_by_object={key.canonical_id: "v2"}, store_size=1)
+    contradictory = MemorySnapshotV3(after_event_id="e3", state_by_object={}, store_size=0)
+    duplicate = TaskRunRecordV3(task_id="t", adapter_id="a", run_id="duplicate", memory_snapshots=(correct, contradictory), parser_extractor_provenance=provenance, completion_status="completed")
+    with pytest.raises(ValueError, match="duplicate.*snapshot anchor"):
+        _final_snapshot(duplicate, task)
+
+    unknown = TaskRunRecordV3(task_id="t", adapter_id="a", run_id="unknown", memory_snapshots=(MemorySnapshotV3(after_event_id="not-a-task-event", state_by_object={key.canonical_id: "v2"}, store_size=1),), parser_extractor_provenance=provenance, completion_status="completed")
+    with pytest.raises(ValueError, match="unknown.*snapshot anchor"):
+        _final_snapshot(unknown, task)
+
+    unanchored = MemorySnapshotV3(state_by_object={key.canonical_id: "v2"}, store_size=1)
+    single = TaskRunRecordV3(task_id="t", adapter_id="a", run_id="single", memory_snapshots=(unanchored,), parser_extractor_provenance=provenance, completion_status="completed")
+    assert _final_snapshot(single, task) == unanchored
+    mixed = single.model_copy(update={"memory_snapshots": (correct, unanchored)})
+    with pytest.raises(ValueError, match="unanchored.*only snapshot"):
+        _final_snapshot(mixed, task)
+
+
+def test_final_state_corruption_has_canonical_failure_attribution():
+    from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
+    from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    replay = replay_task_v3(task)
+    run = TaskRunRecordV3(
+        task_id="t", adapter_id="a", run_id="state-corrupt",
+        memory_snapshots=(MemorySnapshotV3(after_event_id="e3", state_by_object={"n|extra|a|": "bad"}, store_size=1),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
+        completion_status="completed",
+    )
+    flags = derive_failure_flags_v3(
+        task=task, run=run, replay=replay,
+        layer_values={"deletion_scores": {}, "historical_scores": {}, "synthesis_scores": {}},
+        predictions={}, traces={}, evidence={item.query_id: item for item in task.gold_evidence},
+    )
+    assert "current_state_missing" in flags
+    assert "collateral_corruption" in flags
+
+
+def test_namespace_or_subkey_target_mismatch_has_object_key_failure_flag():
+    from mub.vnext.contracts.v3.runtime import ParsedManagerActionV3
+    from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    gold = task.actions[0]
+    wrong_key = gold.target_object_keys[0].model_copy(update={"namespace": "other", "subkey": "wrong"})
+    observed = ParsedManagerActionV3(
+        event_id=gold.event_id, operation=gold.operation, observed_scope=gold.scope,
+        target_object_keys=(wrong_key,), value=gold.value, format_valid=True,
+        execution_status="executed", fallback_used=False, raw_output="wrong-key",
+    )
+    run = TaskRunRecordV3(
+        task_id="t", adapter_id="a", run_id="wrong-key", parsed_actions=(observed,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
+        completion_status="completed",
+    )
+    flags = derive_failure_flags_v3(
+        task=task, run=run, replay=replay_task_v3(task),
+        layer_values={"deletion_scores": {}, "historical_scores": {}, "synthesis_scores": {}},
+        predictions={}, traces={}, evidence={item.query_id: item for item in task.gold_evidence},
+    )
+    assert "wrong_object_key" in flags
+
+
+def test_action_facts_reject_runtime_actions_for_unknown_events():
+    from mub.vnext.contracts.v3.runtime import ParsedManagerActionV3
+    from mub.vnext.scoring.scorer_v3 import _action_facts
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    gold = task.actions[0]
+    extra = ParsedManagerActionV3(
+        event_id="unknown", operation=gold.operation, observed_scope=gold.scope,
+        target_object_keys=gold.target_object_keys, value=gold.value, format_valid=True,
+        execution_status="executed", fallback_used=False, raw_output="extra",
+    )
+    run = TaskRunRecordV3(
+        task_id="t", adapter_id="a", run_id="extra-action", parsed_actions=(extra,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
+        completion_status="completed",
+    )
+    with pytest.raises(ValueError, match="unknown action event"):
+        _action_facts(task, run)
+
+
+def test_answer_state_consistency_denominator_uses_only_applicable_queries():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import _metric_value
+
+    changed = payload()
+    key = changed["target_objects"][0]
+    changed["queries"].append({"query_id": "current", "query_type": "current", "text": "current?", "selector": {"kind": "current"}, "target_object_keys": [key], "answer_schema": "string", "evaluation_mode": "state_direct"})
+    changed["gold_evidence"].append({"query_id": "current", "answer": "v2", "supporting_object_keys": [key], "supporting_event_ids": ["e3"], "derivation_steps": [{"step_id": "current-read", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e3"]}], "final_derivation_step_id": "current-read"})
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    predictions = {
+        "q": AnswerPredictionV3(query_id="q", raw_output="wrong", parsed_answer=["wrong"], format_valid=True),
+        "current": AnswerPredictionV3(query_id="current", raw_output="v2", parsed_answer="v2", format_valid=True),
+    }
+    resolutions = {query.query_id: resolve_query_v3(query, replay, task.events) for query in task.queries}
+    run = TaskRunRecordV3(
+        task_id="t", adapter_id="a", run_id="mixed", answer_predictions=tuple(predictions.values()),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
+        completion_status="completed",
+    )
+    value, detail = _metric_value(
+        "answer_scores.answer_state_consistency", task, run, None, replay, resolutions,
+        {item.query_id: item for item in task.gold_evidence}, predictions, {}, [],
+    )
+    assert detail is None
+    assert value == 1.0

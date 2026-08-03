@@ -74,7 +74,7 @@ CORE_METRIC_FIELD_PATHS = frozenset(
 V3_FAILURE_FLAGS = FAILURE_FLAGS + tuple(flag.value for flag in FailureFlagV3)
 V3_PRIMARY_FAILURE_PRECEDENCE_LAYERS = (
     PRIMARY_FAILURE_PRECEDENCE[0],
-    PRIMARY_FAILURE_PRECEDENCE[1] + ("wrong_delete_scope",),
+    PRIMARY_FAILURE_PRECEDENCE[1] + ("wrong_object_key", "wrong_delete_scope"),
     PRIMARY_FAILURE_PRECEDENCE[2] + ("collateral_mutation", "ttl_violation", "forgotten_value_exposed"),
     PRIMARY_FAILURE_PRECEDENCE[3] + ("version_confusion", "evidence_linkage_error"),
     PRIMARY_FAILURE_PRECEDENCE[4],

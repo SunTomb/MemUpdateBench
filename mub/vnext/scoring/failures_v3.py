@@ -85,6 +85,7 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
         gold_ids = [key.canonical_id for key in gold.target_object_keys]
         observed_ids = [key.canonical_id for key in observed.target_object_keys]
         if observed_ids != gold_ids:
+            flags.add("wrong_object_key")
             if tuple(key.entity for key in observed.target_object_keys) != tuple(key.entity for key in gold.target_object_keys): flags.add("wrong_entity")
             if tuple(key.attribute for key in observed.target_object_keys) != tuple(key.attribute for key in gold.target_object_keys): flags.add("wrong_attribute")
             if gold.operation == Operation.DELETE: flags.add("wrong_delete_scope")
@@ -101,9 +102,33 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     if deletion.get("relearn_accuracy") not in {None, 1.0}: flags.add("current_state_missing")
     forgotten = _forgotten_values(replay)
     obsolete = replay.obsolete_present_values
-    event_positions = {event.event_id: event.sequence_index for event in task.events}
-    snapshots = [snapshot for snapshot in run.memory_snapshots if snapshot.after_event_id in event_positions]
-    final_snapshot = max(snapshots, key=lambda snapshot: event_positions[snapshot.after_event_id]) if snapshots else (run.memory_snapshots[-1] if run.memory_snapshots else None)
+    from mub.vnext.scoring.scorer_v3 import _final_snapshot
+    final_snapshot = _final_snapshot(run, task)
+    if final_snapshot is not None:
+        observed_state = dict(final_snapshot.state_by_object)
+        expected_state = {
+            object_id: version.value
+            for object_id, version in replay.current_state.items()
+        }
+        if any(
+            object_id not in observed_state
+            or not _same(observed_state[object_id], expected_value)
+            for object_id, expected_value in expected_state.items()
+        ):
+            flags.add("current_state_missing")
+        expected_absent = {key.canonical_id for key in replay.expected_absent}
+        if expected_absent & set(observed_state):
+            flags.add("deletion_failure")
+        protected = {key.canonical_id for key in replay.protected_collateral}
+        if (
+            set(observed_state) - set(expected_state) - expected_absent
+            or any(
+                object_id not in observed_state
+                or not _same(observed_state[object_id], expected_state[object_id])
+                for object_id in protected & set(expected_state)
+            )
+        ):
+            flags.add("collateral_corruption")
     if final_snapshot and any(_entry_version_status(entry, replay)[0] is True for entry in final_snapshot.entries): flags.add("stale_retained")
     if any(trace.stale_in_context is True or any(_entry_version_status(entry, replay)[0] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("stale_retrieved")
     if any(any(_entry_version_status(entry, replay)[1] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")

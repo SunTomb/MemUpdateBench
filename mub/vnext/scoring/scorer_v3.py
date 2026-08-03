@@ -232,9 +232,18 @@ def _final_snapshot(run, task=None):
         return None
     if task is None:
         return run.memory_snapshots[-1]
+    if len(run.memory_snapshots) == 1 and run.memory_snapshots[0].after_event_id is None:
+        return run.memory_snapshots[0]
+    if any(snapshot.after_event_id is None for snapshot in run.memory_snapshots):
+        raise ValueError("an unanchored final snapshot must be the only snapshot")
     positions = {event.event_id: event.sequence_index for event in task.events}
-    anchored = [snapshot for snapshot in run.memory_snapshots if snapshot.after_event_id in positions]
-    return max(anchored, key=lambda snapshot: positions[snapshot.after_event_id]) if anchored else run.memory_snapshots[-1]
+    anchors = [snapshot.after_event_id for snapshot in run.memory_snapshots]
+    if len(anchors) != len(set(anchors)):
+        raise ValueError("duplicate memory snapshot anchor")
+    unknown = set(anchors) - set(positions)
+    if unknown:
+        raise ValueError(f"unknown memory snapshot anchor: {sorted(unknown)}")
+    return max(run.memory_snapshots, key=lambda snapshot: positions[snapshot.after_event_id])
 
 
 def _snapshot_state(run, task=None):
@@ -281,6 +290,9 @@ def _validate_bindings(task, run, context):
 def _action_facts(task, run):
     by_event = {action.event_id: action for action in run.parsed_actions}
     gold = list(task.actions)
+    unknown_events = set(by_event) - {action.event_id for action in gold}
+    if unknown_events:
+        raise ValueError(f"runtime contains unknown action event IDs: {sorted(unknown_events)}")
     rows = [(action, by_event.get(action.event_id)) for action in gold]
     def exact_target(left, right):
         return tuple(_identity(key) for key in left) == tuple(_identity(key) for key in right)
@@ -495,7 +507,20 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "normalized_match": return _mean([float(item.format_valid and _normalized(item.parsed_answer) == _normalized(evidence[item.query_id].answer)) for item in predictions.values()]), None
         if leaf == "token_f1": return _mean([_token_f1(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
         if leaf == "structured_field_accuracy": return _mean([_structured_accuracy(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
-        if leaf == "answer_state_consistency": return _mean([float(item.format_valid and _same(item.parsed_answer, resolutions[item.query_id].answer)) for item in predictions.values()]), None
+        if leaf == "answer_state_consistency":
+            applicable = [
+                predictions[query.query_id]
+                for query in task.queries
+                if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}
+                and query.query_id in predictions
+            ]
+            return (
+                _mean([
+                    float(item.format_valid and _same(item.parsed_answer, resolutions[item.query_id].answer))
+                    for item in applicable
+                ]),
+                None,
+            ) if applicable else (None, "no applicable current-state prediction rows")
         obsolete = replay.obsolete_present_values
         if leaf == "stale_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
         if leaf == "distractor_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
