@@ -840,18 +840,16 @@ def _derivation_read_support(
     evidence,
     allowed_objects: set[tuple[str, str, str, str | None]],
 ) -> tuple[int, set[tuple[str, str, str, str | None]]]:
-    read_steps = tuple(
-        step
-        for step in evidence.derivation_steps
-        if step.operation in _DERIVATION_READ_OPERATIONS
-        and any(_identity(key) in allowed_objects for key in step.supporting_object_keys)
-    )
-    return len(read_steps), {
-        _identity(key)
-        for step in read_steps
-        for key in step.supporting_object_keys
-        if _identity(key) in allowed_objects
-    }
+    read_units = set()
+    for step in evidence.derivation_steps:
+        if step.operation not in _DERIVATION_READ_OPERATIONS:
+            continue
+        identities = {_identity(key) for key in step.supporting_object_keys}
+        if len(identities) == 1:
+            identity = next(iter(identities))
+            if identity in allowed_objects:
+                read_units.add(identity)
+    return len(read_units), read_units
 
 
 def _semantic_value(value):
