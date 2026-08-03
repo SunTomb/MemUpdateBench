@@ -594,8 +594,17 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("stale alternative does not satisfy minimum_hops")
             if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
                 minimum_objects = query.synthesis.minimum_objects
-                read_count, read_objects = _derivation_read_support(evidence, targets)
-                influential_objects = _derivation_influential_objects(evidence) & targets
+                read_count, read_objects = _derivation_read_support(
+                    evidence,
+                    targets,
+                    histories,
+                    lambda ledger: ledger.entries,
+                )
+                influential_objects = _derivation_influential_objects(
+                    evidence,
+                    histories,
+                    lambda ledger: ledger.entries,
+                ) & targets
                 if (
                     len(targets) < minimum_objects
                     or read_count < minimum_objects
@@ -612,8 +621,17 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     require_exact_event_coverage=True,
                 )
                 if alternative is not None:
-                    stale_read_count, stale_read_objects = _derivation_read_support(alternative, targets)
-                    stale_influential_objects = _derivation_influential_objects(alternative) & targets
+                    stale_read_count, stale_read_objects = _derivation_read_support(
+                        alternative,
+                        targets,
+                        histories,
+                        lambda ledger: ledger.entries,
+                    )
+                    stale_influential_objects = _derivation_influential_objects(
+                        alternative,
+                        histories,
+                        lambda ledger: ledger.entries,
+                    ) & targets
                     if (
                         stale_read_count < minimum_objects
                         or len(stale_read_objects) < minimum_objects
@@ -648,12 +666,13 @@ def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
     return key.namespace, key.entity, key.attribute, key.subkey
 
 
-def _resolve_derivation_read_support(step, ledgers, version_rows):
+def _resolved_derivation_read_components(step, ledgers, version_rows):
     supporting_events = set(step.supporting_event_ids)
     if step.supporting_object_keys:
         resolved = []
         for key in step.supporting_object_keys:
-            ledger = ledgers.get(_identity(key))
+            identity = _identity(key)
+            ledger = ledgers.get(identity)
             if ledger is None:
                 raise ValueError("derivation support object is missing")
             candidates = tuple(
@@ -663,27 +682,36 @@ def _resolve_derivation_read_support(step, ledgers, version_rows):
             )
             if len(candidates) != 1:
                 raise ValueError("derivation read support is missing or ambiguous")
-            resolved.append(candidates[0])
-        versions = tuple(resolved)
+            resolved.append((identity, candidates[0]))
+        components = tuple(resolved)
     else:
         candidates = tuple(
-            version
-            for ledger in ledgers.values()
+            (identity, version)
+            for identity, ledger in ledgers.items()
             for version in version_rows(ledger)
             if set(version.source_event_ids) & supporting_events
         )
         if len(candidates) != 1:
             raise ValueError("derivation event support is missing or ambiguous")
-        versions = candidates
+        components = candidates
     authenticated_events = {
         event_id
-        for version in versions
+        for _, version in components
         for event_id in version.source_event_ids
         if event_id in supporting_events
     }
     if authenticated_events != supporting_events:
         raise ValueError("derivation read lists event support unrelated to its resolved versions")
-    return versions, authenticated_events
+    return components, authenticated_events
+
+
+def _resolve_derivation_read_support(step, ledgers, version_rows):
+    components, authenticated_events = _resolved_derivation_read_components(
+        step,
+        ledgers,
+        version_rows,
+    )
+    return tuple(version for _, version in components), authenticated_events
 
 
 def _resolve_derivation_read_versions(step, ledgers, version_rows):
@@ -715,21 +743,11 @@ def _validate_multi_hop_read_eligibility(
     for step in evidence.derivation_steps:
         if not _derivation_step_reads_support(step):
             continue
-        versions, authenticated_events = _resolve_derivation_read_support(step, ledgers, version_rows)
-        if step.supporting_object_keys:
-            components = zip((_identity(key) for key in step.supporting_object_keys), versions)
-        else:
-            components = (
-                (
-                    next(
-                        identity
-                        for identity, ledger in ledgers.items()
-                        if any(candidate is version for candidate in version_rows(ledger))
-                    ),
-                    version,
-                )
-                for version in versions
-            )
+        components, authenticated_events = _resolved_derivation_read_components(
+            step,
+            ledgers,
+            version_rows,
+        )
         for identity, version in components:
             if identity in targets:
                 resolved_versions.add((identity, version.version_index))
@@ -743,7 +761,11 @@ def _validate_multi_hop_read_eligibility(
         raise ValueError("multi-hop read provenance does not consume authenticated evidence support")
     if stale_alternative:
         resolved_targets = {identity for identity, _ in resolved_versions}
-        influential_targets = _derivation_influential_objects(evidence) & targets
+        influential_targets = _derivation_influential_objects(
+            evidence,
+            ledgers,
+            version_rows,
+        ) & targets
         if not targets <= resolved_targets or not targets <= influential_targets:
             raise ValueError("stale alternative read provenance lacks target coverage or influence")
         if not resolved_versions - selected_versions:
@@ -766,17 +788,16 @@ def _validate_consistency_read_eligibility(
     for step in evidence.derivation_steps:
         if not _derivation_step_reads_support(step):
             continue
-        if len(step.supporting_object_keys) != 1:
-            raise ValueError("multi-key consistency reads cannot represent eligible per-target provenance")
-        identity = _identity(step.supporting_object_keys[0])
-        if identity not in targets:
-            continue
-        versions, authenticated_events = _resolve_derivation_read_support(
+        components, authenticated_events = _resolved_derivation_read_components(
             step,
             ledgers,
             version_rows,
         )
-        version = versions[0]
+        if len(components) != 1:
+            raise ValueError("multi-key consistency reads cannot represent eligible per-target provenance")
+        identity, version = components[0]
+        if identity not in targets:
+            continue
         if selected_by_target is not None and all(
             version.version_index != selected.version_index
             for selected in selected_by_target[identity]
@@ -1032,11 +1053,20 @@ def _derivation_depth(evidence: QueryGoldEvidenceV3) -> int:
     return depths[evidence.final_derivation_step_id]
 
 
-def _derivation_influential_objects(evidence) -> set[tuple[str, str, str, str | None]]:
+def _derivation_influential_objects(
+    evidence,
+    ledgers,
+    version_rows,
+) -> set[tuple[str, str, str, str | None]]:
     influences = {}
     for step in evidence.derivation_steps:
         if _derivation_step_reads_support(step):
-            influences[step.step_id] = {_identity(key) for key in step.supporting_object_keys}
+            components, _ = _resolved_derivation_read_components(
+                step,
+                ledgers,
+                version_rows,
+            )
+            influences[step.step_id] = {identity for identity, _ in components}
         else:
             consumed = _derivation_consumed_input_indices(step)
             indices = range(len(step.input_step_ids)) if consumed is None else consumed
@@ -1051,14 +1081,20 @@ def _derivation_influential_objects(evidence) -> set[tuple[str, str, str, str | 
 def _derivation_read_support(
     evidence,
     allowed_objects: set[tuple[str, str, str, str | None]],
+    ledgers,
+    version_rows,
 ) -> tuple[int, set[tuple[str, str, str, str | None]]]:
     read_units = set()
     for step in evidence.derivation_steps:
         if not _derivation_step_reads_support(step):
             continue
-        identities = {_identity(key) for key in step.supporting_object_keys}
-        if len(identities) == 1:
-            identity = next(iter(identities))
+        components, _ = _resolved_derivation_read_components(
+            step,
+            ledgers,
+            version_rows,
+        )
+        if len(components) == 1:
+            identity, _ = components[0]
             if identity in allowed_objects:
                 read_units.add(identity)
     return len(read_units), read_units

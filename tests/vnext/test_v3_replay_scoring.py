@@ -1256,6 +1256,95 @@ def replayable_multi_object_consistency_payload(second_event_id):
     return changed
 
 
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_event_only_multi_hop_reads_receive_resolved_target_influence(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    changed = g_stale_payload()
+    item = changed["gold_evidence"][0] if location == "primary" else changed["gold_evidence"][0]["stale_alternative"]
+    item["derivation_steps"][0]["supporting_object_keys"] = []
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    evaluation = evaluate_evidence_v3(
+        task.gold_evidence[0], replay, task.gold_evidence[0].stale_alternative,
+        task.queries[0], task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_event_only_consistency_reads_receive_resolved_target_influence(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    changed = multi_object_consistency_payload()
+    first, second = changed["target_objects"]
+    changed["events"].append({
+        "event_id": "e4", "sequence_index": 4, "raw_text": "second", "normalized_text": "second",
+        "role": "neutral", "gold_action_ids": ["a-second"],
+    })
+    changed["actions"].append({
+        "action_id": "a-second", "event_id": "e4", "operation": "ADD", "scope": "object",
+        "target_object_keys": [second], "value": "z", "effective_at": "004",
+    })
+    changed["version_history"][1]["entries"][0].update(
+        valid_from_event_id="e4", logical_time="004", source_event_ids=["e4"],
+    )
+    evidence = changed["gold_evidence"][0]
+    evidence.update(
+        supporting_event_ids=["e3", "e4"],
+        derivation_steps=[
+            {"step_id": "first", "operation": "read", "supporting_event_ids": ["e3"]},
+            {"step_id": "second", "operation": "read", "supporting_event_ids": ["e4"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "second"]},
+        ],
+    )
+    if location == "stale":
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e1", "e4"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_event_ids": ["e1"]},
+                {"step_id": "second", "operation": "read", "supporting_event_ids": ["e4"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    evaluation = evaluate_evidence_v3(
+        task.gold_evidence[0], replay, task.gold_evidence[0].stale_alternative,
+        task.queries[0], task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+    assert evaluation.answer is False
+    if location == "stale":
+        assert evaluation.stale_alternative_answer is False
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_event_only_reads_fail_closed_when_event_resolves_multiple_targets(location):
+    changed = replayable_multi_object_consistency_payload("e3")
+    evidence = changed["gold_evidence"][0]
+    ambiguous = {
+        "answer": True, "supporting_object_keys": evidence["supporting_object_keys"],
+        "supporting_event_ids": ["e3"],
+        "derivation_steps": [
+            {"step_id": "ambiguous-a", "operation": "read", "supporting_event_ids": ["e3"]},
+            {"step_id": "ambiguous-b", "operation": "read", "supporting_event_ids": ["e3"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["ambiguous-a", "ambiguous-b"]},
+        ],
+        "final_derivation_step_id": "equals",
+    }
+    if location == "primary":
+        evidence.update(ambiguous)
+    else:
+        evidence["stale_alternative"] = ambiguous
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
 def replayable_multi_target_hop_payload():
     changed = replayable_multi_object_consistency_payload("e0")
     first, second = changed["target_objects"]
