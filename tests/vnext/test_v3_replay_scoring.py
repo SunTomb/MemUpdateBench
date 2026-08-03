@@ -1324,6 +1324,54 @@ def test_consistency_rejects_answer_bearing_multi_key_read_bypass(location):
 
 
 @pytest.mark.parametrize("location", ["primary", "stale"])
+def test_consistency_requires_operation_aware_target_influence(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    common_event = "e3" if location == "primary" else "e1"
+    valid = replayable_multi_object_consistency_payload(common_event)
+    evidence = valid["gold_evidence"][0]
+    first, second = evidence["supporting_object_keys"]
+    if location == "stale":
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e1"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e1"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+    assert evaluation.answer is False
+    if location == "stale":
+        assert evaluation.stale_alternative_answer is False
+
+    bypass = deepcopy(valid)
+    bypass_evidence = bypass["gold_evidence"][0]
+    item = bypass_evidence if location == "primary" else bypass_evidence["stale_alternative"]
+    item.update(
+        answer=True,
+        derivation_steps=[
+            {"step_id": "first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+            {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": [common_event]},
+            {"step_id": "select-first", "operation": "seed0", "input_step_ids": ["first", "second"], "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "select-first"]},
+        ],
+        final_derivation_step_id="equals",
+    )
+    with pytest.raises(ValueError, match="seed|influence|minimum_objects"):
+        MemUpdateTaskV3.model_validate(bypass)
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
 @pytest.mark.parametrize(
     ("operation", "binding"),
     (("seed0", "missing"), ("collect", "ambiguous"), ("consistency", "missing"), ("ordered_history", "ambiguous")),

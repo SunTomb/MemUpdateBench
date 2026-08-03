@@ -30,7 +30,7 @@ def _derivation_step_reads_support(step) -> bool:
     if step.operation in _DERIVATION_READ_OPERATIONS:
         return True
     if step.operation in _DERIVATION_SEED_OPERATIONS:
-        return len(step.input_step_ids) != 1
+        return not step.input_step_ids
     return step.operation in _DERIVATION_COLLECTION_OPERATIONS and not step.input_step_ids
 
 
@@ -320,6 +320,8 @@ def _validate_derivation_graph(evidence):
     for step in evidence.derivation_steps:
         if step.operation == "equals" and len(step.input_step_ids) < 2:
             raise ValueError("equals requires at least two operands")
+        if step.operation in _DERIVATION_SEED_OPERATIONS and len(step.input_step_ids) > 1:
+            raise ValueError("seed operations require zero or one operand")
         if set(step.input_step_ids) - steps.keys():
             raise ValueError("derivation references unknown input step")
     visiting: set[str] = set()
@@ -568,8 +570,15 @@ class MemUpdateTaskV3(ImmutableContractModel):
             if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
                 minimum_objects = query.synthesis.minimum_objects
                 read_count, read_objects = _derivation_read_support(evidence, targets)
-                if len(targets) < minimum_objects or read_count < minimum_objects or len(read_objects) < minimum_objects:
-                    raise ValueError("G derivation does not satisfy minimum_objects")
+                influential_objects = _derivation_influential_objects(evidence) & targets
+                if (
+                    len(targets) < minimum_objects
+                    or read_count < minimum_objects
+                    or len(read_objects) < minimum_objects
+                    or len(influential_objects) < minimum_objects
+                    or not targets <= influential_objects
+                ):
+                    raise ValueError("G derivation does not satisfy minimum_objects or target influence")
                 _validate_consistency_read_eligibility(
                     evidence,
                     targets,
@@ -578,8 +587,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 )
                 if alternative is not None:
                     stale_read_count, stale_read_objects = _derivation_read_support(alternative, targets)
-                    if stale_read_count < minimum_objects or len(stale_read_objects) < minimum_objects:
-                        raise ValueError("stale alternative does not satisfy minimum_objects")
+                    stale_influential_objects = _derivation_influential_objects(alternative) & targets
+                    if (
+                        stale_read_count < minimum_objects
+                        or len(stale_read_objects) < minimum_objects
+                        or len(stale_influential_objects) < minimum_objects
+                        or not targets <= stale_influential_objects
+                    ):
+                        raise ValueError("stale alternative does not satisfy minimum_objects or target influence")
                     _validate_consistency_read_eligibility(
                         alternative,
                         targets,
@@ -970,6 +985,20 @@ def _derivation_depth(evidence: QueryGoldEvidenceV3) -> int:
     for step in evidence.derivation_steps:
         depths[step.step_id] = 1 + max((depths[parent] for parent in step.input_step_ids), default=0)
     return depths[evidence.final_derivation_step_id]
+
+
+def _derivation_influential_objects(evidence) -> set[tuple[str, str, str, str | None]]:
+    influences = {}
+    for step in evidence.derivation_steps:
+        if _derivation_step_reads_support(step):
+            influences[step.step_id] = {_identity(key) for key in step.supporting_object_keys}
+        else:
+            influences[step.step_id] = {
+                identity
+                for parent in step.input_step_ids
+                for identity in influences[parent]
+            }
+    return influences[evidence.final_derivation_step_id]
 
 
 def _derivation_read_support(

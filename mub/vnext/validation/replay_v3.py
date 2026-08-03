@@ -421,7 +421,9 @@ def evaluate_evidence_v3(
                     raise ValueError(f"{operation} requires one operand")
                 value = operands[0]
             elif operation in {"seed0", "seed1"}:
-                value = operands[0] if len(operands) == 1 else _read_step_value(step, replay)
+                if len(operands) != 1:
+                    raise ValueError(f"{operation} requires zero support inputs or one operand")
+                value = operands[0]
             elif operation in {"list", "ordered_history", "collect", "combine", "merge"}:
                 value = operands if operands else _read_step_value(step, replay)
             elif operation in {"object", "multi_object", "consistency"}:
