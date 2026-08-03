@@ -1178,3 +1178,33 @@ def test_answer_state_consistency_denominator_uses_only_applicable_queries():
     )
     assert detail is None
     assert value == 1.0
+
+
+def test_future_ttl_is_excluded_from_pre_horizon_stale_and_forgotten_status():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+    from mub.vnext.scoring.scorer_v3 import _entry_forgotten_status, _entry_obsolete_status
+
+    task = MemUpdateTaskV3.model_validate(ttl_horizon_payload("005", "v1"))
+    replay = replay_task_v3(task)
+    current = MemoryEntryRecordV3(
+        entry_id="current-before-expiry", content="v1",
+        object_key_candidate=task.target_objects[0], value_candidate="v1",
+        version_index=1, source_event_ids=("e1",),
+    )
+    assert replay.obsolete_present_values == ("v0",)
+    assert _entry_obsolete_status(current, replay) is False
+    assert _entry_forgotten_status(current, replay) is False
+
+
+def test_mixed_version_provenance_uses_unique_value_consistent_version():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+    from mub.vnext.scoring.scorer_v3 import _entry_obsolete_status
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    replay = replay_task_v3(task)
+    mixed = MemoryEntryRecordV3(
+        entry_id="mixed-provenance", content="v0",
+        object_key_candidate=task.target_objects[0], value_candidate="v0",
+        source_event_ids=("e0", "e3"),
+    )
+    assert _entry_obsolete_status(mixed, replay) is True

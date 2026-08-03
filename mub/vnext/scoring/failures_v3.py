@@ -39,8 +39,9 @@ def _contains_value(output, candidate):
 def _forgotten_values(replay):
     values = []
     for ledger in replay.ledgers:
-        for index, version in enumerate(ledger.versions):
-            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in ledger.versions[index + 1:]):
+        versions = replay.active_versions(ledger)
+        for index, version in enumerate(versions):
+            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in versions[index + 1:]):
                 values.append(version.value)
     return values
 
@@ -50,17 +51,36 @@ def _entry_version_status(entry, replay):
         return False, False
     identity = (entry.object_key_candidate.namespace, entry.object_key_candidate.entity, entry.object_key_candidate.attribute, entry.object_key_candidate.subkey)
     ledger = replay.ledger_by_identity.get(identity)
-    if ledger is None or not ledger.versions:
+    if ledger is None:
         return False, False
+    versions = replay.active_versions(ledger)
+    if not versions:
+        return False, False
+
+    def value_matches(version):
+        if version.status == LedgerEntryStatus.TOMBSTONE:
+            return entry.value_candidate is None
+        return entry.value_candidate is not None and _same(entry.value_candidate, version.value)
+
     matched = None
-    if entry.version_index is not None and entry.version_index < len(ledger.versions):
-        matched = ledger.versions[entry.version_index]
+    if entry.version_index is not None and entry.version_index < len(versions):
+        candidate = versions[entry.version_index]
+        if value_matches(candidate):
+            matched = candidate
     elif entry.source_event_ids:
-        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
+        consistent = [
+            version
+            for version in versions
+            if set(entry.source_event_ids) & set(version.source_event_ids)
+            and value_matches(version)
+        ]
+        if len(consistent) != 1:
+            return None, None
+        matched = consistent[0]
     if matched is None:
         return None, None
-    obsolete = matched.version_index < ledger.versions[-1].version_index
-    forgotten = any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[matched.version_index + 1:])
+    obsolete = matched.version_index < versions[-1].version_index
+    forgotten = any(version.status == LedgerEntryStatus.TOMBSTONE for version in versions[matched.version_index + 1:])
     return obsolete, forgotten
 
 

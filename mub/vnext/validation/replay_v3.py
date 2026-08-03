@@ -69,11 +69,20 @@ class ReplayResultV3(ImmutableContractModel):
     def valid(self) -> bool:
         return not self.issues
 
+    def active_versions(self, ledger: ReplayLedgerV3) -> tuple[ReplayVersionV3, ...]:
+        if self.horizon_logical_time is None:
+            return ledger.versions
+        return tuple(
+            version
+            for version in ledger.versions
+            if version.logical_time is None or version.logical_time <= self.horizon_logical_time
+        )
+
     @property
     def obsolete_present_values(self) -> tuple[Any, ...]:
         values = []
         for ledger in self.ledgers:
-            for version in ledger.versions[:-1]:
+            for version in self.active_versions(ledger)[:-1]:
                 if version.status == LedgerEntryStatus.PRESENT:
                     values.append(version.value)
         return tuple(values)

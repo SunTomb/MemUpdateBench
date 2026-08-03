@@ -310,9 +310,10 @@ def _action_facts(task, run):
 def _forgotten_values(replay):
     values = []
     for ledger in replay.ledgers:
-        for index, version in enumerate(ledger.versions):
-            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in ledger.versions[index + 1:]):
-                if not any(later.status == LedgerEntryStatus.PRESENT and _same(later.value, version.value) for later in ledger.versions[index + 1:]):
+        versions = replay.active_versions(ledger)
+        for index, version in enumerate(versions):
+            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in versions[index + 1:]):
+                if not any(later.status == LedgerEntryStatus.PRESENT and _same(later.value, version.value) for later in versions[index + 1:]):
                     values.append(version.value)
     return values
 
@@ -354,7 +355,7 @@ def _entry_current_match_status(entry, version, replay):
     if entry.value_candidate is None:
         return None
     ledger = replay.ledger_by_identity.get(_identity(version.object_key))
-    same_value_versions = [] if ledger is None else [candidate for candidate in ledger.versions if candidate.status == LedgerEntryStatus.PRESENT and _same(candidate.value, entry.value_candidate)]
+    same_value_versions = [] if ledger is None else [candidate for candidate in replay.active_versions(ledger) if candidate.status == LedgerEntryStatus.PRESENT and _same(candidate.value, entry.value_candidate)]
     if len(same_value_versions) > 1:
         return None
     return _same(entry.value_candidate, version.value)
@@ -364,29 +365,34 @@ def _entry_obsolete_status(entry, replay):
     if entry.object_key_candidate is None:
         return False
     ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
-    if ledger is None or not ledger.versions:
+    if ledger is None:
+        return False
+    versions = replay.active_versions(ledger)
+    if not versions:
         return False
     if entry.version_index is not None:
-        if entry.version_index >= len(ledger.versions):
+        if entry.version_index >= len(versions):
             return False
-        matched = ledger.versions[entry.version_index]
+        matched = versions[entry.version_index]
         value_status = _entry_value_status(entry, matched)
         if value_status is not True:
             return value_status
-        return entry.version_index < ledger.versions[-1].version_index
+        return matched.version_index < versions[-1].version_index
     if entry.source_event_ids:
-        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
-        if matched is None:
+        candidates = [
+            version
+            for version in versions
+            if set(entry.source_event_ids) & set(version.source_event_ids)
+        ]
+        if not candidates:
             return False
-        value_status = _entry_value_status(entry, matched)
-        if value_status is not True:
-            return value_status
-        current_sources = set(ledger.versions[-1].source_event_ids)
-        if set(entry.source_event_ids) & current_sources:
-            return False
-        return matched.version_index < ledger.versions[-1].version_index
-    current = ledger.versions[-1]
-    obsolete = [version for version in ledger.versions[:-1] if version.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, version.value)]
+        statuses = [(version, _entry_value_status(entry, version)) for version in candidates]
+        consistent = [version for version, status in statuses if status is True]
+        if len(consistent) != 1:
+            return None if any(status is None for _, status in statuses) or len(consistent) > 1 else False
+        return consistent[0].version_index < versions[-1].version_index
+    current = versions[-1]
+    obsolete = [version for version in versions[:-1] if version.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, version.value)]
     if obsolete and current.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, current.value):
         return None
     return bool(obsolete)
@@ -398,17 +404,27 @@ def _entry_forgotten_status(entry, replay):
     ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
     if ledger is None:
         return False
+    versions = replay.active_versions(ledger)
     matched = None
-    if entry.version_index is not None and entry.version_index < len(ledger.versions):
-        matched = ledger.versions[entry.version_index]
+    if entry.version_index is not None and entry.version_index < len(versions):
+        matched = versions[entry.version_index]
     elif entry.source_event_ids:
-        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
+        candidates = [
+            version
+            for version in versions
+            if set(entry.source_event_ids) & set(version.source_event_ids)
+        ]
+        statuses = [(version, _entry_value_status(entry, version)) for version in candidates]
+        consistent = [version for version, status in statuses if status is True]
+        if len(consistent) != 1:
+            return None if any(status is None for _, status in statuses) or len(consistent) > 1 else False
+        matched = consistent[0]
     if matched is None:
         return None
     value_status = _entry_value_status(entry, matched)
     if value_status is not True:
         return value_status
-    return any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[matched.version_index + 1:])
+    return any(version.status == LedgerEntryStatus.TOMBSTONE for version in versions[matched.version_index + 1:])
 
 
 def _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts):
