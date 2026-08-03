@@ -546,6 +546,20 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         raise ValueError("stale derivation uses event outside alternative scope")
                 _validate_derivation_read_bindings(alternative, histories, include_implicit=True)
             if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
+                _validate_multi_hop_read_eligibility(
+                    evidence,
+                    targets,
+                    histories,
+                    selected_entries_by_target,
+                )
+                if alternative is not None:
+                    _validate_multi_hop_read_eligibility(
+                        alternative,
+                        targets,
+                        histories,
+                        selected_entries_by_target,
+                        stale_alternative=True,
+                    )
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
                     raise ValueError("G derivation does not satisfy minimum_hops")
@@ -629,6 +643,54 @@ def _validate_derivation_read_bindings(evidence, histories, include_implicit=Fal
         )
         if reads_support:
             _resolve_derivation_read_versions(step, histories, lambda ledger: ledger.entries)
+
+
+def _validate_multi_hop_read_eligibility(
+    evidence,
+    targets,
+    ledgers,
+    selected_by_target,
+    stale_alternative=False,
+    version_rows=None,
+) -> None:
+    if version_rows is None:
+        version_rows = lambda ledger: ledger.entries
+    resolved_versions = set()
+    consumed_events = set()
+    for step in evidence.derivation_steps:
+        if not _derivation_step_reads_support(step):
+            continue
+        versions = _resolve_derivation_read_versions(step, ledgers, version_rows)
+        if step.supporting_object_keys:
+            components = zip((_identity(key) for key in step.supporting_object_keys), versions)
+        else:
+            components = (
+                (
+                    next(
+                        identity
+                        for identity, ledger in ledgers.items()
+                        if any(candidate is version for candidate in version_rows(ledger))
+                    ),
+                    version,
+                )
+                for version in versions
+            )
+        for identity, version in components:
+            if identity in targets:
+                resolved_versions.add((identity, version.version_index))
+        consumed_events.update(step.supporting_event_ids)
+    selected_versions = {
+        (identity, version.version_index)
+        for identity, versions in selected_by_target.items()
+        for version in versions
+    }
+    if consumed_events != set(evidence.supporting_event_ids):
+        raise ValueError("multi-hop read provenance does not consume authenticated evidence support")
+    if stale_alternative:
+        if not resolved_versions - selected_versions:
+            raise ValueError("stale alternative read provenance does not differ from the query selector")
+    elif not selected_versions <= resolved_versions:
+        raise ValueError("multi-hop read provenance is not eligible for the query selector")
 
 
 def _validate_consistency_read_eligibility(

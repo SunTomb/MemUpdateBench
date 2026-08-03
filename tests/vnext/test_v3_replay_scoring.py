@@ -983,6 +983,46 @@ def g_difference_payload():
     return changed
 
 
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_update_sensitive_multi_hop_rejects_unbound_selector_or_stale_provenance(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    valid = g_stale_payload()
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+    wrong = deepcopy(valid)
+    evidence = wrong["gold_evidence"][0]
+    if location == "primary":
+        evidence.update(
+            answer="v1",
+            supporting_event_ids=["e1", "e3"],
+            derivation_steps=[
+                {"step_id": "stale-read", "operation": "read", "supporting_object_keys": wrong["target_objects"], "supporting_event_ids": ["e1"]},
+                {"step_id": "answer", "operation": "answer", "input_step_ids": ["stale-read"]},
+            ],
+            final_derivation_step_id="answer",
+        )
+    else:
+        evidence["stale_alternative"].update(
+            answer="v2",
+            supporting_event_ids=["e3"],
+            derivation_steps=[
+                {"step_id": "current-read", "operation": "read", "supporting_object_keys": wrong["target_objects"], "supporting_event_ids": ["e3"]},
+                {"step_id": "stale-answer", "operation": "answer", "input_step_ids": ["current-read"]},
+            ],
+            final_derivation_step_id="stale-answer",
+        )
+    with pytest.raises(ValueError, match="eligible|provenance|selector"):
+        MemUpdateTaskV3.model_validate(wrong)
+
+
 def test_transformed_g_answer_state_consistency_is_typed_not_applicable():
     from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
     from mub.vnext.scoring.scorer_v3 import score_task_v3

@@ -24,6 +24,7 @@ from mub.vnext.contracts.v3.task import (
     _derivation_step_reads_support,
     _resolve_derivation_read_versions,
     _validate_consistency_read_eligibility,
+    _validate_multi_hop_read_eligibility,
 )
 from mub.vnext.validation.issues import ValidationIssue
 
@@ -449,7 +450,10 @@ def evaluate_evidence_v3(
         return values[item.final_derivation_step_id]
 
     try:
-        if query is not None and query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
+        if query is not None and query.query_type in {
+            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+        }:
             event_positions = {event.event_id: event.sequence_index for event in events}
             event_times = {event.event_id: event.timestamp for event in events if event.timestamp is not None}
             targets = {_identity(key) for key in query.target_object_keys}
@@ -463,21 +467,39 @@ def evaluate_evidence_v3(
                 )
                 for identity in targets
             }
-            _validate_consistency_read_eligibility(
-                evidence,
-                targets,
-                replay.ledger_by_identity,
-                selected_by_target,
-                version_rows=lambda ledger: ledger.versions,
-            )
-            if stale_alternative is not None:
+            if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
                 _validate_consistency_read_eligibility(
-                    stale_alternative,
+                    evidence,
                     targets,
                     replay.ledger_by_identity,
-                    require_exact_event_coverage=True,
+                    selected_by_target,
                     version_rows=lambda ledger: ledger.versions,
                 )
+                if stale_alternative is not None:
+                    _validate_consistency_read_eligibility(
+                        stale_alternative,
+                        targets,
+                        replay.ledger_by_identity,
+                        require_exact_event_coverage=True,
+                        version_rows=lambda ledger: ledger.versions,
+                    )
+            else:
+                _validate_multi_hop_read_eligibility(
+                    evidence,
+                    targets,
+                    replay.ledger_by_identity,
+                    selected_by_target,
+                    version_rows=lambda ledger: ledger.versions,
+                )
+                if stale_alternative is not None:
+                    _validate_multi_hop_read_eligibility(
+                        stale_alternative,
+                        targets,
+                        replay.ledger_by_identity,
+                        selected_by_target,
+                        stale_alternative=True,
+                        version_rows=lambda ledger: ledger.versions,
+                    )
         answer = evaluate(evidence)
         if not _same(answer, evidence.answer):
             raise ValueError("derivation_answer_mismatch")
