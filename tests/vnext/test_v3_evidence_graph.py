@@ -29,11 +29,11 @@ def test_gold_evidence_rejects_cycles_and_disconnected_steps() -> None:
     }
     with pytest.raises(ValidationError, match="cyclic"):
         QueryGoldEvidenceV3(**base, derivation_steps=(
-            DerivationStepV3(step_id="a", operation="read", input_step_ids=("b",)),
+            DerivationStepV3(step_id="a", operation="identity", input_step_ids=("b",)),
             DerivationStepV3(step_id="b", operation="answer", input_step_ids=("a",)),
         ))
     with pytest.raises(ValidationError, match="disconnected"):
         QueryGoldEvidenceV3(**base, derivation_steps=(
             DerivationStepV3(step_id="a", operation="read", supporting_event_ids=("ev",)),
-            DerivationStepV3(step_id="b", operation="answer"),
+            DerivationStepV3(step_id="b", operation="constant"),
         ))

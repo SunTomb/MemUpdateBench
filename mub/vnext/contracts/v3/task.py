@@ -34,6 +34,34 @@ def _derivation_step_reads_support(step) -> bool:
     return step.operation in _DERIVATION_COLLECTION_OPERATIONS and not step.input_step_ids
 
 
+def _derivation_consumed_input_indices(step):
+    size = len(step.input_step_ids)
+    operation = step.operation
+    if operation in _DERIVATION_READ_OPERATIONS:
+        if size != 0:
+            raise ValueError(f"{operation} requires zero operands")
+        return ()
+    if operation in _DERIVATION_SEED_OPERATIONS:
+        if size > 1:
+            raise ValueError(f"{operation} requires zero or one operand")
+        return tuple(range(size))
+    if operation in {"identity", "answer", "left", "right"}:
+        if size != 1:
+            raise ValueError(f"{operation} requires one operand")
+        return (0,)
+    if operation in {"subtract", "multiply"}:
+        if size != 2:
+            raise ValueError(f"{operation} requires two ordered operands")
+        return (0, 1)
+    if operation == "equals":
+        if size < 2:
+            raise ValueError("equals requires at least two operands")
+        return tuple(range(size))
+    if operation in _DERIVATION_COLLECTION_OPERATIONS | {"add", "all", "any", "count"}:
+        return tuple(range(size))
+    return None
+
+
 class GeneratorProvenanceV3(ImmutableContractModel):
     generator_name: StrictString
     seed: Annotated[int, Field(strict=True)]
@@ -318,10 +346,7 @@ def _validate_derivation_graph(evidence):
         raise ValueError("final derivation step is unknown")
     positions = {step.step_id: index for index, step in enumerate(evidence.derivation_steps)}
     for step in evidence.derivation_steps:
-        if step.operation == "equals" and len(step.input_step_ids) < 2:
-            raise ValueError("equals requires at least two operands")
-        if step.operation in _DERIVATION_SEED_OPERATIONS and len(step.input_step_ids) > 1:
-            raise ValueError("seed operations require zero or one operand")
+        _derivation_consumed_input_indices(step)
         if set(step.input_step_ids) - steps.keys():
             raise ValueError("derivation references unknown input step")
     visiting: set[str] = set()
@@ -993,10 +1018,12 @@ def _derivation_influential_objects(evidence) -> set[tuple[str, str, str, str | 
         if _derivation_step_reads_support(step):
             influences[step.step_id] = {_identity(key) for key in step.supporting_object_keys}
         else:
+            consumed = _derivation_consumed_input_indices(step)
+            indices = range(len(step.input_step_ids)) if consumed is None else consumed
             influences[step.step_id] = {
                 identity
-                for parent in step.input_step_ids
-                for identity in influences[parent]
+                for index in indices
+                for identity in influences[step.input_step_ids[index]]
             }
     return influences[evidence.final_derivation_step_id]
 

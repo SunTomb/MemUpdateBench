@@ -1023,6 +1023,49 @@ def test_update_sensitive_multi_hop_rejects_unbound_selector_or_stale_provenance
         MemUpdateTaskV3.model_validate(wrong)
 
 
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_multi_hop_rejects_surplus_operands_with_false_current_influence(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    valid = g_difference_payload()
+    evidence = valid["gold_evidence"][0]
+    if location == "stale":
+        evidence["stale_alternative"] = {
+            "answer": 2, "supporting_object_keys": valid["target_objects"],
+            "supporting_event_ids": ["e0"],
+            "derivation_steps": [
+                {"step_id": "previous", "operation": "read", "supporting_object_keys": valid["target_objects"], "supporting_event_ids": ["e0"]},
+                {"step_id": "stale-answer", "operation": "answer", "input_step_ids": ["previous"]},
+            ],
+            "final_derivation_step_id": "stale-answer",
+        }
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+    bypass = deepcopy(valid)
+    bypass_evidence = bypass["gold_evidence"][0]
+    item = bypass_evidence if location == "primary" else bypass_evidence["stale_alternative"]
+    item.update(
+        answer=4,
+        supporting_event_ids=["e0", "e1"],
+        derivation_steps=[
+            {"step_id": "previous-a", "operation": "read", "supporting_object_keys": bypass["target_objects"], "supporting_event_ids": ["e0"]},
+            {"step_id": "previous-b", "operation": "read", "supporting_object_keys": bypass["target_objects"], "supporting_event_ids": ["e0"]},
+            {"step_id": "current", "operation": "read", "supporting_object_keys": bypass["target_objects"], "supporting_event_ids": ["e1"]},
+            {"step_id": "multiply", "operation": "multiply", "input_step_ids": ["previous-a", "previous-b", "current"]},
+        ],
+        final_derivation_step_id="multiply",
+    )
+    with pytest.raises(ValueError, match="multiply|operand|arity"):
+        MemUpdateTaskV3.model_validate(bypass)
+
+
 def test_transformed_g_answer_state_consistency_is_typed_not_applicable():
     from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
     from mub.vnext.scoring.scorer_v3 import score_task_v3
@@ -1320,6 +1363,59 @@ def test_consistency_rejects_answer_bearing_multi_key_read_bypass(location):
             final_derivation_step_id="equals",
         )
     with pytest.raises(ValueError, match="multi-key|eligible|provenance"):
+        MemUpdateTaskV3.model_validate(bypass)
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_consistency_rejects_surplus_operands_with_false_target_influence(location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    common_event = "e3" if location == "primary" else "e1"
+    valid = replayable_multi_object_consistency_payload(common_event)
+    set_repeated_first_values(valid, 2)
+    second = valid["target_objects"][1]
+    for action in valid["actions"]:
+        if second in action.get("target_object_keys", []):
+            action["value"] = 3
+    valid["version_history"][1]["entries"][0]["value"] = 3
+    evidence = valid["gold_evidence"][0]
+    first = evidence["supporting_object_keys"][0]
+    if location == "stale":
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e1"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e1"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+
+    bypass = deepcopy(valid)
+    bypass_evidence = bypass["gold_evidence"][0]
+    item = bypass_evidence if location == "primary" else bypass_evidence["stale_alternative"]
+    item.update(
+        answer=True,
+        derivation_steps=[
+            {"step_id": "first-a", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+            {"step_id": "first-b", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": [common_event]},
+            {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": [common_event]},
+            {"step_id": "with-surplus", "operation": "multiply", "input_step_ids": ["first-a", "first-b", "second"]},
+            {"step_id": "without-surplus", "operation": "multiply", "input_step_ids": ["first-a", "first-b"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["with-surplus", "without-surplus"]},
+        ],
+        final_derivation_step_id="equals",
+    )
+    with pytest.raises(ValueError, match="multiply|operand|arity"):
         MemUpdateTaskV3.model_validate(bypass)
 
 

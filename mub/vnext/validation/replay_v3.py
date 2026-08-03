@@ -21,6 +21,7 @@ from mub.vnext.contracts.v3.task import (
     PreviousSelector,
     QueryGoldEvidenceV3,
     TransitionSelector,
+    _derivation_consumed_input_indices,
     _derivation_step_reads_support,
     _resolve_derivation_read_versions,
     _validate_consistency_read_eligibility,
@@ -412,17 +413,16 @@ def evaluate_evidence_v3(
     def evaluate(item):
         values = {}
         for step in item.derivation_steps:
-            operands = [values[parent] for parent in step.input_step_ids]
+            all_operands = [values[parent] for parent in step.input_step_ids]
+            consumed = _derivation_consumed_input_indices(step)
+            indices = range(len(all_operands)) if consumed is None else consumed
+            operands = [all_operands[index] for index in indices]
             operation = step.operation
             if _derivation_step_reads_support(step):
                 value = _read_step_value(step, replay)
             elif operation in {"identity", "answer", "left", "right"}:
-                if len(operands) != 1:
-                    raise ValueError(f"{operation} requires one operand")
                 value = operands[0]
             elif operation in {"seed0", "seed1"}:
-                if len(operands) != 1:
-                    raise ValueError(f"{operation} requires zero support inputs or one operand")
                 value = operands[0]
             elif operation in {"list", "ordered_history", "collect", "combine", "merge"}:
                 value = operands if operands else _read_step_value(step, replay)
@@ -431,14 +431,10 @@ def evaluate_evidence_v3(
             elif operation == "add":
                 value = sum(operands)
             elif operation == "subtract":
-                if len(operands) != 2:
-                    raise ValueError("subtract requires two ordered operands")
                 value = operands[0] - operands[1]
             elif operation == "multiply":
                 value = operands[0] * operands[1]
             elif operation == "equals":
-                if len(operands) < 2:
-                    raise ValueError("equals requires at least two operands")
                 value = all(_same(operands[0], operand) for operand in operands[1:])
             elif operation == "all":
                 value = all(operands)
