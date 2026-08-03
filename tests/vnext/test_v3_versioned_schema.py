@@ -2,8 +2,17 @@ from pathlib import Path
 import json
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
+from mub.vnext.contracts.enums import CompletionStatus
+from mub.vnext.contracts.v3.runtime import (
+    MemoryEntryRecordV3,
+    ParserExtractorProvenanceV3,
+    RetrievalTraceV3,
+    TaskRunRecordV3,
+)
 from mub.vnext.io.versioned import parse_versioned_task
 from mub.vnext.schema_export import SCHEMA_MODEL_REGISTRIES, export_schemas
 
@@ -40,12 +49,36 @@ def test_v3_task_run_schema_requires_action_id(tmp_path: Path) -> None:
     assert "action_id" in parsed_action_schema["required"]
 
 
-def test_v3_task_run_schema_declares_positive_integer_ranks(tmp_path: Path) -> None:
+def test_v3_task_run_schema_enforces_positive_integer_ranks(tmp_path: Path) -> None:
     exported = {path.name: path for path in export_schemas(tmp_path / "v3", version="3.0.0")}
     schema = json.loads(exported["task_run_record.schema.json"].read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    payload = TaskRunRecordV3(
+        task_id="task",
+        adapter_id="adapter",
+        run_id="run",
+        retrieval_traces=(
+            RetrievalTraceV3(
+                query_id="query",
+                retrieved_entries=(MemoryEntryRecordV3(entry_id="entry", content="value"),),
+                ranks=(1,),
+            ),
+        ),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status=CompletionStatus.COMPLETED,
+    ).model_dump(mode="json")
 
-    rank_items = schema["$defs"]["RetrievalTraceV3"]["properties"]["ranks"]["items"]
-    assert rank_items == {"gt": 0, "type": "integer"}
+    validator.validate(payload)
+    for invalid_rank in (0, -1):
+        payload["retrieval_traces"][0]["ranks"] = [invalid_rank]
+        with pytest.raises(JsonSchemaValidationError):
+            validator.validate(payload)
 
 
 def test_v3_manifest_record_hash_schema_rejects_blank_property_names(tmp_path: Path) -> None:

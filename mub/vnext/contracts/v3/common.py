@@ -47,7 +47,7 @@ def _validate_finite_float(value: Any) -> float:
 
 
 StrictIdentifier = Annotated[str, BeforeValidator(_validate_identifier), Field(strict=True, min_length=1)]
-StrictPositiveInt = Annotated[int, BeforeValidator(_validate_positive_int), Field(strict=True, gt=0)]
+StrictPositiveInt = Annotated[int, Field(strict=True, gt=0), BeforeValidator(_validate_positive_int)]
 StrictFiniteFloat = Annotated[float, BeforeValidator(_validate_finite_float), Field(strict=True, allow_inf_nan=False)]
 
 
