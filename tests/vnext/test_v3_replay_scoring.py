@@ -442,6 +442,22 @@ def test_ttl_boundary_is_half_open_and_expiry_inclusive():
     assert resolve_query_v3(boundary, replay, task.events).answer is None
 
 
+def test_valid_ttl_delete_replays_at_its_effective_logical_time() -> None:
+    changed = payload()
+    changed["actions"][2]["scope"] = "ttl"
+    changed["version_history"][0]["entries"][1]["valid_until_event_id"] = None
+    changed["version_history"][0]["entries"][2]["valid_from_event_id"] = None
+
+    task = MemUpdateTaskV3.model_validate(changed)
+    ttl_action = task.actions[2]
+    replay = replay_task_v3(task)
+
+    assert ttl_action.effective_at == "002"
+    assert replay.issues == ()
+    assert replay.ledgers[0].versions[2].logical_time == ttl_action.effective_at
+    assert replay.ledgers[0].versions[2].valid_from_event_id is None
+
+
 def test_g_evidence_evaluator_uses_ordered_operands_and_rejects_unknown_ops():
     from mub.vnext.contracts.v3.task import QueryGoldEvidenceV3
     from mub.vnext.validation.replay_v3 import evaluate_evidence_v3

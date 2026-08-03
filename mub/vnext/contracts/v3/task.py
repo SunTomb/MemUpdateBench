@@ -153,6 +153,8 @@ class GoldActionV3(ImmutableContractModel):
     @model_validator(mode="after")
     def _coherent(self) -> Self:
         validate_action_coherence(operation=self.operation, scope=self.scope, targets=self.target_object_keys, value=self.value)
+        if self.operation == Operation.DELETE and self.scope == ActionScope.TTL and self.effective_at is None:
+            raise ValueError("TTL DELETE requires effective_at")
         return self
 
 
@@ -271,6 +273,8 @@ class MemoryQueryV3(ImmutableContractModel):
         if isinstance(self.selector, MultiObjectCurrentSelector):
             if {_identity(k) for k in self.selector.object_keys} != {_identity(k) for k in self.target_object_keys}:
                 raise ValueError("multi-object selector scope must match query targets")
+            if self.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT and len(self.target_object_keys) > 1 and self.answer_schema not in {AnswerSchema.LIST, AnswerSchema.OBJECT}:
+                raise ValueError("direct multi-object current queries require list/object answer schema")
         _require_unique_objects(self.target_object_keys, "query targets")
         return self
 
