@@ -129,7 +129,7 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
                     for candidate in (entry.value_candidate, entry.content)
                     if candidate is not None
                 )
-                if any(_contains_value(prediction.parsed_answer, candidate) for candidate in candidates):
+                if wrong and any(_contains_value(prediction.parsed_answer, candidate) for candidate in candidates):
                     flags.add("distractor_copied")
     if historical.get("version_confusion_rate") not in {None, 0.0}: flags.add("version_confusion")
     if any(historical.get(field) not in {None, 1.0} for field in ("previous_state_accuracy", "point_in_time_accuracy", "transition_accuracy", "ordered_history_accuracy", "historical_distance_accuracy")): flags.add("version_confusion")

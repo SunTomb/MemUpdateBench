@@ -626,6 +626,15 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (copied,), "retrieval_traces": (trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": copied}, traces={"q": trace}, evidence=evidence)
     assert "distractor_copied" in flags
 
+    gold_candidate = MemoryEntryRecordV3(entry_id="gold-overlap", content="v0", value_candidate="v0", raw_metadata={"is_distractor": True})
+    overlap_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(gold_candidate,), distractor_in_context=True)
+    correct = AnswerPredictionV3(query_id="q", raw_output="correct", parsed_answer=["v0", "v1", None, "v2"], format_valid=True)
+    flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (correct,), "retrieval_traces": (overlap_trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": correct}, traces={"q": overlap_trace}, evidence=evidence)
+    assert "distractor_copied" not in flags
+    value, detail = _metric_value("answer_scores.distractor_copied", task, run, None, replay, {}, evidence, {"q": correct}, {"q": overlap_trace}, [])
+    assert detail is None
+    assert value == 0.0
+
 
 def g_stale_payload():
     changed = payload()
@@ -671,6 +680,20 @@ def test_g_gold_contract_registers_strict_stale_alternative_derivation():
     shallow_alt["final_derivation_step_id"] = "stale-read"
     with pytest.raises(Exception, match="stale alternative.*minimum_hops"):
         MemUpdateTaskV3.model_validate(shallow)
+
+    multi = payload()
+    first = multi["target_objects"][0]
+    second = {**first, "entity": "e2"}
+    multi["target_objects"].append(second)
+    multi["version_history"].append({"object_key": second, "entries": [{"version_index": 0, "status": "present", "value": "z", "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"]}]})
+    multi["queries"][0] = {"query_id": "q", "query_type": "multi_object_current_consistency", "text": "?", "selector": {"kind": "multi_object_current", "object_keys": [first, second]}, "target_object_keys": [first, second], "answer_schema": "boolean", "evaluation_mode": "state_direct", "synthesis": {"kind": "multi_object_current_consistency", "minimum_objects": 2}}
+    multi["gold_evidence"][0] = {
+        "query_id": "q", "answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e0", "e3"],
+        "derivation_steps": [{"step_id": "both", "operation": "equals", "supporting_object_keys": [first, second], "supporting_event_ids": ["e0", "e3"]}], "final_derivation_step_id": "both",
+        "stale_alternative": {"answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e1"], "derivation_steps": [{"step_id": "one", "operation": "equals", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]}], "final_derivation_step_id": "one"},
+    }
+    with pytest.raises(Exception, match="stale alternative.*minimum_objects"):
+        MemUpdateTaskV3.model_validate(multi)
 
 
 def test_stale_propagation_uses_registered_alternative_not_any_obsolete_value():

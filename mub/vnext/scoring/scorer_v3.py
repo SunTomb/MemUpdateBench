@@ -449,7 +449,7 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "answer_state_consistency": return _mean([float(item.format_valid and _same(item.parsed_answer, resolutions[item.query_id].answer)) for item in predictions.values()]), None
         obsolete = replay.obsolete_present_values
         if leaf == "stale_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
-        if leaf == "distractor_copied": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
+        if leaf == "distractor_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
         if leaf == "gold_retrieved_wrong_answer": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].gold_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
         if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
     if layer == "system_scores":

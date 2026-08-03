@@ -530,8 +530,14 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 minimum_objects = query.synthesis.minimum_objects
                 if len(targets) < minimum_objects or len(evidence_objects) < minimum_objects:
                     raise ValueError("G derivation does not satisfy minimum_objects")
-                if alternative is not None and len({_identity(key) for key in alternative.supporting_object_keys}) < minimum_objects:
-                    raise ValueError("stale alternative does not satisfy minimum_objects")
+                if alternative is not None:
+                    stale_derivation_objects = {
+                        _identity(key)
+                        for step in alternative.derivation_steps
+                        for key in step.supporting_object_keys
+                    }
+                    if len(stale_derivation_objects) < minimum_objects:
+                        raise ValueError("stale alternative does not satisfy minimum_objects")
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
             for query in self.queries
