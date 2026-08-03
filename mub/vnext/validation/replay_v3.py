@@ -56,6 +56,7 @@ class ReplayResultV3(ImmutableContractModel):
     expected_present: tuple[MemoryObjectKeyV3, ...]
     expected_absent: tuple[MemoryObjectKeyV3, ...]
     protected_collateral: tuple[MemoryObjectKeyV3, ...]
+    horizon_logical_time: str | None = None
     mutation_count: int = Field(strict=True, ge=0)
     issues: tuple[ValidationIssue, ...] = ()
 
@@ -72,9 +73,8 @@ class ReplayResultV3(ImmutableContractModel):
     def obsolete_present_values(self) -> tuple[Any, ...]:
         values = []
         for ledger in self.ledgers:
-            current = ledger.versions[-1] if ledger.versions else None
             for version in ledger.versions[:-1]:
-                if version.status == LedgerEntryStatus.PRESENT and (current is None or current.status != LedgerEntryStatus.PRESENT or not _same(version.value, current.value)):
+                if version.status == LedgerEntryStatus.PRESENT:
                     values.append(version.value)
         return tuple(values)
 
@@ -103,6 +103,9 @@ class EvidenceEvaluationV3(ImmutableContractModel):
     required_object_ids: tuple[str, ...] = ()
     required_event_ids: tuple[str, ...] = ()
     required_step_ids: tuple[str, ...] = ()
+    stale_required_object_ids: tuple[str, ...] = ()
+    stale_required_event_ids: tuple[str, ...] = ()
+    stale_required_step_ids: tuple[str, ...] = ()
     issues: tuple[ValidationIssue, ...] = ()
 
     @property
@@ -137,6 +140,18 @@ def _build_replay(task: MemUpdateTaskV3) -> ReplayResultV3:
     state: dict[tuple[str, str, str, str | None], ReplayVersionV3] = {}
     mutation_count = 0
     pending_ttl: list[tuple[str, int, Any]] = []
+    horizon_candidates = [event.timestamp for event in task.events if event.timestamp is not None]
+    horizon_candidates.extend(
+        action.effective_at
+        for action in task.actions
+        if action.effective_at is not None and not (action.operation == Operation.DELETE and action.scope is not None and action.scope.value == "ttl")
+    )
+    horizon_candidates.extend(
+        query.selector.logical_time
+        for query in task.queries
+        if isinstance(query.selector, LogicalTimeAnchorSelector)
+    )
+    horizon = max(horizon_candidates) if horizon_candidates else None
 
     def append_version(action, key, status, value, logical_time, boundary_event):
         nonlocal mutation_count
@@ -162,14 +177,16 @@ def _build_replay(task: MemUpdateTaskV3) -> ReplayResultV3:
         for logical_time, _, action in due:
             identity = _identity(action.target_object_keys[0])
             if identity in state:
-                append_version(action, action.target_object_keys[0], LedgerEntryStatus.TOMBSTONE, None, logical_time, action.event_id)
+                append_version(action, action.target_object_keys[0], LedgerEntryStatus.TOMBSTONE, None, logical_time, None)
             pending_ttl.remove((logical_time, _, action))
 
     for action_index, action in enumerate(task.actions):
         event = events[action.event_id]
         now = _action_time(action, event.sequence_index)
-        if now is not None:
-            expire_due(now)
+        ttl_schedule = action.operation == Operation.DELETE and action.scope is not None and action.scope.value == "ttl"
+        expiration_clock = event.timestamp if event.timestamp is not None else (None if ttl_schedule else now)
+        if expiration_clock is not None:
+            expire_due(expiration_clock)
         targets = tuple(action.target_object_keys)
         if action.operation == Operation.NOOP:
             continue
@@ -198,16 +215,27 @@ def _build_replay(task: MemUpdateTaskV3) -> ReplayResultV3:
     for logical_time, _, action in sorted(pending_ttl, key=lambda item: (item[0], item[1])):
         identity = _identity(action.target_object_keys[0])
         if identity in state:
-            append_version(action, action.target_object_keys[0], LedgerEntryStatus.TOMBSTONE, None, logical_time, action.event_id)
+            append_version(action, action.target_object_keys[0], LedgerEntryStatus.TOMBSTONE, None, logical_time, None)
 
     ledgers = tuple(ReplayLedgerV3(object_key=key, versions=tuple(histories[_identity(key)])) for key in task.target_objects)
+    state = {}
+    for ledger in ledgers:
+        eligible = (
+            ledger.versions
+            if horizon is None
+            else tuple(version for version in ledger.versions if version.logical_time is None or version.logical_time <= horizon)
+        )
+        if eligible:
+            active = max(eligible, key=lambda version: version.version_index)
+            if active.status == LedgerEntryStatus.PRESENT:
+                state[_identity(ledger.object_key)] = active
     current = {_canonical_id(keys[identity]): version for identity, version in state.items()}
-    declared_absent = tuple(ledger.object_key for ledger in ledgers if ledger.versions and ledger.versions[-1].status == LedgerEntryStatus.TOMBSTONE)
-    declared_present = tuple(ledger.object_key for ledger in ledgers if ledger.versions and ledger.versions[-1].status == LedgerEntryStatus.PRESENT)
+    declared_present = tuple(key for key in task.target_objects if key.canonical_id in current)
+    declared_absent = tuple(key for key in task.target_objects if key.canonical_id not in current)
     # Objects not targeted by any DELETE are protected collateral for lifecycle scoring.
     deleted = {_identity(key) for action in task.actions if action.operation == Operation.DELETE for key in action.target_object_keys}
     protected = tuple(key for key in task.target_objects if _identity(key) not in deleted)
-    return ReplayResultV3(current_state=current, ledgers=ledgers, expected_present=declared_present, expected_absent=declared_absent, protected_collateral=protected, mutation_count=mutation_count)
+    return ReplayResultV3(current_state=current, ledgers=ledgers, expected_present=declared_present, expected_absent=declared_absent, protected_collateral=protected, horizon_logical_time=horizon, mutation_count=mutation_count)
 
 
 def _declared_matches(task: MemUpdateTaskV3, replay: ReplayResultV3) -> bool:
@@ -258,12 +286,13 @@ def _shape(values: list[Any], keys, schema) -> Any:
     raise ValueError("multiple selected objects require list/object answer schema")
 
 
-def _selected_for(ledger: ReplayLedgerV3, selector, event_positions) -> tuple[ReplayVersionV3, ...]:
+def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times, horizon) -> tuple[ReplayVersionV3, ...]:
     versions = ledger.versions
+    active_versions = versions if horizon is None else tuple(version for version in versions if version.logical_time is None or version.logical_time <= horizon)
     if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
-        return versions[-1:]
+        return active_versions[-1:]
     if isinstance(selector, PreviousSelector):
-        return versions[-2:-1]
+        return active_versions[-2:-1]
     if isinstance(selector, ExactVersionSelector):
         return versions[selector.version_index:selector.version_index + 1]
     if isinstance(selector, TransitionSelector):
@@ -276,6 +305,11 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions) -> tuple[Re
         anchor = event_positions.get(selector.event_id)
         if anchor is None:
             return ()
+        event_time = event_times.get(selector.event_id)
+        if event_time is not None:
+            eligible = [version for version in versions if version.logical_time is not None and version.logical_time <= event_time]
+            if eligible:
+                return (max(eligible, key=lambda version: version.version_index),)
         matched = [version for version in versions if version.valid_from_event_id is not None and event_positions[version.valid_from_event_id] <= anchor and (version.valid_until_event_id is None or anchor < event_positions[version.valid_until_event_id])]
         return tuple(matched)
     if isinstance(selector, LogicalTimeAnchorSelector):
@@ -292,6 +326,7 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
         return QueryResolutionV3(query_id=query.query_id, issues=replay.issues)
     ledgers = replay.ledger_by_identity
     event_positions = {event.event_id: event.sequence_index for event in events}
+    event_times = {event.event_id: event.timestamp for event in events if event.timestamp is not None}
     if not event_positions:
         for ledger in replay.ledgers:
             for version in ledger.versions:
@@ -303,7 +338,7 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
         ledger = ledgers.get(_identity(key))
         if ledger is None:
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_missing_object", "selector target has no replay ledger", f"queries.{query.query_id}.target_object_keys"),))
-        selected = _selected_for(ledger, query.selector, event_positions)
+        selected = _selected_for(ledger, query.selector, event_positions, event_times, replay.horizon_logical_time)
         if not selected:
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_missing_version", "typed selector did not resolve a version", f"queries.{query.query_id}.selector"),))
         if isinstance(query.selector, (EventAnchorSelector, LogicalTimeAnchorSelector)) and len(selected) != 1:
@@ -395,6 +430,8 @@ def evaluate_evidence_v3(evidence: QueryGoldEvidenceV3, replay: ReplayResultV3, 
         if not _same(answer, evidence.answer):
             raise ValueError("derivation_answer_mismatch")
         stale_answer = None if stale_alternative is None else evaluate(stale_alternative)
+        if stale_alternative is not None and not _same(stale_answer, stale_alternative.answer):
+            raise ValueError("stale_derivation_answer_mismatch")
     except Exception as exc:
         code = "unsupported_derivation_operation" if str(exc).startswith("unsupported_derivation_operation") else "evidence_replay_error"
         return EvidenceEvaluationV3(query_id=evidence.query_id, issues=(_issue(code, str(exc), f"gold_evidence.{evidence.query_id}"),))
@@ -403,6 +440,9 @@ def evaluate_evidence_v3(evidence: QueryGoldEvidenceV3, replay: ReplayResultV3, 
         required_object_ids=tuple(key.canonical_id for key in evidence.supporting_object_keys),
         required_event_ids=tuple(evidence.supporting_event_ids),
         required_step_ids=tuple(step.step_id for step in evidence.derivation_steps),
+        stale_required_object_ids=() if stale_alternative is None else tuple(key.canonical_id for key in stale_alternative.supporting_object_keys),
+        stale_required_event_ids=() if stale_alternative is None else tuple(stale_alternative.supporting_event_ids),
+        stale_required_step_ids=() if stale_alternative is None else tuple(step.step_id for step in stale_alternative.derivation_steps),
     )
 
 

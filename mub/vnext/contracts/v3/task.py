@@ -292,8 +292,42 @@ class DerivationStepV3(ImmutableContractModel):
         return self
 
 
-class QueryGoldEvidenceV3(ImmutableContractModel):
-    query_id: StrictString
+def _validate_derivation_graph(evidence):
+    if len(evidence.supporting_event_ids) != len(set(evidence.supporting_event_ids)):
+        raise ValueError("gold supporting event IDs must be unique")
+    if len({_identity(key) for key in evidence.supporting_object_keys}) != len(evidence.supporting_object_keys):
+        raise ValueError("gold supporting object identities must be unique")
+    steps = {step.step_id: step for step in evidence.derivation_steps}
+    if len(steps) != len(evidence.derivation_steps):
+        raise ValueError("derivation step IDs must be unique")
+    if evidence.final_derivation_step_id not in steps:
+        raise ValueError("final derivation step is unknown")
+    positions = {step.step_id: index for index, step in enumerate(evidence.derivation_steps)}
+    for step in evidence.derivation_steps:
+        if set(step.input_step_ids) - steps.keys():
+            raise ValueError("derivation references unknown input step")
+    visiting: set[str] = set()
+    reached: set[str] = set()
+    def visit(step_id: str) -> None:
+        if step_id in visiting:
+            raise ValueError("cyclic derivation graph")
+        if step_id in reached:
+            return
+        visiting.add(step_id)
+        for parent in steps[step_id].input_step_ids:
+            visit(parent)
+        visiting.remove(step_id)
+        reached.add(step_id)
+    visit(evidence.final_derivation_step_id)
+    if reached != set(steps):
+        raise ValueError("disconnected derivation graph")
+    for step in evidence.derivation_steps:
+        if any(positions[parent] >= positions[step.step_id] for parent in step.input_step_ids):
+            raise ValueError("derivation steps must be in topological order")
+    return evidence
+
+
+class StaleAlternativeEvidenceV3(ImmutableContractModel):
     answer: FrozenJsonValue
     supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
     supporting_event_ids: tuple[StrictString, ...] = Field(min_length=1)
@@ -302,38 +336,21 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _validate_graph(self) -> Self:
-        if len(self.supporting_event_ids) != len(set(self.supporting_event_ids)):
-            raise ValueError("gold supporting event IDs must be unique")
-        if len({_identity(key) for key in self.supporting_object_keys}) != len(self.supporting_object_keys):
-            raise ValueError("gold supporting object identities must be unique")
-        steps = {step.step_id: step for step in self.derivation_steps}
-        if len(steps) != len(self.derivation_steps):
-            raise ValueError("derivation step IDs must be unique")
-        if self.final_derivation_step_id not in steps:
-            raise ValueError("final derivation step is unknown")
-        positions = {step.step_id: index for index, step in enumerate(self.derivation_steps)}
-        for step in self.derivation_steps:
-            if set(step.input_step_ids) - steps.keys():
-                raise ValueError("derivation references unknown input step")
-        visiting: set[str] = set()
-        reached: set[str] = set()
-        def visit(step_id: str) -> None:
-            if step_id in visiting:
-                raise ValueError("cyclic derivation graph")
-            if step_id in reached:
-                return
-            visiting.add(step_id)
-            for parent in steps[step_id].input_step_ids:
-                visit(parent)
-            visiting.remove(step_id)
-            reached.add(step_id)
-        visit(self.final_derivation_step_id)
-        if reached != set(steps):
-            raise ValueError("disconnected derivation graph")
-        for step in self.derivation_steps:
-            if any(positions[parent] >= positions[step.step_id] for parent in step.input_step_ids):
-                raise ValueError("derivation steps must be in topological order")
-        return self
+        return _validate_derivation_graph(self)
+
+
+class QueryGoldEvidenceV3(ImmutableContractModel):
+    query_id: StrictString
+    answer: FrozenJsonValue
+    supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
+    supporting_event_ids: tuple[StrictString, ...] = Field(min_length=1)
+    derivation_steps: tuple[DerivationStepV3, ...] = Field(min_length=1)
+    final_derivation_step_id: StrictString
+    stale_alternative: StaleAlternativeEvidenceV3 | None = None
+
+    @model_validator(mode="after")
+    def _validate_graph(self) -> Self:
+        return _validate_derivation_graph(self)
 
 
 class MemUpdateTaskV3(ImmutableContractModel):
@@ -435,10 +452,10 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 ):
                     raise ValueError("query selector references unknown event anchor")
             if isinstance(selector, LogicalTimeAnchorSelector) and any(
-                selector.logical_time not in {entry.logical_time for entry in histories[target].entries}
+                not any(entry.logical_time is not None and entry.logical_time <= selector.logical_time for entry in histories[target].entries)
                 for target in targets
             ):
-                raise ValueError("query selector references unknown logical-time anchor")
+                raise ValueError("query selector precedes all known logical-time anchors")
             if isinstance(selector, ExactVersionSelector):
                 if any(selector.version_index >= len(histories[target].entries) for target in targets):
                     raise ValueError("query selector references unknown version")
@@ -476,6 +493,21 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("derivation uses object outside evidence scope")
                 if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
                     raise ValueError("derivation uses event outside evidence scope")
+            alternative = evidence.stale_alternative
+            if alternative is not None:
+                if query.query_type not in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY}:
+                    raise ValueError("stale alternative is only valid for G synthesis queries")
+                alternative_objects = {_identity(key) for key in alternative.supporting_object_keys}
+                if not targets <= alternative_objects or not alternative_objects <= declared:
+                    raise ValueError("stale alternative objects are not coherent with query targets")
+                if set(alternative.supporting_event_ids) - set(event_ids):
+                    raise ValueError("stale alternative references unknown event")
+                _validate_answer_schema(alternative.answer, query.answer_schema)
+                for step in alternative.derivation_steps:
+                    if {_identity(key) for key in step.supporting_object_keys} - alternative_objects:
+                        raise ValueError("stale derivation uses object outside alternative scope")
+                    if set(step.supporting_event_ids) - set(alternative.supporting_event_ids):
+                        raise ValueError("stale derivation uses event outside alternative scope")
             if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
@@ -631,11 +663,18 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     histories.sort(key=lambda item: _canonical_bytes(item["object_key"]))
     evidence_by_query = {}
     for gold in task.gold_evidence:
+        alternative = gold.stale_alternative
         evidence_by_query[gold.query_id] = {
             "answer": _semantic_value(gold.answer),
             "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
             "supporting_event_indices": sorted(event_ref(event_id) for event_id in gold.supporting_event_ids),
             "derivation_graph": _derivation_semantic_projection(gold, event_index),
+            "stale_alternative": None if alternative is None else {
+                "answer": _semantic_value(alternative.answer),
+                "supporting_objects": sorted((_semantic_value(key) for key in alternative.supporting_object_keys), key=_canonical_bytes),
+                "supporting_event_indices": sorted(event_ref(event_id) for event_id in alternative.supporting_event_ids),
+                "derivation_graph": _derivation_semantic_projection(alternative, event_index),
+            },
         }
     bundles = [
         {
@@ -681,7 +720,11 @@ def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_
         end = selector.end_version_index if selector.end_version_index is not None else len(entries) - 1
         return entries[start : end + 1]
     if isinstance(selector, LogicalTimeAnchorSelector):
-        return tuple(entry for entry in entries if entry.logical_time == selector.logical_time)
+        eligible = tuple(entry for entry in entries if entry.logical_time is not None and entry.logical_time <= selector.logical_time)
+        if not eligible:
+            return ()
+        latest = max(entry.logical_time for entry in eligible)
+        return tuple(entry for entry in eligible if entry.logical_time == latest)
     if isinstance(selector, EventAnchorSelector):
         anchor = event_position[selector.event_id]
         return tuple(
@@ -749,7 +792,7 @@ __all__ = [
     "GeneratorProvenanceV3", "GoldActionV3", "GoldEvidenceV3", "HistorySelector",
     "LedgerEntryStatus", "LegacyProvenanceV3", "LogicalTimeAnchorSelector", "LogicalTimeSelector", "MemUpdateTaskV3", "MemoryEventV3", "MemoryQueryV3",
     "MultiObjectCurrentConsistencySynthesis", "MultiObjectCurrentSelector", "MultiObjectCurrentStateSelector", "OrderedHistorySelector",
-    "PreviousSelector", "QueryGoldEvidenceV3", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "SynthesisSpecV3", "TaskMetadataV3",
+    "PreviousSelector", "QueryGoldEvidenceV3", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "StaleAlternativeEvidenceV3", "SynthesisSpecV3", "TaskMetadataV3",
     "TransitionSelector", "UpdateSensitiveMultiHopSynthesis", "VersionHistoryEntry", "VersionHistoryLedger",
     "VersionIndexSelector", "VersionLedgerEntryV3", "VersionLedgerV3",
 ]

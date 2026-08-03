@@ -8,11 +8,12 @@ from typing import Any
 
 from pydantic import field_validator, model_validator
 
-from mub.vnext.contracts.common import ImmutableContractModel, MetricFieldSupport
+from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel, MetricFieldSupport
 from mub.vnext.contracts.enums import CompletionStatus, Operation, SupportReason
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
 from mub.vnext.contracts.v3.common import StrictIdentifier, object_identity
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
+from mub.vnext.contracts.v3.manifest import RunManifestV3, TaskManifestV3
 from mub.vnext.contracts.v3.runtime import TaskRunRecordV3
 from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, ScorerConfigV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
@@ -23,34 +24,113 @@ from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3,
 _NULL_POLICY = "serialize_null_exclude_from_aggregation"
 
 
+def _contract_hash(value) -> str:
+    raw = json.dumps(value.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
 class VerifiedScoringContextV3(ImmutableContractModel):
-    adapter_info: AdapterInfoV3
-    capabilities: AdapterCapabilitiesV3
-    scorer_config: ScorerConfigV3
+    task_manifest: TaskManifestV3
+    run_manifest: RunManifestV3
+    task_artifact: ArtifactRef
+    run_artifact: ArtifactRef
+    authenticated_task_manifest_sha256: str
+    authenticated_run_manifest_sha256: str
+    task_manifest_payload_sha256: str
+    run_manifest_payload_sha256: str
+    task_payload_sha256: str
+    run_payload_sha256: str
+    capabilities_sha256: str
+    adapter_configuration_hash: str
+    scorer_configuration_hash: str
+    task_id: StrictIdentifier
     run_id: StrictIdentifier
-    verified_capabilities_sha256: str
+
+    @property
+    def adapter_info(self) -> AdapterInfoV3:
+        return self.run_manifest.adapter_info
+
+    @property
+    def capabilities(self) -> AdapterCapabilitiesV3:
+        return self.run_manifest.adapter_capabilities
+
+    @property
+    def scorer_config(self) -> ScorerConfigV3:
+        return self.run_manifest.scorer_config
 
     @staticmethod
     def capability_hash(capabilities: AdapterCapabilitiesV3) -> str:
-        raw = json.dumps(capabilities.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-        return hashlib.sha256(raw).hexdigest()
+        return _contract_hash(capabilities)
 
     @classmethod
-    def create_verified(cls, *, adapter_info, capabilities, scorer_config, run_id):
-        capabilities = AdapterCapabilitiesV3.model_validate(capabilities.model_dump(mode="python") if isinstance(capabilities, AdapterCapabilitiesV3) else capabilities)
-        return cls(adapter_info=adapter_info, capabilities=capabilities, scorer_config=scorer_config, run_id=run_id, verified_capabilities_sha256=cls.capability_hash(capabilities))
+    def create_verified(cls, **kwargs):
+        raise ValueError("unauthenticated scoring contexts are forbidden; use from_authenticated_manifests")
 
-    @field_validator("verified_capabilities_sha256")
+    @classmethod
+    def from_authenticated_manifests(
+        cls, *, task, run, task_manifest, run_manifest, task_artifact, run_artifact,
+        authenticated_task_manifest_sha256, authenticated_run_manifest_sha256,
+    ):
+        task = MemUpdateTaskV3.model_validate(task.model_dump(mode="python") if isinstance(task, MemUpdateTaskV3) else task)
+        run = TaskRunRecordV3.model_validate(run.model_dump(mode="python") if isinstance(run, TaskRunRecordV3) else run)
+        task_manifest = TaskManifestV3.model_validate(task_manifest.model_dump(mode="python") if isinstance(task_manifest, TaskManifestV3) else task_manifest)
+        run_manifest = RunManifestV3.model_validate(run_manifest.model_dump(mode="python") if isinstance(run_manifest, RunManifestV3) else run_manifest)
+        task_artifact = ArtifactRef.model_validate(task_artifact.model_dump(mode="python") if isinstance(task_artifact, ArtifactRef) else task_artifact)
+        run_artifact = ArtifactRef.model_validate(run_artifact.model_dump(mode="python") if isinstance(run_artifact, ArtifactRef) else run_artifact)
+        if task.task_id != run.task_id:
+            raise ValueError("task_id mismatch between authenticated task and run")
+        if run.run_id != run_manifest.run_id:
+            raise ValueError("run_id mismatch with authenticated run manifest")
+        if run.adapter_id != run_manifest.adapter_info.adapter_id:
+            raise ValueError("adapter_id mismatch with authenticated run manifest")
+        return cls(
+            task_manifest=task_manifest, run_manifest=run_manifest,
+            task_artifact=task_artifact, run_artifact=run_artifact,
+            authenticated_task_manifest_sha256=authenticated_task_manifest_sha256,
+            authenticated_run_manifest_sha256=authenticated_run_manifest_sha256,
+            task_manifest_payload_sha256=_contract_hash(task_manifest),
+            run_manifest_payload_sha256=_contract_hash(run_manifest),
+            task_payload_sha256=_contract_hash(task), run_payload_sha256=_contract_hash(run),
+            capabilities_sha256=cls.capability_hash(run_manifest.adapter_capabilities),
+            adapter_configuration_hash=run_manifest.adapter_info.configuration_hash,
+            scorer_configuration_hash=run_manifest.scorer_config.configuration_hash,
+            task_id=task.task_id, run_id=run.run_id,
+        )
+
+    @field_validator(
+        "authenticated_task_manifest_sha256", "authenticated_run_manifest_sha256",
+        "task_manifest_payload_sha256", "run_manifest_payload_sha256",
+        "task_payload_sha256", "run_payload_sha256", "capabilities_sha256",
+        "adapter_configuration_hash", "scorer_configuration_hash",
+    )
     @classmethod
     def _hash(cls, value):
         if type(value) is not str or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-            raise ValueError("verified capability hash must be lowercase sha256")
+            raise ValueError("authenticated hashes must be lowercase sha256")
         return value
 
     @model_validator(mode="after")
     def _verified(self):
-        if self.verified_capabilities_sha256 != self.capability_hash(self.capabilities):
-            raise ValueError("forged capabilities: verification hash mismatch")
+        if self.run_manifest.task_manifest.sha256 != self.authenticated_task_manifest_sha256:
+            raise ValueError("run manifest task manifest binding mismatch")
+        if self.task_artifact not in self.task_manifest.task_file_paths_and_hashes:
+            raise ValueError("task artifact is not authenticated by task manifest")
+        if self.run_artifact not in self.run_manifest.normalized_runtime_artifacts:
+            raise ValueError("run artifact is not authenticated by run manifest")
+        if self.run_manifest.capability_verification_artifact is None:
+            raise ValueError("capability verification artifact is required")
+        if self.task_manifest_payload_sha256 != _contract_hash(self.task_manifest):
+            raise ValueError("authenticated task manifest substitution detected")
+        if self.run_manifest_payload_sha256 != _contract_hash(self.run_manifest):
+            raise ValueError("authenticated run manifest/config/capability substitution detected")
+        if self.capabilities_sha256 != self.capability_hash(self.run_manifest.adapter_capabilities):
+            raise ValueError("authenticated capability hash mismatch")
+        if self.adapter_configuration_hash != self.run_manifest.adapter_info.configuration_hash:
+            raise ValueError("authenticated adapter configuration mismatch")
+        if self.scorer_configuration_hash != self.run_manifest.scorer_config.configuration_hash:
+            raise ValueError("authenticated scorer configuration mismatch")
+        if self.run_id != self.run_manifest.run_id:
+            raise ValueError("run identity does not match authenticated run manifest")
         return self
 
 
@@ -137,11 +217,20 @@ def _validate_bindings(task, run, context):
         raise ValueError("task_id mismatch between task and run")
     if run.run_id != context.run_id:
         raise ValueError("run_id mismatch between run and verified context")
+    if context.task_id != task.task_id or context.task_payload_sha256 != _contract_hash(task):
+        raise ValueError("authenticated task substitution detected")
+    if context.run_payload_sha256 != _contract_hash(run):
+        raise ValueError("authenticated run substitution detected")
     if run.adapter_id != context.adapter_info.adapter_id:
         raise ValueError("adapter_id mismatch between run and verified context")
-    if context.verified_capabilities_sha256 != context.capability_hash(context.capabilities):
-        raise ValueError("forged capabilities")
     provenance = run.parser_extractor_provenance
+    manifest = context.run_manifest
+    if provenance.action_parser_version != manifest.action_parser_version or provenance.answer_parser_version != manifest.answer_parser_version:
+        raise ValueError("parser config identity mismatch")
+    if provenance.memory_entry_extractor_version != manifest.memory_entry_extractor_version:
+        raise ValueError("extractor config identity mismatch")
+    if provenance.redaction_policy_version != manifest.redaction_policy_version:
+        raise ValueError("redaction config identity mismatch")
     if context.adapter_info.extractor_version is not None and provenance.memory_entry_extractor_version != context.adapter_info.extractor_version:
         raise ValueError("extractor/config version mismatch")
 
@@ -174,7 +263,61 @@ def _forgotten_values(replay):
 
 
 def _entry_matches_version(entry, version):
-    return entry.object_key_candidate is not None and _identity(entry.object_key_candidate) == _identity(version.object_key) and _same(entry.value_candidate, version.value)
+    if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
+        return False
+    if entry.version_index is not None:
+        return entry.version_index == version.version_index
+    if entry.source_event_ids:
+        return bool(set(entry.source_event_ids) & set(version.source_event_ids))
+    return _same(entry.value_candidate, version.value)
+
+
+def _entry_current_match_status(entry, version, replay):
+    if entry.version_index is not None or entry.source_event_ids:
+        return _entry_matches_version(entry, version)
+    if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
+        return False
+    ledger = replay.ledger_by_identity.get(_identity(version.object_key))
+    same_value_versions = [] if ledger is None else [candidate for candidate in ledger.versions if candidate.status == LedgerEntryStatus.PRESENT and _same(candidate.value, entry.value_candidate)]
+    if len(same_value_versions) > 1:
+        return None
+    return _same(entry.value_candidate, version.value)
+
+
+def _entry_obsolete_status(entry, replay):
+    if entry.object_key_candidate is None:
+        return False
+    ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
+    if ledger is None or not ledger.versions:
+        return False
+    if entry.version_index is not None:
+        return entry.version_index < ledger.versions[-1].version_index
+    if entry.source_event_ids:
+        current_sources = set(ledger.versions[-1].source_event_ids)
+        if set(entry.source_event_ids) & current_sources:
+            return False
+        return any(set(entry.source_event_ids) & set(version.source_event_ids) for version in ledger.versions[:-1])
+    current = ledger.versions[-1]
+    obsolete = [version for version in ledger.versions[:-1] if version.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, version.value)]
+    if obsolete and current.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, current.value):
+        return None
+    return bool(obsolete)
+
+
+def _entry_forgotten_status(entry, replay):
+    if entry.object_key_candidate is None:
+        return False
+    ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
+    if ledger is None:
+        return False
+    matched = None
+    if entry.version_index is not None and entry.version_index < len(ledger.versions):
+        matched = ledger.versions[entry.version_index]
+    elif entry.source_event_ids:
+        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
+    if matched is None:
+        return None
+    return any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[matched.version_index + 1:])
 
 
 def _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts):
@@ -223,7 +366,10 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "compaction_ratio": return snapshot.store_size / mutations, None
         if leaf == "write_amplification": return sum(action.operation not in {None, Operation.NOOP} for action in actions) / mutations, None
         current_versions = tuple(replay.current_state.values())
-        stale = [entry for entry in entries if entry.object_key_candidate is not None and not any(_entry_matches_version(entry, version) for version in current_versions)]
+        statuses = tuple(_entry_obsolete_status(entry, replay) for entry in entries)
+        if any(status is None for status in statuses) and leaf in {"obsolete_version_count", "stale_conflicting_value_count", "duplicate_current_count"}:
+            return None, "version identity is ambiguous for repeated-value store entries"
+        stale = [entry for entry, status in zip(entries, statuses) if status is True]
         if leaf == "obsolete_version_count": return len(stale), None
         if leaf == "stale_conflicting_value_count": return len(stale), None
         if leaf == "duplicate_current_count": return sum(max(0, sum(_entry_matches_version(entry, version) for entry in entries) - 1) for version in current_versions), None
@@ -231,17 +377,33 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if not traces: return None, "retrieval traces are missing"
         current_queries = [query for query in task.queries if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}]
         current_rows = [(query, traces.get(query.query_id)) for query in current_queries if traces.get(query.query_id) is not None]
-        if leaf == "current_recall_at_k": return (_mean([float(any(any(_entry_matches_version(entry, version) for version in resolutions[q.query_id].selected_versions) for entry in trace.retrieved_entries)) for q, trace in current_rows]), None) if current_rows else (None, "no current retrieval rows")
+        current_statuses = {
+            query.query_id: tuple(
+                any(_entry_current_match_status(entry, version, replay) is True for version in resolutions[query.query_id].selected_versions)
+                if not any(_entry_current_match_status(entry, version, replay) is None for version in resolutions[query.query_id].selected_versions)
+                else None
+                for entry in trace.retrieved_entries
+            )
+            for query, trace in current_rows
+        }
+        if leaf in {"current_recall_at_k", "current_mrr"} and any(status is None for statuses in current_statuses.values() for status in statuses):
+            return None, "version identity is ambiguous for repeated-value current retrieval entries"
+        if leaf == "current_recall_at_k": return (_mean([float(any(status is True for status in current_statuses[q.query_id])) for q, trace in current_rows]), None) if current_rows else (None, "no current retrieval rows")
         if leaf == "current_mrr":
             reciprocal = []
             for query, trace in current_rows:
-                hit = next((index + 1 for index, entry in enumerate(trace.retrieved_entries) if any(_entry_matches_version(entry, version) for version in resolutions[query.query_id].selected_versions)), None)
+                hit = next((index + 1 for index, status in enumerate(current_statuses[query.query_id]) if status is True), None)
                 reciprocal.append(0.0 if hit is None else 1.0 / hit)
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
-        obsolete = replay.obsolete_present_values
-        exposed = [any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in trace.retrieved_entries) for trace in traces.values()]
+        classified = {
+            trace.query_id: tuple(_entry_obsolete_status(entry, replay) for entry in trace.retrieved_entries)
+            for trace in traces.values()
+        }
+        if any(status is None for statuses in classified.values() for status in statuses):
+            return None, "version identity is ambiguous for repeated-value retrieval entries"
+        exposed = [any(status is True for status in classified[trace.query_id]) for trace in traces.values()]
         if leaf == "stale_exposure_rate": return _mean([float(value) for value in exposed]), None
-        if leaf == "stale_count_in_context": return sum(sum(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()), None
+        if leaf == "stale_count_in_context": return sum(sum(status is True for status in classified[trace.query_id]) for trace in traces.values()), None
         if leaf == "distractor_exposure_rate": return _mean([float(trace.distractor_in_context is True) for trace in traces.values()]), None
     if layer == "answer_scores":
         if not predictions: return None, "answer predictions are missing"
@@ -286,11 +448,16 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             observations = []
             for fact in ttl:
                 target_ids = [key.canonical_id for key in fact[0].target_object_keys]
-                observed_snapshot = next((item for item in run.memory_snapshots if item.after_event_id == fact[0].event_id), None)
+                event_times = {event.event_id: event.timestamp for event in task.events if event.timestamp is not None}
+                candidates = [
+                    item for item in run.memory_snapshots
+                    if item.after_event_id in event_times
+                    and fact[0].effective_at is not None
+                    and event_times[item.after_event_id] >= fact[0].effective_at
+                ]
+                observed_snapshot = min(candidates, key=lambda item: event_times[item.after_event_id]) if candidates else None
                 if observed_snapshot is None:
-                    observed_snapshot = snapshot
-                if observed_snapshot is None:
-                    return None, "TTL state snapshot missing"
+                    return None, "TTL expiry-time state snapshot missing"
                 observed_state = dict(observed_snapshot.state_by_object)
                 observations.append(float(fact[6] and fact[3] and fact[4] and all(target not in observed_state for target in target_ids)))
             return _mean(observations), None
@@ -300,10 +467,13 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         forgotten = _forgotten_values(replay)
         if leaf == "forgotten_exposure_rate":
             if not traces: return None, "retrieval traces missing"
-            return _mean([float(any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries)) for trace in traces.values()]), None
+            classified = [tuple(_entry_forgotten_status(entry, replay) for entry in trace.retrieved_entries) for trace in traces.values()]
+            if any(status is None for statuses in classified for status in statuses):
+                return None, "version identity is ambiguous for forgotten-value retrieval entries"
+            return _mean([float(any(status is True for status in statuses)) for statuses in classified]), None
         if leaf == "forgotten_value_leakage_rate":
             if not predictions: return None, "answer predictions missing"
-            return _mean([float(any(_same(item.parsed_answer, value) for value in forgotten)) for item in predictions.values()]), None
+            return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in forgotten)) for item in predictions.values()]), None
     if layer == "historical_scores":
         kinds = {
             "current_state_accuracy": {QueryTypeV3.CURRENT}, "previous_state_accuracy": {QueryTypeV3.PREVIOUS},
@@ -342,11 +512,29 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             rows = [(q, traces[q.query_id]) for q in g if q.query_id in traces]
             return (_mean([len(set(evidence[q.query_id].supporting_event_ids) & {event for entry in trace.retrieved_entries for event in entry.source_event_ids}) / len(evidence[q.query_id].supporting_event_ids) for q, trace in rows]), None) if rows else (None, "reasoning retrieval support missing")
         if leaf == "stale_propagation_rate":
-            rows = [predictions[q.query_id] for q in g if q.query_id in predictions]
-            obsolete = replay.obsolete_present_values
-            return (_mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in rows]), None) if rows else (None, "G answer predictions missing")
+            rows = [predictions[q.query_id] for q in g if q.query_id in predictions and evidence[q.query_id].stale_alternative is not None]
+            return (_mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and _same(item.parsed_answer, evidence[item.query_id].stale_alternative.answer)) for item in rows]), None) if rows else (None, "registered stale-alternative prediction rows missing")
     return None, "metric artifact is unavailable"
 
+
+def _metric_applies_to_task_v3(path, task, replay):
+    if path.startswith("deletion_scores."):
+        deletes = [action for action in task.actions if action.operation == Operation.DELETE]
+        if not deletes:
+            return False
+        if path == "deletion_scores.ttl_compliance_rate":
+            return any(action.scope is not None and action.scope.value == "ttl" for action in deletes)
+        if path == "deletion_scores.relearn_accuracy":
+            return any(
+                any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[:-1])
+                and ledger.versions[-1].status == LedgerEntryStatus.PRESENT
+                for ledger in replay.ledgers
+            )
+        if path in {"deletion_scores.forgotten_exposure_rate", "deletion_scores.forgotten_value_leakage_rate"}:
+            return any(any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions) for ledger in replay.ledgers)
+    if path == "synthesis_scores.stale_propagation_rate":
+        return any(evidence.stale_alternative is not None for evidence in task.gold_evidence)
+    return True
 
 def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: VerifiedScoringContextV3) -> ScoreRecordV3:
     task = MemUpdateTaskV3.model_validate(task.model_dump(mode="python"))
@@ -362,7 +550,7 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
         raise ValueError("typed query resolution failed")
     evidence = {item.query_id: item for item in task.gold_evidence}
     for item in task.gold_evidence:
-        evaluated = evaluate_evidence_v3(item, replay)
+        evaluated = evaluate_evidence_v3(item, replay, item.stale_alternative)
         # Non-G derivation operation vocabularies are descriptive and need not execute.
         if any(query.query_id == item.query_id and query.query_type in {QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP, QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY} for query in task.queries) and evaluated.issues:
             raise ValueError(f"G evidence replay failed: {evaluated.issues[0].code}")
@@ -374,7 +562,7 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     runtime_failed = run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL} or bool(run.exceptions)
     for path, descriptor in CORE_METRIC_REGISTRY_V3.items():
         layer, leaf = path.split(".", 1)
-        if not metric_applies_v3(descriptor, task.task_family, query_kinds):
+        if not metric_applies_v3(descriptor, task.task_family, query_kinds) or not _metric_applies_to_task_v3(path, task, replay):
             support[path] = _support(SupportReason.NOT_APPLICABLE, "Metric does not apply to this family/query kind.")
             continue
         if path not in requested:

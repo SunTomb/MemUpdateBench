@@ -22,6 +22,20 @@ def _same(left, right):
     return type(left) is type(right) and left == right
 
 
+def _contains_value(output, candidate):
+    if _same(output, candidate):
+        return True
+    output = _plain(output)
+    candidate = _plain(candidate)
+    if isinstance(output, str) and isinstance(candidate, str):
+        return bool(candidate) and candidate.casefold() in output.casefold()
+    if isinstance(output, Mapping):
+        return any(_contains_value(value, candidate) for value in output.values())
+    if isinstance(output, list):
+        return any(_contains_value(value, candidate) for value in output)
+    return False
+
+
 def _forgotten_values(replay):
     values = []
     for ledger in replay.ledgers:
@@ -29,6 +43,25 @@ def _forgotten_values(replay):
             if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in ledger.versions[index + 1:]):
                 values.append(version.value)
     return values
+
+
+def _entry_version_status(entry, replay):
+    if entry.object_key_candidate is None:
+        return False, False
+    identity = (entry.object_key_candidate.namespace, entry.object_key_candidate.entity, entry.object_key_candidate.attribute, entry.object_key_candidate.subkey)
+    ledger = replay.ledger_by_identity.get(identity)
+    if ledger is None or not ledger.versions:
+        return False, False
+    matched = None
+    if entry.version_index is not None and entry.version_index < len(ledger.versions):
+        matched = ledger.versions[entry.version_index]
+    elif entry.source_event_ids:
+        matched = next((version for version in ledger.versions if set(entry.source_event_ids) & set(version.source_event_ids)), None)
+    if matched is None:
+        return None, None
+    obsolete = matched.version_index < ledger.versions[-1].version_index
+    forgotten = any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions[matched.version_index + 1:])
+    return obsolete, forgotten
 
 
 def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, traces, evidence) -> tuple[str, ...]:
@@ -68,17 +101,19 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     if deletion.get("relearn_accuracy") not in {None, 1.0}: flags.add("current_state_missing")
     forgotten = _forgotten_values(replay)
     obsolete = replay.obsolete_present_values
-    final_snapshot = run.memory_snapshots[-1] if run.memory_snapshots else None
-    if final_snapshot and any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in final_snapshot.entries): flags.add("stale_retained")
-    if any(trace.stale_in_context is True or any(any(_same(entry.value_candidate, value) for value in obsolete) for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("stale_retrieved")
-    if any(any(any(_same(entry.value_candidate, value) for value in forgotten) for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")
-    if any(any(_same(prediction.parsed_answer, value) for value in obsolete) for prediction in predictions.values()): flags.add("stale_copied")
-    if any(any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.add("forgotten_value_exposed")
+    event_positions = {event.event_id: event.sequence_index for event in task.events}
+    snapshots = [snapshot for snapshot in run.memory_snapshots if snapshot.after_event_id in event_positions]
+    final_snapshot = max(snapshots, key=lambda snapshot: event_positions[snapshot.after_event_id]) if snapshots else (run.memory_snapshots[-1] if run.memory_snapshots else None)
+    if final_snapshot and any(_entry_version_status(entry, replay)[0] is True for entry in final_snapshot.entries): flags.add("stale_retained")
+    if any(trace.stale_in_context is True or any(_entry_version_status(entry, replay)[0] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("stale_retrieved")
+    if any(any(_entry_version_status(entry, replay)[1] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")
+    if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in obsolete) for prediction in predictions.values()): flags.add("stale_copied")
+    if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.add("forgotten_value_exposed")
     for query_id, prediction in predictions.items():
         trace = traces.get(query_id)
         gold_answer = evidence[query_id].answer
         wrong = not prediction.format_valid or not _same(prediction.parsed_answer, gold_answer)
-        if not prediction.format_valid:
+        if not prediction.format_valid and _same(prediction.parsed_answer, gold_answer):
             flags.add("answer_format_only")
         if trace is not None:
             if trace.gold_in_context is False:
@@ -87,7 +122,13 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
                 flags.add("gold_retrieved_wrong_answer")
             if trace.distractor_in_context is True:
                 flags.add("distractor_retrieved")
-                if wrong:
+                candidates = tuple(
+                    candidate
+                    for entry in trace.retrieved_entries
+                    for candidate in (entry.value_candidate, entry.content)
+                    if candidate is not None
+                )
+                if any(_contains_value(prediction.parsed_answer, candidate) for candidate in candidates):
                     flags.add("distractor_copied")
     if historical.get("version_confusion_rate") not in {None, 0.0}: flags.add("version_confusion")
     if any(historical.get(field) not in {None, 1.0} for field in ("previous_state_accuracy", "point_in_time_accuracy", "transition_accuracy", "ordered_history_accuracy", "historical_distance_accuracy")): flags.add("version_confusion")
@@ -131,6 +172,9 @@ def failure_taxonomy_coverage_v3(scores: Iterable[ScoreRecordV3], *, families: I
 
     def qualifies(row):
         if row.completion_status != CompletionStatus.COMPLETED: return False
+        row_flags = {flag.value if hasattr(flag, "value") else flag for flag in row.failure_flags}
+        if row_flags == {"system_exception"}:
+            return False
         principal_values = []
         for path, descriptor in CORE_METRIC_REGISTRY_V3.items():
             if not descriptor.principal: continue
