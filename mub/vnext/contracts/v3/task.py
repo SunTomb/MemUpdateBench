@@ -727,6 +727,10 @@ def _validate_multi_hop_read_eligibility(
     if consumed_events != set(evidence.supporting_event_ids):
         raise ValueError("multi-hop read provenance does not consume authenticated evidence support")
     if stale_alternative:
+        resolved_targets = {identity for identity, _ in resolved_versions}
+        influential_targets = _derivation_influential_objects(evidence) & targets
+        if not targets <= resolved_targets or not targets <= influential_targets:
+            raise ValueError("stale alternative read provenance lacks target coverage or influence")
         if not resolved_versions - selected_versions:
             raise ValueError("stale alternative read provenance does not differ from the query selector")
     elif not selected_versions <= resolved_versions:

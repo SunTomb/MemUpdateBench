@@ -1207,6 +1207,82 @@ def replayable_multi_object_consistency_payload(second_event_id):
     return changed
 
 
+def replayable_multi_target_hop_payload():
+    changed = replayable_multi_object_consistency_payload("e0")
+    first, second = changed["target_objects"]
+    changed["actions"].append({
+        "action_id": "a-second-update", "event_id": "e3", "operation": "UPDATE", "scope": "object",
+        "target_object_keys": [second], "value": "z2", "effective_at": "003",
+    })
+    next(event for event in changed["events"] if event["event_id"] == "e3")["gold_action_ids"].append("a-second-update")
+    second_entry = changed["version_history"][1]["entries"][0]
+    second_entry["valid_until_event_id"] = "e3"
+    changed["version_history"][1]["entries"].append({
+        "version_index": 1, "status": "present", "value": "z2",
+        "valid_from_event_id": "e3", "logical_time": "003", "source_event_ids": ["e3"],
+    })
+    changed["queries"][0].update(
+        query_type="update_sensitive_multi_hop",
+        selector={"kind": "multi_object_current", "object_keys": [first, second]},
+        synthesis={"kind": "update_sensitive_multi_hop", "minimum_hops": 2},
+    )
+    changed["gold_evidence"][0].update(
+        answer=False,
+        supporting_event_ids=["e3"],
+        derivation_steps=[
+            {"step_id": "first-current", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "second-current", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e3"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-current", "second-current"]},
+        ],
+        final_derivation_step_id="equals",
+        stale_alternative={
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e1", "e3"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "second-current", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e3"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "second-current"]},
+            ],
+            "final_derivation_step_id": "equals",
+        },
+    )
+    return changed
+
+
+@pytest.mark.parametrize("missing_target", ["first", "second"])
+def test_stale_multi_hop_requires_read_influence_for_every_target(missing_target):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    valid = replayable_multi_target_hop_payload()
+    valid_task = MemUpdateTaskV3.model_validate(valid)
+    replay = replay_task_v3(valid_task)
+    evaluation = evaluate_evidence_v3(
+        valid_task.gold_evidence[0], replay, valid_task.gold_evidence[0].stale_alternative,
+        valid_task.queries[0], valid_task.events,
+    )
+    assert replay.issues == ()
+    assert evaluation.issues == ()
+    assert evaluation.stale_alternative_answer is False
+
+    omitted = deepcopy(valid)
+    first, second = omitted["target_objects"]
+    retained = second if missing_target == "first" else first
+    stale_event = "e0" if missing_target == "first" else "e1"
+    alternative = omitted["gold_evidence"][0]["stale_alternative"]
+    alternative.update(
+        answer=True,
+        supporting_event_ids=[stale_event],
+        derivation_steps=[
+            {"step_id": "duplicate-a", "operation": "read", "supporting_object_keys": [retained], "supporting_event_ids": [stale_event]},
+            {"step_id": "duplicate-b", "operation": "read", "supporting_object_keys": [retained], "supporting_event_ids": [stale_event]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["duplicate-a", "duplicate-b"]},
+        ],
+        final_derivation_step_id="equals",
+    )
+    with pytest.raises(ValueError, match="target|coverage|influence"):
+        MemUpdateTaskV3.model_validate(omitted)
+
+
 def set_repeated_first_values(changed, value="same"):
     first = changed["target_objects"][0]
     for action in changed["actions"]:
