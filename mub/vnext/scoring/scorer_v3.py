@@ -16,6 +16,7 @@ from mub.vnext.contracts.v3.runtime import TaskRunRecordV3
 from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, ScorerConfigV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.io import sha256_model
+from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
 from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2, missing_capabilities as missing_capabilities_v2
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3, metric_applies_v3, missing_capabilities_v3
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
@@ -288,12 +289,7 @@ def _validate_bindings(task, run, context):
 
 
 def _action_facts(task, run):
-    by_event = {action.event_id: action for action in run.parsed_actions}
-    gold = list(task.actions)
-    unknown_events = set(by_event) - {action.event_id for action in gold}
-    if unknown_events:
-        raise ValueError(f"runtime contains unknown action event IDs: {sorted(unknown_events)}")
-    rows = [(action, by_event.get(action.event_id)) for action in gold]
+    rows = bind_action_pairs_v3(task, run)
     def exact_target(left, right):
         return tuple(_identity(key) for key in left) == tuple(_identity(key) for key in right)
     facts = []

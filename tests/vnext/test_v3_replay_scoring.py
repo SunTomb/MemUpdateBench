@@ -2111,25 +2111,108 @@ def test_namespace_or_subkey_target_mismatch_has_object_key_failure_flag():
     assert "wrong_object_key" in flags
 
 
-def test_action_facts_reject_runtime_actions_for_unknown_events():
+def _parsed_action_for(action, *, action_id=None, event_id=None):
     from mub.vnext.contracts.v3.runtime import ParsedManagerActionV3
-    from mub.vnext.scoring.scorer_v3 import _action_facts
 
-    task = MemUpdateTaskV3.model_validate(payload())
-    gold = task.actions[0]
-    extra = ParsedManagerActionV3(
-        action_id="unknown-action",
-        event_id="unknown", operation=gold.operation, observed_scope=gold.scope,
-        target_object_keys=gold.target_object_keys, value=gold.value, format_valid=True,
-        execution_status="executed", fallback_used=False, raw_output="extra",
+    return ParsedManagerActionV3(
+        action_id=action.action_id if action_id is None else action_id,
+        event_id=action.event_id if event_id is None else event_id,
+        operation=action.operation, observed_scope=action.scope,
+        target_object_keys=action.target_object_keys, value=action.value, format_valid=True,
+        execution_status="executed", fallback_used=False, raw_output="ok",
     )
-    run = TaskRunRecordV3(
-        task_id="t", adapter_id="a", run_id="extra-action", parsed_actions=(extra,),
+
+
+def _run_with_parsed_actions(parsed_actions, run_id):
+    return TaskRunRecordV3(
+        task_id="t", adapter_id="a", run_id=run_id, parsed_actions=tuple(parsed_actions),
         parser_extractor_provenance=ParserExtractorProvenanceV3(action_parser_version="1", answer_parser_version="1", memory_entry_extractor_version="1", redaction_policy_version="1"),
         completion_status="completed",
     )
-    with pytest.raises(ValueError, match="unknown action event"):
+
+
+def test_action_facts_bind_same_event_actions_by_action_id_with_perfect_metrics():
+    from mub.vnext.scoring.scorer_v3 import _action_facts, _metric_value
+
+    task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e3"))
+    replay = replay_task_v3(task)
+    same_event = [action for action in task.actions if action.event_id == "e3"]
+    assert replay.issues == ()
+    assert len(same_event) == 2
+    assert len({action.action_id for action in same_event}) == 2
+
+    run = _run_with_parsed_actions(
+        (_parsed_action_for(action) for action in task.actions),
+        "same-event-actions",
+    )
+    facts = _action_facts(task, run)
+    same_event_facts = [fact for fact in facts if fact[0].event_id == "e3"]
+    assert len(same_event_facts) == 2
+    assert [(gold.action_id, observed.action_id if observed else None) for gold, observed, *_ in facts] == [
+        (action.action_id, action.action_id) for action in task.actions
+    ]
+
+    expected_metrics = {
+        "operation_accuracy": 1.0,
+        "entity_accuracy": 1.0,
+        "attribute_accuracy": 1.0,
+        "object_key_accuracy": 1.0,
+        "value_accuracy": 1.0,
+        "full_action_exact_match": 1.0,
+        "false_write_rate": 0.0,
+        "missed_write_rate": 0.0,
+        "wrong_object_write_rate": 0.0,
+    }
+    for leaf, expected in expected_metrics.items():
+        value, detail = _metric_value(
+            f"action_scores.{leaf}", task, run, None, replay, {}, {}, {}, {}, facts,
+        )
+        assert detail is None
+        assert value == expected
+
+
+@pytest.mark.parametrize("event_id", ["e0", "unknown-event"])
+def test_action_facts_reject_unknown_action_id_without_event_fallback(event_id):
+    from mub.vnext.scoring.scorer_v3 import _action_facts
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    observed = _parsed_action_for(task.actions[0], action_id="unknown-action", event_id=event_id)
+    run = _run_with_parsed_actions((observed,), f"unknown-id-{event_id}")
+    with pytest.raises(ValueError, match="unknown observed action_id"):
         _action_facts(task, run)
+
+
+def test_action_facts_reject_known_action_id_with_wrong_event_id():
+    from mub.vnext.scoring.scorer_v3 import _action_facts
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    observed = _parsed_action_for(task.actions[0], event_id=task.actions[1].event_id)
+    run = _run_with_parsed_actions((observed,), "wrong-event")
+    with pytest.raises(ValueError, match="event_id mismatch"):
+        _action_facts(task, run)
+
+
+def test_action_facts_represent_one_missing_same_event_action_once():
+    from mub.vnext.scoring.scorer_v3 import _action_facts, _metric_value
+
+    task = MemUpdateTaskV3.model_validate(replayable_multi_object_consistency_payload("e3"))
+    replay = replay_task_v3(task)
+    missing = next(action for action in task.actions if action.action_id == "a-second")
+    run = _run_with_parsed_actions(
+        (_parsed_action_for(action) for action in task.actions if action.action_id != missing.action_id),
+        "one-missing-action",
+    )
+    facts = _action_facts(task, run)
+    missing_facts = [fact for fact in facts if fact[1] is None]
+    assert len(facts) == len(task.actions)
+    assert len(missing_facts) == 1
+    assert missing_facts[0][0].action_id == missing.action_id
+
+    execution_rate, detail = _metric_value(
+        "protocol_scores.execution_success_rate", task, run, None, replay, {}, {}, {}, {}, facts,
+    )
+    assert detail is None
+    assert execution_rate == (len(task.actions) - 1) / len(task.actions)
 
 
 def test_answer_state_consistency_denominator_uses_only_applicable_queries():
