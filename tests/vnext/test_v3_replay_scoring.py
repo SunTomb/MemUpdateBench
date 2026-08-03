@@ -3,6 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 import pytest
+from pydantic import ValidationError
 
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
 from mub.vnext.contracts.v3.manifest import RunManifestV3, TaskManifestV3
@@ -456,6 +457,16 @@ def test_valid_ttl_delete_replays_at_its_effective_logical_time() -> None:
     assert replay.issues == ()
     assert replay.ledgers[0].versions[2].logical_time == ttl_action.effective_at
     assert replay.ledgers[0].versions[2].valid_from_event_id is None
+
+
+@pytest.mark.parametrize("effective_at", ["", " ", "\t\n"])
+def test_full_task_rejects_blank_ttl_effective_at(effective_at: str) -> None:
+    changed = payload()
+    changed["actions"][2]["scope"] = "ttl"
+    changed["actions"][2]["effective_at"] = effective_at
+
+    with pytest.raises(ValidationError, match="TTL.*effective_at"):
+        MemUpdateTaskV3.model_validate(changed)
 
 
 def test_g_evidence_evaluator_uses_ordered_operands_and_rejects_unknown_ops():

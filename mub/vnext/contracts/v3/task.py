@@ -150,6 +150,15 @@ class GoldActionV3(ImmutableContractModel):
     effective_at: str | None = Field(default=None, strict=True)
     expected_effect: FrozenJsonObjectV3 = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_ttl_effective_at(cls, data):
+        if isinstance(data, Mapping) and data.get("operation") == Operation.DELETE and data.get("scope") == ActionScope.TTL:
+            effective_at = data.get("effective_at")
+            if type(effective_at) is not str or not effective_at.strip():
+                raise ValueError("TTL DELETE requires nonblank effective_at")
+        return data
+
     @model_validator(mode="after")
     def _coherent(self) -> Self:
         validate_action_coherence(operation=self.operation, scope=self.scope, targets=self.target_object_keys, value=self.value)

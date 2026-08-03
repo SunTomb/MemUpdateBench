@@ -61,6 +61,35 @@ def test_ttl_delete_requires_effective_at_but_object_delete_does_not() -> None:
     scheduled = GoldActionV3(**action, effective_at="010")
     assert scheduled.effective_at == "010"
     assert GoldActionV3(**{**action, "scope": "object"}).effective_at is None
+    assert GoldActionV3(**{**action, "scope": "object"}, effective_at="").effective_at == ""
+
+
+@pytest.mark.parametrize("effective_at", ["", " ", "\t\n"])
+def test_ttl_delete_rejects_blank_effective_at(effective_at: str) -> None:
+    with pytest.raises(ValidationError, match="TTL.*effective_at"):
+        GoldActionV3(
+            action_id="a",
+            event_id="ev",
+            operation="DELETE",
+            scope="ttl",
+            target_object_keys=(key(),),
+            effective_at=effective_at,
+        )
+
+
+def test_ttl_delete_requires_exact_builtin_string_effective_at() -> None:
+    class StringSubclass(str):
+        pass
+
+    with pytest.raises(ValidationError, match="TTL.*effective_at"):
+        GoldActionV3(
+            action_id="a",
+            event_id="ev",
+            operation="DELETE",
+            scope="ttl",
+            target_object_keys=(key(),),
+            effective_at=StringSubclass("010"),
+        )
 
 
 @pytest.mark.parametrize("answer_schema", ["string", "number", "boolean"])
