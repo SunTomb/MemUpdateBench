@@ -151,6 +151,47 @@ def test_event_anchor_does_not_look_ahead_at_equal_timestamp():
     assert resolution.selected_event_ids == ("e0",)
 
 
+def test_event_anchor_accepts_globally_known_noop_inside_version_interval():
+    changed = payload()
+    changed["events"].insert(1, {
+        "event_id": "e-noop", "sequence_index": 1, "raw_text": "ordinary",
+        "normalized_text": "ordinary", "role": "neutral", "gold_action_ids": ["a-noop"],
+    })
+    for index, event in enumerate(changed["events"]):
+        event["sequence_index"] = index
+    changed["actions"].insert(1, {
+        "action_id": "a-noop", "event_id": "e-noop", "operation": "NOOP",
+    })
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "point_in_time", "text": "?",
+        "selector": {"kind": "event_anchor", "event_id": "e-noop"},
+        "target_object_keys": changed["target_objects"], "answer_schema": "string",
+        "evaluation_mode": "state_direct",
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": "v0", "supporting_object_keys": changed["target_objects"],
+        "supporting_event_ids": ["e0"],
+        "derivation_steps": [{
+            "step_id": "read", "operation": "read",
+            "supporting_object_keys": changed["target_objects"], "supporting_event_ids": ["e0"],
+        }],
+        "final_derivation_step_id": "read",
+    }
+
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+    assert replay.issues == ()
+    assert resolution.issues == ()
+    assert resolution.answer == "v0"
+    assert tuple(version.version_index for version in resolution.selected_versions) == (0,)
+
+    unknown = deepcopy(changed)
+    unknown["queries"][0]["selector"]["event_id"] = "not-an-event"
+    with pytest.raises(ValueError, match="unknown event anchor"):
+        MemUpdateTaskV3.model_validate(unknown)
+
+
 def test_metric_family_aliases_include_canonical_letters_registry_wide():
     from mub.vnext.scoring.registry_v3 import metric_applies_v3
 
@@ -663,6 +704,40 @@ def test_future_ttl_transition_preserves_state_until_exact_expiry():
     assert replay.current_state[key.canonical_id].value == "v2"
 
 
+@pytest.mark.parametrize(
+    ("event_id", "answer", "answer_schema", "support_event_id"),
+    (("e2", "v1", "string", "e1"), ("e-later", [None], "list", "e2")),
+)
+def test_event_anchor_contract_uses_interval_and_logical_time_without_lookahead(
+    event_id, answer, answer_schema, support_event_id,
+):
+    changed = future_ttl_payload()
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "point_in_time", "text": "?",
+        "selector": {"kind": "event_anchor", "event_id": event_id},
+        "target_object_keys": changed["target_objects"], "answer_schema": answer_schema,
+        "evaluation_mode": "state_direct",
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": answer, "supporting_object_keys": changed["target_objects"],
+        "supporting_event_ids": [support_event_id],
+        "derivation_steps": [{
+            "step_id": "read", "operation": "read",
+            "supporting_object_keys": changed["target_objects"],
+            "supporting_event_ids": [support_event_id],
+        }],
+        "final_derivation_step_id": "read",
+    }
+
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+    assert replay.issues == ()
+    assert resolution.issues == ()
+    assert resolution.answer == task.gold_evidence[0].answer
+    assert resolution.selected_event_ids == (support_event_id,)
+
+
 def ttl_horizon_payload(query_time, answer):
     changed = future_ttl_payload()
     changed["events"] = changed["events"][:3]
@@ -707,6 +782,41 @@ def test_current_query_contract_uses_pre_expiry_horizon_not_future_tombstone():
     replay = replay_task_v3(task)
     assert replay.issues == ()
     assert resolve_query_v3(task.queries[0], replay, task.events).answer == "v1"
+
+
+def test_ordered_history_contract_and_replay_exclude_future_ttl_versions():
+    changed = ttl_horizon_payload("005", "v1")
+    changed["queries"][0].update(
+        query_type="ordered_history",
+        selector={"kind": "ordered_history"},
+        answer_schema="list",
+    )
+    changed["gold_evidence"][0].update(
+        answer=["v0", "v1"],
+        supporting_event_ids=["e0", "e1"],
+        derivation_steps=[{
+            "step_id": "history",
+            "operation": "ordered_history",
+            "supporting_object_keys": changed["target_objects"],
+            "supporting_event_ids": ["e0", "e1"],
+        }],
+        final_derivation_step_id="history",
+    )
+
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+    assert replay.issues == ()
+    assert resolution.issues == ()
+    assert resolution.answer == ("v0", "v1")
+    assert tuple(version.version_index for version in resolution.selected_versions) == (0, 1)
+
+    out_of_horizon = deepcopy(changed)
+    out_of_horizon["queries"][0]["selector"]["end_version_index"] = 2
+    out_of_horizon["gold_evidence"][0]["supporting_event_ids"].append("e2")
+    out_of_horizon["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"].append("e2")
+    with pytest.raises(ValueError, match="unknown end version"):
+        MemUpdateTaskV3.model_validate(out_of_horizon)
 
 
 def test_ttl_scorer_uses_expiry_snapshot_not_scheduling_snapshot():
@@ -936,12 +1046,138 @@ def test_g_gold_contract_registers_strict_stale_alternative_derivation():
     multi["version_history"].append({"object_key": second, "entries": [{"version_index": 0, "status": "present", "value": "z", "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"]}]})
     multi["queries"][0] = {"query_id": "q", "query_type": "multi_object_current_consistency", "text": "?", "selector": {"kind": "multi_object_current", "object_keys": [first, second]}, "target_object_keys": [first, second], "answer_schema": "boolean", "evaluation_mode": "state_direct", "synthesis": {"kind": "multi_object_current_consistency", "minimum_objects": 2}}
     multi["gold_evidence"][0] = {
-        "query_id": "q", "answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e0", "e3"],
-        "derivation_steps": [{"step_id": "both", "operation": "equals", "supporting_object_keys": [first, second], "supporting_event_ids": ["e0", "e3"]}], "final_derivation_step_id": "both",
+        "query_id": "q", "answer": False, "supporting_object_keys": [first, second], "supporting_event_ids": ["e0", "e3"],
+        "derivation_steps": [
+            {"step_id": "first-current", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "second-current", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "both", "operation": "equals", "input_step_ids": ["first-current", "second-current"]},
+        ], "final_derivation_step_id": "both",
         "stale_alternative": {"answer": True, "supporting_object_keys": [first, second], "supporting_event_ids": ["e1"], "derivation_steps": [{"step_id": "one", "operation": "equals", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]}], "final_derivation_step_id": "one"},
     }
     with pytest.raises(Exception, match="stale alternative.*minimum_objects"):
         MemUpdateTaskV3.model_validate(multi)
+
+
+def multi_object_consistency_payload():
+    changed = payload()
+    first = changed["target_objects"][0]
+    second = {**first, "entity": "e2"}
+    changed["target_objects"].append(second)
+    changed["version_history"].append({
+        "object_key": second,
+        "entries": [{
+            "version_index": 0, "status": "present", "value": "z",
+            "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"],
+        }],
+    })
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "multi_object_current_consistency", "text": "?",
+        "selector": {"kind": "multi_object_current", "object_keys": [first, second]},
+        "target_object_keys": [first, second], "answer_schema": "boolean", "evaluation_mode": "state_direct",
+        "synthesis": {"kind": "multi_object_current_consistency", "minimum_objects": 2},
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": False, "supporting_object_keys": [first, second],
+        "supporting_event_ids": ["e0", "e3"],
+        "derivation_steps": [
+            {"step_id": "first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "second"]},
+        ],
+        "final_derivation_step_id": "equals",
+    }
+    return changed
+
+
+@pytest.mark.parametrize("location", ["primary-no-input", "primary-one-input", "stale-no-input"])
+def test_multi_object_consistency_requires_two_distinct_reachable_read_operands(location):
+    changed = multi_object_consistency_payload()
+    evidence = changed["gold_evidence"][0]
+    if location == "primary-no-input":
+        evidence["derivation_steps"] = [{
+            "step_id": "equals", "operation": "equals",
+            "supporting_object_keys": evidence["supporting_object_keys"],
+            "supporting_event_ids": evidence["supporting_event_ids"],
+        }]
+    elif location == "primary-one-input":
+        evidence["derivation_steps"] = [evidence["derivation_steps"][0], {
+            "step_id": "equals", "operation": "equals", "input_step_ids": ["first"],
+        }]
+    else:
+        evidence["stale_alternative"] = {
+            "answer": True, "supporting_object_keys": evidence["supporting_object_keys"],
+            "supporting_event_ids": ["e0", "e1"],
+            "derivation_steps": [{
+                "step_id": "stale-equals", "operation": "equals",
+                "supporting_object_keys": evidence["supporting_object_keys"],
+                "supporting_event_ids": ["e0", "e1"],
+            }],
+            "final_derivation_step_id": "stale-equals",
+        }
+    with pytest.raises(ValueError, match="minimum_objects"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_multi_object_consistency_does_not_count_non_target_read_support(location):
+    changed = multi_object_consistency_payload()
+    first, second = changed["queries"][0]["target_object_keys"]
+    third = {**first, "entity": "e3"}
+    changed["target_objects"].append(third)
+    changed["version_history"].append({
+        "object_key": third,
+        "entries": [{
+            "version_index": 0, "status": "present", "value": "other",
+            "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"],
+        }],
+    })
+    evidence = changed["gold_evidence"][0]
+    if location == "primary":
+        evidence["supporting_object_keys"].append(third)
+        evidence["derivation_steps"] = [
+            {"step_id": "first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "third", "operation": "read", "supporting_object_keys": [third], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first", "third"]},
+        ]
+    else:
+        evidence["stale_alternative"] = {
+            "answer": False, "supporting_object_keys": [first, second, third],
+            "supporting_event_ids": ["e0", "e1"],
+            "derivation_steps": [
+                {"step_id": "first-stale", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "third", "operation": "read", "supporting_object_keys": [third], "supporting_event_ids": ["e0"]},
+                {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-stale", "third"]},
+            ],
+            "final_derivation_step_id": "equals",
+        }
+    with pytest.raises(ValueError, match="minimum_objects"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
+@pytest.mark.parametrize("operand_count", [0, 1])
+def test_evidence_evaluator_rejects_vacuous_equals(operand_count):
+    from mub.vnext.contracts.v3.task import QueryGoldEvidenceV3
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    key = task.target_objects[0]
+    steps = []
+    input_ids = []
+    if operand_count:
+        steps.append({
+            "step_id": "read", "operation": "read",
+            "supporting_object_keys": [key], "supporting_event_ids": ["e3"],
+        })
+        input_ids.append("read")
+    steps.append({"step_id": "equals", "operation": "equals", "input_step_ids": input_ids})
+    evidence = QueryGoldEvidenceV3(
+        query_id="vacuous", answer=True, supporting_object_keys=(key,), supporting_event_ids=("e3",),
+        derivation_steps=steps, final_derivation_step_id="equals",
+    )
+    evaluation = evaluate_evidence_v3(evidence, replay_task_v3(task))
+    assert evaluation.answer is None
+    assert evaluation.issues[0].code == "evidence_replay_error"
+    assert "at least two operands" in evaluation.issues[0].message
 
 
 def test_stale_propagation_uses_registered_alternative_not_any_obsolete_value():

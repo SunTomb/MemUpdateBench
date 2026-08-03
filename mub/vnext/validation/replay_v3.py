@@ -306,8 +306,8 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times
         return (versions[selector.from_version_index], versions[selector.to_version_index]) if selector.to_version_index < len(versions) else ()
     if isinstance(selector, OrderedHistorySelector):
         start = 0 if selector.start_version_index is None else selector.start_version_index
-        end = len(versions) - 1 if selector.end_version_index is None else selector.end_version_index
-        return versions[start:end + 1]
+        end = len(active_versions) - 1 if selector.end_version_index is None else selector.end_version_index
+        return active_versions[start:end + 1]
     if isinstance(selector, EventAnchorSelector):
         anchor = event_positions.get(selector.event_id)
         if anchor is None:
@@ -435,7 +435,9 @@ def evaluate_evidence_v3(evidence: QueryGoldEvidenceV3, replay: ReplayResultV3, 
             elif operation == "multiply":
                 value = operands[0] * operands[1]
             elif operation == "equals":
-                value = all(_same(operands[0], operand) for operand in operands[1:]) if operands else True
+                if len(operands) < 2:
+                    raise ValueError("equals requires at least two operands")
+                value = all(_same(operands[0], operand) for operand in operands[1:])
             elif operation == "all":
                 value = all(operands)
             elif operation == "any":

@@ -381,6 +381,11 @@ class MemUpdateTaskV3(ImmutableContractModel):
         if set(histories) != declared:
             raise ValueError("version histories must cover declared targets exactly")
         event_position = {event_id: index for index, event_id in enumerate(event_ids)}
+        event_times = {
+            event.event_id: event.timestamp
+            for event in self.events
+            if event.timestamp is not None
+        }
         action_by_id = {action.action_id: action for action in self.actions}
         if len(action_by_id) != len(self.actions):
             raise ValueError("action IDs must be unique")
@@ -452,17 +457,8 @@ class MemUpdateTaskV3(ImmutableContractModel):
             if any(not histories[target].entries for target in targets):
                 raise ValueError("query selectors require nonempty version histories")
             selector = query.selector
-            if isinstance(selector, EventAnchorSelector):
-                if selector.event_id not in event_ids or any(
-                    selector.event_id not in {
-                        anchor
-                        for entry in histories[target].entries
-                        for anchor in (entry.valid_from_event_id, entry.valid_until_event_id, *entry.source_event_ids)
-                        if anchor is not None
-                    }
-                    for target in targets
-                ):
-                    raise ValueError("query selector references unknown event anchor")
+            if isinstance(selector, EventAnchorSelector) and selector.event_id not in event_ids:
+                raise ValueError("query selector references unknown event anchor")
             if isinstance(selector, LogicalTimeAnchorSelector) and any(
                 not any(entry.logical_time is not None and entry.logical_time <= selector.logical_time for entry in histories[target].entries)
                 for target in targets
@@ -477,7 +473,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 raise ValueError("transition selector references unknown version")
             if isinstance(selector, OrderedHistorySelector):
                 for target in targets:
-                    size = len(histories[target].entries)
+                    size = len(_horizon_active_entries(histories[target].entries, task_horizon))
                     if selector.start_version_index is not None and selector.start_version_index >= size:
                         raise ValueError("history selector references unknown start version")
                     if selector.end_version_index is not None and selector.end_version_index >= size:
@@ -492,7 +488,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
             selected_entries = [
                 entry
                 for target in targets
-                for entry in _selector_entries(query.selector, histories[target], event_position, task_horizon)
+                for entry in _selector_entries(query.selector, histories[target], event_position, event_times, task_horizon)
             ]
             if not selected_entries:
                 raise ValueError("selector does not resolve any version history entries")
@@ -528,15 +524,12 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("stale alternative does not satisfy minimum_hops")
             if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
                 minimum_objects = query.synthesis.minimum_objects
-                if len(targets) < minimum_objects or len(evidence_objects) < minimum_objects:
+                read_count, read_objects = _derivation_read_support(evidence, targets)
+                if len(targets) < minimum_objects or read_count < minimum_objects or len(read_objects) < minimum_objects:
                     raise ValueError("G derivation does not satisfy minimum_objects")
                 if alternative is not None:
-                    stale_derivation_objects = {
-                        _identity(key)
-                        for step in alternative.derivation_steps
-                        for key in step.supporting_object_keys
-                    }
-                    if len(stale_derivation_objects) < minimum_objects:
+                    stale_read_count, stale_read_objects = _derivation_read_support(alternative, targets)
+                    if stale_read_count < minimum_objects or len(stale_read_objects) < minimum_objects:
                         raise ValueError("stale alternative does not satisfy minimum_objects")
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
@@ -727,9 +720,19 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
     }
 
 
-def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_position: Mapping[str, int], horizon: str | None = None) -> tuple[VersionHistoryEntry, ...]:
+def _horizon_active_entries(entries, horizon: str | None):
+    return entries if horizon is None else tuple(entry for entry in entries if entry.logical_time is None or entry.logical_time <= horizon)
+
+
+def _selector_entries(
+    selector: SelectorV3,
+    ledger: VersionHistoryLedger,
+    event_position: Mapping[str, int],
+    event_times: Mapping[str, str],
+    horizon: str | None = None,
+) -> tuple[VersionHistoryEntry, ...]:
     entries = ledger.entries
-    active_entries = entries if horizon is None else tuple(entry for entry in entries if entry.logical_time is None or entry.logical_time <= horizon)
+    active_entries = _horizon_active_entries(entries, horizon)
     if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
         return active_entries[-1:]
     if isinstance(selector, PreviousSelector):
@@ -740,8 +743,8 @@ def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_
         return (entries[selector.from_version_index], entries[selector.to_version_index])
     if isinstance(selector, OrderedHistorySelector):
         start = selector.start_version_index or 0
-        end = selector.end_version_index if selector.end_version_index is not None else len(entries) - 1
-        return entries[start : end + 1]
+        end = selector.end_version_index if selector.end_version_index is not None else len(active_entries) - 1
+        return active_entries[start : end + 1]
     if isinstance(selector, LogicalTimeAnchorSelector):
         eligible = tuple(entry for entry in entries if entry.logical_time is not None and entry.logical_time <= selector.logical_time)
         if not eligible:
@@ -750,15 +753,28 @@ def _selector_entries(selector: SelectorV3, ledger: VersionHistoryLedger, event_
         return tuple(entry for entry in eligible if entry.logical_time == latest)
     if isinstance(selector, EventAnchorSelector):
         anchor = event_position[selector.event_id]
-        return tuple(
-            entry for entry in entries
-            if selector.event_id in entry.source_event_ids
-            or (
-                entry.valid_from_event_id is not None
-                and event_position[entry.valid_from_event_id] <= anchor
-                and (entry.valid_until_event_id is None or anchor < event_position[entry.valid_until_event_id])
+        matched = tuple(
+            entry
+            for entry in entries
+            if entry.valid_from_event_id is not None
+            and event_position[entry.valid_from_event_id] <= anchor
+            and (
+                entry.valid_until_event_id is None
+                or anchor < event_position[entry.valid_until_event_id]
             )
         )
+        event_time = event_times.get(selector.event_id)
+        scheduled = tuple(
+            entry
+            for entry in entries
+            if entry.valid_from_event_id is None
+            and entry.logical_time is not None
+            and event_time is not None
+            and entry.logical_time <= event_time
+            and all(event_position[event_id] <= anchor for event_id in entry.source_event_ids)
+        )
+        eligible = (*matched, *scheduled)
+        return () if not eligible else (max(eligible, key=lambda entry: entry.version_index),)
     raise TypeError("unknown selector")
 
 
@@ -779,6 +795,24 @@ def _derivation_depth(evidence: QueryGoldEvidenceV3) -> int:
     for step in evidence.derivation_steps:
         depths[step.step_id] = 1 + max((depths[parent] for parent in step.input_step_ids), default=0)
     return depths[evidence.final_derivation_step_id]
+
+
+def _derivation_read_support(
+    evidence,
+    allowed_objects: set[tuple[str, str, str, str | None]],
+) -> tuple[int, set[tuple[str, str, str, str | None]]]:
+    read_steps = tuple(
+        step
+        for step in evidence.derivation_steps
+        if step.operation in {"read", "read_current", "read_version"}
+        and any(_identity(key) in allowed_objects for key in step.supporting_object_keys)
+    )
+    return len(read_steps), {
+        _identity(key)
+        for step in read_steps
+        for key in step.supporting_object_keys
+        if _identity(key) in allowed_objects
+    }
 
 
 def _semantic_value(value):
