@@ -468,6 +468,98 @@ def test_e_failure_flags_are_invariant_to_requested_metric_fields():
     assert unrelated.supported_metric_fields[metric_path].reason is SupportReason.NOT_APPLICABLE
 
 
+def test_f_failure_flags_are_invariant_to_requested_metric_fields():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id="f-request-invariance",
+        answer_predictions=(AnswerPredictionV3(
+            query_id="q", raw_output="v2", parsed_answer="v2", format_valid=True,
+        ),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    capabilities = AdapterCapabilitiesV3(supports_historical_query=True)
+    metric_path = "historical_scores.version_confusion_rate"
+    relevant = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=(metric_path,)),
+        ),
+    )
+    unrelated = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=("system_scores.error_rate",)),
+        ),
+    )
+
+    assert relevant.historical_scores.version_confusion_rate == 1.0
+    assert "version_confusion" in relevant.failure_flags
+    assert unrelated.failure_flags == relevant.failure_flags
+    assert unrelated.historical_scores.version_confusion_rate is None
+    assert unrelated.supported_metric_fields[metric_path].reason is SupportReason.NOT_APPLICABLE
+
+
+def test_g_failure_flags_are_invariant_to_requested_metric_fields():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    changed = g_stale_payload()
+    changed["task_family"] = "G"
+    task = MemUpdateTaskV3.model_validate(changed)
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id="g-request-invariance",
+        answer_predictions=(AnswerPredictionV3(
+            query_id="q", raw_output="v1", parsed_answer="v1", format_valid=True,
+        ),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    capabilities = AdapterCapabilitiesV3(supports_multi_object_query=True)
+    metric_path = "synthesis_scores.stale_propagation_rate"
+    relevant = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=(metric_path,)),
+        ),
+    )
+    unrelated = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=("system_scores.error_rate",)),
+        ),
+    )
+
+    assert relevant.synthesis_scores.stale_propagation_rate == 1.0
+    assert "stale_propagation" in relevant.failure_flags
+    assert unrelated.failure_flags == relevant.failure_flags
+    assert unrelated.synthesis_scores.stale_propagation_rate is None
+    assert unrelated.supported_metric_fields[metric_path].reason is SupportReason.NOT_APPLICABLE
+
+
 def test_authenticated_scoring_context_rejects_manifest_capability_config_and_task_substitution():
     from mub.vnext.scoring.scorer_v3 import score_task_v3
 
