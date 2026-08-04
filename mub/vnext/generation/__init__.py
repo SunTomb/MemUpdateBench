@@ -28,10 +28,22 @@ from mub.vnext.generation.core_catalogs import (
 )
 from mub.vnext.generation.core_config import CoreConfig, load_core_config
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
-from mub.vnext.generation.family_a import generate_family_a_cores
-from mub.vnext.generation.family_b import generate_family_b_cores
-from mub.vnext.generation.family_c import generate_family_c_cores
-from mub.vnext.generation.family_d import generate_family_d_cores
+from mub.vnext.generation.family_a import (
+    generate_core_family_a_cores,
+    generate_family_a_cores,
+)
+from mub.vnext.generation.family_b import (
+    generate_core_family_b_cores,
+    generate_family_b_cores,
+)
+from mub.vnext.generation.family_c import (
+    generate_core_family_c_cores,
+    generate_family_c_cores,
+)
+from mub.vnext.generation.family_d import (
+    generate_core_family_d_cores,
+    generate_family_d_cores,
+)
 from mub.vnext.generation.identity import (
     action_id,
     core_id,
@@ -99,6 +111,10 @@ __all__ = [
     "compile_pilot_tasks",
     "core_id",
     "event_id",
+    "generate_core_family_a_cores",
+    "generate_core_family_b_cores",
+    "generate_core_family_c_cores",
+    "generate_core_family_d_cores",
     "generate_family_a_cores",
     "generate_family_b_cores",
     "generate_family_c_cores",
