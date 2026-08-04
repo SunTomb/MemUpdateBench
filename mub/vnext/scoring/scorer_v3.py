@@ -848,6 +848,9 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
         task=task, run=run, replay=replay, layer_values=failure_layers,
         predictions=predictions, traces=traces, evidence=evidence,
         resolutions=resolutions, lifecycle_by_query=lifecycle_by_query,
+        action_trace_observable=(
+            context.capabilities.exports_action_trace or bool(run.parsed_actions)
+        ),
     )
     return ScoreRecordV3.empty(
         task_id=task.task_id, run_id=run.run_id, adapter_id=run.adapter_id,

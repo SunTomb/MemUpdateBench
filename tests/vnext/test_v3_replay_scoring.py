@@ -4899,6 +4899,43 @@ def test_clean_not_supported_preserves_requested_observability_metrics():
     assert "system_exception" not in score.failure_flags
 
 
+def test_unobservable_not_supported_run_omits_action_failure_flags():
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id="not-supported-unobservable",
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="not_supported",
+        exceptions=(),
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    context = authenticated_context(
+        task,
+        run,
+        info,
+        AdapterCapabilitiesV3(exports_action_trace=False),
+    )
+
+    score = score_task_v3(task, run, context)
+
+    assert score.audit_scores.action_trace_available is False
+    assert not {"missed_update", "deletion_failure"} & set(score.failure_flags)
+
+
 @pytest.mark.parametrize(
     ("completion_status", "has_exception", "expected_error_rate"),
     (

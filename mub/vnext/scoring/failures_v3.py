@@ -73,14 +73,14 @@ def _entry_version_status(entry, replay):
 
 def derive_failure_flags_v3(
     *, task, run, replay, layer_values, predictions, traces, evidence,
-    resolutions=None, lifecycle_by_query=None,
+    resolutions=None, lifecycle_by_query=None, action_trace_observable=True,
 ) -> tuple[str, ...]:
     flags: set[str] = set()
     if run.exceptions or run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL}:
         flags.add("system_exception")
     for gold, observed in bind_action_pairs_v3(task, run):
         if observed is None:
-            if gold.operation != Operation.NOOP:
+            if action_trace_observable and gold.operation != Operation.NOOP:
                 flags.add("missed_update")
                 if gold.operation == Operation.DELETE: flags.add("deletion_failure")
             continue
