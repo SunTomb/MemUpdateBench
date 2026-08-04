@@ -74,6 +74,56 @@ def _entry(task, entry_id, value, *, version_index=None, source_event_ids=(), ke
     )
 
 
+def _two_target_raw_value_classifier(shared):
+    task = _task_with_present_values(
+        first="unused-old", second="unused-middle", current="unused-current"
+    )
+    first_key = task.target_objects[0]
+    second_key = MemoryObjectKeyV3(
+        object_type="slot",
+        namespace="n",
+        entity="second",
+        attribute="a",
+        subkey=None,
+    )
+    query_payload = task.queries[0].model_dump(mode="json")
+    query_payload["target_object_keys"] = [
+        first_key.model_dump(mode="json"),
+        second_key.model_dump(mode="json"),
+    ]
+    query = type(task.queries[0]).model_validate(query_payload)
+
+    def version(key, index, value=None, *, tombstone=False):
+        return ReplayVersionV3(
+            object_key=key,
+            version_index=index,
+            status="tombstone" if tombstone else "present",
+            value=None if tombstone else value,
+            source_action_id=f"{key.entity}-a{index}",
+            source_event_ids=(f"{key.entity}-e{index}",),
+            logical_time=f"00{index}",
+        )
+
+    first_versions = (
+        version(first_key, 0, "stale-only"),
+        version(first_key, 1, shared),
+    )
+    second_versions = (
+        version(second_key, 0, shared),
+        version(second_key, 1, "forgotten-only"),
+        version(second_key, 2, tombstone=True),
+        version(second_key, 3, "current-only"),
+    )
+    replay = _replace_replay(
+        replay_task_v3(task),
+        ledgers=(
+            ReplayLedgerV3(object_key=first_key, versions=first_versions),
+            ReplayLedgerV3(object_key=second_key, versions=second_versions),
+        ),
+    )
+    return TargetLifecycleClassifierV3.for_query(query, replay)
+
+
 def test_lifecycle_status_is_immutable():
     status = EntryLifecycleStatusV3(obsolete=False, stale=False, forgotten=False)
     with pytest.raises(FrozenInstanceError):
@@ -195,6 +245,36 @@ def test_lifecycle_classifier_uses_typed_equality_without_hashing_nested_values(
     assert changed.classify_entry(
         _entry(changed_task, "nested-changed", nested_int, version_index=0)
     ).stale is True
+
+
+def test_lifecycle_raw_value_predicates_report_cross_target_provenance_collision():
+    classifier = _two_target_raw_value_classifier("shared")
+
+    assert classifier.is_stale_value("shared") is None
+    assert classifier.is_forgotten_value("shared") is None
+    assert classifier.is_stale_value("stale-only") is True
+    assert classifier.is_forgotten_value("forgotten-only") is True
+    assert classifier.is_stale_value("current-only") is False
+    assert classifier.is_forgotten_value("current-only") is False
+    assert classifier.is_stale_value("no-match") is False
+    assert classifier.is_forgotten_value("no-match") is False
+
+
+def test_lifecycle_raw_value_collision_supports_nested_unhashable_values():
+    shared = {"nested": [1, {"leaf": ["x"]}]}
+    classifier = _two_target_raw_value_classifier(shared)
+
+    assert classifier.is_stale_value(shared) is None
+    assert classifier.is_forgotten_value(shared) is None
+
+
+def test_lifecycle_raw_value_collision_preserves_bool_int_distinction():
+    classifier = _two_target_raw_value_classifier(1)
+
+    assert classifier.is_stale_value(True) is False
+    assert classifier.is_forgotten_value(True) is False
+    assert classifier.is_stale_value(1) is None
+    assert classifier.is_forgotten_value(1) is None
 
 
 def test_lifecycle_classifier_requires_all_supplied_source_events_to_match_version():

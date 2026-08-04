@@ -67,16 +67,14 @@ class TargetLifecycleClassifierV3:
             obsolete=True, stale=stale, forgotten=forgotten
         )
 
-    def is_stale_value(self, value: Any) -> bool:
-        return any(
-            _value_status(value, versions, forgotten=False)
-            for versions in self._target_active_versions()
+    def is_stale_value(self, value: Any) -> bool | None:
+        return _raw_value_status(
+            value, self._target_active_versions(), forgotten=False
         )
 
-    def is_forgotten_value(self, value: Any) -> bool:
-        return any(
-            _value_status(value, versions, forgotten=True)
-            for versions in self._target_active_versions()
+    def is_forgotten_value(self, value: Any) -> bool | None:
+        return _raw_value_status(
+            value, self._target_active_versions(), forgotten=True
         )
 
     def has_forgotten_entry(self) -> bool:
@@ -240,12 +238,30 @@ def _lifecycle_flags(
     return stale, forgotten
 
 
+def _raw_value_status(
+    value: Any,
+    target_versions: Iterator[tuple[ReplayVersionV3, ...]],
+    *,
+    forgotten: bool,
+) -> bool | None:
+    statuses = tuple(
+        _value_status(value, versions, forgotten=forgotten)
+        for versions in target_versions
+    )
+    matched_statuses = tuple(status for status in statuses if status is not None)
+    if any(status is True for status in matched_statuses) and any(
+        status is False for status in matched_statuses
+    ):
+        return None
+    return any(status is True for status in matched_statuses)
+
+
 def _value_status(
     value: Any,
     versions: tuple[ReplayVersionV3, ...],
     *,
     forgotten: bool,
-) -> bool:
+) -> bool | None:
     for position in range(len(versions) - 1, -1, -1):
         version = versions[position]
         if version.status != LedgerEntryStatus.PRESENT or not typed_json_equal(
@@ -254,7 +270,7 @@ def _value_status(
             continue
         stale, forgotten_status = _lifecycle_flags(value, versions, position)
         return forgotten_status if forgotten else stale
-    return False
+    return None
 
 
 def _unrelated() -> EntryLifecycleStatusV3:
