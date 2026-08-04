@@ -49,7 +49,7 @@ class TargetLifecycleClassifierV3:
         versions = self.replay.active_versions(ledger)
         if not versions:
             return _indeterminate()
-        resolved = _resolve_entry_version(entry, versions)
+        resolved = resolve_entry_version_v3(entry, versions)
         if resolved is None:
             return _indeterminate()
         matched_position, matched = resolved
@@ -195,6 +195,13 @@ def _entry_value_status(
     return typed_json_equal(entry.value_candidate, version.value)
 
 
+def resolve_entry_version_v3(
+    entry: MemoryEntryRecordV3,
+    versions: tuple[ReplayVersionV3, ...],
+) -> tuple[int, ReplayVersionV3] | None:
+    return _resolve_entry_version(entry, versions)
+
+
 def _resolve_entry_version(
     entry: MemoryEntryRecordV3,
     versions: tuple[ReplayVersionV3, ...],
@@ -286,4 +293,5 @@ __all__ = [
     "QueryLifecycleEvidenceV3",
     "TargetLifecycleClassifierV3",
     "build_query_lifecycle_evidence_v3",
+    "resolve_entry_version_v3",
 ]

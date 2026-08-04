@@ -1464,7 +1464,7 @@ def test_current_mrr_uses_rank_when_tuple_order_disagrees():
     assert value == pytest.approx(1 / 9)
 
 
-def test_current_mrr_ignores_ranks_of_nonmatching_entries():
+def test_current_mrr_fails_closed_on_value_inconsistent_explicit_evidence():
     task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
     wrong_value = _current_mrr_entry(task, "wrong", "not-v2", 3, "e3")
     stale = _current_mrr_entry(task, "stale", "v1", 1, "e1")
@@ -1474,8 +1474,8 @@ def test_current_mrr_ignores_ranks_of_nonmatching_entries():
         wrong_value, stale, current, ranks=(1, 2, 11),
     )
 
-    assert detail is None
-    assert value == pytest.approx(1 / 11)
+    assert value is None
+    assert "version identity is ambiguous" in detail
 
 
 def test_same_value_different_version_is_not_current_entry_match():
@@ -1524,8 +1524,8 @@ def test_same_value_different_version_is_not_current_entry_match():
     assert not _entry_matches_version(wrong_value_v3, current_replay.ledgers[0].versions[3])
     wrong_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(wrong_value_v3,))
     value, detail = _metric_value("retrieval_scores.current_recall_at_k", current_task, run.model_copy(update={"retrieval_traces": (wrong_trace,)}), None, current_replay, {"q": resolve_query_v3(current_task.queries[0], current_replay, current_task.events)}, {"q": current_task.gold_evidence[0]}, {}, {"q": wrong_trace}, [])
-    assert detail is None
-    assert value == 0.0
+    assert value is None
+    assert "version identity" in detail
 
     missing_value_v3 = MemoryEntryRecordV3(entry_id="missing-v3", content="missing", object_key_candidate=current_task.target_objects[0], version_index=3, source_event_ids=("e3",))
     missing_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(missing_value_v3,))
@@ -1564,6 +1564,153 @@ def test_same_value_different_version_is_not_current_entry_match():
     conflict, detail = _metric_value("store_scores.stale_conflicting_value_count", task, explicit_run, None, replay, {}, evidence, {}, {}, _action_facts(task, explicit_run))
     assert detail is None
     assert conflict == 0
+
+
+def _two_version_current_task():
+    changed = payload()
+    changed["events"] = changed["events"][:2]
+    changed["actions"] = changed["actions"][:2]
+    changed["actions"][0]["value"] = "old"
+    changed["actions"][1]["value"] = "new"
+    changed["version_history"][0]["entries"] = changed["version_history"][0]["entries"][:2]
+    changed["version_history"][0]["entries"][0]["value"] = "old"
+    changed["version_history"][0]["entries"][1]["value"] = "new"
+    changed["version_history"][0]["entries"][1].pop("valid_until_event_id", None)
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": "current", "text": "?",
+        "selector": {"kind": "current"},
+        "target_object_keys": changed["target_objects"],
+        "answer_schema": "string", "evaluation_mode": "state_direct",
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": "new",
+        "supporting_object_keys": changed["target_objects"],
+        "supporting_event_ids": ["e1"],
+        "derivation_steps": [{
+            "step_id": "read", "operation": "read",
+            "supporting_object_keys": changed["target_objects"],
+            "supporting_event_ids": ["e1"],
+        }],
+        "final_derivation_step_id": "read",
+    }
+    return MemUpdateTaskV3.model_validate(changed)
+
+
+def _score_entry_attribution(task, entry, paths, *, retrieve=False):
+    from mub.vnext.contracts.v3.runtime import (
+        AnswerPredictionV3, MemorySnapshotV3, RetrievalTraceV3,
+    )
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    trace = RetrievalTraceV3(
+        query_id="q", retrieved_entries=(entry,), ranks=(1,),
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id=f"entry-attribution-{'retrieval' if retrieve else 'store'}",
+        memory_snapshots=() if retrieve else (
+            MemorySnapshotV3(
+                after_event_id="e1", entries=(entry,), store_size=1,
+            ),
+        ),
+        retrieval_traces=(trace,) if retrieve else (),
+        answer_predictions=(AnswerPredictionV3(
+            query_id="q", raw_output="new", parsed_answer="new",
+            format_valid=True,
+        ),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        supports_isolated_reset=True,
+        exports_version_history=True,
+        exports_entries=True,
+        exports_source_event_ids=True,
+        exports_timestamps_or_order=True,
+        exports_object_keys=True,
+        exports_values=True,
+        exports_retrieval_ids=True,
+        exports_retrieval_scores=True,
+    )
+    config = ScorerConfigV3(requested_metric_fields=paths)
+    return score_task_v3(
+        task, run, authenticated_context(task, run, info, caps, config),
+    )
+
+
+def test_store_metrics_fail_closed_on_conflicting_version_and_source_evidence():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    task = _two_version_current_task()
+    entry = MemoryEntryRecordV3(
+        entry_id="conflicting-attribution", content="old",
+        object_key_candidate=task.target_objects[0], value_candidate="old",
+        version_index=0, source_event_ids=("e1",),
+    )
+    paths = (
+        "store_scores.obsolete_version_count",
+        "store_scores.stale_conflicting_value_count",
+        "store_scores.duplicate_current_count",
+    )
+
+    score = _score_entry_attribution(task, entry, paths)
+
+    for path in paths:
+        assert getattr(score.store_scores, path.rsplit(".", 1)[1]) is None
+        assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+
+
+def test_retrieval_metrics_fail_closed_on_split_source_provenance():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    task = _two_version_current_task()
+    entry = MemoryEntryRecordV3(
+        entry_id="split-provenance", content="new",
+        object_key_candidate=task.target_objects[0], value_candidate="new",
+        source_event_ids=("e0", "e1"),
+    )
+    paths = (
+        "retrieval_scores.current_recall_at_k",
+        "retrieval_scores.current_mrr",
+    )
+
+    score = _score_entry_attribution(task, entry, paths, retrieve=True)
+
+    for path in paths:
+        assert getattr(score.retrieval_scores, path.rsplit(".", 1)[1]) is None
+        assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+
+
+def test_store_metrics_fail_closed_on_incomplete_present_value_evidence():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    task = _two_version_current_task()
+    entry = MemoryEntryRecordV3(
+        entry_id="incomplete-present", content="unknown",
+        object_key_candidate=task.target_objects[0], value_candidate=None,
+    )
+    paths = (
+        "store_scores.obsolete_version_count",
+        "store_scores.stale_conflicting_value_count",
+        "store_scores.duplicate_current_count",
+    )
+
+    score = _score_entry_attribution(task, entry, paths)
+
+    for path in paths:
+        assert getattr(score.store_scores, path.rsplit(".", 1)[1]) is None
+        assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
 
 
 def _store_metric_value(path, task, replay, *entries):
@@ -4066,7 +4213,7 @@ def test_future_ttl_is_excluded_from_pre_horizon_stale_and_forgotten_status():
     assert lifecycle.forgotten is False
 
 
-def test_mixed_version_provenance_uses_unique_value_consistent_version():
+def test_mixed_version_provenance_is_indeterminate():
     from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
     from mub.vnext.scoring.scorer_v3 import _entry_obsolete_status
 
@@ -4077,7 +4224,7 @@ def test_mixed_version_provenance_uses_unique_value_consistent_version():
         object_key_candidate=task.target_objects[0], value_candidate="v0",
         source_event_ids=("e0", "e3"),
     )
-    assert _entry_obsolete_status(mixed, replay) is True
+    assert _entry_obsolete_status(mixed, replay) is None
 
 
 _LIFECYCLE_METRICS = (

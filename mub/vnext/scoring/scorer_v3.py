@@ -17,7 +17,10 @@ from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, 
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.io import sha256_model
 from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
-from mub.vnext.scoring.lifecycle_v3 import build_query_lifecycle_evidence_v3
+from mub.vnext.scoring.lifecycle_v3 import (
+    build_query_lifecycle_evidence_v3,
+    resolve_entry_version_v3,
+)
 from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2, missing_capabilities as missing_capabilities_v2
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3, metric_applies_v3, missing_capabilities_v3
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
@@ -320,7 +323,9 @@ def _entry_matches_version(entry, version):
         return False
     if entry.version_index is not None and entry.version_index != version.version_index:
         return False
-    if entry.source_event_ids and not (set(entry.source_event_ids) & set(version.source_event_ids)):
+    if entry.source_event_ids and not all(
+        event_id in version.source_event_ids for event_id in entry.source_event_ids
+    ):
         return False
     if entry.version_index is None and not entry.source_event_ids and not _same(entry.value_candidate, version.value):
         return False
@@ -328,23 +333,16 @@ def _entry_matches_version(entry, version):
 
 
 def _entry_current_match_status(entry, version, replay):
-    if entry.version_index is not None or entry.source_event_ids:
-        if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
-            return False
-        if entry.version_index is not None and entry.version_index != version.version_index:
-            return False
-        if entry.source_event_ids and not (set(entry.source_event_ids) & set(version.source_event_ids)):
-            return False
-        return _entry_value_status(entry, version)
     if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
         return False
-    if entry.value_candidate is None:
-        return None
     ledger = replay.ledger_by_identity.get(_identity(version.object_key))
-    same_value_versions = [] if ledger is None else [candidate for candidate in replay.active_versions(ledger) if candidate.status == LedgerEntryStatus.PRESENT and _same(candidate.value, entry.value_candidate)]
-    if len(same_value_versions) > 1:
+    if ledger is None:
         return None
-    return _same(entry.value_candidate, version.value)
+    resolved = resolve_entry_version_v3(entry, replay.active_versions(ledger))
+    if resolved is None:
+        return None
+    _, matched = resolved
+    return matched.version_index == version.version_index
 
 
 def _entry_obsolete_status(entry, replay):
@@ -356,32 +354,11 @@ def _entry_obsolete_status(entry, replay):
     versions = replay.active_versions(ledger)
     if not versions:
         return False
-    if entry.version_index is not None:
-        if entry.version_index >= len(versions):
-            return False
-        matched = versions[entry.version_index]
-        value_status = _entry_value_status(entry, matched)
-        if value_status is not True:
-            return value_status
-        return matched.version_index < versions[-1].version_index
-    if entry.source_event_ids:
-        candidates = [
-            version
-            for version in versions
-            if set(entry.source_event_ids) & set(version.source_event_ids)
-        ]
-        if not candidates:
-            return False
-        statuses = [(version, _entry_value_status(entry, version)) for version in candidates]
-        consistent = [version for version, status in statuses if status is True]
-        if len(consistent) != 1:
-            return None if any(status is None for _, status in statuses) or len(consistent) > 1 else False
-        return consistent[0].version_index < versions[-1].version_index
-    current = versions[-1]
-    obsolete = [version for version in versions[:-1] if version.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, version.value)]
-    if obsolete and current.status == LedgerEntryStatus.PRESENT and _same(entry.value_candidate, current.value):
+    resolved = resolve_entry_version_v3(entry, versions)
+    if resolved is None:
         return None
-    return bool(obsolete)
+    matched_position, _ = resolved
+    return matched_position < len(versions) - 1
 
 
 def _obsolete_entry_conflicts_with_current(entry, replay):
