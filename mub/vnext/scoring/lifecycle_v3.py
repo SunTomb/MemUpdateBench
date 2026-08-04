@@ -182,15 +182,15 @@ def _tri_state_any(statuses) -> bool | None:
 def _entry_value_status(
     entry: MemoryEntryRecordV3, version: ReplayVersionV3
 ) -> bool | None:
+    tombstone_marker = (
+        entry.raw_metadata.get("is_tombstone") is True
+        or entry.raw_metadata.get("status") == "tombstone"
+    )
     if version.status == LedgerEntryStatus.TOMBSTONE:
-        tombstone_marker = (
-            entry.raw_metadata.get("is_tombstone") is True
-            or entry.raw_metadata.get("status") == "tombstone"
-        )
         if entry.value_candidate is not None:
             return False
         return True if tombstone_marker else None
-    if entry.value_candidate is None:
+    if tombstone_marker or entry.value_candidate is None:
         return None
     return typed_json_equal(entry.value_candidate, version.value)
 

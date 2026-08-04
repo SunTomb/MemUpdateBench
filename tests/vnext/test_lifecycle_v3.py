@@ -293,6 +293,24 @@ def test_lifecycle_classifier_requires_all_supplied_source_events_to_match_versi
     )
 
 
+@pytest.mark.parametrize(
+    "tombstone_metadata",
+    ({"is_tombstone": True}, {"status": "tombstone"}),
+)
+def test_lifecycle_classifier_rejects_tombstone_metadata_for_present_version(
+    tombstone_metadata,
+):
+    task = _task_with_present_values(first="x", second="middle", current="y")
+    classifier, _ = _classifier(task)
+    entry = _entry(task, "status-conflict", "x", version_index=0).model_copy(
+        update={"raw_metadata": tombstone_metadata}
+    )
+
+    assert classifier.classify_entry(entry) == EntryLifecycleStatusV3(
+        obsolete=None, stale=None, forgotten=None
+    )
+
+
 def test_lifecycle_classifier_marks_ambiguous_or_inconsistent_provenance_indeterminate():
     task = _task_with_present_values(first="x", second="x", current="y")
     classifier, _ = _classifier(task)

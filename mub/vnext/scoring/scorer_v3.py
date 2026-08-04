@@ -307,31 +307,6 @@ def _action_facts(task, run):
     return facts
 
 
-def _entry_value_status(entry, version):
-    if version.status == LedgerEntryStatus.TOMBSTONE:
-        tombstone_marker = entry.raw_metadata.get("is_tombstone") is True or entry.raw_metadata.get("status") == "tombstone"
-        if entry.value_candidate is not None:
-            return False
-        return True if tombstone_marker else None
-    if entry.value_candidate is None:
-        return None
-    return _same(entry.value_candidate, version.value)
-
-
-def _entry_matches_version(entry, version):
-    if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
-        return False
-    if entry.version_index is not None and entry.version_index != version.version_index:
-        return False
-    if entry.source_event_ids and not all(
-        event_id in version.source_event_ids for event_id in entry.source_event_ids
-    ):
-        return False
-    if entry.version_index is None and not entry.source_event_ids and not _same(entry.value_candidate, version.value):
-        return False
-    return _entry_value_status(entry, version) is True
-
-
 def _entry_current_match_status(entry, version, replay):
     if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
         return False
@@ -468,7 +443,24 @@ def _metric_value(
         stale = [entry for entry, status in zip(entries, statuses) if status is True]
         if leaf == "obsolete_version_count": return len(stale), None
         if leaf == "stale_conflicting_value_count": return sum(_obsolete_entry_conflicts_with_current(entry, replay) for entry in stale), None
-        if leaf == "duplicate_current_count": return sum(max(0, sum(_entry_matches_version(entry, version) for entry in entries) - 1) for version in current_versions), None
+        if leaf == "duplicate_current_count":
+            match_statuses = tuple(
+                tuple(
+                    _entry_current_match_status(entry, version, replay)
+                    for entry in entries
+                )
+                for version in current_versions
+            )
+            if any(
+                status is None
+                for version_statuses in match_statuses
+                for status in version_statuses
+            ):
+                return None, "version identity is ambiguous for repeated-value store entries"
+            return sum(
+                max(0, sum(status is True for status in version_statuses) - 1)
+                for version_statuses in match_statuses
+            ), None
     if layer == "retrieval_scores":
         current_queries = [query for query in task.queries if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}]
         missing_query_ids = tuple(sorted(query.query_id for query in current_queries if query.query_id not in traces))
