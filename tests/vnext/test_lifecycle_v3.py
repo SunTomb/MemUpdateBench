@@ -197,6 +197,22 @@ def test_lifecycle_classifier_uses_typed_equality_without_hashing_nested_values(
     ).stale is True
 
 
+def test_lifecycle_classifier_requires_all_supplied_source_events_to_match_version():
+    task = _task_with_present_values(first="x", second="middle", current="y")
+    classifier, _ = _classifier(task)
+    entry = _entry(
+        task,
+        "partially-matching-provenance",
+        "x",
+        version_index=0,
+        source_event_ids=("e0", "e1"),
+    )
+
+    assert classifier.classify_entry(entry) == EntryLifecycleStatusV3(
+        obsolete=None, stale=None, forgotten=None
+    )
+
+
 def test_lifecycle_classifier_marks_ambiguous_or_inconsistent_provenance_indeterminate():
     task = _task_with_present_values(first="x", second="x", current="y")
     classifier, _ = _classifier(task)
@@ -209,6 +225,29 @@ def test_lifecycle_classifier_marks_ambiguous_or_inconsistent_provenance_indeter
     indeterminate = EntryLifecycleStatusV3(obsolete=None, stale=None, forgotten=None)
     assert classifier.classify_entry(ambiguous) == indeterminate
     assert classifier.classify_entry(inconsistent) == indeterminate
+
+
+def test_lifecycle_classifier_marks_only_older_tombstone_obsolete():
+    task = _task_with_present_values(first="x", second="middle", current="y")
+    classifier, _ = _classifier(task)
+    older_tombstone = MemoryEntryRecordV3(
+        entry_id="older-tombstone",
+        content="deleted",
+        object_key_candidate=task.target_objects[0],
+        value_candidate=None,
+        version_index=2,
+        source_event_ids=("e2",),
+        raw_metadata={"status": "tombstone"},
+    )
+
+    assert classifier.classify_entry(older_tombstone) == EntryLifecycleStatusV3(
+        obsolete=True, stale=False, forgotten=False
+    )
+
+    horizon_tombstone_classifier, _ = _classifier(task, horizon="002")
+    assert horizon_tombstone_classifier.classify_entry(
+        older_tombstone
+    ) == EntryLifecycleStatusV3(obsolete=False, stale=False, forgotten=False)
 
 
 def test_lifecycle_classifier_marks_target_missing_from_replay_indeterminate():

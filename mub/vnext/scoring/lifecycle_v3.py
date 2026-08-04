@@ -53,11 +53,12 @@ class TargetLifecycleClassifierV3:
         if resolved is None:
             return _indeterminate()
         matched_position, matched = resolved
-        if (
-            matched.status != LedgerEntryStatus.PRESENT
-            or matched_position == len(versions) - 1
-        ):
+        if matched_position == len(versions) - 1:
             return _unrelated()
+        if matched.status == LedgerEntryStatus.TOMBSTONE:
+            return EntryLifecycleStatusV3(
+                obsolete=True, stale=False, forgotten=False
+            )
 
         stale, forgotten = _lifecycle_flags(
             matched.value, versions, matched_position
@@ -113,7 +114,7 @@ def _resolve_entry_version(
             and version.version_index != entry.version_index
         ):
             continue
-        if entry.source_event_ids and not any(
+        if entry.source_event_ids and not all(
             event_id in version.source_event_ids for event_id in entry.source_event_ids
         ):
             continue
