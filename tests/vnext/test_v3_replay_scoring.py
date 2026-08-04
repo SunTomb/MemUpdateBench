@@ -1797,6 +1797,124 @@ def test_ordered_history_contract_and_replay_exclude_future_ttl_versions():
         MemUpdateTaskV3.model_validate(out_of_horizon)
 
 
+def horizon_exact_transition_payload(selector):
+    changed = ttl_horizon_payload("002", "v1")
+    changed["events"][1]["timestamp"] = "002"
+    changed["actions"][1]["effective_at"] = "002"
+    changed["version_history"][0]["entries"][1]["logical_time"] = "002"
+    is_transition = selector["kind"] == "transition"
+    selected_indices = (
+        (selector["from_version_index"], selector["to_version_index"])
+        if is_transition
+        else (selector["version_index"],)
+    )
+    selected_entries = [changed["version_history"][0]["entries"][index] for index in selected_indices]
+    changed["queries"][0].update(
+        query_type="transition" if is_transition else "point_in_time",
+        selector=selector,
+        answer_schema="object" if is_transition else ("list" if selected_entries[0]["status"] == "tombstone" else "string"),
+    )
+    if is_transition:
+        answer = {"from": selected_entries[0].get("value"), "to": selected_entries[1].get("value")}
+        derivation_steps = [
+            {
+                "step_id": f"read-{position}",
+                "operation": "read_version",
+                "supporting_object_keys": changed["target_objects"],
+                "supporting_event_ids": entry["source_event_ids"],
+            }
+            for position, entry in zip(("from", "to"), selected_entries)
+        ]
+        derivation_steps.append({
+            "step_id": "answer",
+            "operation": "object",
+            "input_step_ids": ["read-from", "read-to"],
+        })
+        final_step = "answer"
+    else:
+        value = selected_entries[0].get("value")
+        answer = [value] if selected_entries[0]["status"] == "tombstone" else value
+        derivation_steps = [{
+            "step_id": "read",
+            "operation": "read_version",
+            "supporting_object_keys": changed["target_objects"],
+            "supporting_event_ids": selected_entries[0]["source_event_ids"],
+        }]
+        final_step = "read"
+    changed["gold_evidence"][0].update(
+        answer=answer,
+        supporting_event_ids=[
+            event_id
+            for entry in selected_entries
+            for event_id in entry["source_event_ids"]
+        ],
+        derivation_steps=derivation_steps,
+        final_derivation_step_id=final_step,
+    )
+    return changed
+
+
+@pytest.mark.parametrize(
+    "selector",
+    (
+        {"kind": "exact_version", "version_index": 2},
+        {"kind": "transition", "from_version_index": 1, "to_version_index": 2},
+    ),
+)
+def test_contract_rejects_exact_or_transition_endpoint_beyond_horizon(selector):
+    with pytest.raises(ValueError, match="unknown version"):
+        MemUpdateTaskV3.model_validate(horizon_exact_transition_payload(selector))
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected_indices"),
+    (
+        ({"kind": "exact_version", "version_index": 1}, (1,)),
+        ({"kind": "transition", "from_version_index": 0, "to_version_index": 1}, (0, 1)),
+    ),
+)
+def test_horizon_boundary_exact_and_transition_versions_remain_valid(selector, expected_indices):
+    task = MemUpdateTaskV3.model_validate(horizon_exact_transition_payload(selector))
+    replay = replay_task_v3(task)
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+
+    assert replay.horizon_logical_time == "002"
+    assert replay.issues == ()
+    assert resolution.issues == ()
+    assert tuple(version.version_index for version in resolution.selected_versions) == expected_indices
+    assert resolution.selected_versions[-1].logical_time == "002"
+
+
+@pytest.mark.parametrize(
+    "selector",
+    (
+        {"kind": "exact_version", "version_index": 2},
+        {"kind": "transition", "from_version_index": 1, "to_version_index": 2},
+    ),
+)
+def test_defensive_query_resolution_never_selects_future_version(selector):
+    from mub.vnext.contracts.v3.task import MemoryQueryV3
+
+    task = MemUpdateTaskV3.model_validate(
+        horizon_exact_transition_payload({"kind": "exact_version", "version_index": 1})
+    )
+    replay = replay_task_v3(task)
+    query = MemoryQueryV3(
+        query_id="defensive",
+        query_type="transition" if selector["kind"] == "transition" else "point_in_time",
+        text="?",
+        selector=selector,
+        target_object_keys=task.target_objects,
+        answer_schema="object" if selector["kind"] == "transition" else "list",
+        evaluation_mode="state_direct",
+    )
+
+    resolution = resolve_query_v3(query, replay, task.events)
+
+    assert resolution.selected_versions == ()
+    assert tuple(issue.code for issue in resolution.issues) == ("selector_missing_version",)
+
+
 def test_ttl_scorer_uses_expiry_snapshot_not_scheduling_snapshot():
     from mub.vnext.contracts.v3.runtime import MemorySnapshotV3, ParsedManagerActionV3
     from mub.vnext.scoring.scorer_v3 import _action_facts, _metric_value

@@ -521,12 +521,20 @@ class MemUpdateTaskV3(ImmutableContractModel):
             ):
                 raise ValueError("query selector precedes all known logical-time anchors")
             if isinstance(selector, ExactVersionSelector):
-                if any(selector.version_index >= len(histories[target].entries) for target in targets):
+                if any(
+                    selector.version_index >= len(_horizon_active_entries(histories[target].entries, task_horizon))
+                    for target in targets
+                ):
                     raise ValueError("query selector references unknown version")
             if isinstance(selector, PreviousSelector) and any(len(histories[target].entries) < 2 for target in targets):
                 raise ValueError("previous selector requires at least two versions")
-            if isinstance(selector, TransitionSelector) and any(selector.to_version_index >= len(histories[target].entries) for target in targets):
-                raise ValueError("transition selector references unknown version")
+            if isinstance(selector, TransitionSelector):
+                if any(
+                    selector.from_version_index >= len(_horizon_active_entries(histories[target].entries, task_horizon))
+                    or selector.to_version_index >= len(_horizon_active_entries(histories[target].entries, task_horizon))
+                    for target in targets
+                ):
+                    raise ValueError("transition selector references unknown version")
             if isinstance(selector, OrderedHistorySelector):
                 for target in targets:
                     size = len(_horizon_active_entries(histories[target].entries, task_horizon))
@@ -1007,9 +1015,14 @@ def _selector_entries(
     if isinstance(selector, PreviousSelector):
         return active_entries[-2:-1]
     if isinstance(selector, ExactVersionSelector):
-        return (entries[selector.version_index],)
+        return active_entries[selector.version_index : selector.version_index + 1]
     if isinstance(selector, TransitionSelector):
-        return (entries[selector.from_version_index], entries[selector.to_version_index])
+        if (
+            selector.from_version_index >= len(active_entries)
+            or selector.to_version_index >= len(active_entries)
+        ):
+            return ()
+        return (active_entries[selector.from_version_index], active_entries[selector.to_version_index])
     if isinstance(selector, OrderedHistorySelector):
         start = selector.start_version_index or 0
         end = selector.end_version_index if selector.end_version_index is not None else len(active_entries) - 1

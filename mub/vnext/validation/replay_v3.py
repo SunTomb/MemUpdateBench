@@ -306,9 +306,17 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times
     if isinstance(selector, PreviousSelector):
         return active_versions[-2:-1]
     if isinstance(selector, ExactVersionSelector):
-        return versions[selector.version_index:selector.version_index + 1]
+        return active_versions[selector.version_index:selector.version_index + 1]
     if isinstance(selector, TransitionSelector):
-        return (versions[selector.from_version_index], versions[selector.to_version_index]) if selector.to_version_index < len(versions) else ()
+        if (
+            selector.from_version_index >= len(active_versions)
+            or selector.to_version_index >= len(active_versions)
+        ):
+            return ()
+        return (
+            active_versions[selector.from_version_index],
+            active_versions[selector.to_version_index],
+        )
     if isinstance(selector, OrderedHistorySelector):
         start = 0 if selector.start_version_index is None else selector.start_version_index
         end = len(active_versions) - 1 if selector.end_version_index is None else selector.end_version_index
