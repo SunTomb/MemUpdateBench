@@ -587,10 +587,13 @@ def _metric_value(
                 None,
             ) if applicable else (None, "no applicable current-state prediction rows")
         if leaf == "stale_copied":
-            return _mean([
-                float(lifecycle_by_query[item.query_id].stale_copied)
+            classified = [
+                lifecycle_by_query[item.query_id].stale_copied
                 for item in predictions.values()
-            ]), None
+            ]
+            if any(status is None for status in classified):
+                return None, "raw value provenance is ambiguous across query targets"
+            return _mean([float(status) for status in classified]), None
         if leaf == "distractor_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
         if leaf == "gold_retrieved_wrong_answer":
             current_queries = [
@@ -681,10 +684,13 @@ def _metric_value(
         if leaf == "forgotten_value_leakage_rate":
             if not predictions:
                 return None, "answer predictions missing"
-            return _mean([
-                float(lifecycle_by_query[item.query_id].forgotten_leaked)
+            classified = [
+                lifecycle_by_query[item.query_id].forgotten_leaked
                 for item in predictions.values()
-            ]), None
+            ]
+            if any(status is None for status in classified):
+                return None, "raw value provenance is ambiguous across query targets"
+            return _mean([float(status) for status in classified]), None
     if layer == "historical_scores":
         kinds = {
             "current_state_accuracy": {QueryTypeV3.CURRENT}, "previous_state_accuracy": {QueryTypeV3.PREVIOUS},

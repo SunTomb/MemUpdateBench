@@ -3680,6 +3680,41 @@ def _two_object_lifecycle_payload(query_entity):
     return changed
 
 
+def _two_object_shared_value_collision_payload():
+    changed = _two_object_lifecycle_payload("A")
+    key_a, key_b = changed["target_objects"]
+    changed["actions"][0]["value"] = "shared"
+    changed["actions"][1]["value"] = "shared"
+    changed["version_history"][0]["entries"][0]["value"] = "shared"
+    changed["version_history"][1]["entries"][0]["value"] = "shared"
+    changed["queries"][0] = {
+        "query_id": "q",
+        "query_type": "multi_object_current",
+        "text": "?",
+        "selector": {
+            "kind": "multi_object_current",
+            "object_keys": [key_a, key_b],
+        },
+        "target_object_keys": [key_a, key_b],
+        "answer_schema": "list",
+        "evaluation_mode": "state_direct",
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q",
+        "answer": ["shared", None],
+        "supporting_object_keys": [key_a, key_b],
+        "supporting_event_ids": ["e0", "e2"],
+        "derivation_steps": [{
+            "step_id": "read",
+            "operation": "read",
+            "supporting_object_keys": [key_a, key_b],
+            "supporting_event_ids": ["e0", "e2"],
+        }],
+        "final_derivation_step_id": "read",
+    }
+    return changed
+
+
 def _task_with_family(task, family):
     data = task.model_dump(mode="python")
     data["task_family"] = family
@@ -3713,6 +3748,37 @@ def _score_lifecycle_wiring(task, entries, prediction):
     )
     config = ScorerConfigV3(requested_metric_fields=_LIFECYCLE_METRICS)
     return score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+
+@pytest.mark.parametrize(
+    ("family", "metric_path", "failure_flag"),
+    (
+        ("F", "answer_scores.stale_copied", "stale_copied"),
+        (
+            "E",
+            "deletion_scores.forgotten_value_leakage_rate",
+            "forgotten_value_exposed",
+        ),
+    ),
+)
+def test_raw_value_collision_scores_missing_artifact_without_failure_flag(
+    family, metric_path, failure_flag
+):
+    from mub.vnext.contracts.enums import SupportReason
+
+    task = MemUpdateTaskV3.model_validate(
+        _two_object_shared_value_collision_payload()
+    )
+    score = _score_lifecycle_wiring(
+        _task_with_family(task, family), (), "shared"
+    )
+    layer, leaf = metric_path.split(".", 1)
+
+    assert getattr(getattr(score, layer), leaf) is None
+    support = score.supported_metric_fields[metric_path]
+    assert support.reason is SupportReason.MISSING_ARTIFACT
+    assert "query targets" in support.detail
+    assert failure_flag not in score.failure_flags
 
 
 def test_lifecycle_metrics_and_flags_are_scoped_to_each_query_targets():
