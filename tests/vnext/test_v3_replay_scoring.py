@@ -3924,3 +3924,153 @@ def test_forgotten_entry_exposure_remains_applicable_when_relearn_masks_value_le
         "deletion_scores.forgotten_value_leakage_rate"
     ].reason is SupportReason.NOT_APPLICABLE
     assert "forgotten_value_exposed" in score.failure_flags
+
+
+def test_clean_not_supported_preserves_requested_observability_metrics():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import ParsedManagerActionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    parsed_actions = tuple(
+        ParsedManagerActionV3(
+            action_id=action.action_id,
+            event_id=action.event_id,
+            operation=action.operation,
+            observed_scope=action.scope,
+            target_object_keys=action.target_object_keys,
+            value=action.value,
+            format_valid=True,
+            execution_status="not_supported",
+            fallback_used=False,
+            raw_output="unsupported",
+        )
+        for action in task.actions
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id="not-supported-observable",
+        parsed_actions=parsed_actions,
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="not_supported",
+        exceptions=(),
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    capabilities = AdapterCapabilitiesV3(
+        supports_isolated_reset=True,
+        supports_event_ingest=True,
+        supports_add=True,
+        supports_update=True,
+        supports_delete=True,
+        supports_historical_query=True,
+        exports_version_history=True,
+        exports_entries=True,
+        exports_object_keys=True,
+        exports_values=True,
+        exports_action_trace=True,
+        exports_retrieval_ids=True,
+        exports_source_event_ids=True,
+    )
+    requested = (
+        "protocol_scores.unsupported_operation_rate",
+        "system_scores.error_rate",
+        "audit_scores.action_trace_available",
+        "audit_scores.manifest_completeness",
+        "audit_scores.source_provenance_coverage",
+        "state_scores.final_state_accuracy",
+    )
+    context = authenticated_context(
+        task,
+        run,
+        info,
+        capabilities,
+        ScorerConfigV3(requested_metric_fields=requested),
+    )
+
+    score = score_task_v3(task, run, context)
+
+    assert score.protocol_scores.unsupported_operation_rate == 1.0
+    assert score.system_scores.error_rate == 0.0
+    assert score.audit_scores.action_trace_available is True
+    assert score.audit_scores.manifest_completeness == 1.0
+    for path in (
+        "protocol_scores.unsupported_operation_rate",
+        "system_scores.error_rate",
+        "audit_scores.action_trace_available",
+        "audit_scores.manifest_completeness",
+    ):
+        assert path not in score.supported_metric_fields
+    assert score.audit_scores.source_provenance_coverage is None
+    assert score.supported_metric_fields[
+        "audit_scores.source_provenance_coverage"
+    ].reason is SupportReason.MISSING_ARTIFACT
+    assert score.state_scores.final_state_accuracy is None
+    assert score.supported_metric_fields[
+        "state_scores.final_state_accuracy"
+    ].reason is SupportReason.NOT_SUPPORTED
+    assert score.audit_scores.state_export_available is None
+    assert score.supported_metric_fields[
+        "audit_scores.state_export_available"
+    ].reason is SupportReason.NOT_APPLICABLE
+    assert "unsupported_action" in score.failure_flags
+    assert "system_exception" not in score.failure_flags
+
+
+@pytest.mark.parametrize(
+    ("completion_status", "has_exception", "expected_error_rate"),
+    (
+        ("not_supported", False, 0.0),
+        ("not_supported", True, 1.0),
+        ("failed", False, 1.0),
+        ("partial", False, 1.0),
+    ),
+)
+def test_system_error_rate_tracks_runtime_failure_lifecycle(
+    completion_status, has_exception, expected_error_rate,
+):
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id=f"lifecycle-{completion_status}-{has_exception}",
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status=completion_status,
+        exceptions=({"type": "boom"},) if has_exception else (),
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    config = ScorerConfigV3(
+        requested_metric_fields=("system_scores.error_rate",),
+    )
+    context = authenticated_context(task, run, info, AdapterCapabilitiesV3(), config)
+
+    score = score_task_v3(task, run, context)
+
+    assert score.system_scores.error_rate == expected_error_rate
+    assert ("system_exception" in score.failure_flags) is (
+        has_exception or completion_status in {"failed", "partial"}
+    )

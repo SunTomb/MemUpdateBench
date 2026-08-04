@@ -621,7 +621,7 @@ def _metric_value(
             return (_mean(observations), None) if observations else (None, "no applicable current retrieval rows")
         if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
     if layer == "system_scores":
-        if leaf == "error_rate": return float(run.completion_status != CompletionStatus.COMPLETED or bool(run.exceptions)), None
+        if leaf == "error_rate": return float(run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL} or bool(run.exceptions)), None
         if leaf == "ingest_latency_ms": return (_mean([item.latency_ms for item in actions if item.latency_ms is not None]), None) if any(item.latency_ms is not None for item in actions) else (None, "ingest latency missing")
         if leaf == "answer_latency_ms": return (_mean([item.latency_ms for item in answers if item.latency_ms is not None]), None) if any(item.latency_ms is not None for item in answers) else (None, "answer latency missing")
         if leaf == "retrieval_latency_ms": return None, "retrieval trace has no latency field"
@@ -811,7 +811,10 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
         if runtime_failed and layer not in {"protocol_scores", "system_scores", "audit_scores"}:
             support[path] = _support(SupportReason.RUNTIME_FAILED, f"Task completion status is {run.completion_status.value}.")
             continue
-        if run.completion_status == CompletionStatus.NOT_SUPPORTED:
+        if (
+            run.completion_status == CompletionStatus.NOT_SUPPORTED
+            and layer not in {"protocol_scores", "system_scores", "audit_scores"}
+        ):
             support[path] = _support(SupportReason.NOT_SUPPORTED, "Run completion status is not_supported.")
             continue
         missing = (
