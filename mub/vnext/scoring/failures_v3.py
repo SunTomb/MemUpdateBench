@@ -8,10 +8,13 @@ from pydantic import field_validator
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, StrictNonnegativeFloat, StrictNonnegativeInt, freeze_mapping
 from mub.vnext.contracts.enums import CompletionStatus, Operation, TaskFamily
 from mub.vnext.contracts.v3.common import typed_json_equal
-from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
+from mub.vnext.contracts.v3.enums import ExecutionStatusV3, QueryTypeV3
 from mub.vnext.contracts.v3.score import ScoreRecordV3, V3_FAILURE_FLAGS
 from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
-from mub.vnext.scoring.lifecycle_v3 import build_query_lifecycle_evidence_v3
+from mub.vnext.scoring.lifecycle_v3 import (
+    TargetLifecycleClassifierV3,
+    build_query_lifecycle_evidence_v3,
+)
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
 from mub.vnext.validation.replay_v3 import resolve_query_v3
 
@@ -44,38 +47,12 @@ def _entry_version_status(entry, replay):
     if entry.object_key_candidate is None:
         return False, False
     identity = (entry.object_key_candidate.namespace, entry.object_key_candidate.entity, entry.object_key_candidate.attribute, entry.object_key_candidate.subkey)
-    ledger = replay.ledger_by_identity.get(identity)
-    if ledger is None:
+    if identity not in replay.ledger_by_identity:
         return False, False
-    versions = replay.active_versions(ledger)
-    if not versions:
-        return False, False
-
-    def value_matches(version):
-        if version.status == LedgerEntryStatus.TOMBSTONE:
-            return entry.value_candidate is None
-        return entry.value_candidate is not None and _same(entry.value_candidate, version.value)
-
-    matched = None
-    if entry.version_index is not None and entry.version_index < len(versions):
-        candidate = versions[entry.version_index]
-        if value_matches(candidate):
-            matched = candidate
-    elif entry.source_event_ids:
-        consistent = [
-            version
-            for version in versions
-            if set(entry.source_event_ids) & set(version.source_event_ids)
-            and value_matches(version)
-        ]
-        if len(consistent) != 1:
-            return None, None
-        matched = consistent[0]
-    if matched is None:
-        return None, None
-    obsolete = matched.version_index < versions[-1].version_index
-    forgotten = any(version.status == LedgerEntryStatus.TOMBSTONE for version in versions[matched.version_index + 1:])
-    return obsolete, forgotten
+    status = TargetLifecycleClassifierV3(
+        target_identities=frozenset({identity}), replay=replay,
+    ).classify_entry(entry)
+    return status.obsolete, status.forgotten
 
 
 def derive_failure_flags_v3(

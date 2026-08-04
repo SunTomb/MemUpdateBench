@@ -1678,6 +1678,7 @@ def test_store_metrics_fail_closed_on_conflicting_version_and_source_evidence():
     for path in paths:
         assert getattr(score.store_scores, path.rsplit(".", 1)[1]) is None
         assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+    assert "stale_retained" not in score.failure_flags
 
 
 def test_retrieval_metrics_fail_closed_on_split_source_provenance():
