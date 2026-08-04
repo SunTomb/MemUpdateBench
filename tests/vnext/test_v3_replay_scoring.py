@@ -836,6 +836,210 @@ def test_current_retrieval_metrics_require_exact_trace_coverage(case, missing_qu
         assert missing_query_id in support.detail
 
 
+def _retrieval_annotation_metric(
+    leaf,
+    entry_kind,
+    *,
+    gold_in_context=None,
+    stale_in_context=None,
+    ranks=(),
+):
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import _metric_value
+
+    changed = current_structured_payload("x", "string")
+    changed["actions"][0]["value"] = "x"
+    changed["version_history"][0]["entries"][0]["value"] = "x"
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    key = task.target_objects[0]
+    entry_specs = {
+        "empty": (),
+        "current": (("current", "x", 3, "e3"),),
+        "stale": (("stale", "x", 0, "e0"),),
+        "two_stale": (
+            ("stale-0", "x", 0, "e0"),
+            ("stale-1", "v1", 1, "e1"),
+        ),
+        "ambiguous": (("ambiguous", "x", None, None),),
+    }
+    entries = tuple(
+        MemoryEntryRecordV3(
+            entry_id=entry_id,
+            content=value,
+            object_key_candidate=key,
+            value_candidate=value,
+            version_index=version_index,
+            source_event_ids=() if event_id is None else (event_id,),
+        )
+        for entry_id, value, version_index, event_id in entry_specs[entry_kind]
+    )
+    trace = RetrievalTraceV3(
+        query_id="q",
+        retrieved_entries=entries,
+        ranks=ranks,
+        gold_in_context=gold_in_context,
+        stale_in_context=stale_in_context,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="a",
+        run_id="retrieval-annotation",
+        retrieval_traces=(trace,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    return _metric_value(
+        f"retrieval_scores.{leaf}",
+        task,
+        run,
+        None,
+        replay,
+        {"q": resolve_query_v3(task.queries[0], replay, task.events)},
+        {"q": task.gold_evidence[0]},
+        {},
+        {"q": trace},
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    ("gold_in_context", "entry_kind", "expected"),
+    [
+        (True, "empty", 1.0),
+        (True, "current", 1.0),
+        (True, "ambiguous", 1.0),
+        (False, "empty", 0.0),
+        (False, "current", 0.0),
+        (False, "ambiguous", 0.0),
+    ],
+)
+def test_current_recall_annotation_overrides_detailed_entries(
+    gold_in_context, entry_kind, expected,
+):
+    value, detail = _retrieval_annotation_metric(
+        "current_recall_at_k",
+        entry_kind,
+        gold_in_context=gold_in_context,
+    )
+
+    assert detail is None
+    assert value == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_kind", "expected", "missing_artifact"),
+    [
+        ("empty", 0.0, False),
+        ("current", 1.0, False),
+        ("stale", 0.0, False),
+        ("ambiguous", None, True),
+    ],
+)
+def test_current_recall_null_annotation_falls_back_to_detailed_entries(
+    entry_kind, expected, missing_artifact,
+):
+    value, detail = _retrieval_annotation_metric(
+        "current_recall_at_k", entry_kind, gold_in_context=None,
+    )
+
+    assert value == expected
+    assert (detail is not None) is missing_artifact
+
+
+@pytest.mark.parametrize(
+    ("stale_in_context", "entry_kind", "expected"),
+    [
+        (True, "current", 1.0),
+        (True, "ambiguous", 1.0),
+        (False, "stale", 0.0),
+        (False, "ambiguous", 0.0),
+    ],
+)
+def test_stale_exposure_annotation_overrides_detailed_entries(
+    stale_in_context, entry_kind, expected,
+):
+    value, detail = _retrieval_annotation_metric(
+        "stale_exposure_rate",
+        entry_kind,
+        stale_in_context=stale_in_context,
+    )
+
+    assert detail is None
+    assert value == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_kind", "expected", "missing_artifact"),
+    [
+        ("empty", 0.0, False),
+        ("current", 0.0, False),
+        ("stale", 1.0, False),
+        ("ambiguous", None, True),
+    ],
+)
+def test_stale_exposure_null_annotation_falls_back_to_detailed_entries(
+    entry_kind, expected, missing_artifact,
+):
+    value, detail = _retrieval_annotation_metric(
+        "stale_exposure_rate", entry_kind, stale_in_context=None,
+    )
+
+    assert value == expected
+    assert (detail is not None) is missing_artifact
+
+
+@pytest.mark.parametrize(
+    ("stale_in_context", "entry_kind", "expected", "missing_artifact"),
+    [
+        (False, "ambiguous", 0, False),
+        (True, "empty", None, True),
+        (True, "current", None, True),
+        (True, "ambiguous", None, True),
+        (True, "stale", 1, False),
+        (None, "two_stale", 2, False),
+        (None, "empty", 0, False),
+        (None, "ambiguous", None, True),
+    ],
+)
+def test_stale_count_annotation_controls_exact_multiplicity_artifacts(
+    stale_in_context, entry_kind, expected, missing_artifact,
+):
+    value, detail = _retrieval_annotation_metric(
+        "stale_count_in_context",
+        entry_kind,
+        stale_in_context=stale_in_context,
+    )
+
+    assert value == expected
+    assert (detail is not None) is missing_artifact
+
+
+@pytest.mark.parametrize(
+    ("entry_kind", "expected", "missing_artifact"),
+    [
+        ("empty", 0.0, False),
+        ("current", None, True),
+    ],
+)
+def test_current_mrr_does_not_infer_rank_from_positive_gold_annotation(
+    entry_kind, expected, missing_artifact,
+):
+    value, detail = _retrieval_annotation_metric(
+        "current_mrr",
+        entry_kind,
+        gold_in_context=True,
+    )
+
+    assert value == expected
+    assert (detail is not None) is missing_artifact
+
+
 def _current_mrr_fixture(*entries, ranks=()):
     from mub.vnext.contracts.v3.runtime import RetrievalTraceV3
     from mub.vnext.scoring.scorer_v3 import _metric_value

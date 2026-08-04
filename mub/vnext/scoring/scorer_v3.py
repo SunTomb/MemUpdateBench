@@ -500,21 +500,53 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if missing_query_ids:
             return None, f"retrieval traces are missing for applicable query IDs: {', '.join(missing_query_ids)}"
         current_rows = [(query, traces[query.query_id]) for query in current_queries]
-        current_statuses = {
-            query.query_id: tuple(
-                any(_entry_current_match_status(entry, version, replay) is True for version in resolutions[query.query_id].selected_versions)
-                if not any(_entry_current_match_status(entry, version, replay) is None for version in resolutions[query.query_id].selected_versions)
-                else None
+
+        def current_statuses(query, trace):
+            selected_versions = resolutions[query.query_id].selected_versions
+            statuses = []
+            for entry in trace.retrieved_entries:
+                entry_statuses = tuple(
+                    _entry_current_match_status(entry, version, replay)
+                    for version in selected_versions
+                )
+                statuses.append(
+                    None
+                    if any(status is None for status in entry_statuses)
+                    else any(status is True for status in entry_statuses)
+                )
+            return tuple(statuses)
+
+        def obsolete_statuses(trace):
+            return tuple(
+                _entry_obsolete_status(entry, replay)
                 for entry in trace.retrieved_entries
             )
-            for query, trace in current_rows
-        }
-        if leaf in {"current_recall_at_k", "current_mrr"} and any(status is None for statuses in current_statuses.values() for status in statuses):
-            if any(entry.value_candidate is None for _, trace in current_rows for entry in trace.retrieved_entries):
-                return None, "value evidence is missing for version-bearing current retrieval entries"
-            return None, "version identity is ambiguous for repeated-value current retrieval entries"
-        if leaf == "current_recall_at_k": return (_mean([float(any(status is True for status in current_statuses[q.query_id])) for q, trace in current_rows]), None) if current_rows else (None, "no current retrieval rows")
+
+        def current_ambiguity_detail(rows):
+            if any(entry.value_candidate is None for _, trace in rows for entry in trace.retrieved_entries):
+                return "value evidence is missing for version-bearing current retrieval entries"
+            return "version identity is ambiguous for repeated-value current retrieval entries"
+
+        if leaf == "current_recall_at_k":
+            recalls = []
+            fallback_rows = []
+            for query, trace in current_rows:
+                if trace.gold_in_context is not None:
+                    recalls.append(float(trace.gold_in_context))
+                    continue
+                statuses = current_statuses(query, trace)
+                fallback_rows.append((query, trace))
+                if any(status is None for status in statuses):
+                    return None, current_ambiguity_detail(fallback_rows)
+                recalls.append(float(any(status is True for status in statuses)))
+            return (_mean(recalls), None) if recalls else (None, "no current retrieval rows")
         if leaf == "current_mrr":
+            current_status_by_query = {
+                query.query_id: current_statuses(query, trace)
+                for query, trace in current_rows
+            }
+            if any(status is None for statuses in current_status_by_query.values() for status in statuses):
+                return None, current_ambiguity_detail(current_rows)
             if any(
                 trace.retrieved_entries
                 and len(trace.ranks) != len(trace.retrieved_entries)
@@ -526,7 +558,7 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
                 matching_ranks = [
                     rank
                     for rank, status in zip(
-                        trace.ranks, current_statuses[query.query_id]
+                        trace.ranks, current_status_by_query[query.query_id]
                     )
                     if status is True
                 ]
@@ -534,15 +566,30 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
                     0.0 if not matching_ranks else 1.0 / min(matching_ranks)
                 )
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
-        classified = {
-            trace.query_id: tuple(_entry_obsolete_status(entry, replay) for entry in trace.retrieved_entries)
-            for _, trace in current_rows
-        }
-        if any(status is None for statuses in classified.values() for status in statuses):
-            return None, "version identity is ambiguous for repeated-value retrieval entries"
-        exposed = [any(status is True for status in classified[trace.query_id]) for _, trace in current_rows]
-        if leaf == "stale_exposure_rate": return _mean([float(value) for value in exposed]), None
-        if leaf == "stale_count_in_context": return sum(sum(status is True for status in classified[trace.query_id]) for _, trace in current_rows), None
+        if leaf == "stale_exposure_rate":
+            exposed = []
+            for _, trace in current_rows:
+                if trace.stale_in_context is not None:
+                    exposed.append(trace.stale_in_context)
+                    continue
+                statuses = obsolete_statuses(trace)
+                if any(status is None for status in statuses):
+                    return None, "version identity is ambiguous for repeated-value retrieval entries"
+                exposed.append(any(status is True for status in statuses))
+            return _mean([float(value) for value in exposed]), None
+        if leaf == "stale_count_in_context":
+            total = 0
+            for _, trace in current_rows:
+                if trace.stale_in_context is False:
+                    continue
+                statuses = obsolete_statuses(trace)
+                if any(status is None for status in statuses):
+                    return None, "version identity is ambiguous for repeated-value retrieval entries"
+                stale_count = sum(status is True for status in statuses)
+                if trace.stale_in_context is True and stale_count == 0:
+                    return None, "stale annotation requires at least one classifiable stale retrieval entry"
+                total += stale_count
+            return total, None
         if leaf == "distractor_exposure_rate": return _mean([float(trace.distractor_in_context is True) for _, trace in current_rows]), None
     if layer == "answer_scores":
         if not predictions: return None, "answer predictions are missing"
