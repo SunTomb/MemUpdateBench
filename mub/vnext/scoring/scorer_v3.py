@@ -801,19 +801,23 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     runtime_failed = run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL} or bool(run.exceptions)
     for path, descriptor in CORE_METRIC_REGISTRY_V3.items():
         layer, leaf = path.split(".", 1)
+        terminal_observable = (
+            layer in {"protocol_scores", "audit_scores"}
+            or path == "system_scores.error_rate"
+        )
         if not metric_applies_v3(descriptor, task.task_family, query_kinds) or not _metric_applies_to_task_v3(path, task, replay, lifecycle_by_query):
             support[path] = _support(SupportReason.NOT_APPLICABLE, "Metric does not apply to this family/query kind.")
             continue
         if path not in requested:
             support[path] = _support(SupportReason.NOT_APPLICABLE, "Metric was not requested.")
             continue
-        # A runtime failure dominates missing capabilities for every otherwise-applicable metric.
-        if runtime_failed and layer not in {"protocol_scores", "system_scores", "audit_scores"}:
+        # A runtime failure dominates missing capabilities for otherwise-applicable performance metrics.
+        if runtime_failed and not terminal_observable:
             support[path] = _support(SupportReason.RUNTIME_FAILED, f"Task completion status is {run.completion_status.value}.")
             continue
         if (
             run.completion_status == CompletionStatus.NOT_SUPPORTED
-            and layer not in {"protocol_scores", "system_scores", "audit_scores"}
+            and not terminal_observable
         ):
             support[path] = _support(SupportReason.NOT_SUPPORTED, "Run completion status is not_supported.")
             continue

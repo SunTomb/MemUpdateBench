@@ -4074,3 +4074,94 @@ def test_system_error_rate_tracks_runtime_failure_lifecycle(
     assert ("system_exception" in score.failure_flags) is (
         has_exception or completion_status in {"failed", "partial"}
     )
+
+
+@pytest.mark.parametrize(
+    ("completion_status", "has_exception", "expected_reason"),
+    (
+        ("not_supported", False, "not_supported"),
+        ("not_supported", True, "runtime_failed"),
+        ("failed", False, "runtime_failed"),
+        ("partial", False, "runtime_failed"),
+    ),
+)
+def test_system_performance_metrics_remain_terminally_gated(
+    completion_status, has_exception, expected_reason,
+):
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParsedManagerActionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    parsed_actions = tuple(
+        ParsedManagerActionV3(
+            action_id=action.action_id,
+            event_id=action.event_id,
+            operation=action.operation,
+            observed_scope=action.scope,
+            target_object_keys=action.target_object_keys,
+            value=action.value,
+            format_valid=True,
+            execution_status="not_supported",
+            fallback_used=False,
+            raw_output="unsupported",
+            latency_ms=12.5,
+        )
+        for action in task.actions
+    )
+    prediction = AnswerPredictionV3(
+        query_id="q",
+        raw_output="answer",
+        parsed_answer=["v0", "v1", None, "v2"],
+        format_valid=True,
+        latency_ms=8.5,
+        usage={"total_tokens": 9},
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id=f"system-performance-{completion_status}-{has_exception}",
+        parsed_actions=parsed_actions,
+        answer_predictions=(prediction,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status=completion_status,
+        exceptions=({"type": "boom"},) if has_exception else (),
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    capabilities = AdapterCapabilitiesV3(
+        supports_event_ingest=True,
+        supports_historical_query=True,
+        reports_latency=True,
+        reports_token_usage=True,
+        reports_cost=True,
+    )
+    paths = (
+        "system_scores.ingest_latency_ms",
+        "system_scores.answer_latency_ms",
+        "system_scores.token_usage",
+        "system_scores.api_cost",
+    )
+    context = authenticated_context(
+        task,
+        run,
+        info,
+        capabilities,
+        ScorerConfigV3(requested_metric_fields=paths),
+    )
+
+    score = score_task_v3(task, run, context)
+
+    for path in paths:
+        layer, leaf = path.split(".")
+        assert getattr(getattr(score, layer), leaf) is None
+        assert score.supported_metric_fields[path].reason.value == expected_reason
