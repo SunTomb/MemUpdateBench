@@ -99,6 +99,42 @@ def current_structured_payload(value, answer_schema):
     return changed
 
 
+def test_normalized_match_preserves_typed_bool_number_distinction():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    task = MemUpdateTaskV3.model_validate(current_structured_payload(True, "boolean"))
+    prediction = AnswerPredictionV3(
+        query_id="q", raw_output="1", parsed_answer=1, format_valid=True
+    )
+    run = TaskRunRecordV3(
+        task_id="t", adapter_id="adapter", run_id="typed-normalized-match",
+        answer_predictions=(prediction,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    config = ScorerConfigV3(requested_metric_fields=(
+        "answer_scores.exact_match", "answer_scores.normalized_match",
+    ))
+    score = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info,
+            AdapterCapabilitiesV3(supports_native_answer=True), config,
+        ),
+    )
+
+    assert score.answer_scores.exact_match == 0.0
+    assert score.answer_scores.normalized_match == 0.0
+
+
 def test_authenticated_context_uses_canonical_unicode_model_hashes():
     from mub.vnext.io import sha256_model
     from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3

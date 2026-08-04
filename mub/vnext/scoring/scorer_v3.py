@@ -569,7 +569,7 @@ def _metric_value(
         if not predictions: return None, "answer predictions are missing"
         exacts = [float(predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in task.queries if q.query_id in predictions]
         if leaf == "exact_match": return _mean(exacts), None
-        if leaf == "normalized_match": return _mean([float(item.format_valid and _normalized(item.parsed_answer) == _normalized(evidence[item.query_id].answer)) for item in predictions.values()]), None
+        if leaf == "normalized_match": return _mean([float(item.format_valid and typed_json_equal(_normalized(item.parsed_answer), _normalized(evidence[item.query_id].answer))) for item in predictions.values()]), None
         if leaf == "token_f1": return _mean([_token_f1(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
         if leaf == "structured_field_accuracy": return _mean([_structured_accuracy(item.parsed_answer, evidence[item.query_id].answer) if item.format_valid else 0.0 for item in predictions.values()]), None
         if leaf == "answer_state_consistency":
