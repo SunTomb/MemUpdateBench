@@ -718,6 +718,124 @@ def test_mixed_historical_trace_does_not_affect_current_retrieval_metrics():
     assert score.retrieval_scores.distractor_exposure_rate == 0.0
 
 
+@pytest.mark.parametrize(
+    ("case", "missing_query_id"),
+    (("historical_only_trace", "q-current"), ("one_of_two_current_traces", "q-current-2")),
+)
+def test_current_retrieval_metrics_require_exact_trace_coverage(case, missing_query_id):
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    if case == "historical_only_trace":
+        changed = payload()
+        key = changed["target_objects"][0]
+        changed["queries"].append({
+            "query_id": missing_query_id, "query_type": "current", "text": "?",
+            "selector": {"kind": "current"}, "target_object_keys": [key],
+            "answer_schema": "string", "evaluation_mode": "state_direct",
+        })
+        changed["gold_evidence"].append({
+            "query_id": missing_query_id, "answer": "v2", "supporting_object_keys": [key],
+            "supporting_event_ids": ["e3"],
+            "derivation_steps": [{
+                "step_id": "read-current", "operation": "read",
+                "supporting_object_keys": [key], "supporting_event_ids": ["e3"],
+            }],
+            "final_derivation_step_id": "read-current",
+        })
+        traced_query_id, traced_value, traced_version, traced_event = "q", "v0", 0, "e0"
+    else:
+        changed = replayable_multi_object_consistency_payload("e1")
+        changed["task_family"] = "F"
+        first, second = changed["target_objects"]
+        changed["queries"] = [
+            {
+                "query_id": "q", "query_type": "current", "text": "?",
+                "selector": {"kind": "current"}, "target_object_keys": [first],
+                "answer_schema": "string", "evaluation_mode": "state_direct",
+            },
+            {
+                "query_id": missing_query_id, "query_type": "current", "text": "?",
+                "selector": {"kind": "current"}, "target_object_keys": [second],
+                "answer_schema": "string", "evaluation_mode": "state_direct",
+            },
+        ]
+        changed["gold_evidence"] = [
+            {
+                "query_id": "q", "answer": "v2", "supporting_object_keys": [first],
+                "supporting_event_ids": ["e3"],
+                "derivation_steps": [{
+                    "step_id": "read-first", "operation": "read",
+                    "supporting_object_keys": [first], "supporting_event_ids": ["e3"],
+                }],
+                "final_derivation_step_id": "read-first",
+            },
+            {
+                "query_id": missing_query_id, "answer": "z", "supporting_object_keys": [second],
+                "supporting_event_ids": ["e1"],
+                "derivation_steps": [{
+                    "step_id": "read-second", "operation": "read",
+                    "supporting_object_keys": [second], "supporting_event_ids": ["e1"],
+                }],
+                "final_derivation_step_id": "read-second",
+            },
+        ]
+        traced_query_id, traced_value, traced_version, traced_event = "q", "v2", 3, "e3"
+
+    task = MemUpdateTaskV3.model_validate(changed)
+    trace = RetrievalTraceV3(
+        query_id=traced_query_id,
+        retrieved_entries=(MemoryEntryRecordV3(
+            entry_id="only-supplied-trace", content=traced_value,
+            object_key_candidate=task.target_objects[0], value_candidate=traced_value,
+            version_index=traced_version, source_event_ids=(traced_event,),
+        ),),
+        ranks=(1,),
+    )
+    predictions = tuple(
+        AnswerPredictionV3(
+            query_id=evidence.query_id, raw_output=str(evidence.answer),
+            parsed_answer=evidence.answer, format_valid=True,
+        )
+        for evidence in task.gold_evidence
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id=f"coverage-{case}",
+        retrieval_traces=(trace,), answer_predictions=predictions,
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_entries=True, exports_object_keys=True, exports_values=True,
+        exports_retrieval_ids=True, exports_retrieval_scores=True,
+    )
+    paths = tuple(
+        f"retrieval_scores.{leaf}"
+        for leaf in (
+            "current_recall_at_k", "current_mrr", "stale_exposure_rate",
+            "stale_count_in_context", "distractor_exposure_rate",
+        )
+    )
+    config = ScorerConfigV3(requested_metric_fields=paths)
+
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+    for path in paths:
+        layer, leaf = path.split(".", 1)
+        assert getattr(getattr(score, layer), leaf) is None
+        support = score.supported_metric_fields[path]
+        assert support.reason is SupportReason.MISSING_ARTIFACT
+        assert missing_query_id in support.detail
+
+
 def _current_mrr_fixture(*entries, ranks=()):
     from mub.vnext.contracts.v3.runtime import RetrievalTraceV3
     from mub.vnext.scoring.scorer_v3 import _metric_value

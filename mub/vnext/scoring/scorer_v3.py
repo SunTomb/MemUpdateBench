@@ -495,9 +495,11 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "stale_conflicting_value_count": return sum(_obsolete_entry_conflicts_with_current(entry, replay) for entry in stale), None
         if leaf == "duplicate_current_count": return sum(max(0, sum(_entry_matches_version(entry, version) for entry in entries) - 1) for version in current_versions), None
     if layer == "retrieval_scores":
-        if not traces: return None, "retrieval traces are missing"
         current_queries = [query for query in task.queries if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}]
-        current_rows = [(query, traces.get(query.query_id)) for query in current_queries if traces.get(query.query_id) is not None]
+        missing_query_ids = tuple(sorted(query.query_id for query in current_queries if query.query_id not in traces))
+        if missing_query_ids:
+            return None, f"retrieval traces are missing for applicable query IDs: {', '.join(missing_query_ids)}"
+        current_rows = [(query, traces[query.query_id]) for query in current_queries]
         current_statuses = {
             query.query_id: tuple(
                 any(_entry_current_match_status(entry, version, replay) is True for version in resolutions[query.query_id].selected_versions)
