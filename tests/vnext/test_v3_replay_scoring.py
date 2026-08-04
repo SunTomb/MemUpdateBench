@@ -2026,6 +2026,195 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     assert "distractor_copied" not in flags
 
 
+def g_horizon_payload(query_type):
+    changed = ttl_horizon_payload("002", "v1")
+    changed["task_family"] = "G"
+    changed["events"][1]["timestamp"] = "002"
+    changed["actions"][1]["effective_at"] = "002"
+    changed["version_history"][0]["entries"][1]["logical_time"] = "002"
+    first = changed["target_objects"][0]
+    if query_type == "update_sensitive_multi_hop":
+        changed["queries"][0] = {
+            "query_id": "q", "query_type": query_type, "text": "?",
+            "selector": {"kind": "current"}, "target_object_keys": [first],
+            "answer_schema": "string", "evaluation_mode": "state_direct",
+            "synthesis": {"kind": query_type, "minimum_hops": 2},
+        }
+        changed["gold_evidence"][0] = {
+            "query_id": "q", "answer": "v1", "supporting_object_keys": [first],
+            "supporting_event_ids": ["e1"],
+            "derivation_steps": [
+                {"step_id": "current", "operation": "read_current", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+                {"step_id": "answer", "operation": "answer", "input_step_ids": ["current"]},
+            ],
+            "final_derivation_step_id": "answer",
+            "stale_alternative": {
+                "answer": "v0", "supporting_object_keys": [first],
+                "supporting_event_ids": ["e0"],
+                "derivation_steps": [
+                    {"step_id": "historical", "operation": "read_version", "supporting_object_keys": [first], "supporting_event_ids": ["e0"]},
+                    {"step_id": "stale-answer", "operation": "answer", "input_step_ids": ["historical"]},
+                ],
+                "final_derivation_step_id": "stale-answer",
+            },
+        }
+        return changed
+
+    second = {**first, "entity": "e2-control"}
+    changed["target_objects"].append(second)
+    changed["events"][0]["gold_action_ids"].append("a-second")
+    changed["actions"].insert(1, {
+        "action_id": "a-second", "event_id": "e0", "operation": "ADD", "scope": "object",
+        "target_object_keys": [second], "value": "v1", "effective_at": "000",
+    })
+    changed["version_history"].append({
+        "object_key": second,
+        "entries": [{
+            "version_index": 0, "status": "present", "value": "v1",
+            "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"],
+        }],
+    })
+    changed["queries"][0] = {
+        "query_id": "q", "query_type": query_type, "text": "?",
+        "selector": {"kind": "multi_object_current", "object_keys": [first, second]},
+        "target_object_keys": [first, second], "answer_schema": "boolean",
+        "evaluation_mode": "state_direct",
+        "synthesis": {"kind": query_type, "minimum_objects": 2},
+    }
+    changed["gold_evidence"][0] = {
+        "query_id": "q", "answer": True, "supporting_object_keys": [first, second],
+        "supporting_event_ids": ["e0", "e1"],
+        "derivation_steps": [
+            {"step_id": "first-current", "operation": "read_current", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+            {"step_id": "second-current", "operation": "read_current", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "equals", "operation": "equals", "input_step_ids": ["first-current", "second-current"]},
+        ],
+        "final_derivation_step_id": "equals",
+        "stale_alternative": {
+            "answer": False, "supporting_object_keys": [first, second],
+            "supporting_event_ids": ["e0"],
+            "derivation_steps": [
+                {"step_id": "first-historical", "operation": "read_version", "supporting_object_keys": [first], "supporting_event_ids": ["e0"]},
+                {"step_id": "second-historical", "operation": "read_version", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+                {"step_id": "stale-equals", "operation": "equals", "input_step_ids": ["first-historical", "second-historical"]},
+            ],
+            "final_derivation_step_id": "stale-equals",
+        },
+    }
+    return changed
+
+
+@pytest.mark.parametrize("query_type", ["update_sensitive_multi_hop", "multi_object_current_consistency"])
+def test_g_horizon_boundary_current_and_active_history_reads_pass(query_type):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    task = MemUpdateTaskV3.model_validate(g_horizon_payload(query_type))
+    replay = replay_task_v3(task)
+    evaluation = evaluate_evidence_v3(
+        task.gold_evidence[0], replay, task.gold_evidence[0].stale_alternative,
+        task.queries[0], task.events,
+    )
+
+    assert replay.issues == ()
+    assert replay.horizon_logical_time == "002"
+    assert tuple(version.version_index for version in replay.active_versions(replay.ledgers[0])) == (0, 1)
+    assert replay.active_versions(replay.ledgers[0])[-1].logical_time == "002"
+    assert evaluation.issues == ()
+
+
+@pytest.mark.parametrize("query_type", ["update_sensitive_multi_hop", "multi_object_current_consistency"])
+def test_g_current_read_cannot_bind_active_historical_version(query_type):
+    changed = g_horizon_payload(query_type)
+    alternative = changed["gold_evidence"][0]["stale_alternative"]
+    alternative["derivation_steps"][0]["operation"] = "read_current"
+
+    with pytest.raises(ValueError, match="current|support|eligible|provenance"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
+@pytest.mark.parametrize("query_type", ["update_sensitive_multi_hop", "multi_object_current_consistency"])
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_g_contract_rejects_future_horizon_derivation_reads(query_type, location):
+    changed = g_horizon_payload(query_type)
+    evidence = changed["gold_evidence"][0]
+    item = evidence if location == "primary" else evidence["stale_alternative"]
+    item["derivation_steps"][0]["supporting_event_ids"] = ["e2"]
+    item["supporting_event_ids"] = sorted({
+        event_id
+        for step in item["derivation_steps"]
+        for event_id in step.get("supporting_event_ids", [])
+    })
+
+    with pytest.raises(ValueError, match="support|eligible|provenance|selector"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
+@pytest.mark.parametrize("query_type", ["update_sensitive_multi_hop", "multi_object_current_consistency"])
+@pytest.mark.parametrize("location", ["primary", "stale"])
+def test_defensive_g_replay_marks_future_derivation_read_unavailable(query_type, location):
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    task = MemUpdateTaskV3.model_validate(g_horizon_payload(query_type))
+    replay = replay_task_v3(task)
+    evidence = task.gold_evidence[0]
+    if location == "primary":
+        steps = list(evidence.derivation_steps)
+        steps[0] = steps[0].model_copy(update={"supporting_event_ids": ("e2",)})
+        expected = None if query_type == "update_sensitive_multi_hop" else False
+        evidence = evidence.model_copy(update={"answer": expected, "derivation_steps": tuple(steps)})
+        alternative = None
+    else:
+        alternative = evidence.stale_alternative
+        steps = list(alternative.derivation_steps)
+        steps[0] = steps[0].model_copy(update={"supporting_event_ids": ("e2",)})
+        expected = None if query_type == "update_sensitive_multi_hop" else False
+        alternative = alternative.model_copy(update={"answer": expected, "derivation_steps": tuple(steps)})
+
+    evaluation = evaluate_evidence_v3(evidence, replay, alternative)
+
+    assert evaluation.answer is None
+    assert tuple(issue.code for issue in evaluation.issues) == ("evidence_replay_error",)
+    assert "missing" in evaluation.issues[0].message
+
+
+def test_defensive_g_count_does_not_include_future_horizon_row():
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    task = MemUpdateTaskV3.model_validate(g_horizon_payload("update_sensitive_multi_hop"))
+    replay = replay_task_v3(task)
+    evidence_type = task.gold_evidence[0].__class__
+    active_evidence = evidence_type.model_validate({
+        "query_id": "q", "answer": 1, "supporting_object_keys": task.target_objects,
+        "supporting_event_ids": ["e1"],
+        "derivation_steps": [
+            {"step_id": "boundary", "operation": "read_version", "supporting_object_keys": task.target_objects, "supporting_event_ids": ["e1"]},
+            {"step_id": "rows", "operation": "collect", "input_step_ids": ["boundary"]},
+            {"step_id": "count", "operation": "count", "input_step_ids": ["rows"]},
+        ],
+        "final_derivation_step_id": "count",
+    })
+    active_evaluation = evaluate_evidence_v3(active_evidence, replay)
+    assert active_evaluation.issues == ()
+    assert active_evaluation.answer == 1
+
+    future_evidence = evidence_type.model_validate({
+        "query_id": "q", "answer": 2, "supporting_object_keys": task.target_objects,
+        "supporting_event_ids": ["e1", "e2"],
+        "derivation_steps": [
+            {"step_id": "boundary", "operation": "read_version", "supporting_object_keys": task.target_objects, "supporting_event_ids": ["e1"]},
+            {"step_id": "future", "operation": "read_version", "supporting_object_keys": task.target_objects, "supporting_event_ids": ["e2"]},
+            {"step_id": "rows", "operation": "collect", "input_step_ids": ["boundary", "future"]},
+            {"step_id": "count", "operation": "count", "input_step_ids": ["rows"]},
+        ],
+        "final_derivation_step_id": "count",
+    })
+    future_evaluation = evaluate_evidence_v3(future_evidence, replay)
+
+    assert future_evaluation.answer is None
+    assert tuple(issue.code for issue in future_evaluation.issues) == ("evidence_replay_error",)
+    assert "missing" in future_evaluation.issues[0].message
+
+
 def g_stale_payload():
     changed = payload()
     key = changed["target_objects"][0]

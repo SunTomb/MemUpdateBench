@@ -402,7 +402,7 @@ def _read_step_value(step, replay: ReplayResultV3):
     versions = _resolve_derivation_read_versions(
         step,
         replay.ledger_by_identity,
-        lambda ledger: ledger.versions,
+        replay.active_versions,
     )
     values = [version.value for version in versions]
     return values[0] if len(values) == 1 else values
@@ -480,7 +480,7 @@ def evaluate_evidence_v3(
                     replay.ledger_by_identity,
                     selected_by_target,
                     require_exact_event_coverage=True,
-                    version_rows=lambda ledger: ledger.versions,
+                    version_rows=replay.active_versions,
                 )
                 if stale_alternative is not None:
                     _validate_consistency_read_eligibility(
@@ -488,7 +488,7 @@ def evaluate_evidence_v3(
                         targets,
                         replay.ledger_by_identity,
                         require_exact_event_coverage=True,
-                        version_rows=lambda ledger: ledger.versions,
+                        version_rows=replay.active_versions,
                     )
             else:
                 _validate_multi_hop_read_eligibility(
@@ -496,7 +496,7 @@ def evaluate_evidence_v3(
                     targets,
                     replay.ledger_by_identity,
                     selected_by_target,
-                    version_rows=lambda ledger: ledger.versions,
+                    version_rows=replay.active_versions,
                 )
                 if stale_alternative is not None:
                     _validate_multi_hop_read_eligibility(
@@ -505,7 +505,7 @@ def evaluate_evidence_v3(
                         replay.ledger_by_identity,
                         selected_by_target,
                         stale_alternative=True,
-                        version_rows=lambda ledger: ledger.versions,
+                        version_rows=replay.active_versions,
                     )
         answer = evaluate(evidence)
         if not _same(answer, evidence.answer):

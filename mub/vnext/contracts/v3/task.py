@@ -569,13 +569,20 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     raise ValueError("derivation uses object outside evidence scope")
                 if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
                     raise ValueError("derivation uses event outside evidence scope")
+            g_synthesis_query = query.query_type in {
+                QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+                QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+            }
+            derivation_version_rows = (
+                lambda ledger: _horizon_active_entries(ledger.entries, task_horizon)
+                if g_synthesis_query
+                else ledger.entries
+            )
             _validate_derivation_read_bindings(
                 evidence,
                 histories,
-                include_implicit=query.query_type in {
-                    QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
-                    QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
-                },
+                include_implicit=g_synthesis_query,
+                version_rows=derivation_version_rows,
             )
             alternative = evidence.stale_alternative
             if alternative is not None:
@@ -592,13 +599,19 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         raise ValueError("stale derivation uses object outside alternative scope")
                     if set(step.supporting_event_ids) - set(alternative.supporting_event_ids):
                         raise ValueError("stale derivation uses event outside alternative scope")
-                _validate_derivation_read_bindings(alternative, histories, include_implicit=True)
+                _validate_derivation_read_bindings(
+                    alternative,
+                    histories,
+                    include_implicit=True,
+                    version_rows=derivation_version_rows,
+                )
             if query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
                 _validate_multi_hop_read_eligibility(
                     evidence,
                     targets,
                     histories,
                     selected_entries_by_target,
+                    version_rows=derivation_version_rows,
                 )
                 if alternative is not None:
                     _validate_multi_hop_read_eligibility(
@@ -607,6 +620,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         histories,
                         selected_entries_by_target,
                         stale_alternative=True,
+                        version_rows=derivation_version_rows,
                     )
                 minimum_hops = query.synthesis.minimum_hops
                 if _derivation_depth(evidence) < minimum_hops:
@@ -619,12 +633,12 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     evidence,
                     targets,
                     histories,
-                    lambda ledger: ledger.entries,
+                    derivation_version_rows,
                 )
                 influential_objects = _derivation_influential_objects(
                     evidence,
                     histories,
-                    lambda ledger: ledger.entries,
+                    derivation_version_rows,
                 ) & targets
                 if (
                     len(targets) < minimum_objects
@@ -640,18 +654,19 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     histories,
                     selected_entries_by_target,
                     require_exact_event_coverage=True,
+                    version_rows=derivation_version_rows,
                 )
                 if alternative is not None:
                     stale_read_count, stale_read_objects = _derivation_read_support(
                         alternative,
                         targets,
                         histories,
-                        lambda ledger: ledger.entries,
+                        derivation_version_rows,
                     )
                     stale_influential_objects = _derivation_influential_objects(
                         alternative,
                         histories,
-                        lambda ledger: ledger.entries,
+                        derivation_version_rows,
                     ) & targets
                     if (
                         stale_read_count < minimum_objects
@@ -665,6 +680,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         targets,
                         histories,
                         require_exact_event_coverage=True,
+                        version_rows=derivation_version_rows,
                     )
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
@@ -689,6 +705,11 @@ def _identity(key: MemoryObjectKeyV3) -> tuple[str, str, str, str | None]:
 
 def _resolved_derivation_read_components(step, ledgers, version_rows):
     supporting_events = set(step.supporting_event_ids)
+
+    def eligible_versions(ledger):
+        versions = tuple(version_rows(ledger))
+        return versions[-1:] if step.operation == "read_current" else versions
+
     if step.supporting_object_keys:
         resolved = []
         for key in step.supporting_object_keys:
@@ -698,7 +719,7 @@ def _resolved_derivation_read_components(step, ledgers, version_rows):
                 raise ValueError("derivation support object is missing")
             candidates = tuple(
                 version
-                for version in version_rows(ledger)
+                for version in eligible_versions(ledger)
                 if set(version.source_event_ids) & supporting_events
             )
             if len(candidates) != 1:
@@ -709,7 +730,7 @@ def _resolved_derivation_read_components(step, ledgers, version_rows):
         candidates = tuple(
             (identity, version)
             for identity, ledger in ledgers.items()
-            for version in version_rows(ledger)
+            for version in eligible_versions(ledger)
             if set(version.source_event_ids) & supporting_events
         )
         if len(candidates) != 1:
@@ -739,14 +760,21 @@ def _resolve_derivation_read_versions(step, ledgers, version_rows):
     return _resolve_derivation_read_support(step, ledgers, version_rows)[0]
 
 
-def _validate_derivation_read_bindings(evidence, histories, include_implicit=False) -> None:
+def _validate_derivation_read_bindings(
+    evidence,
+    histories,
+    include_implicit=False,
+    version_rows=None,
+) -> None:
+    if version_rows is None:
+        version_rows = lambda ledger: ledger.entries
     for step in evidence.derivation_steps:
         reads_support = (
             step.operation in _DERIVATION_READ_OPERATIONS
             or include_implicit and _derivation_step_reads_support(step)
         )
         if reads_support:
-            _resolve_derivation_read_versions(step, histories, lambda ledger: ledger.entries)
+            _resolve_derivation_read_versions(step, histories, version_rows)
 
 
 def _validate_multi_hop_read_eligibility(
