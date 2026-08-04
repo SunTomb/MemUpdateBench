@@ -152,24 +152,14 @@ def _value_status(
     *,
     forgotten: bool,
 ) -> bool:
-    if len(versions) < 2 or not _stale_against_current(value, versions[-1]):
-        return False
-    tombstone_after = versions[-1].status == LedgerEntryStatus.TOMBSTONE
-    same_value_present_after = False
-    for position in range(len(versions) - 2, -1, -1):
+    for position in range(len(versions) - 1, -1, -1):
         version = versions[position]
-        same_value_present = (
-            version.status == LedgerEntryStatus.PRESENT
-            and typed_json_equal(value, version.value)
-        )
-        if same_value_present:
-            if not forgotten or (
-                tombstone_after and not same_value_present_after
-            ):
-                return True
-            same_value_present_after = True
-        elif version.status == LedgerEntryStatus.TOMBSTONE:
-            tombstone_after = True
+        if version.status != LedgerEntryStatus.PRESENT or not typed_json_equal(
+            value, version.value
+        ):
+            continue
+        stale, forgotten_status = _lifecycle_flags(value, versions, position)
+        return forgotten_status if forgotten else stale
     return False
 
 
