@@ -439,6 +439,52 @@ def _entry_forgotten_status(entry, replay):
     return any(version.status == LedgerEntryStatus.TOMBSTONE for version in versions[matched.version_index + 1:])
 
 
+def _effective_current_retrieval_status(trace, selected_versions, replay):
+    if trace.gold_in_context is not None:
+        return trace.gold_in_context
+    statuses = _current_retrieval_entry_statuses(trace, selected_versions, replay)
+    if any(status is None for status in statuses):
+        return None
+    return any(status is True for status in statuses)
+
+
+def _effective_stale_retrieval_status(trace, replay):
+    if trace.stale_in_context is not None:
+        return trace.stale_in_context
+    statuses = _obsolete_retrieval_entry_statuses(trace, replay)
+    if any(status is None for status in statuses):
+        return None
+    return any(status is True for status in statuses)
+
+
+def _current_retrieval_entry_statuses(trace, selected_versions, replay):
+    statuses = []
+    for entry in trace.retrieved_entries:
+        entry_statuses = tuple(
+            _entry_current_match_status(entry, version, replay)
+            for version in selected_versions
+        )
+        statuses.append(
+            None
+            if any(status is None for status in entry_statuses)
+            else any(status is True for status in entry_statuses)
+        )
+    return tuple(statuses)
+
+
+def _obsolete_retrieval_entry_statuses(trace, replay):
+    return tuple(
+        _entry_obsolete_status(entry, replay)
+        for entry in trace.retrieved_entries
+    )
+
+
+def _current_retrieval_ambiguity_detail(traces):
+    if any(entry.value_candidate is None for trace in traces for entry in trace.retrieved_entries):
+        return "value evidence is missing for version-bearing current retrieval entries"
+    return "version identity is ambiguous for repeated-value current retrieval entries"
+
+
 def _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts):
     layer, leaf = path.split(".", 1)
     snapshot = _final_snapshot(run, task)
@@ -502,43 +548,19 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         current_rows = [(query, traces[query.query_id]) for query in current_queries]
 
         def current_statuses(query, trace):
-            selected_versions = resolutions[query.query_id].selected_versions
-            statuses = []
-            for entry in trace.retrieved_entries:
-                entry_statuses = tuple(
-                    _entry_current_match_status(entry, version, replay)
-                    for version in selected_versions
-                )
-                statuses.append(
-                    None
-                    if any(status is None for status in entry_statuses)
-                    else any(status is True for status in entry_statuses)
-                )
-            return tuple(statuses)
-
-        def obsolete_statuses(trace):
-            return tuple(
-                _entry_obsolete_status(entry, replay)
-                for entry in trace.retrieved_entries
+            return _current_retrieval_entry_statuses(
+                trace, resolutions[query.query_id].selected_versions, replay,
             )
-
-        def current_ambiguity_detail(rows):
-            if any(entry.value_candidate is None for _, trace in rows for entry in trace.retrieved_entries):
-                return "value evidence is missing for version-bearing current retrieval entries"
-            return "version identity is ambiguous for repeated-value current retrieval entries"
 
         if leaf == "current_recall_at_k":
             recalls = []
-            fallback_rows = []
             for query, trace in current_rows:
-                if trace.gold_in_context is not None:
-                    recalls.append(float(trace.gold_in_context))
-                    continue
-                statuses = current_statuses(query, trace)
-                fallback_rows.append((query, trace))
-                if any(status is None for status in statuses):
-                    return None, current_ambiguity_detail(fallback_rows)
-                recalls.append(float(any(status is True for status in statuses)))
+                status = _effective_current_retrieval_status(
+                    trace, resolutions[query.query_id].selected_versions, replay,
+                )
+                if status is None:
+                    return None, _current_retrieval_ambiguity_detail((trace,))
+                recalls.append(float(status))
             return (_mean(recalls), None) if recalls else (None, "no current retrieval rows")
         if leaf == "current_mrr":
             current_status_by_query = {
@@ -546,7 +568,7 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
                 for query, trace in current_rows
             }
             if any(status is None for statuses in current_status_by_query.values() for status in statuses):
-                return None, current_ambiguity_detail(current_rows)
+                return None, _current_retrieval_ambiguity_detail(trace for _, trace in current_rows)
             if any(
                 trace.retrieved_entries
                 and len(trace.ranks) != len(trace.retrieved_entries)
@@ -569,20 +591,17 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "stale_exposure_rate":
             exposed = []
             for _, trace in current_rows:
-                if trace.stale_in_context is not None:
-                    exposed.append(trace.stale_in_context)
-                    continue
-                statuses = obsolete_statuses(trace)
-                if any(status is None for status in statuses):
+                status = _effective_stale_retrieval_status(trace, replay)
+                if status is None:
                     return None, "version identity is ambiguous for repeated-value retrieval entries"
-                exposed.append(any(status is True for status in statuses))
+                exposed.append(status)
             return _mean([float(value) for value in exposed]), None
         if leaf == "stale_count_in_context":
             total = 0
             for _, trace in current_rows:
                 if trace.stale_in_context is False:
                     continue
-                statuses = obsolete_statuses(trace)
+                statuses = _obsolete_retrieval_entry_statuses(trace, replay)
                 if any(status is None for status in statuses):
                     return None, "version identity is ambiguous for repeated-value retrieval entries"
                 stale_count = sum(status is True for status in statuses)
@@ -615,7 +634,33 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         obsolete = replay.obsolete_present_values
         if leaf == "stale_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
         if leaf == "distractor_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
-        if leaf == "gold_retrieved_wrong_answer": return _mean([float(traces.get(item.query_id) is not None and traces[item.query_id].gold_in_context is True and not _same(item.parsed_answer, evidence[item.query_id].answer)) for item in predictions.values()]), None
+        if leaf == "gold_retrieved_wrong_answer":
+            current_queries = [
+                query for query in task.queries
+                if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}
+            ]
+            missing_query_ids = tuple(sorted(
+                query.query_id for query in current_queries
+                if query.query_id not in traces
+            ))
+            if missing_query_ids:
+                return None, f"retrieval traces are missing for applicable query IDs: {', '.join(missing_query_ids)}"
+            observations = []
+            for query in current_queries:
+                prediction = predictions.get(query.query_id)
+                if prediction is None:
+                    return None, f"answer prediction is missing for applicable query ID: {query.query_id}"
+                trace = traces[query.query_id]
+                status = _effective_current_retrieval_status(
+                    trace, resolutions[query.query_id].selected_versions, replay,
+                )
+                if status is None:
+                    return None, _current_retrieval_ambiguity_detail((trace,))
+                observations.append(float(
+                    status is True
+                    and not _same(prediction.parsed_answer, evidence[query.query_id].answer)
+                ))
+            return (_mean(observations), None) if observations else (None, "no applicable current retrieval rows")
         if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
     if layer == "system_scores":
         if leaf == "error_rate": return float(run.completion_status != CompletionStatus.COMPLETED or bool(run.exceptions)), None
@@ -805,7 +850,7 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
         else:
             layers[layer][leaf] = value
     from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
-    flags = derive_failure_flags_v3(task=task, run=run, replay=replay, layer_values=layers, predictions=predictions, traces=traces, evidence=evidence)
+    flags = derive_failure_flags_v3(task=task, run=run, replay=replay, layer_values=layers, predictions=predictions, traces=traces, evidence=evidence, resolutions=resolutions)
     return ScoreRecordV3.empty(
         task_id=task.task_id, run_id=run.run_id, adapter_id=run.adapter_id,
         task_family=task.task_family, difficulty=task.difficulty,

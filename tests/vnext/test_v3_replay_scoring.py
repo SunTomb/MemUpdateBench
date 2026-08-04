@@ -952,6 +952,143 @@ def test_current_recall_null_annotation_falls_back_to_detailed_entries(
     assert (detail is not None) is missing_artifact
 
 
+def _score_effective_current_retrieval(
+    entry_kind,
+    *,
+    gold_in_context=None,
+    stale_in_context=None,
+    wrong_answer=True,
+):
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    changed = current_structured_payload("x", "string")
+    changed["actions"][0]["value"] = "x"
+    changed["version_history"][0]["entries"][0]["value"] = "x"
+    task = MemUpdateTaskV3.model_validate(changed)
+    key = task.target_objects[0]
+    entry_specs = {
+        "empty": (),
+        "current": (("current", "x", 3, "e3"),),
+        "stale": (("stale", "x", 0, "e0"),),
+        "ambiguous": (("ambiguous", "x", None, None),),
+    }
+    entries = tuple(
+        MemoryEntryRecordV3(
+            entry_id=entry_id,
+            content=value,
+            object_key_candidate=key,
+            value_candidate=value,
+            version_index=version_index,
+            source_event_ids=() if event_id is None else (event_id,),
+        )
+        for entry_id, value, version_index, event_id in entry_specs[entry_kind]
+    )
+    trace = RetrievalTraceV3(
+        query_id="q",
+        retrieved_entries=entries,
+        gold_in_context=gold_in_context,
+        stale_in_context=stale_in_context,
+    )
+    answer = "wrong" if wrong_answer else "x"
+    prediction = AnswerPredictionV3(
+        query_id="q", raw_output=answer, parsed_answer=answer, format_valid=True,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id=f"effective-{entry_kind}",
+        retrieval_traces=(trace,),
+        answer_predictions=(prediction,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_entries=True,
+        exports_object_keys=True,
+        exports_values=True,
+        exports_retrieval_ids=True,
+    )
+    config = ScorerConfigV3(requested_metric_fields=(
+        "retrieval_scores.current_recall_at_k",
+        "retrieval_scores.stale_exposure_rate",
+        "answer_scores.gold_retrieved_wrong_answer",
+    ))
+    return score_task_v3(
+        task, run, authenticated_context(task, run, info, caps, config),
+    )
+
+
+@pytest.mark.parametrize(
+    ("gold_in_context", "entry_kind", "expected_recall", "expected_wrong", "expected_flags", "missing"),
+    [
+        (False, "current", 0.0, 0.0, {"current_not_retrieved"}, False),
+        (True, "empty", 1.0, 1.0, {"gold_retrieved_wrong_answer"}, False),
+        (None, "current", 1.0, 1.0, {"gold_retrieved_wrong_answer"}, False),
+        (None, "ambiguous", None, None, set(), True),
+    ],
+)
+def test_effective_gold_status_keeps_recall_answer_metric_and_flags_in_parity(
+    gold_in_context, entry_kind, expected_recall, expected_wrong, expected_flags, missing,
+):
+    from mub.vnext.contracts.enums import SupportReason
+
+    score = _score_effective_current_retrieval(
+        entry_kind, gold_in_context=gold_in_context,
+    )
+
+    assert score.retrieval_scores.current_recall_at_k == expected_recall
+    assert score.answer_scores.gold_retrieved_wrong_answer == expected_wrong
+    assert ({"current_not_retrieved", "gold_retrieved_wrong_answer"} & set(score.failure_flags)) == expected_flags
+    for path in (
+        "retrieval_scores.current_recall_at_k",
+        "answer_scores.gold_retrieved_wrong_answer",
+    ):
+        if missing:
+            assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+        else:
+            assert path not in score.supported_metric_fields
+
+
+@pytest.mark.parametrize(
+    ("stale_in_context", "entry_kind", "expected_exposure", "expected_flag", "missing"),
+    [
+        (False, "stale", 0.0, False, False),
+        (True, "empty", 1.0, True, False),
+        (None, "stale", 1.0, True, False),
+        (None, "ambiguous", None, False, True),
+    ],
+)
+def test_effective_stale_status_keeps_exposure_metric_and_flag_in_parity(
+    stale_in_context, entry_kind, expected_exposure, expected_flag, missing,
+):
+    from mub.vnext.contracts.enums import SupportReason
+
+    score = _score_effective_current_retrieval(
+        entry_kind,
+        gold_in_context=True,
+        stale_in_context=stale_in_context,
+        wrong_answer=False,
+    )
+
+    assert score.retrieval_scores.stale_exposure_rate == expected_exposure
+    assert ("stale_retrieved" in score.failure_flags) is expected_flag
+    support_path = "retrieval_scores.stale_exposure_rate"
+    if missing:
+        assert score.supported_metric_fields[support_path].reason is SupportReason.MISSING_ARTIFACT
+    else:
+        assert support_path not in score.supported_metric_fields
+
+
 @pytest.mark.parametrize(
     ("stale_in_context", "entry_kind", "expected"),
     [
@@ -1294,15 +1431,16 @@ def test_same_value_different_version_is_not_current_entry_match():
 
     from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
     evidence = {item.query_id: item for item in task.gold_evidence}
+    current_evidence = {item.query_id: item for item in current_task.gold_evidence}
     layers = {"deletion_scores": {}, "historical_scores": {}, "synthesis_scores": {}}
-    current_v3 = MemoryEntryRecordV3(entry_id="v3", content="x", object_key_candidate=task.target_objects[0], value_candidate="x", version_index=3, source_event_ids=("e3",))
+    current_v3 = MemoryEntryRecordV3(entry_id="v3", content="x", object_key_candidate=current_task.target_objects[0], value_candidate="x", version_index=3, source_event_ids=("e3",))
     current_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(current_v3,), stale_in_context=False)
     current_run = TaskRunRecordV3(task_id="t", adapter_id="a", run_id="current", retrieval_traces=(current_trace,), parser_extractor_provenance=run.parser_extractor_provenance, completion_status="completed")
-    flags = derive_failure_flags_v3(task=task, run=current_run, replay=replay, layer_values=layers, predictions={}, traces={"q": current_trace}, evidence=evidence)
+    flags = derive_failure_flags_v3(task=current_task, run=current_run, replay=current_replay, layer_values=layers, predictions={}, traces={"q": current_trace}, evidence=current_evidence)
     assert "stale_retrieved" not in flags
     stale_trace = RetrievalTraceV3(query_id="q", retrieved_entries=(stale_v0,), stale_in_context=True)
     stale_run = current_run.model_copy(update={"retrieval_traces": (stale_trace,)})
-    flags = derive_failure_flags_v3(task=task, run=stale_run, replay=replay, layer_values=layers, predictions={}, traces={"q": stale_trace}, evidence=evidence)
+    flags = derive_failure_flags_v3(task=current_task, run=stale_run, replay=current_replay, layer_values=layers, predictions={}, traces={"q": stale_trace}, evidence=current_evidence)
     assert "stale_retrieved" in flags
     from mub.vnext.scoring.scorer_v3 import _action_facts
     value, detail = _metric_value("deletion_scores.forgotten_exposure_rate", task, stale_run, None, replay, {}, evidence, {}, {"q": stale_trace}, _action_facts(task, stale_run))
@@ -1721,19 +1859,22 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (format_only,)}), replay=replay, layer_values=empty_layers, predictions={"q": format_only}, traces={}, evidence=evidence)
     assert "answer_format_only" in flags
 
+    current_task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    current_replay = replay_task_v3(current_task)
+    current_evidence = {item.query_id: item for item in current_task.gold_evidence}
     distractor = MemoryEntryRecordV3(entry_id="d", content="distractor", value_candidate="distractor", raw_metadata={"is_distractor": True})
     trace = RetrievalTraceV3(query_id="q", retrieved_entries=(distractor,), distractor_in_context=True)
     wrong = AnswerPredictionV3(query_id="q", raw_output="other", parsed_answer="other", format_valid=True)
-    flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (wrong,), "retrieval_traces": (trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": wrong}, traces={"q": trace}, evidence=evidence)
+    flags = derive_failure_flags_v3(task=current_task, run=run.model_copy(update={"answer_predictions": (wrong,), "retrieval_traces": (trace,)}), replay=current_replay, layer_values=empty_layers, predictions={"q": wrong}, traces={"q": trace}, evidence=current_evidence)
     assert "distractor_retrieved" in flags
     assert "distractor_copied" not in flags
     from mub.vnext.scoring.scorer_v3 import _metric_value
-    value, detail = _metric_value("answer_scores.distractor_copied", task, run, None, replay, {}, evidence, {"q": wrong}, {"q": trace}, [])
+    value, detail = _metric_value("answer_scores.distractor_copied", current_task, run, None, current_replay, {}, current_evidence, {"q": wrong}, {"q": trace}, [])
     assert detail is None
     assert value == 0.0
 
     copied = AnswerPredictionV3(query_id="q", raw_output="distractor", parsed_answer="distractor", format_valid=True)
-    flags = derive_failure_flags_v3(task=task, run=run.model_copy(update={"answer_predictions": (copied,), "retrieval_traces": (trace,)}), replay=replay, layer_values=empty_layers, predictions={"q": copied}, traces={"q": trace}, evidence=evidence)
+    flags = derive_failure_flags_v3(task=current_task, run=run.model_copy(update={"answer_predictions": (copied,), "retrieval_traces": (trace,)}), replay=current_replay, layer_values=empty_layers, predictions={"q": copied}, traces={"q": trace}, evidence=current_evidence)
     assert "distractor_copied" in flags
 
     gold_candidate = MemoryEntryRecordV3(entry_id="gold-overlap", content="v0", value_candidate="v0", raw_metadata={"is_distractor": True})
@@ -1818,6 +1959,7 @@ def test_retrieval_metrics_are_not_applicable_to_historical_or_synthesis_queries
         "retrieval_scores.stale_exposure_rate",
         "retrieval_scores.stale_count_in_context",
         "retrieval_scores.distractor_exposure_rate",
+        "answer_scores.gold_retrieved_wrong_answer",
     )
     task = MemUpdateTaskV3.model_validate(task_payload())
     first_version = task.version_history[0].entries[0]
@@ -1877,6 +2019,59 @@ def test_retrieval_metrics_are_not_applicable_to_historical_or_synthesis_queries
         layer, leaf = path.split(".", 1)
         assert getattr(getattr(score, layer), leaf) is None
         assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
+    assert "stale_retrieved" not in score.failure_flags
+    assert "distractor_retrieved" not in score.failure_flags
+    assert "distractor_copied" not in score.failure_flags
+
+
+def test_failed_historical_support_recall_does_not_imply_current_not_retrieved():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, RetrievalTraceV3
+    from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    replay = replay_task_v3(task)
+    trace = RetrievalTraceV3(
+        query_id="q",
+        gold_in_context=False,
+        stale_in_context=False,
+        distractor_in_context=False,
+    )
+    prediction = AnswerPredictionV3(
+        query_id="q",
+        raw_output=str(task.gold_evidence[0].answer),
+        parsed_answer=task.gold_evidence[0].answer,
+        format_valid=True,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id="historical-linkage-failure",
+        retrieval_traces=(trace,),
+        answer_predictions=(prediction,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    flags = derive_failure_flags_v3(
+        task=task,
+        run=run,
+        replay=replay,
+        layer_values={
+            "deletion_scores": {},
+            "historical_scores": {"historical_support_recall": 0.0},
+            "synthesis_scores": {},
+        },
+        predictions={"q": prediction},
+        traces={"q": trace},
+        evidence={"q": task.gold_evidence[0]},
+    )
+
+    assert "evidence_linkage_error" in flags
+    assert "current_not_retrieved" not in flags
 
 
 @pytest.mark.parametrize("family", ["multi_hop", "consistency"])

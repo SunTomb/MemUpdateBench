@@ -88,6 +88,7 @@ _FAMILY_BY_LAYER = {
 }
 _QUERY_BY_LEAF = {
     "answer_state_consistency": ("current", "multi_object_current"),
+    "gold_retrieved_wrong_answer": ("current", "multi_object_current"),
     "current_recall_at_k": ("current", "multi_object_current"),
     "current_mrr": ("current", "multi_object_current"),
     "stale_exposure_rate": ("current", "multi_object_current"),

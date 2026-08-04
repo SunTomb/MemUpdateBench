@@ -12,6 +12,7 @@ from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, Q
 from mub.vnext.contracts.v3.score import ScoreRecordV3, V3_FAILURE_FLAGS
 from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
+from mub.vnext.validation.replay_v3 import resolve_query_v3
 
 
 def _plain(value):
@@ -86,7 +87,7 @@ def _entry_version_status(entry, replay):
     return obsolete, forgotten
 
 
-def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, traces, evidence) -> tuple[str, ...]:
+def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, traces, evidence, resolutions=None) -> tuple[str, ...]:
     flags: set[str] = set()
     if run.exceptions or run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL}:
         flags.add("system_exception")
@@ -128,7 +129,11 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     if deletion.get("relearn_accuracy") not in {None, 1.0}: flags.add("current_state_missing")
     forgotten = _forgotten_values(replay)
     obsolete = replay.obsolete_present_values
-    from mub.vnext.scoring.scorer_v3 import _final_snapshot
+    from mub.vnext.scoring.scorer_v3 import (
+        _effective_current_retrieval_status,
+        _effective_stale_retrieval_status,
+        _final_snapshot,
+    )
     final_snapshot = _final_snapshot(run, task)
     if final_snapshot is not None:
         observed_state = dict(final_snapshot.state_by_object)
@@ -156,36 +161,58 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
         ):
             flags.add("collateral_corruption")
     if final_snapshot and any(_entry_version_status(entry, replay)[0] is True for entry in final_snapshot.entries): flags.add("stale_retained")
-    if any(trace.stale_in_context is True or any(_entry_version_status(entry, replay)[0] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("stale_retrieved")
+    current_queries = {
+        query.query_id: query
+        for query in task.queries
+        if query.query_type in {QueryTypeV3.CURRENT, QueryTypeV3.MULTI_OBJECT_CURRENT}
+    }
+    current_resolutions = {} if resolutions is None else resolutions
+    if any(
+        _effective_stale_retrieval_status(traces[query_id], replay) is True
+        for query_id in current_queries
+        if query_id in traces
+    ):
+        flags.add("stale_retrieved")
     if any(any(_entry_version_status(entry, replay)[1] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")
     if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in obsolete) for prediction in predictions.values()): flags.add("stale_copied")
     if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.add("forgotten_value_exposed")
     for query_id, prediction in predictions.items():
+        gold_answer = evidence[query_id].answer
+        if not prediction.format_valid and _same(prediction.parsed_answer, gold_answer):
+            flags.add("answer_format_only")
+    for query_id in current_queries:
+        prediction = predictions.get(query_id)
         trace = traces.get(query_id)
+        if prediction is None or trace is None:
+            continue
         gold_answer = evidence[query_id].answer
         semantic_wrong = not _same(prediction.parsed_answer, gold_answer)
         wrong = not prediction.format_valid or semantic_wrong
-        if not prediction.format_valid and _same(prediction.parsed_answer, gold_answer):
-            flags.add("answer_format_only")
-        if trace is not None:
-            if trace.gold_in_context is False:
-                flags.add("current_not_retrieved")
-            if trace.gold_in_context is True and wrong:
-                flags.add("gold_retrieved_wrong_answer")
-            if trace.distractor_in_context is True:
-                flags.add("distractor_retrieved")
-                candidates = tuple(
-                    candidate
-                    for entry in trace.retrieved_entries
-                    if entry.raw_metadata.get("is_distractor") is True or entry.raw_metadata.get("role") == "distractor"
-                    for candidate in (entry.value_candidate, entry.content)
-                    if candidate is not None
-                )
-                if semantic_wrong and any(_contains_value(prediction.parsed_answer, candidate) for candidate in candidates):
-                    flags.add("distractor_copied")
+        resolution = current_resolutions.get(query_id)
+        if resolution is None and trace.gold_in_context is None:
+            resolution = resolve_query_v3(current_queries[query_id], replay, task.events)
+        selected_versions = () if resolution is None else resolution.selected_versions
+        gold_status = _effective_current_retrieval_status(
+            trace, selected_versions, replay,
+        )
+        if gold_status is False:
+            flags.add("current_not_retrieved")
+        if gold_status is True and wrong:
+            flags.add("gold_retrieved_wrong_answer")
+        if trace.distractor_in_context is True:
+            flags.add("distractor_retrieved")
+            candidates = tuple(
+                candidate
+                for entry in trace.retrieved_entries
+                if entry.raw_metadata.get("is_distractor") is True or entry.raw_metadata.get("role") == "distractor"
+                for candidate in (entry.value_candidate, entry.content)
+                if candidate is not None
+            )
+            if semantic_wrong and any(_contains_value(prediction.parsed_answer, candidate) for candidate in candidates):
+                flags.add("distractor_copied")
     if historical.get("version_confusion_rate") not in {None, 0.0}: flags.add("version_confusion")
     if any(historical.get(field) not in {None, 1.0} for field in ("previous_state_accuracy", "point_in_time_accuracy", "transition_accuracy", "ordered_history_accuracy", "historical_distance_accuracy")): flags.add("version_confusion")
-    if historical.get("historical_support_recall") not in {None, 1.0}: flags.update(("evidence_linkage_error", "current_not_retrieved"))
+    if historical.get("historical_support_recall") not in {None, 1.0}: flags.add("evidence_linkage_error")
     for query in task.queries:
         if query.query_id not in predictions: continue
         prediction = predictions[query.query_id]
