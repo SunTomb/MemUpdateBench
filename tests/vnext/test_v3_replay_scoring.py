@@ -628,6 +628,96 @@ def test_supported_stale_count_metric_executes_without_dead_branch_name_error():
     assert value == 1
 
 
+def test_mixed_historical_trace_does_not_affect_current_retrieval_metrics():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    changed = payload()
+    changed["actions"][0]["value"] = "v2"
+    changed["version_history"][0]["entries"][0]["value"] = "v2"
+    changed["gold_evidence"][0]["answer"][0] = "v2"
+    key = changed["target_objects"][0]
+    changed["queries"].append({
+        "query_id": "q-current", "query_type": "current", "text": "?",
+        "selector": {"kind": "current"}, "target_object_keys": [key],
+        "answer_schema": "string", "evaluation_mode": "state_direct",
+    })
+    changed["gold_evidence"].append({
+        "query_id": "q-current", "answer": "v2", "supporting_object_keys": [key],
+        "supporting_event_ids": ["e3"],
+        "derivation_steps": [{
+            "step_id": "read-current", "operation": "read",
+            "supporting_object_keys": [key], "supporting_event_ids": ["e3"],
+        }],
+        "final_derivation_step_id": "read-current",
+    })
+    task = MemUpdateTaskV3.model_validate(changed)
+    object_key = task.target_objects[0]
+    current_trace = RetrievalTraceV3(
+        query_id="q-current",
+        retrieved_entries=(MemoryEntryRecordV3(
+            entry_id="current", content="v2", object_key_candidate=object_key,
+            value_candidate="v2", version_index=3, source_event_ids=("e3",),
+        ),),
+        ranks=(7,),
+        stale_in_context=False,
+        distractor_in_context=False,
+    )
+    historical_trace = RetrievalTraceV3(
+        query_id="q",
+        retrieved_entries=(MemoryEntryRecordV3(
+            entry_id="ambiguous-history", content="v2",
+            object_key_candidate=object_key, value_candidate="v2",
+        ),),
+        ranks=(1,),
+        stale_in_context=True,
+        distractor_in_context=True,
+    )
+    predictions = tuple(
+        AnswerPredictionV3(
+            query_id=evidence.query_id,
+            raw_output=str(evidence.answer),
+            parsed_answer=evidence.answer,
+            format_valid=True,
+        )
+        for evidence in task.gold_evidence
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id="mixed-retrieval",
+        retrieval_traces=(current_trace, historical_trace),
+        answer_predictions=predictions,
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_entries=True, exports_object_keys=True, exports_values=True,
+        exports_retrieval_ids=True, exports_retrieval_scores=True,
+    )
+    paths = tuple(
+        f"retrieval_scores.{leaf}"
+        for leaf in (
+            "current_recall_at_k", "current_mrr", "stale_exposure_rate",
+            "stale_count_in_context", "distractor_exposure_rate",
+        )
+    )
+    config = ScorerConfigV3(requested_metric_fields=paths)
+
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+    assert score.retrieval_scores.current_recall_at_k == 1.0
+    assert score.retrieval_scores.current_mrr == pytest.approx(1 / 7)
+    assert score.retrieval_scores.stale_exposure_rate == 0.0
+    assert score.retrieval_scores.stale_count_in_context == 0
+    assert score.retrieval_scores.distractor_exposure_rate == 0.0
+
+
 def _current_mrr_fixture(*entries, ranks=()):
     from mub.vnext.contracts.v3.runtime import RetrievalTraceV3
     from mub.vnext.scoring.scorer_v3 import _metric_value

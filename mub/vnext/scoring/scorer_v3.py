@@ -534,14 +534,14 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
         classified = {
             trace.query_id: tuple(_entry_obsolete_status(entry, replay) for entry in trace.retrieved_entries)
-            for trace in traces.values()
+            for _, trace in current_rows
         }
         if any(status is None for statuses in classified.values() for status in statuses):
             return None, "version identity is ambiguous for repeated-value retrieval entries"
-        exposed = [any(status is True for status in classified[trace.query_id]) for trace in traces.values()]
+        exposed = [any(status is True for status in classified[trace.query_id]) for _, trace in current_rows]
         if leaf == "stale_exposure_rate": return _mean([float(value) for value in exposed]), None
-        if leaf == "stale_count_in_context": return sum(sum(status is True for status in classified[trace.query_id]) for trace in traces.values()), None
-        if leaf == "distractor_exposure_rate": return _mean([float(trace.distractor_in_context is True) for trace in traces.values()]), None
+        if leaf == "stale_count_in_context": return sum(sum(status is True for status in classified[trace.query_id]) for _, trace in current_rows), None
+        if leaf == "distractor_exposure_rate": return _mean([float(trace.distractor_in_context is True) for _, trace in current_rows]), None
     if layer == "answer_scores":
         if not predictions: return None, "answer predictions are missing"
         exacts = [float(predictions[q.query_id].format_valid and _same(predictions[q.query_id].parsed_answer, evidence[q.query_id].answer)) for q in task.queries if q.query_id in predictions]
