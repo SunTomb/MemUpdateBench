@@ -677,6 +677,23 @@ def test_scorer_module_exposes_verified_context_and_rejects_identity_mismatch():
         score_task_v3(task, run, context)
 
 
+def test_public_action_binding_rejects_task_identity_mismatch():
+    from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
+
+    task = MemUpdateTaskV3.model_validate(payload())
+    run = TaskRunRecordV3(
+        task_id="other", adapter_id="adapter", run_id="run",
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="failed", exceptions=({"type": "boom"},),
+    )
+
+    with pytest.raises(ValueError, match="task_id mismatch"):
+        bind_action_pairs_v3(task, run)
+
+
 def test_runtime_failure_precedes_capability_absence_in_support_map():
     from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3, score_task_v3
 

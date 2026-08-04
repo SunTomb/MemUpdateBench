@@ -8,6 +8,8 @@ def bind_action_pairs_v3(
     task: MemUpdateTaskV3,
     run: TaskRunRecordV3,
 ) -> tuple[tuple[GoldActionV3, ParsedManagerActionV3 | None], ...]:
+    if task.task_id != run.task_id:
+        raise ValueError("task_id mismatch between task and run")
     gold_by_id = {action.action_id: action for action in task.actions}
     observed_by_id = {action.action_id: action for action in run.parsed_actions}
     unknown_action_ids = [action_id for action_id in observed_by_id if action_id not in gold_by_id]
