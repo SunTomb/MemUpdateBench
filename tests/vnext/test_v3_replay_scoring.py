@@ -237,6 +237,23 @@ def test_v3_registry_exactly_covers_all_score_fields_and_principal_policies():
             assert descriptor.denominator_definition.strip()
 
 
+def test_v3_retrieval_registry_applies_only_to_current_query_types():
+    from mub.vnext.contracts.v3.enums import QueryTypeV3
+
+    paths = (
+        "retrieval_scores.current_recall_at_k",
+        "retrieval_scores.current_mrr",
+        "retrieval_scores.stale_exposure_rate",
+        "retrieval_scores.stale_count_in_context",
+        "retrieval_scores.distractor_exposure_rate",
+    )
+    expected_query_types = tuple(sorted((QueryTypeV3.CURRENT.value, QueryTypeV3.MULTI_OBJECT_CURRENT.value)))
+    for path in paths:
+        descriptor = CORE_METRIC_REGISTRY_V3[path]
+        assert descriptor.applicable_task_families == ("*",)
+        assert descriptor.applicable_query_kinds == expected_query_types
+
+
 def test_e_metric_registry_has_exact_leaf_capabilities_and_support_precedence():
     from mub.vnext.scoring.registry_v3 import missing_capabilities_v3
     from mub.vnext.scoring.scorer_v3 import score_task_v3
@@ -594,7 +611,7 @@ def test_supported_stale_count_metric_executes_without_dead_branch_name_error():
     from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3, RetrievalTraceV3
     from mub.vnext.scoring.scorer_v3 import _metric_value
 
-    task = MemUpdateTaskV3.model_validate(payload())
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
     replay = replay_task_v3(task)
     query = task.queries[0]
     trace = RetrievalTraceV3(
@@ -1375,6 +1392,79 @@ def g_difference_payload():
         "final_derivation_step_id": "difference",
     }
     return changed
+
+
+@pytest.mark.parametrize("task_payload", [payload, g_difference_payload])
+def test_retrieval_metrics_are_not_applicable_to_historical_or_synthesis_queries(task_payload):
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    paths = (
+        "retrieval_scores.current_recall_at_k",
+        "retrieval_scores.current_mrr",
+        "retrieval_scores.stale_exposure_rate",
+        "retrieval_scores.stale_count_in_context",
+        "retrieval_scores.distractor_exposure_rate",
+    )
+    task = MemUpdateTaskV3.model_validate(task_payload())
+    first_version = task.version_history[0].entries[0]
+    trace = RetrievalTraceV3(
+        query_id=task.queries[0].query_id,
+        retrieved_entries=(MemoryEntryRecordV3(
+            entry_id="supplied-trace",
+            content=str(first_version.value),
+            object_key_candidate=task.target_objects[0],
+            value_candidate=first_version.value,
+            version_index=first_version.version_index,
+            source_event_ids=first_version.source_event_ids,
+        ),),
+        ranks=(1,),
+        gold_in_context=True,
+        stale_in_context=True,
+        distractor_in_context=True,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id=f"non-applicable-{task.task_family}",
+        retrieval_traces=(trace,),
+        answer_predictions=(AnswerPredictionV3(
+            query_id=task.queries[0].query_id,
+            raw_output=str(task.gold_evidence[0].answer),
+            parsed_answer=task.gold_evidence[0].answer,
+            format_valid=True,
+        ),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        exports_entries=True,
+        exports_object_keys=True,
+        exports_values=True,
+        exports_retrieval_ids=True,
+        exports_retrieval_scores=True,
+    )
+    config = ScorerConfigV3(requested_metric_fields=paths)
+
+    score = score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+    for path in paths:
+        layer, leaf = path.split(".", 1)
+        assert getattr(getattr(score, layer), leaf) is None
+        assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
 
 
 @pytest.mark.parametrize("family", ["multi_hop", "consistency"])

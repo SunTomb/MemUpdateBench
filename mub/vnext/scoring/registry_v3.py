@@ -88,6 +88,11 @@ _FAMILY_BY_LAYER = {
 }
 _QUERY_BY_LEAF = {
     "answer_state_consistency": ("current", "multi_object_current"),
+    "current_recall_at_k": ("current", "multi_object_current"),
+    "current_mrr": ("current", "multi_object_current"),
+    "stale_exposure_rate": ("current", "multi_object_current"),
+    "stale_count_in_context": ("current", "multi_object_current"),
+    "distractor_exposure_rate": ("current", "multi_object_current"),
     "current_state_accuracy": ("current",),
     "previous_state_accuracy": ("previous",),
     "point_in_time_accuracy": ("point_in_time",),
@@ -120,6 +125,8 @@ def _descriptor(path: str) -> MetricDescriptorV3:
     layer, leaf = path.split(".", 1)
     legacy = METRIC_REGISTRY_V2.get(path)
     families = tuple(legacy.applicable_task_families) if legacy is not None else _FAMILY_BY_LAYER.get(layer, (ALL_FAMILIES,))
+    if layer == "retrieval_scores":
+        families = (ALL_FAMILIES,)
     query_kinds = _QUERY_BY_LEAF.get(leaf, (ALL_QUERY_KINDS,))
     caps = tuple(legacy.required_adapter_capabilities) if legacy is not None else _CAPS_BY_LEAF.get(leaf, _CAPS_BY_LAYER.get(layer, ()))
     count = leaf in _COUNT_LEAVES
