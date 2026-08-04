@@ -24,6 +24,7 @@ _DERIVATION_COLLECTION_OPERATIONS = frozenset({
     "list", "ordered_history", "collect", "combine", "merge",
     "object", "multi_object", "consistency",
 })
+_DERIVATION_NONEMPTY_VARIADIC_OPERATIONS = frozenset({"add", "all", "any", "count"})
 
 
 def _derivation_step_reads_support(step) -> bool:
@@ -57,7 +58,11 @@ def _derivation_consumed_input_indices(step):
         if size < 2:
             raise ValueError("equals requires at least two operands")
         return tuple(range(size))
-    if operation in _DERIVATION_COLLECTION_OPERATIONS | {"add", "all", "any", "count"}:
+    if operation in _DERIVATION_NONEMPTY_VARIADIC_OPERATIONS:
+        if size == 0:
+            raise ValueError(f"{operation} requires at least one operand")
+        return tuple(range(size))
+    if operation in _DERIVATION_COLLECTION_OPERATIONS:
         return tuple(range(size))
     return None
 

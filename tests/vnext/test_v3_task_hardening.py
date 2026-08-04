@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.contracts.v3.task import MemUpdateTaskV3, QueryGoldEvidenceV3
 
 
 H = "a" * 64
@@ -35,6 +35,50 @@ def task_payload():
         "gold_evidence": [{"query_id": "q", "answer": "v2", "supporting_object_keys": [key], "supporting_event_ids": ["e2"], "derivation_steps": [{"step_id": "read", "operation": "read", "supporting_object_keys": [key], "supporting_event_ids": ["e2"]}], "final_derivation_step_id": "read"}],
         "metadata": {"split": "test", "split_key": {"semantic_core_id": "c", "source_group_id": "s", "trajectory_id": "t", "split_policy_version": "3"}, "profile_name": "easy", "generation_config_hash": H, "compiler_version": "3"},
     }
+
+
+@pytest.mark.parametrize("operation", ("add", "all", "any", "count"))
+def test_derivation_operations_reject_zero_operands(operation: str) -> None:
+    key = task_payload()["target_objects"][0]
+    with pytest.raises(ValidationError, match=f"{operation} requires at least one operand"):
+        QueryGoldEvidenceV3.model_validate({
+            "query_id": "q",
+            "answer": 0,
+            "supporting_object_keys": [key],
+            "supporting_event_ids": ["e2"],
+            "derivation_steps": [{"step_id": "result", "operation": operation}],
+            "final_derivation_step_id": "result",
+        })
+
+
+@pytest.mark.parametrize("operation", ("add", "all", "any", "count"))
+@pytest.mark.parametrize("operand_count", (1, 2))
+def test_derivation_operations_accept_one_or_more_operands(operation: str, operand_count: int) -> None:
+    key = task_payload()["target_objects"][0]
+    reads = [
+        {
+            "step_id": f"read-{index}",
+            "operation": "read",
+            "supporting_object_keys": [key],
+            "supporting_event_ids": ["e2"],
+        }
+        for index in range(operand_count)
+    ]
+    QueryGoldEvidenceV3.model_validate({
+        "query_id": "q",
+        "answer": 0,
+        "supporting_object_keys": [key],
+        "supporting_event_ids": ["e2"],
+        "derivation_steps": [
+            *reads,
+            {
+                "step_id": "result",
+                "operation": operation,
+                "input_step_ids": [step["step_id"] for step in reads],
+            },
+        ],
+        "final_derivation_step_id": "result",
+    })
 
 
 def test_task_rejects_duplicate_empty_inverted_and_partial_ledgers() -> None:
