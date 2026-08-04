@@ -254,6 +254,64 @@ def test_v3_retrieval_registry_applies_only_to_current_query_types():
         assert descriptor.applicable_query_kinds == expected_query_types
 
 
+def test_v3_historical_diagnostic_registry_excludes_current_queries():
+    expected_query_types = (
+        "ordered_history", "point_in_time", "previous", "transition",
+    )
+    paths = (
+        "historical_scores.version_confusion_rate",
+        "historical_scores.historical_support_recall",
+        "historical_scores.historical_distance_accuracy",
+    )
+
+    for path in paths:
+        assert CORE_METRIC_REGISTRY_V3[path].applicable_query_kinds == expected_query_types
+
+
+def test_current_only_f_failed_run_marks_historical_diagnostics_not_applicable_first():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    paths = (
+        "historical_scores.version_confusion_rate",
+        "historical_scores.historical_support_recall",
+        "historical_scores.historical_distance_accuracy",
+    )
+    task = MemUpdateTaskV3.model_validate(current_structured_payload("v2", "string"))
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="adapter",
+        run_id="current-only-failed",
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="failed",
+        exceptions=({"type": "boom"},),
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter",
+        adapter_version="1",
+        system_name="system",
+        system_version="1",
+        configuration_hash=H,
+    )
+    config = ScorerConfigV3(requested_metric_fields=paths)
+
+    score = score_task_v3(
+        task,
+        run,
+        authenticated_context(task, run, info, AdapterCapabilitiesV3(), config),
+    )
+
+    for path in paths:
+        layer, leaf = path.split(".", 1)
+        assert getattr(getattr(score, layer), leaf) is None
+        assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
+
+
 def test_e_metric_registry_has_exact_leaf_capabilities_and_support_precedence():
     from mub.vnext.scoring.registry_v3 import missing_capabilities_v3
     from mub.vnext.scoring.scorer_v3 import score_task_v3

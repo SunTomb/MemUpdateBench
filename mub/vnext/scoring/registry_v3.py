@@ -99,6 +99,9 @@ _QUERY_BY_LEAF = {
     "point_in_time_accuracy": ("point_in_time",),
     "transition_accuracy": ("transition",),
     "ordered_history_accuracy": ("ordered_history",),
+    "version_confusion_rate": ("previous", "point_in_time", "transition", "ordered_history"),
+    "historical_support_recall": ("previous", "point_in_time", "transition", "ordered_history"),
+    "historical_distance_accuracy": ("previous", "point_in_time", "transition", "ordered_history"),
     "multi_hop_accuracy": ("update_sensitive_multi_hop",),
     "multi_object_accuracy": ("multi_object_current", "multi_object_current_consistency"),
 }
