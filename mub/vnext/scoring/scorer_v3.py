@@ -812,9 +812,40 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
             support[path] = _support(SupportReason.MISSING_ARTIFACT, detail or "Required artifact is missing.")
         else:
             layers[layer][leaf] = value
-    from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
+    from mub.vnext.scoring.failures_v3 import (
+        FAILURE_METRIC_PATHS_V3,
+        derive_failure_flags_v3,
+    )
+    failure_layers = {layer: dict(values) for layer, values in layers.items()}
+    for path in FAILURE_METRIC_PATHS_V3:
+        layer, leaf = path.split(".", 1)
+        if failure_layers[layer][leaf] is not None:
+            continue
+        descriptor = CORE_METRIC_REGISTRY_V3[path]
+        if (
+            not metric_applies_v3(descriptor, task.task_family, query_kinds)
+            or not _metric_applies_to_task_v3(
+                path, task, replay, lifecycle_by_query
+            )
+            or runtime_failed
+            or run.completion_status == CompletionStatus.NOT_SUPPORTED
+        ):
+            continue
+        missing = (
+            missing_capabilities_v2(METRIC_REGISTRY_V2[path], context.capabilities)
+            if path in METRIC_REGISTRY_V2
+            else missing_capabilities_v3(descriptor, context.capabilities)
+        )
+        if missing:
+            continue
+        value, _ = _metric_value(
+            path, task, run, context, replay, resolutions, evidence, predictions,
+            traces, action_facts, lifecycle_by_query,
+        )
+        if value is not None:
+            failure_layers[layer][leaf] = value
     flags = derive_failure_flags_v3(
-        task=task, run=run, replay=replay, layer_values=layers,
+        task=task, run=run, replay=replay, layer_values=failure_layers,
         predictions=predictions, traces=traces, evidence=evidence,
         resolutions=resolutions, lifecycle_by_query=lifecycle_by_query,
     )

@@ -19,6 +19,22 @@ from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
 from mub.vnext.validation.replay_v3 import resolve_query_v3
 
 
+FAILURE_METRIC_PATHS_V3 = (
+    "deletion_scores.collateral_damage_rate",
+    "deletion_scores.ttl_compliance_rate",
+    "deletion_scores.relearn_accuracy",
+    "historical_scores.version_confusion_rate",
+    "historical_scores.previous_state_accuracy",
+    "historical_scores.point_in_time_accuracy",
+    "historical_scores.transition_accuracy",
+    "historical_scores.ordered_history_accuracy",
+    "historical_scores.historical_distance_accuracy",
+    "historical_scores.historical_support_recall",
+    "synthesis_scores.stale_propagation_rate",
+    "synthesis_scores.multi_object_accuracy",
+)
+
+
 def _plain(value):
     if isinstance(value, Mapping): return {key: _plain(item) for key, item in value.items()}
     if isinstance(value, tuple): return [_plain(item) for item in value]
@@ -261,4 +277,4 @@ def failure_taxonomy_coverage_v3(scores: Iterable[ScoreRecordV3], *, families: I
     return FailureTaxonomyCoverageV3(overall=cell(rows), by_family={family: cell([row for row in rows if row.task_family == family]) for family in all_families})
 
 
-__all__ = ["CoverageCellV3", "FailureTaxonomyCoverageV3", "derive_failure_flags_v3", "failure_taxonomy_coverage_v3"]
+__all__ = ["CoverageCellV3", "FAILURE_METRIC_PATHS_V3", "FailureTaxonomyCoverageV3", "derive_failure_flags_v3", "failure_taxonomy_coverage_v3"]

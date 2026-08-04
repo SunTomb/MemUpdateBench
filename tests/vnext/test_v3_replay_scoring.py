@@ -391,6 +391,83 @@ def test_e_metric_registry_has_exact_leaf_capabilities_and_support_precedence():
     assert score.supported_metric_fields["deletion_scores.deletion_accuracy"].reason.value == "runtime_failed"
 
 
+def test_e_failure_flags_are_invariant_to_requested_metric_fields():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemorySnapshotV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    changed = payload()
+    changed["task_family"] = "E"
+    protected_key = deepcopy(changed["target_objects"][0])
+    protected_key["entity"] = "protected"
+    changed["target_objects"].append(protected_key)
+    changed["events"].append({
+        "event_id": "e4", "sequence_index": 4, "raw_text": "protect",
+        "normalized_text": "protect", "role": "neutral", "gold_action_ids": ["a4"],
+    })
+    changed["actions"].append({
+        "action_id": "a4", "event_id": "e4", "operation": "ADD",
+        "scope": "object", "target_object_keys": [protected_key],
+        "value": "protected-value", "effective_at": "004",
+    })
+    changed["version_history"].append({
+        "object_key": protected_key,
+        "entries": [{
+            "version_index": 0, "status": "present", "value": "protected-value",
+            "valid_from_event_id": "e4", "logical_time": "004",
+            "source_event_ids": ["e4"],
+        }],
+    })
+    task = MemUpdateTaskV3.model_validate(changed)
+    current_key = task.target_objects[0]
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id="request-invariance",
+        answer_predictions=(AnswerPredictionV3(
+            query_id="q", raw_output="history",
+            parsed_answer=["v0", "v1", None, "v2"], format_valid=True,
+        ),),
+        memory_snapshots=(MemorySnapshotV3(
+            after_event_id="e4",
+            state_by_object={current_key.canonical_id: "v2"},
+            store_size=1,
+        ),),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    capabilities = AdapterCapabilitiesV3(
+        supports_delete=True, supports_isolated_reset=True, exports_entries=True,
+        exports_object_keys=True, exports_values=True,
+    )
+    metric_path = "deletion_scores.collateral_damage_rate"
+    relevant = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=(metric_path,)),
+        ),
+    )
+    unrelated = score_task_v3(
+        task, run,
+        authenticated_context(
+            task, run, info, capabilities,
+            ScorerConfigV3(requested_metric_fields=("system_scores.error_rate",)),
+        ),
+    )
+
+    assert relevant.deletion_scores.collateral_damage_rate == 1.0
+    assert "collateral_mutation" in relevant.failure_flags
+    assert unrelated.failure_flags == relevant.failure_flags
+    assert unrelated.deletion_scores.collateral_damage_rate is None
+    assert unrelated.supported_metric_fields[metric_path].reason is SupportReason.NOT_APPLICABLE
+
+
 def test_authenticated_scoring_context_rejects_manifest_capability_config_and_task_substitution():
     from mub.vnext.scoring.scorer_v3 import score_task_v3
 
