@@ -52,6 +52,15 @@ from mub.vnext.generation.config import (
     RepeatedSameSlotUpdateConfig,
     SplitConfig,
 )
+from mub.vnext.generation.core_config import (
+    CoreConfig,
+    CoreEntityAttributeGroundingConfig,
+    CoreFamiliesConfig,
+    CoreInterleavedMultiSlotUpdateConfig,
+    CoreNoopWriteDisciplineConfig,
+    CoreRepeatedSameSlotUpdateConfig,
+    CoreSurfaceDeclaration,
+)
 from mub.vnext.io import sha256_model
 from mub.vnext.version import COMPILER_VERSION
 
@@ -174,6 +183,56 @@ class _FrozenPilotConfig(_FrozenConfigMixin, PilotConfig):
 
 
 _FrozenPilotConfig.model_rebuild()
+
+
+class _FrozenCoreRepeatedSameSlotUpdateConfig(
+    _FrozenConfigMixin,
+    CoreRepeatedSameSlotUpdateConfig,
+):
+    pass
+
+
+class _FrozenCoreInterleavedMultiSlotUpdateConfig(
+    _FrozenConfigMixin,
+    CoreInterleavedMultiSlotUpdateConfig,
+):
+    pass
+
+
+class _FrozenCoreEntityAttributeGroundingConfig(
+    _FrozenConfigMixin,
+    CoreEntityAttributeGroundingConfig,
+):
+    pass
+
+
+class _FrozenCoreNoopWriteDisciplineConfig(
+    _FrozenConfigMixin,
+    CoreNoopWriteDisciplineConfig,
+):
+    pass
+
+
+class _FrozenCoreFamiliesConfig(_FrozenConfigMixin, CoreFamiliesConfig):
+    repeated_same_slot_update: _FrozenCoreRepeatedSameSlotUpdateConfig
+    interleaved_multi_slot_update: _FrozenCoreInterleavedMultiSlotUpdateConfig
+    entity_attribute_grounding: _FrozenCoreEntityAttributeGroundingConfig
+    noop_write_discipline: _FrozenCoreNoopWriteDisciplineConfig
+
+
+class _FrozenCoreSurfaceDeclaration(_FrozenConfigMixin, CoreSurfaceDeclaration):
+    pass
+
+
+class _FrozenCoreConfig(_FrozenConfigMixin, CoreConfig):
+    surfaces: list[_FrozenCoreSurfaceDeclaration]
+    splits: _FrozenSplitConfig
+    families: _FrozenCoreFamiliesConfig
+    mechanism_slice: _FrozenMechanismSliceConfig
+    output: _FrozenOutputConfig
+
+
+_FrozenCoreConfig.model_rebuild()
 
 
 def _validate_json_value(value: Any, field_name: str) -> Any:
@@ -365,7 +424,7 @@ class _FrozenCanonicalAnswer(_FrozenCoreModel, CanonicalAnswer):
 
 
 class GenerationContext(_FrozenCoreModel):
-    config: PilotConfig
+    config: PilotConfig | CoreConfig
     code_revision: str = Field(min_length=1, strict=True)
     compiler_version: str = Field(default=COMPILER_VERSION, strict=True)
     generator_name: str = Field(
@@ -376,8 +435,12 @@ class GenerationContext(_FrozenCoreModel):
     @field_validator("config", mode="before")
     @classmethod
     def _clone_config(cls, value: Any) -> Any:
+        if isinstance(value, CoreConfig):
+            return _FrozenCoreConfig.model_validate(value.model_dump(mode="python"))
         if isinstance(value, PilotConfig):
-            value = value.model_dump(mode="python")
+            return _FrozenPilotConfig.model_validate(value.model_dump(mode="python"))
+        if isinstance(value, Mapping) and "surface_catalog_version" in value:
+            return _FrozenCoreConfig.model_validate(value)
         return _FrozenPilotConfig.model_validate(value)
 
     @field_validator("code_revision", "compiler_version", "generator_name")

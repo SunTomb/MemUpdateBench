@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from itertools import product
 
 from mub.vnext.contracts import Difficulty, EventRole, MemoryObjectKey, Operation, TaskFamily
@@ -12,6 +13,11 @@ from mub.vnext.generation.catalogs import (
     values_for_attribute,
 )
 from mub.vnext.generation.config import PilotConfig, RepeatedSameSlotUpdateConfig
+from mub.vnext.generation.core_config import (
+    CORE_FAMILY_A_CONDITIONS,
+    CORE_FAMILY_A_DEPTHS,
+    CoreConfig,
+)
 from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
@@ -344,4 +350,298 @@ def generate_family_a_cores(config: PilotConfig) -> list[SemanticCore]:
     return cores
 
 
-__all__ = ["generate_family_a_cores"]
+@lru_cache(maxsize=None)
+def _core_values_for_attribute(attribute: str) -> tuple[str, ...]:
+    base = values_for_attribute(attribute)
+    generators = {
+        "city": lambda index: f"Core City {index:02d}",
+        "employer": lambda index: f"Core Organization {index:02d}",
+        "favorite_color": lambda index: f"core-shade-{index:02d}",
+        "phone_number": lambda index: f"+1-303-555-{200 + index:04d}",
+        "preferred_cafe": lambda index: f"Core Cafe {index:02d}",
+        "project_code": lambda index: f"CORE-{index:02d}",
+        "shipping_address": lambda index: f"{1000 + index} Core Avenue",
+        "timezone": lambda index: f"UTC{index - 12:+03d}:30",
+    }
+    try:
+        generator = generators[attribute]
+    except KeyError as exc:
+        raise ValueError(f"unsupported canonical attribute: {attribute}") from exc
+    expanded = (*base, *(generator(index) for index in range(1, 17)))
+    if len(expanded) != len(set(expanded)):
+        raise ValueError("Core value expansion must remain collision-free")
+    return expanded
+
+
+def _core_difficulty(depth: int) -> Difficulty:
+    if depth <= 2:
+        return Difficulty.EASY
+    if depth <= 8:
+        return Difficulty.MEDIUM
+    return Difficulty.HARD
+
+
+def _core_target_events(
+    config: CoreConfig,
+    core_index: int,
+    axis_index: int,
+    target: MemoryObjectKey,
+    depth: int,
+) -> tuple[CoreEvent, ...]:
+    values = _core_values_for_attribute(target.attribute)
+    final_value = values[(config.seed + axis_index) % len(values)]
+    stale_values = select_conflicting_values(
+        values,
+        final_value,
+        depth,
+        {
+            "family": _FAMILY_NAME,
+            "profile": "core",
+            "seed": config.seed,
+            "core_index": core_index,
+            "axis_index": axis_index,
+            "target": target.canonical_id,
+        },
+    )
+    versions = (*stale_values, final_value)
+    return tuple(
+        CoreEvent(
+            operation=Operation.ADD if version_index == 0 else Operation.UPDATE,
+            object_keys=[target],
+            value=value,
+            role=(
+                EventRole.LATEST_GOLD
+                if version_index == len(versions) - 1
+                else EventRole.STALE_SAME_SLOT
+            ),
+            metadata={
+                "version_index": version_index,
+                "version_metadata": (
+                    "latest" if version_index == len(versions) - 1 else "stale"
+                ),
+            },
+        )
+        for version_index, value in enumerate(versions)
+    )
+
+
+def _core_condition_events(
+    config: CoreConfig,
+    core_index: int,
+    axis_index: int,
+    target: MemoryObjectKey,
+    final_value: str,
+    condition: str,
+) -> tuple[CoreEvent, ...]:
+    if condition == "stale_burden":
+        return ()
+    if condition == "duplicate_current":
+        return (
+            CoreEvent(
+                operation=Operation.UPDATE,
+                object_keys=[target],
+                value=final_value,
+                role=EventRole.DUPLICATE_CURRENT,
+                metadata={
+                    "condition": condition,
+                    "version_metadata": "duplicate_current",
+                },
+            ),
+        )
+    if condition == "other_attribute_distractor":
+        candidates = tuple(
+            attribute
+            for attribute in CANONICAL_ATTRIBUTES
+            if attribute != target.attribute
+        )
+        attribute = min(
+            candidates,
+            key=lambda candidate: stable_id(
+                "core_family_a_other_attribute",
+                {
+                    "seed": config.seed,
+                    "core_index": core_index,
+                    "target": target.canonical_id,
+                    "attribute": candidate,
+                },
+            ),
+        )
+        key = _key(target.namespace, target.entity, attribute)
+        role = EventRole.SAME_ENTITY_OTHER_ATTRIBUTE
+    elif condition == "same_name_other_entity_distractor":
+        group = next(group for group in SAME_NAME_ENTITIES if target.entity in group)
+        entity = min(
+            (candidate for candidate in group if candidate != target.entity),
+            key=lambda candidate: stable_id(
+                "core_family_a_same_name_entity",
+                {
+                    "seed": config.seed,
+                    "core_index": core_index,
+                    "target": target.canonical_id,
+                    "entity": candidate,
+                },
+            ),
+        )
+        key = _key(target.namespace, entity, target.attribute)
+        role = EventRole.SAME_NAME_OTHER_ENTITY
+    else:
+        raise ValueError(f"unsupported Core Family A condition: {condition}")
+    value = min(
+        (
+            candidate
+            for candidate in _core_values_for_attribute(key.attribute)
+            if candidate != final_value
+        ),
+        key=lambda candidate: stable_id(
+            "core_family_a_distractor_value",
+            {
+                "seed": config.seed,
+                "core_index": core_index,
+                "axis_index": axis_index,
+                "target": target.canonical_id,
+                "distractor": key.canonical_id,
+                "value": candidate,
+            },
+        ),
+    )
+    return (
+        CoreEvent(
+            operation=Operation.ADD,
+            object_keys=[key],
+            value=value,
+            role=role,
+            metadata={"condition": condition, "distractor_index": 0},
+        ),
+    )
+
+
+def _build_core_family_a_core(
+    config: CoreConfig,
+    core_index: int,
+    axis_index: int,
+    axis: tuple[str, str, str],
+    depth: int,
+    condition: str,
+    axis_product_size: int,
+) -> SemanticCore:
+    target = _key(*axis)
+    target_events = _core_target_events(
+        config,
+        core_index,
+        axis_index,
+        target,
+        depth,
+    )
+    final_value = target_events[-1].value
+    condition_events = _core_condition_events(
+        config,
+        core_index,
+        axis_index,
+        target,
+        final_value,
+        condition,
+    )
+    events = (*target_events, *condition_events)
+    difficulty = _core_difficulty(depth)
+    same_name_count = sum(
+        event.role is EventRole.SAME_NAME_OTHER_ENTITY for event in events
+    )
+    other_attribute_count = sum(
+        event.role is EventRole.SAME_ENTITY_OTHER_ATTRIBUTE for event in events
+    )
+    duplicate_count = sum(event.role is EventRole.DUPLICATE_CURRENT for event in events)
+    semantic_payload = {
+        "family": _FAMILY_NAME,
+        "profile": "core",
+        "seed": config.seed,
+        "core_index": core_index,
+        "axis_index": axis_index,
+        "target": {
+            "namespace": target.namespace,
+            "entity": target.entity,
+            "attribute": target.attribute,
+            "subkey": target.subkey,
+        },
+        "update_depth": depth,
+        "condition": condition,
+        "events": [
+            {
+                "operation": event.operation.value,
+                "object_keys": [key.canonical_id for key in event.object_keys],
+                "value": event.value,
+                "role": event.role.value,
+            }
+            for event in events
+        ],
+    }
+    identifier = core_id(_FAMILY_NAME, semantic_payload)
+    return SemanticCore(
+        core_id=identifier,
+        task_family=TaskFamily.REPEATED_SAME_SLOT,
+        difficulty=difficulty,
+        core_index=core_index,
+        trajectory_id=trajectory_id(identifier, f"core_family_a_{core_index:03d}"),
+        events=list(events),
+        query_targets=[target],
+        expected_answer=final_value,
+        profile={
+            "update_depth": depth,
+            "stale_count": depth,
+            "active_object_count": 1 + same_name_count + other_attribute_count,
+            "noop_density": 0.0,
+            "entity_ambiguity": "high" if same_name_count else "none",
+            "attribute_ambiguity": "high" if other_attribute_count else "none",
+            "context_length": len(events),
+            "query_type": "current_state",
+            "version_metadata": "event_index",
+        },
+        stratification={
+            "num_events": len(events),
+            "num_target_updates": depth + duplicate_count,
+            "same_name_distractor_count": same_name_count,
+            "same_entity_other_attribute_count": other_attribute_count,
+            "duplicate_current_count": duplicate_count,
+            "noop_count": 0,
+            "stale_same_slot_count": depth,
+            "stale_count": depth,
+            "condition": condition,
+            "axis_product_index": axis_index,
+            "axis_product_size": axis_product_size,
+            "depth_allocation_count": 80,
+            "condition_allocation_count": 120,
+            "depth_condition_cell_count": 20,
+        },
+    )
+
+
+def generate_core_family_a_cores(config: CoreConfig) -> list[SemanticCore]:
+    """Generate the deterministic 480-core Core repeated same-slot Family A."""
+    if not isinstance(config, CoreConfig):
+        raise TypeError("config must be a CoreConfig")
+    family = config.families.repeated_same_slot_update
+    if tuple(family.update_depths) != CORE_FAMILY_A_DEPTHS:
+        raise ValueError("Core Family A update_depths do not match the approved axes")
+    if tuple(family.conditions) != CORE_FAMILY_A_CONDITIONS:
+        raise ValueError("Core Family A conditions do not match the approved axes")
+    axes = _canonical_axis_order(config)
+    cores = []
+    cells_per_depth = len(CORE_FAMILY_A_CONDITIONS) * 20
+    for core_index in range(family.semantic_core_count):
+        depth = CORE_FAMILY_A_DEPTHS[core_index // cells_per_depth]
+        condition = CORE_FAMILY_A_CONDITIONS[(core_index % cells_per_depth) // 20]
+        axis_index = core_index % len(axes)
+        cores.append(
+            _build_core_family_a_core(
+                config,
+                core_index,
+                axis_index,
+                axes[axis_index],
+                depth,
+                condition,
+                len(axes),
+            )
+        )
+    return cores
+
+
+__all__ = ["generate_core_family_a_cores", "generate_family_a_cores"]

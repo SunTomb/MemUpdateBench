@@ -12,6 +12,12 @@ from mub.vnext.generation.catalogs import (
     values_for_attribute,
 )
 from mub.vnext.generation.config import InterleavedMultiSlotUpdateConfig, PilotConfig
+from mub.vnext.generation.core_config import (
+    CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS,
+    CORE_FAMILY_B_DEPTHS,
+    CORE_FAMILY_B_INTERLEAVING_PATTERNS,
+    CoreConfig,
+)
 from mub.vnext.generation.core import CoreEvent, SemanticCore
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 from mub.vnext.generation.family_b_schedule import (
@@ -362,6 +368,7 @@ def _build_core(
     allocation_cell_ideal: float,
     difficulty_allocation_count: int,
     difficulty_allocation_ideal: float,
+    semantic_profile: str | None = None,
 ) -> SemanticCore:
     events = _interleave(trajectories, pattern)
     target = trajectories[0][0].object_keys[0]
@@ -394,6 +401,8 @@ def _build_core(
             for event in events
         ],
     }
+    if semantic_profile is not None:
+        semantic_payload["profile"] = semantic_profile
     identifier = core_id(_FAMILY_NAME, semantic_payload)
     profile = {
         "update_depth": depth,
@@ -532,4 +541,206 @@ def generate_family_b_cores(config: PilotConfig) -> list[SemanticCore]:
     return cores
 
 
-__all__ = ["generate_family_b_cores"]
+def _core_active_keys(
+    config: CoreConfig,
+    axis: tuple[str, str, str],
+    active_object_count: int,
+) -> tuple[MemoryObjectKey, ...]:
+    namespace, target_entity, target_attribute = axis
+    same_entity_count = min(active_object_count, len(CANONICAL_ATTRIBUTES))
+    keys = list(_active_keys(axis, same_entity_count))
+    if len(keys) == active_object_count:
+        return tuple(keys)
+    candidates = tuple(
+        _key(namespace, entity, attribute)
+        for entity in RELATION_QUALIFIED_ENTITIES
+        if entity != target_entity
+        for attribute in CANONICAL_ATTRIBUTES
+    )
+    target = _key(namespace, target_entity, target_attribute)
+    ordered = sorted(
+        candidates,
+        key=lambda key: stable_id(
+            "core_family_b_active_object",
+            {
+                "seed": config.seed,
+                "target": target.canonical_id,
+                "candidate": key.canonical_id,
+            },
+        ),
+    )
+    keys.extend(ordered[: active_object_count - len(keys)])
+    if len({key.canonical_id for key in keys}) != active_object_count:
+        raise ValueError(
+            "Core Family B active objects must have distinct exact identities"
+        )
+    return tuple(keys)
+
+
+def _ordered_core_final_values(
+    config: CoreConfig,
+    group_index: int,
+    keys: tuple[MemoryObjectKey, ...],
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for key in keys:
+        ordered = sorted(
+            values_for_attribute(key.attribute),
+            key=lambda value: stable_id(
+                "core_family_b_final_value",
+                {
+                    "seed": config.seed,
+                    "group_index": group_index,
+                    "target": key.canonical_id,
+                    "value": value,
+                },
+            ),
+        )
+        value = next((candidate for candidate in ordered if candidate not in selected), None)
+        if value is None:
+            raise ValueError("insufficient distinct values for Core Family B replay")
+        selected.append(value)
+    return tuple(selected)
+
+
+def _build_core_family_b_trajectories(
+    config: CoreConfig,
+    group_index: int,
+    axis: tuple[str, str, str],
+    depth: int,
+    active_object_count: int,
+    cross_slot_distractor_count: int,
+) -> tuple[tuple[CoreEvent, ...], ...]:
+    keys = _core_active_keys(config, axis, active_object_count)
+    final_values = _ordered_core_final_values(config, group_index, keys)
+    target = _target_trajectory(
+        config,
+        group_index,
+        keys[0],
+        depth,
+        final_values[0],
+    )
+    allocations = _distribute_updates(
+        cross_slot_distractor_count,
+        active_object_count - 1,
+    )
+    non_targets = tuple(
+        _non_target_trajectory(
+            config,
+            group_index,
+            slot_index,
+            key,
+            allocations[slot_index - 1],
+            final_values[slot_index],
+        )
+        for slot_index, key in enumerate(keys[1:], start=1)
+    )
+    return (target, *non_targets)
+
+
+def _core_family_b_difficulty(active_object_count: int) -> Difficulty:
+    if active_object_count == 2:
+        return Difficulty.EASY
+    if active_object_count == 4:
+        return Difficulty.MEDIUM
+    return Difficulty.HARD
+
+
+def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
+    """Generate the deterministic 480-core Core interleaved multi-slot Family B."""
+    if not isinstance(config, CoreConfig):
+        raise TypeError("config must be a CoreConfig")
+    family = config.families.interleaved_multi_slot_update
+    depths = tuple(family.update_depths)
+    active_counts = tuple(family.active_object_counts)
+    patterns = tuple(family.interleaving_patterns)
+    if depths != CORE_FAMILY_B_DEPTHS:
+        raise ValueError("Core Family B update_depths do not match the approved axes")
+    if active_counts != CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS:
+        raise ValueError(
+            "Core Family B active_object_counts do not match the approved axes"
+        )
+    if patterns != CORE_FAMILY_B_INTERLEAVING_PATTERNS:
+        raise ValueError("Core Family B patterns do not match the approved axes")
+
+    axes = _canonical_axis_order(config)
+    groups_per_stratum = 120 // len(patterns)
+    density_by_count = {2: 0.0, 4: 0.25, 8: 0.5, 12: 0.5}
+    cell_counts = Counter(
+        (
+            active_count,
+            depths[group_in_stratum % len(depths)],
+            pattern,
+        )
+        for active_count in active_counts
+        for group_in_stratum in range(groups_per_stratum)
+        for pattern in patterns
+    )
+    difficulty_counts = Counter(
+        _core_family_b_difficulty(active_count)
+        for active_count in active_counts
+        for _ in range(120)
+    )
+    cores: list[SemanticCore] = []
+    for active_stratum_index, active_object_count in enumerate(active_counts):
+        density = density_by_count[active_object_count]
+        difficulty = _core_family_b_difficulty(active_object_count)
+        for group_in_stratum in range(groups_per_stratum):
+            group_index = active_stratum_index * groups_per_stratum + group_in_stratum
+            depth = depths[group_in_stratum % len(depths)]
+            axis_index = group_index % len(axes)
+            base_event_count = active_object_count + depth
+            distractor_count = canonical_cross_slot_update_count(
+                base_event_count,
+                density,
+            )
+            trajectories = _build_core_family_b_trajectories(
+                config,
+                group_index,
+                axes[axis_index],
+                depth,
+                active_object_count,
+                distractor_count,
+            )
+            for pattern_index, pattern in enumerate(patterns):
+                core_index = (
+                    active_stratum_index * 120
+                    + group_in_stratum * len(patterns)
+                    + pattern_index
+                )
+                core = _build_core(
+                    config,
+                    core_index,
+                    group_index,
+                    axis_index,
+                    len(axes),
+                    depth,
+                    difficulty,
+                    pattern,
+                    active_object_count,
+                    density,
+                    base_event_count,
+                    distractor_count,
+                    trajectories,
+                    cell_counts[(active_object_count, depth, pattern)],
+                    120 / (len(depths) * len(patterns)),
+                    difficulty_counts[difficulty],
+                    family.semantic_core_count / len(_DIFFICULTIES),
+                    semantic_profile="core",
+                )
+                stratification = dict(core.stratification)
+                stratification.update(
+                    {
+                        "active_object_stratum_count": 120,
+                        "active_object_depth_pattern_cell_count": cell_counts[
+                            (active_object_count, depth, pattern)
+                        ],
+                    }
+                )
+                cores.append(
+                    core.model_copy(update={"stratification": stratification})
+                )
+    return cores
+
+
+__all__ = ["generate_core_family_b_cores", "generate_family_b_cores"]

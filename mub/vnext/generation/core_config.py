@@ -9,14 +9,14 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import Field, model_validator
 
-from mub.vnext.contracts.common import ContractModel
+from mub.vnext.contracts.common import ContractModel, StrictBool
 from mub.vnext.generation.config import (
     EntityAttributeGroundingConfig,
-    InterleavedMultiSlotUpdateConfig,
+    InterleavingPattern,
     MechanismSliceConfig,
     NoopWriteDisciplineConfig,
+    NonEmptyPositiveInts,
     OutputConfig,
-    RepeatedSameSlotUpdateConfig,
     SplitConfig,
     StrictPositiveInt,
 )
@@ -33,6 +33,26 @@ CoreSurfaceId = Literal[
     "short_dialogue_lifecycle_intent",
     "controlled_adversarial_paraphrase",
 ]
+CoreFamilyACondition = Literal[
+    "stale_burden",
+    "duplicate_current",
+    "other_attribute_distractor",
+    "same_name_other_entity_distractor",
+]
+CORE_FAMILY_A_DEPTHS = (1, 2, 4, 8, 16, 32)
+CORE_FAMILY_A_CONDITIONS = (
+    "stale_burden",
+    "duplicate_current",
+    "other_attribute_distractor",
+    "same_name_other_entity_distractor",
+)
+CORE_FAMILY_B_DEPTHS = (1, 4, 16)
+CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS = (2, 4, 8, 12)
+CORE_FAMILY_B_INTERLEAVING_PATTERNS = (
+    "round_robin",
+    "burst",
+    "adversarial_adjacent",
+)
 
 CORE_FAMILY_COUNTS = MappingProxyType(
     {
@@ -48,12 +68,19 @@ class CoreSurfaceDeclaration(ContractModel):
     surface_id: CoreSurfaceId
 
 
-class CoreRepeatedSameSlotUpdateConfig(RepeatedSameSlotUpdateConfig):
+class CoreRepeatedSameSlotUpdateConfig(ContractModel):
+    enabled: StrictBool
     semantic_core_count: StrictPositiveInt
+    update_depths: NonEmptyPositiveInts
+    conditions: Annotated[list[CoreFamilyACondition], Field(min_length=1)]
 
 
-class CoreInterleavedMultiSlotUpdateConfig(InterleavedMultiSlotUpdateConfig):
+class CoreInterleavedMultiSlotUpdateConfig(ContractModel):
+    enabled: StrictBool
     semantic_core_count: StrictPositiveInt
+    update_depths: NonEmptyPositiveInts
+    active_object_counts: NonEmptyPositiveInts
+    interleaving_patterns: Annotated[list[InterleavingPattern], Field(min_length=1)]
 
 
 class CoreEntityAttributeGroundingConfig(EntityAttributeGroundingConfig):
@@ -105,6 +132,34 @@ class CoreConfig(ContractModel):
         if self.family_core_counts != dict(CORE_FAMILY_COUNTS):
             raise ValueError(
                 "Core family counts must be A=480, B=480, C=420, and D=420"
+            )
+        family_a = self.families.repeated_same_slot_update
+        if not family_a.enabled:
+            raise ValueError("Core Family A must be enabled")
+        if tuple(family_a.update_depths) != CORE_FAMILY_A_DEPTHS:
+            raise ValueError(
+                "Core Family A update_depths must be [1, 2, 4, 8, 16, 32]"
+            )
+        if tuple(family_a.conditions) != CORE_FAMILY_A_CONDITIONS:
+            raise ValueError("Core Family A conditions must match the approved order")
+        family_b = self.families.interleaved_multi_slot_update
+        if not family_b.enabled:
+            raise ValueError("Core Family B must be enabled")
+        if tuple(family_b.update_depths) != CORE_FAMILY_B_DEPTHS:
+            raise ValueError("Core Family B update_depths must be [1, 4, 16]")
+        if (
+            tuple(family_b.active_object_counts)
+            != CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS
+        ):
+            raise ValueError(
+                "Core Family B active_object_counts must be [2, 4, 8, 12]"
+            )
+        if (
+            tuple(family_b.interleaving_patterns)
+            != CORE_FAMILY_B_INTERLEAVING_PATTERNS
+        ):
+            raise ValueError(
+                "Core Family B interleaving_patterns must match the approved order"
             )
 
         ratios = {
@@ -174,9 +229,15 @@ def load_core_config(path: Path) -> CoreConfig:
 
 
 __all__ = [
+    "CORE_FAMILY_A_CONDITIONS",
+    "CORE_FAMILY_A_DEPTHS",
+    "CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS",
+    "CORE_FAMILY_B_DEPTHS",
+    "CORE_FAMILY_B_INTERLEAVING_PATTERNS",
     "CORE_FAMILY_COUNTS",
     "CoreConfig",
     "CoreFamiliesConfig",
+    "CoreFamilyACondition",
     "CoreSurfaceDeclaration",
     "CoreSurfaceId",
     "load_core_config",
