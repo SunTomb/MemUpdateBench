@@ -573,10 +573,9 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
                 QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
             }
-            derivation_version_rows = (
-                lambda ledger: _horizon_active_entries(ledger.entries, task_horizon)
-                if g_synthesis_query
-                else ledger.entries
+            derivation_version_rows = lambda ledger: _horizon_active_entries(
+                ledger.entries,
+                task_horizon,
             )
             _validate_derivation_read_bindings(
                 evidence,

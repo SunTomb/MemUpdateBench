@@ -2026,6 +2026,36 @@ def test_failure_flags_distinguish_format_only_and_authenticated_distractor_copy
     assert "distractor_copied" not in flags
 
 
+def test_non_g_derivation_contract_rejects_future_horizon_read():
+    from mub.vnext.validation.replay_v3 import evaluate_evidence_v3
+
+    control = ttl_horizon_payload("002", "v1")
+    control["events"][1]["timestamp"] = "002"
+    control["actions"][1]["effective_at"] = "002"
+    control["version_history"][0]["entries"][1]["logical_time"] = "002"
+    control["gold_evidence"][0]["derivation_steps"][0]["operation"] = "read_version"
+    task = MemUpdateTaskV3.model_validate(control)
+    replay = replay_task_v3(task)
+    evaluation = evaluate_evidence_v3(task.gold_evidence[0], replay)
+    assert replay.horizon_logical_time == "002"
+    assert evaluation.issues == ()
+    assert evaluation.answer == "v1"
+
+    future = deepcopy(control)
+    future["gold_evidence"][0]["supporting_event_ids"] = ["e1", "e2"]
+    future["gold_evidence"][0]["derivation_steps"][0]["supporting_event_ids"] = ["e2"]
+
+    defensive_steps = list(task.gold_evidence[0].derivation_steps)
+    defensive_steps[0] = defensive_steps[0].model_copy(update={"supporting_event_ids": ("e2",)})
+    defensive_evidence = task.gold_evidence[0].model_copy(update={"derivation_steps": tuple(defensive_steps)})
+    defensive_evaluation = evaluate_evidence_v3(defensive_evidence, replay)
+    assert tuple(issue.code for issue in defensive_evaluation.issues) == ("evidence_replay_error",)
+    assert "missing" in defensive_evaluation.issues[0].message
+
+    with pytest.raises(ValueError, match="support|missing|future|horizon"):
+        MemUpdateTaskV3.model_validate(future)
+
+
 def g_horizon_payload(query_type):
     changed = ttl_horizon_payload("002", "v1")
     changed["task_family"] = "G"
