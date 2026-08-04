@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 import mub.vnext.generation as generation
+import mub.vnext.generation.render as render_generation
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import (
     AnswerDisposition,
@@ -152,6 +153,20 @@ def _unique_core() -> SemanticCore:
         ],
         selected_candidate_ids=[candidate.candidate_id],
         value="Osaka",
+    )
+
+
+def test_pilot_unresolved_query_helper_retains_default_surface_catalog() -> None:
+    core = _unique_core()
+    rendered = render_core(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=_CONTEXT,
+    )
+
+    assert render_generation._render_unresolved_query_text(core, 0) == (
+        rendered.queries[0].text
     )
 
 

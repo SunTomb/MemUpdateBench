@@ -19,6 +19,14 @@ from mub.vnext.generation.catalogs import (
     values_for_attribute,
 )
 from mub.vnext.generation.config import PilotConfig, load_pilot_config
+from mub.vnext.generation.core_catalogs import (
+    CORE_REFERENCE_QUERY_TEMPLATE_SETS,
+    CORE_SURFACE_CATALOG_V1,
+    CORE_SURFACE_CATALOG_VERSION,
+    CORE_SURFACE_IDS,
+    CORE_SURFACE_TEMPLATE_SETS,
+)
+from mub.vnext.generation.core_config import CoreConfig, load_core_config
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.family_a import generate_family_a_cores
 from mub.vnext.generation.family_b import generate_family_b_cores
@@ -40,7 +48,11 @@ from mub.vnext.generation.publish import (
     PublishedPilotBundle,
     publish_pilot_artifact_bundle,
 )
-from mub.vnext.generation.render import render_core
+from mub.vnext.generation.render import (
+    PILOT_SURFACE_CATALOG,
+    render_core,
+    render_core_with_catalog,
+)
 from mub.vnext.generation.splits import (
     CoreSplitAssignment,
     SplitAssignmentResult,
@@ -53,7 +65,13 @@ __all__ = [
     "ALIAS_MAPPINGS",
     "ATTRIBUTE_VALUES",
     "CANONICAL_ATTRIBUTES",
+    "CORE_REFERENCE_QUERY_TEMPLATE_SETS",
+    "CORE_SURFACE_CATALOG_V1",
+    "CORE_SURFACE_CATALOG_VERSION",
+    "CORE_SURFACE_IDS",
+    "CORE_SURFACE_TEMPLATE_SETS",
     "CompiledPilotTasks",
+    "CoreConfig",
     "CoreEvent",
     "CoreSplitAssignment",
     "GenerationContext",
@@ -61,6 +79,7 @@ __all__ = [
     "NAMESPACES",
     "PilotArtifactBundle",
     "PilotConfig",
+    "PILOT_SURFACE_CATALOG",
     "PublishedPilotBundle",
     "REFERENCE_CONDITION_LABELS",
     "REFERENCE_QUERY_TEMPLATE_SETS",
@@ -84,11 +103,13 @@ __all__ = [
     "generate_family_b_cores",
     "generate_family_c_cores",
     "generate_family_d_cores",
+    "load_core_config",
     "load_pilot_config",
     "paraphrase_group_id",
     "publish_pilot_artifact_bundle",
     "query_id",
     "render_core",
+    "render_core_with_catalog",
     "select_conflicting_values",
     "source_id",
     "stable_id",

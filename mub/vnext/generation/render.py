@@ -40,6 +40,7 @@ from mub.vnext.contracts.task import (
 )
 from mub.vnext.generation.catalogs import REFERENCE_QUERY_TEMPLATE_SETS, SURFACE_TEMPLATE_SETS
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
+from mub.vnext.generation.surface_catalog import SurfaceCatalog
 from mub.vnext.generation.identity import (
     action_id,
     event_id,
@@ -63,6 +64,16 @@ from mub.vnext.validation.task import validate_task
 _NORMALIZATION_VERSION = "vnext-pilot-semantic-v2"
 _SPLIT_POLICY_VERSION = "vnext-pilot-core-v2"
 _SPEAKERS = ("Narrator", "User", "Records clerk")
+PILOT_SURFACE_CATALOG = SurfaceCatalog(
+    catalog_version="vnext-pilot-surfaces-v1",
+    template_sets=SURFACE_TEMPLATE_SETS,
+    reference_query_template_sets=REFERENCE_QUERY_TEMPLATE_SETS,
+    speakers=_SPEAKERS,
+    source_namespace="vnext_pilot",
+    task_tag="vnext_pilot",
+    normalization_version=_NORMALIZATION_VERSION,
+    split_policy_version=_SPLIT_POLICY_VERSION,
+)
 _RENDERER_METADATA_KEY = "__surface_renderer__"
 _NOOP_ROLE_FALLBACKS = {
     EventRole.LATEST_GOLD: "The latest-gold statement does not direct a memory change.",
@@ -363,13 +374,14 @@ def _render_surface_references(core: SemanticCore) -> str:
 def _render_unresolved_query_text(
     core: SemanticCore,
     surface_variant: int,
+    surface_catalog: SurfaceCatalog = PILOT_SURFACE_CATALOG,
 ) -> str:
     (
         _,
         query_template,
         resolution_instruction,
         abstention_instruction,
-    ) = REFERENCE_QUERY_TEMPLATE_SETS[surface_variant]
+    ) = surface_catalog.reference_query_template_sets[surface_variant]
     return Template(query_template).substitute(
         candidates=_render_reference_candidates(core),
         references=_render_surface_references(core),
@@ -466,17 +478,25 @@ def _build_render_plan(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
+    surface_catalog: SurfaceCatalog = PILOT_SURFACE_CATALOG,
 ) -> _RenderPlan:
     if not isinstance(core, SemanticCore):
         raise TypeError("core must be a SemanticCore")
     if not isinstance(context, GenerationContext):
         raise TypeError("context must be a GenerationContext")
+    if not isinstance(surface_catalog, SurfaceCatalog):
+        raise TypeError("surface_catalog must be a SurfaceCatalog")
     if not isinstance(split, Split):
         raise TypeError("split must be a Split")
     if type(surface_variant) is not int:
         raise TypeError("surface_variant must be an integer")
-    if surface_variant not in (0, 1, 2):
-        raise ValueError("surface_variant must be one of 0, 1, 2")
+    if surface_variant < 0 or surface_variant >= surface_catalog.surface_count:
+        allowed_variants = ", ".join(
+            str(index) for index in range(surface_catalog.surface_count)
+        )
+        raise ValueError(
+            f"surface_variant must be one of {allowed_variants}"
+        )
 
     (
         template_name,
@@ -489,7 +509,7 @@ def _build_render_plan(
         deletion_number_template,
         deletion_sequence_template,
         deletion_string_template,
-    ) = SURFACE_TEMPLATE_SETS[surface_variant]
+    ) = surface_catalog.template_sets[surface_variant]
     operation_templates = {
         Operation.ADD: add_template,
         Operation.UPDATE: update_template,
@@ -517,7 +537,7 @@ def _build_render_plan(
     ]
     rendered_query_id = query_id(rendered_task_id, 0)
     rendered_source_id = source_id(
-        "vnext_pilot",
+        surface_catalog.source_namespace,
         core.core_index,
         {
             "semantic_core_id": core.core_id,
@@ -567,7 +587,7 @@ def _build_render_plan(
             timestamp=None,
             raw_text=raw_text,
             normalized_text=_normalized_event_text(core_event),
-            speaker=_SPEAKERS[surface_variant],
+            speaker=surface_catalog.speakers[surface_variant],
             gold_action_ids=[rendered_action_ids[index]],
             role=core_event.role,
             source_anchor={"event_index": index},
@@ -583,7 +603,11 @@ def _build_render_plan(
 
     query_type, answer, answer_schema = _query_semantics(core, replay)
     if query_type is QueryType.UNRESOLVED_REFERENCE:
-        query_text = _render_unresolved_query_text(core, surface_variant)
+        query_text = _render_unresolved_query_text(
+            core,
+            surface_variant,
+            surface_catalog,
+        )
     else:
         query_template = _select_query_template(
             query_type,
@@ -671,7 +695,7 @@ def _build_render_plan(
         license_or_privacy="synthetic_redistributable",
         raw_hash=raw_source_hash,
         normalized_hash=normalized_source_hash,
-        normalization_version=_NORMALIZATION_VERSION,
+        normalization_version=surface_catalog.normalization_version,
         provenance={
             "redistributable": True,
             "license": "synthetic_redistributable",
@@ -706,14 +730,14 @@ def _build_render_plan(
             source_document_id=source_document,
             version_group_id=version_group,
             split_exception_id=None,
-            split_policy_version=_SPLIT_POLICY_VERSION,
+            split_policy_version=surface_catalog.split_policy_version,
         ),
         profile_name=core.difficulty,
         resolved_profile=_plain(resolved_profile),
         generation_config_hash=context.config_sha256,
         compiler_version=context.compiler_version,
         tags=[
-            "vnext_pilot",
+            surface_catalog.task_tag,
             core.task_family.value,
             core.difficulty.value,
             template_name,
@@ -747,6 +771,7 @@ def _build_render_plan(
                 "difficulty": core.difficulty.value,
                 "split": split.value,
                 "surface_variant": surface_variant,
+                "surface_catalog_version": surface_catalog.catalog_version,
                 "config_sha256": context.config_sha256,
                 "code_revision": context.code_revision,
                 "compiler_version": context.compiler_version,
@@ -794,12 +819,14 @@ def _render_core_unvalidated(
     surface_variant: int,
     context: GenerationContext,
     plan: _RenderPlan | None = None,
+    surface_catalog: SurfaceCatalog = PILOT_SURFACE_CATALOG,
 ) -> _RenderedTask:
     resolved_plan = plan or _build_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
+        surface_catalog=surface_catalog,
     )
     task = _construct_core_task(resolved_plan)
     envelope = _RenderedTask(task=task, plan=resolved_plan)
@@ -818,13 +845,54 @@ def _expected_render_plan(
     split: Split,
     surface_variant: int,
     context: GenerationContext,
+    surface_catalog: SurfaceCatalog = PILOT_SURFACE_CATALOG,
 ) -> _RenderPlan:
     return _build_render_plan(
         core,
         split=split,
         surface_variant=surface_variant,
         context=context,
+        surface_catalog=surface_catalog,
     )
+
+
+def render_core_with_catalog(
+    core: SemanticCore,
+    *,
+    split: Split,
+    surface_variant: int,
+    context: GenerationContext,
+    surface_catalog: SurfaceCatalog,
+) -> MemUpdateTask:
+    expected_plan = _expected_render_plan(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+        surface_catalog=surface_catalog,
+    )
+    envelope = _render_core_unvalidated(
+        core,
+        split=split,
+        surface_variant=surface_variant,
+        context=context,
+        plan=expected_plan,
+        surface_catalog=surface_catalog,
+    )
+    integrity_issues = _render_envelope_issues(envelope, expected_plan)
+    if integrity_issues:
+        raise ValueError(
+            "render_core integrity validation failed: "
+            + "; ".join(integrity_issues)
+        )
+    task = envelope.task
+    structural_report = validate_task(task)
+    if not structural_report.valid:
+        raise _report_error("structural", structural_report)
+    replay_report = validate_gold_replay(task)
+    if not replay_report.valid:
+        raise _report_error("gold replay", replay_report)
+    return task
 
 
 def render_core(
@@ -863,4 +931,4 @@ def render_core(
     return task
 
 
-__all__ = ["render_core"]
+__all__ = ["PILOT_SURFACE_CATALOG", "render_core", "render_core_with_catalog"]
