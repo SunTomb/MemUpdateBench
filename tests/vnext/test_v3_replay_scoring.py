@@ -2674,6 +2674,28 @@ def multi_object_consistency_payload():
     return changed
 
 
+def test_multi_object_consistency_rejects_stale_alternative_with_same_resolved_versions():
+    changed = multi_object_consistency_payload()
+    evidence = changed["gold_evidence"][0]
+    first, second = evidence["supporting_object_keys"]
+    evidence["stale_alternative"] = {
+        "answer": False,
+        "supporting_object_keys": [first, second],
+        "supporting_event_ids": ["e0", "e3"],
+        "derivation_steps": [
+            {"step_id": "stale-first", "operation": "read", "supporting_object_keys": [first], "supporting_event_ids": ["e3"]},
+            {"step_id": "stale-first-copy", "operation": "identity", "input_step_ids": ["stale-first"]},
+            {"step_id": "stale-second", "operation": "read", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "stale-second-copy", "operation": "identity", "input_step_ids": ["stale-second"]},
+            {"step_id": "stale-equals", "operation": "equals", "input_step_ids": ["stale-first-copy", "stale-second-copy"]},
+        ],
+        "final_derivation_step_id": "stale-equals",
+    }
+
+    with pytest.raises(ValueError, match="same ledger versions"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
 def replayable_multi_object_consistency_payload(second_event_id):
     changed = multi_object_consistency_payload()
     second = changed["target_objects"][1]

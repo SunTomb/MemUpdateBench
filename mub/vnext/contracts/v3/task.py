@@ -681,6 +681,16 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         require_exact_event_coverage=True,
                         version_rows=derivation_version_rows,
                     )
+                    if _derivation_resolved_version_set(
+                        alternative,
+                        histories,
+                        derivation_version_rows,
+                    ) == _derivation_resolved_version_set(
+                        evidence,
+                        histories,
+                        derivation_version_rows,
+                    ):
+                        raise ValueError("stale alternative resolves the same ledger versions as the primary derivation")
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
             for query in self.queries
@@ -1129,6 +1139,27 @@ def _derivation_influential_objects(
                 for identity in influences[step.input_step_ids[index]]
             }
     return influences[evidence.final_derivation_step_id]
+
+
+def _derivation_resolved_version_set(
+    evidence,
+    ledgers,
+    version_rows,
+) -> frozenset[tuple[tuple[str, str, str, str | None], int]]:
+    resolved_versions = set()
+    for step in evidence.derivation_steps:
+        if not _derivation_step_reads_support(step):
+            continue
+        components, _ = _resolved_derivation_read_components(
+            step,
+            ledgers,
+            version_rows,
+        )
+        resolved_versions.update(
+            (identity, version.version_index)
+            for identity, version in components
+        )
+    return frozenset(resolved_versions)
 
 
 def _derivation_read_support(
