@@ -12,6 +12,7 @@ from mub.vnext.generation.catalogs import (
 )
 from mub.vnext.generation.config import NoopWriteDisciplineConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
+from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
 
@@ -22,6 +23,15 @@ _TRAPS = (
     "duplicate_current",
     "other_entity_correction",
     "other_attribute_correction",
+)
+_CORE_TRAPS = (
+    "transient",
+    "hypothetical",
+    "negated",
+    "uncertain",
+    "semantic_near_miss",
+    "duplicate_current",
+    "unsupported_inference",
 )
 _DENSITY_DIFFICULTY = {
     0.25: Difficulty.EASY,
@@ -50,6 +60,30 @@ def _validate_config(config: PilotConfig) -> NoopWriteDisciplineConfig:
         family.difficulties
     ) != expected_difficulties:
         raise ValueError("Family D difficulties must include easy, medium, and hard exactly once")
+    return family
+
+
+def _validate_core_config(config: CoreConfig) -> NoopWriteDisciplineConfig:
+    if not isinstance(config, CoreConfig):
+        raise TypeError("config must be a CoreConfig")
+    family = config.families.noop_write_discipline
+    if family.semantic_core_count != 420:
+        raise ValueError("Core Family D requires semantic_core_count=420")
+    if not family.enabled:
+        raise ValueError("Core Family D must be enabled")
+    if len(family.noop_densities) != len(_DENSITIES) or set(
+        family.noop_densities
+    ) != set(_DENSITIES):
+        raise ValueError(
+            "Core Family D noop_densities must be exactly 0.25, 0.50, and 0.75"
+        )
+    expected_difficulties = set(_DENSITY_DIFFICULTY.values())
+    if len(family.difficulties) != len(expected_difficulties) or set(
+        family.difficulties
+    ) != expected_difficulties:
+        raise ValueError(
+            "Core Family D difficulties must include easy, medium, and hard exactly once"
+        )
     return family
 
 
@@ -88,6 +122,49 @@ def family_d_duplicate_current_statement(
         f"The record confirms that {entity.replace('_', ' ')}'s "
         f"{attribute.replace('_', ' ')} is still {current_value}."
     )
+
+
+def _core_trap_statement(
+    trap_type: str,
+    target: MemoryObjectKey,
+    current_value: str,
+) -> str:
+    entity = target.entity.replace("_", " ")
+    attribute = target.attribute.replace("_", " ")
+    if trap_type == "transient":
+        return (
+            f"A temporary note mentions {entity}'s {attribute}, but explicitly says "
+            "the transient information must not be stored."
+        )
+    if trap_type == "hypothetical":
+        return (
+            f"A hypothetical asks what would happen if {entity}'s {attribute} "
+            "changed, without asserting that any change occurred."
+        )
+    if trap_type == "negated":
+        return (
+            f"The note explicitly denies that {entity}'s {attribute} changed and "
+            "provides no replacement fact."
+        )
+    if trap_type == "uncertain":
+        return (
+            f"The note is uncertain whether {entity}'s {attribute} changed and "
+            "contains no confirmed value to store."
+        )
+    if trap_type == "semantic_near_miss":
+        return family_d_semantic_near_miss_statement(target.entity, target.attribute)
+    if trap_type == "duplicate_current":
+        return family_d_duplicate_current_statement(
+            target.entity,
+            target.attribute,
+            current_value,
+        )
+    if trap_type == "unsupported_inference":
+        return (
+            f"A contextual remark mentions {entity}'s {attribute}, but provides no "
+            "stated fact that supports inferring a different value."
+        )
+    raise ValueError(f"unsupported Core Family D NOOP trap type: {trap_type}")
 
 
 def family_d_independent_noop_statement(entity: str, note_number: int) -> str:
@@ -232,41 +309,58 @@ def _noop_trap_event(
     trap_type: str,
     target: MemoryObjectKey,
     current_value: str,
+    *,
+    core_metadata: bool = False,
 ) -> CoreEvent:
-    if trap_type == "semantic_near_miss":
-        return CoreEvent(
-            operation=Operation.NOOP,
-            object_keys=[],
-            value=None,
-            role=EventRole.NOOP_NEAR_MISS,
-            metadata={
-                "trap_type": trap_type,
-                "lifecycle": "trap_noop",
-                "surface_statement": family_d_semantic_near_miss_statement(
-                    target.entity,
-                    target.attribute,
-                ),
-            },
-        )
+    if trap_type not in _CORE_TRAPS:
+        raise ValueError(f"unsupported Family D NOOP trap type: {trap_type}")
+
+    if core_metadata:
+        metadata = {
+            "trap_type": trap_type,
+            "lifecycle": "trap_noop",
+            "semantic_effect": "noop",
+            "review_status": "reviewed",
+            "wording_style": "deterministic_reviewed_v1",
+            "referenced_object_identity": _identity_payload(target),
+            "surface_statement": _core_trap_statement(
+                trap_type,
+                target,
+                current_value,
+            ),
+        }
+    elif trap_type == "semantic_near_miss":
+        metadata = {
+            "trap_type": trap_type,
+            "lifecycle": "trap_noop",
+            "surface_statement": family_d_semantic_near_miss_statement(
+                target.entity,
+                target.attribute,
+            ),
+        }
+    elif trap_type == "duplicate_current":
+        metadata = {
+            "trap_type": trap_type,
+            "lifecycle": "trap_noop",
+            "allow_accepted_answer_ambiguity": True,
+            "surface_statement": family_d_duplicate_current_statement(
+                target.entity,
+                target.attribute,
+                current_value,
+            ),
+        }
+    else:
+        raise ValueError(f"unsupported Pilot Family D NOOP trap type: {trap_type}")
+
     if trap_type == "duplicate_current":
-        # DUPLICATE_CURRENT is reserved for write actions; an observed repeat is a gold NOOP.
-        return CoreEvent(
-            operation=Operation.NOOP,
-            object_keys=[],
-            value=None,
-            role=EventRole.NOOP_NEAR_MISS,
-            metadata={
-                "trap_type": trap_type,
-                "lifecycle": "trap_noop",
-                "allow_accepted_answer_ambiguity": True,
-                "surface_statement": family_d_duplicate_current_statement(
-                    target.entity,
-                    target.attribute,
-                    current_value,
-                ),
-            },
-        )
-    raise ValueError(f"unsupported Family D NOOP trap type: {trap_type}")
+        metadata["allow_accepted_answer_ambiguity"] = True
+    return CoreEvent(
+        operation=Operation.NOOP,
+        object_keys=[],
+        value=None,
+        role=EventRole.NOOP_NEAR_MISS,
+        metadata=metadata,
+    )
 
 
 def _correction_events(
@@ -446,12 +540,14 @@ def _semantic_payload(
 
 
 def _build_core(
-    config: PilotConfig,
+    config: PilotConfig | CoreConfig,
     core_index: int,
     example_index: int,
     target: MemoryObjectKey,
     density: float,
     trap_type: str,
+    *,
+    core_mode: bool = False,
 ) -> SemanticCore:
     current_value = _current_value(config, target)
     target_event = CoreEvent(
@@ -467,8 +563,13 @@ def _build_core(
         ("target", target_event, frozenset())
     ]
     excluded_keys: tuple[MemoryObjectKey, ...] = ()
-    if trap_type in {"semantic_near_miss", "duplicate_current"}:
-        trap_event = _noop_trap_event(trap_type, target, current_value)
+    if core_mode or trap_type in {"semantic_near_miss", "duplicate_current"}:
+        trap_event = _noop_trap_event(
+            trap_type,
+            target,
+            current_value,
+            core_metadata=core_mode,
+        )
         event_specs.append(("trap", trap_event, frozenset({"target"})))
         filler_write_count = requested_write_count - 1
         filler_noop_count = requested_noop_count - 1
@@ -621,9 +722,44 @@ def generate_family_d_cores(config: PilotConfig) -> list[SemanticCore]:
     return cores
 
 
+def generate_core_family_d_cores(config: CoreConfig) -> list[SemanticCore]:
+    """Generate the deterministic 420-core Core NOOP/write-discipline grid."""
+    family = _validate_core_config(config)
+    cells = tuple(product(_CORE_TRAPS, family.noop_densities))
+    examples_per_cell, remainder = divmod(family.semantic_core_count, len(cells))
+    if remainder or examples_per_cell != 20:
+        raise ValueError("Core Family D requires exactly 20 cores per trap/density cell")
+
+    axes = _canonical_axis_order(config)
+    cores = []
+    for cell_index, (trap_type, density) in enumerate(cells):
+        for example_index in range(examples_per_cell):
+            core_index = cell_index * examples_per_cell + example_index
+            target = _target_for_example(
+                config,
+                axes,
+                core_index,
+                example_index,
+                trap_type,
+            )
+            cores.append(
+                _build_core(
+                    config,
+                    core_index,
+                    example_index,
+                    target,
+                    density,
+                    trap_type,
+                    core_mode=True,
+                )
+            )
+    return cores
+
+
 __all__ = [
     "family_d_duplicate_current_statement",
     "family_d_independent_noop_statement",
     "family_d_semantic_near_miss_statement",
+    "generate_core_family_d_cores",
     "generate_family_d_cores",
 ]

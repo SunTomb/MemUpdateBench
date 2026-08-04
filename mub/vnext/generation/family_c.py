@@ -26,6 +26,7 @@ from mub.vnext.generation.catalogs import (
 )
 from mub.vnext.generation.config import EntityAttributeGroundingConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
+from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
 
@@ -105,6 +106,35 @@ def _validate_config(config: PilotConfig) -> EntityAttributeGroundingConfig:
     return family
 
 
+def _validate_core_config(config: CoreConfig) -> EntityAttributeGroundingConfig:
+    if not isinstance(config, CoreConfig):
+        raise TypeError("config must be a CoreConfig")
+    family = config.families.entity_attribute_grounding
+    if family.semantic_core_count != 420:
+        raise ValueError("Core Family C requires semantic_core_count=420")
+    if not family.enabled:
+        raise ValueError("Core Family C must be enabled")
+    if len(family.entity_conditions) != len(_ENTITY_CONDITIONS) or set(
+        family.entity_conditions
+    ) != set(_ENTITY_CONDITIONS):
+        raise ValueError(
+            "Core Family C entity_conditions must include distinct, same_name, alias, "
+            "and namespace_collision exactly once"
+        )
+    if len(family.attribute_conditions) != len(_ATTRIBUTE_CONDITIONS) or set(
+        family.attribute_conditions
+    ) != set(_ATTRIBUTE_CONDITIONS):
+        raise ValueError(
+            "Core Family C attribute_conditions must include exact, paraphrase, and "
+            "near_name exactly once"
+        )
+    if set(family.difficulties) != set(_DIFFICULTIES):
+        raise ValueError(
+            "Core Family C difficulties must include easy, medium, and hard"
+        )
+    return family
+
+
 def _key(namespace: str, entity: str, attribute: str) -> MemoryObjectKey:
     return MemoryObjectKey(
         object_type="slot",
@@ -124,7 +154,12 @@ def _identity_payload(key: MemoryObjectKey) -> dict[str, str | None]:
     }
 
 
-def _ordered_indices(label: str, config: PilotConfig, cell_index: int, size: int) -> tuple[int, ...]:
+def _ordered_indices(
+    label: str,
+    config: PilotConfig | CoreConfig,
+    cell_index: int,
+    size: int,
+) -> tuple[int, ...]:
     return tuple(
         sorted(
             range(size),
@@ -146,7 +181,7 @@ def _different_bare_name_entity(entity: str, ordered_entities: tuple[str, ...]) 
 
 
 def _entity_spec(
-    config: PilotConfig,
+    config: PilotConfig | CoreConfig,
     cell_index: int,
     example_index: int,
     entity_condition: str,
@@ -211,8 +246,11 @@ def _attribute_spec(
     cell_index: int,
     example_index: int,
     attribute_condition: str,
+    examples_per_cell: int = 10,
 ) -> tuple[str, str, str, str, str]:
-    attribute_index = (cell_index * 10 + example_index) % len(CANONICAL_ATTRIBUTES)
+    attribute_index = (
+        cell_index * examples_per_cell + example_index
+    ) % len(CANONICAL_ATTRIBUTES)
     canonical_attribute = CANONICAL_ATTRIBUTES[attribute_index]
     if attribute_condition == "paraphrase":
         surface, mapped_attribute = _ATTRIBUTE_PARAPHRASE_MAPPINGS[attribute_index]
@@ -265,7 +303,7 @@ def _difficulty(entity_condition: str, attribute_condition: str) -> Difficulty:
 
 
 def _candidate_values(
-    config: PilotConfig,
+    config: PilotConfig | CoreConfig,
     core_index: int,
     attribute: str,
 ) -> tuple[str, str]:
@@ -362,12 +400,13 @@ def _semantic_core_id(
 
 
 def _build_core(
-    config: PilotConfig,
+    config: PilotConfig | CoreConfig,
     core_index: int,
     cell_index: int,
     example_index: int,
     entity_condition: str,
     attribute_condition: str,
+    examples_per_cell: int = 10,
 ) -> SemanticCore:
     (
         entity_surface,
@@ -387,7 +426,12 @@ def _build_core(
         attribute_mapping_id,
         near_name_evidence,
         attribute_evidence_kind,
-    ) = _attribute_spec(cell_index, example_index, attribute_condition)
+    ) = _attribute_spec(
+        cell_index,
+        example_index,
+        attribute_condition,
+        examples_per_cell,
+    )
     keys = tuple(
         _key(namespace, entity, canonical_attribute)
         for namespace, entity in entity_candidates
@@ -517,7 +561,7 @@ def _build_core(
         "difficulty": difficulty.value,
         "cell_index": cell_index,
         "cell_example_index": example_index,
-        "cell_count": 10,
+        "cell_count": examples_per_cell,
         "num_events": len(events),
         "num_target_updates": 0,
         "noop_count": 0,
@@ -565,4 +609,30 @@ def generate_family_c_cores(config: PilotConfig) -> list[SemanticCore]:
     return cores
 
 
-__all__ = ["generate_family_c_cores"]
+def generate_core_family_c_cores(config: CoreConfig) -> list[SemanticCore]:
+    """Generate the deterministic 420-core Core entity/attribute grid."""
+    family = _validate_core_config(config)
+    cells = tuple(product(family.entity_conditions, family.attribute_conditions))
+    examples_per_cell, remainder = divmod(family.semantic_core_count, len(cells))
+    if remainder or examples_per_cell != 35:
+        raise ValueError("Core Family C requires exactly 35 cores per condition cell")
+
+    cores = []
+    for cell_index, (entity_condition, attribute_condition) in enumerate(cells):
+        for example_index in range(examples_per_cell):
+            core_index = cell_index * examples_per_cell + example_index
+            cores.append(
+                _build_core(
+                    config,
+                    core_index,
+                    cell_index,
+                    example_index,
+                    entity_condition,
+                    attribute_condition,
+                    examples_per_cell,
+                )
+            )
+    return cores
+
+
+__all__ = ["generate_core_family_c_cores", "generate_family_c_cores"]
