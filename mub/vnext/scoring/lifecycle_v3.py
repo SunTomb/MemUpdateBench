@@ -79,12 +79,106 @@ class TargetLifecycleClassifierV3:
             for versions in self._target_active_versions()
         )
 
+    def has_forgotten_entry(self) -> bool:
+        return any(
+            version.status == LedgerEntryStatus.PRESENT
+            and _lifecycle_flags(version.value, versions, position)[1]
+            for versions in self._target_active_versions()
+            for position, version in enumerate(versions)
+        )
+
+    def has_forgotten_value(self) -> bool:
+        for versions in self._target_active_versions():
+            seen_values: list[Any] = []
+            for position in range(len(versions) - 1, -1, -1):
+                version = versions[position]
+                if version.status != LedgerEntryStatus.PRESENT or any(
+                    typed_json_equal(version.value, seen)
+                    for seen in seen_values
+                ):
+                    continue
+                seen_values.append(version.value)
+                if _lifecycle_flags(version.value, versions, position)[1]:
+                    return True
+        return False
+
     def _target_active_versions(self) -> Iterator[tuple[ReplayVersionV3, ...]]:
         ledgers = self.replay.ledger_by_identity
         for identity in self.target_identities:
             ledger = ledgers.get(identity)
             if ledger is not None:
                 yield self.replay.active_versions(ledger)
+
+
+@dataclass(frozen=True, slots=True)
+class QueryLifecycleEvidenceV3:
+    classifier: TargetLifecycleClassifierV3
+    entry_statuses: tuple[EntryLifecycleStatusV3, ...]
+    stale_exposed: bool | None
+    forgotten_exposed: bool | None
+    stale_copied: bool | None
+    forgotten_leaked: bool | None
+    has_forgotten_entry: bool
+    has_forgotten_value: bool
+
+
+def build_query_lifecycle_evidence_v3(task, replay, traces, predictions=None):
+    predictions = {} if predictions is None else predictions
+    gold_by_query = {item.query_id: item.answer for item in task.gold_evidence}
+    evidence_by_query = {}
+    for query in task.queries:
+        classifier = TargetLifecycleClassifierV3.for_query(query, replay)
+        trace = traces.get(query.query_id)
+        statuses = (
+            ()
+            if trace is None
+            else tuple(
+                classifier.classify_entry(entry)
+                for entry in trace.retrieved_entries
+            )
+        )
+        stale_exposed = None
+        forgotten_exposed = None
+        if trace is not None:
+            stale_exposed = (
+                trace.stale_in_context
+                if trace.stale_in_context is not None
+                else _tri_state_any(status.stale for status in statuses)
+            )
+            forgotten_exposed = _tri_state_any(
+                status.forgotten for status in statuses
+            )
+        prediction = predictions.get(query.query_id)
+        stale_copied = None
+        forgotten_leaked = None
+        if prediction is not None:
+            wrong = not typed_json_equal(
+                prediction.parsed_answer, gold_by_query[query.query_id]
+            )
+            stale_copied = wrong and classifier.is_stale_value(
+                prediction.parsed_answer
+            )
+            forgotten_leaked = wrong and classifier.is_forgotten_value(
+                prediction.parsed_answer
+            )
+        evidence_by_query[query.query_id] = QueryLifecycleEvidenceV3(
+            classifier=classifier,
+            entry_statuses=statuses,
+            stale_exposed=stale_exposed,
+            forgotten_exposed=forgotten_exposed,
+            stale_copied=stale_copied,
+            forgotten_leaked=forgotten_leaked,
+            has_forgotten_entry=classifier.has_forgotten_entry(),
+            has_forgotten_value=classifier.has_forgotten_value(),
+        )
+    return evidence_by_query
+
+
+def _tri_state_any(statuses) -> bool | None:
+    statuses = tuple(statuses)
+    if any(status is None for status in statuses):
+        return None
+    return any(status is True for status in statuses)
 
 
 def _entry_value_status(
@@ -171,4 +265,9 @@ def _indeterminate() -> EntryLifecycleStatusV3:
     return EntryLifecycleStatusV3(obsolete=None, stale=None, forgotten=None)
 
 
-__all__ = ["EntryLifecycleStatusV3", "TargetLifecycleClassifierV3"]
+__all__ = [
+    "EntryLifecycleStatusV3",
+    "QueryLifecycleEvidenceV3",
+    "TargetLifecycleClassifierV3",
+    "build_query_lifecycle_evidence_v3",
+]

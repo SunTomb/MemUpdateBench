@@ -260,3 +260,21 @@ def test_lifecycle_classifier_marks_target_missing_from_replay_indeterminate():
     ) == EntryLifecycleStatusV3(obsolete=None, stale=None, forgotten=None)
     assert classifier.is_stale_value("x") is False
     assert classifier.is_forgotten_value("x") is False
+
+
+def test_lifecycle_classifier_reports_forgotten_applicability_from_active_target_versions():
+    forgotten, _ = _classifier(
+        _task_with_present_values(first="x", second="middle", current="y")
+    )
+    relearned, _ = _classifier(_relearn_then_update_task())
+    pre_tombstone, _ = _classifier(
+        _task_with_present_values(first="x", second="middle", current="y"),
+        horizon="001",
+    )
+
+    assert forgotten.has_forgotten_entry() is True
+    assert forgotten.has_forgotten_value() is True
+    assert relearned.has_forgotten_entry() is True
+    assert relearned.has_forgotten_value() is False
+    assert pre_tombstone.has_forgotten_entry() is False
+    assert pre_tombstone.has_forgotten_value() is False

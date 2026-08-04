@@ -856,9 +856,9 @@ def _retrieval_annotation_metric(
     entry_specs = {
         "empty": (),
         "current": (("current", "x", 3, "e3"),),
-        "stale": (("stale", "x", 0, "e0"),),
+        "stale": (("stale", "v1", 1, "e1"),),
         "two_stale": (
-            ("stale-0", "x", 0, "e0"),
+            ("stale-0", "v1", 1, "e1"),
             ("stale-1", "v1", 1, "e1"),
         ),
         "ambiguous": (("ambiguous", "x", None, None),),
@@ -971,7 +971,7 @@ def _score_effective_current_retrieval(
     entry_specs = {
         "empty": (),
         "current": (("current", "x", 3, "e3"),),
-        "stale": (("stale", "x", 0, "e0"),),
+        "stale": (("stale", "v1", 1, "e1"),),
         "ambiguous": (("ambiguous", "x", None, None),),
     }
     entries = tuple(
@@ -1457,9 +1457,12 @@ def test_same_value_different_version_is_not_current_entry_match():
     flags = derive_failure_flags_v3(task=current_task, run=stale_run, replay=current_replay, layer_values=layers, predictions={}, traces={"q": stale_trace}, evidence=current_evidence)
     assert "stale_retrieved" in flags
     from mub.vnext.scoring.scorer_v3 import _action_facts
-    value, detail = _metric_value("deletion_scores.forgotten_exposure_rate", task, stale_run, None, replay, {}, evidence, {}, {"q": stale_trace}, _action_facts(task, stale_run))
+    value, detail = _metric_value(
+        "deletion_scores.forgotten_exposure_rate", task, stale_run, None,
+        replay, {}, evidence, {}, {"q": stale_trace}, _action_facts(task, stale_run),
+    )
     assert detail is None
-    assert value == 1.0
+    assert value == 0.0
     explicit_run = run.model_copy(update={"memory_snapshots": (MemorySnapshotV3(after_event_id="e3", entries=(stale_v0,), store_size=1),)})
     obsolete, detail = _metric_value("store_scores.obsolete_version_count", task, explicit_run, None, replay, {}, evidence, {}, {}, _action_facts(task, explicit_run))
     assert detail is None
@@ -3592,7 +3595,8 @@ def test_answer_state_consistency_denominator_uses_only_applicable_queries():
 
 def test_future_ttl_is_excluded_from_pre_horizon_stale_and_forgotten_status():
     from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
-    from mub.vnext.scoring.scorer_v3 import _entry_forgotten_status, _entry_obsolete_status
+    from mub.vnext.scoring.lifecycle_v3 import TargetLifecycleClassifierV3
+    from mub.vnext.scoring.scorer_v3 import _entry_obsolete_status
 
     task = MemUpdateTaskV3.model_validate(ttl_horizon_payload("005", "v1"))
     replay = replay_task_v3(task)
@@ -3601,9 +3605,12 @@ def test_future_ttl_is_excluded_from_pre_horizon_stale_and_forgotten_status():
         object_key_candidate=task.target_objects[0], value_candidate="v1",
         version_index=1, source_event_ids=("e1",),
     )
+    lifecycle = TargetLifecycleClassifierV3.for_query(
+        task.queries[0], replay,
+    ).classify_entry(current)
     assert replay.obsolete_present_values == ("v0",)
     assert _entry_obsolete_status(current, replay) is False
-    assert _entry_forgotten_status(current, replay) is False
+    assert lifecycle.forgotten is False
 
 
 def test_mixed_version_provenance_uses_unique_value_consistent_version():
@@ -3618,3 +3625,302 @@ def test_mixed_version_provenance_uses_unique_value_consistent_version():
         source_event_ids=("e0", "e3"),
     )
     assert _entry_obsolete_status(mixed, replay) is True
+
+
+_LIFECYCLE_METRICS = (
+    "retrieval_scores.stale_exposure_rate",
+    "retrieval_scores.stale_count_in_context",
+    "answer_scores.stale_copied",
+    "deletion_scores.forgotten_exposure_rate",
+    "deletion_scores.forgotten_value_leakage_rate",
+)
+
+
+def _two_object_lifecycle_payload(query_entity):
+    changed = payload()
+    key_a = deepcopy(changed["target_objects"][0])
+    key_a["entity"] = "A"
+    key_b = deepcopy(key_a)
+    key_b["entity"] = "B"
+    changed["task_family"] = "E"
+    changed["events"] = [
+        {"event_id": "e0", "sequence_index": 0, "raw_text": "A", "normalized_text": "A", "role": "neutral", "gold_action_ids": ["a0"]},
+        {"event_id": "e1", "sequence_index": 1, "raw_text": "B", "normalized_text": "B", "role": "neutral", "gold_action_ids": ["a1"]},
+        {"event_id": "e2", "sequence_index": 2, "raw_text": "forget B", "normalized_text": "forget B", "role": "neutral", "gold_action_ids": ["a2"]},
+    ]
+    changed["target_objects"] = [key_a, key_b]
+    changed["actions"] = [
+        {"action_id": "a0", "event_id": "e0", "operation": "ADD", "scope": "object", "target_object_keys": [key_a], "value": "a-current", "effective_at": "000"},
+        {"action_id": "a1", "event_id": "e1", "operation": "ADD", "scope": "object", "target_object_keys": [key_b], "value": "b-deleted", "effective_at": "001"},
+        {"action_id": "a2", "event_id": "e2", "operation": "DELETE", "scope": "object", "target_object_keys": [key_b], "effective_at": "002"},
+    ]
+    changed["version_history"] = [
+        {"object_key": key_a, "entries": [
+            {"version_index": 0, "status": "present", "value": "a-current", "valid_from_event_id": "e0", "logical_time": "000", "source_event_ids": ["e0"]},
+        ]},
+        {"object_key": key_b, "entries": [
+            {"version_index": 0, "status": "present", "value": "b-deleted", "valid_from_event_id": "e1", "valid_until_event_id": "e2", "logical_time": "001", "source_event_ids": ["e1"]},
+            {"version_index": 1, "status": "tombstone", "valid_from_event_id": "e2", "logical_time": "002", "source_event_ids": ["e2"]},
+        ]},
+    ]
+    target = key_a if query_entity == "A" else key_b
+    answer = "a-current" if query_entity == "A" else [None]
+    support_event = "e0" if query_entity == "A" else "e2"
+    changed["queries"] = [{
+        "query_id": "q", "query_type": "current", "text": "?", "selector": {"kind": "current"},
+        "target_object_keys": [target], "answer_schema": "string" if query_entity == "A" else "list",
+        "evaluation_mode": "state_direct",
+    }]
+    changed["gold_evidence"] = [{
+        "query_id": "q", "answer": answer, "supporting_object_keys": [target],
+        "supporting_event_ids": [support_event],
+        "derivation_steps": [{"step_id": "read", "operation": "read", "supporting_object_keys": [target], "supporting_event_ids": [support_event]}],
+        "final_derivation_step_id": "read",
+    }]
+    return changed
+
+
+def _task_with_family(task, family):
+    data = task.model_dump(mode="python")
+    data["task_family"] = family
+    return MemUpdateTaskV3.model_validate(data)
+
+
+def _score_lifecycle_wiring(task, entries, prediction):
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, ParserExtractorProvenanceV3, RetrievalTraceV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    trace = RetrievalTraceV3(query_id="q", retrieved_entries=tuple(entries))
+    answer = AnswerPredictionV3(
+        query_id="q", raw_output=json.dumps(prediction), parsed_answer=prediction, format_valid=True,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id, adapter_id="adapter", run_id=f"lifecycle-{task.task_id}",
+        retrieval_traces=(trace,), answer_predictions=(answer,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1", answer_parser_version="1",
+            memory_entry_extractor_version="1", redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id="adapter", adapter_version="1", system_name="system",
+        system_version="1", configuration_hash=H,
+    )
+    caps = AdapterCapabilitiesV3(
+        supports_delete=True, supports_native_answer=True, exports_entries=True,
+        exports_object_keys=True, exports_values=True, exports_retrieval_ids=True,
+    )
+    config = ScorerConfigV3(requested_metric_fields=_LIFECYCLE_METRICS)
+    return score_task_v3(task, run, authenticated_context(task, run, info, caps, config))
+
+
+def test_lifecycle_metrics_and_flags_are_scoped_to_each_query_targets():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    scores = {}
+    for query_entity in ("A", "B"):
+        base_task = MemUpdateTaskV3.model_validate(_two_object_lifecycle_payload(query_entity))
+        for family in ("E", "F"):
+            task = _task_with_family(base_task, family)
+            b_key = next(key for key in task.target_objects if key.entity == "B")
+            entry = MemoryEntryRecordV3(
+                entry_id=f"b-old-for-{query_entity}-{family}", content="b-deleted",
+                object_key_candidate=b_key, value_candidate="b-deleted",
+                version_index=0, source_event_ids=("e1",),
+            )
+            scores[query_entity, family] = _score_lifecycle_wiring(task, (entry,), "b-deleted")
+
+    unrelated_stale = scores["A", "F"]
+    assert unrelated_stale.retrieval_scores.stale_exposure_rate == 0.0
+    assert unrelated_stale.retrieval_scores.stale_count_in_context == 0
+    assert unrelated_stale.answer_scores.stale_copied == 0.0
+    assert not {"stale_retrieved", "stale_copied", "forgotten_value_exposed"} & set(unrelated_stale.failure_flags)
+
+    unrelated_forgotten = scores["A", "E"]
+    assert unrelated_forgotten.deletion_scores.forgotten_exposure_rate is None
+    assert unrelated_forgotten.deletion_scores.forgotten_value_leakage_rate is None
+    assert unrelated_forgotten.supported_metric_fields["deletion_scores.forgotten_exposure_rate"].reason is SupportReason.NOT_APPLICABLE
+    assert unrelated_forgotten.supported_metric_fields["deletion_scores.forgotten_value_leakage_rate"].reason is SupportReason.NOT_APPLICABLE
+    assert "forgotten_value_exposed" not in unrelated_forgotten.failure_flags
+
+    targeted_stale = scores["B", "F"]
+    assert targeted_stale.retrieval_scores.stale_exposure_rate == 1.0
+    assert targeted_stale.retrieval_scores.stale_count_in_context == 1
+    assert targeted_stale.answer_scores.stale_copied == 1.0
+    assert {"stale_retrieved", "stale_copied", "forgotten_value_exposed"} <= set(targeted_stale.failure_flags)
+
+    targeted_forgotten = scores["B", "E"]
+    assert targeted_forgotten.deletion_scores.forgotten_exposure_rate == 1.0
+    assert targeted_forgotten.deletion_scores.forgotten_value_leakage_rate == 1.0
+    assert "forgotten_value_exposed" in targeted_forgotten.failure_flags
+
+
+def test_relearned_identical_value_is_obsolete_but_not_stale_or_forgotten():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+    from mub.vnext.scoring.lifecycle_v3 import TargetLifecycleClassifierV3
+
+    changed = current_structured_payload("x", "string")
+    changed["task_family"] = "E"
+    changed["actions"][0]["value"] = "x"
+    changed["version_history"][0]["entries"][0]["value"] = "x"
+    changed["events"] = [changed["events"][index] for index in (0, 2, 3)]
+    for sequence_index, event in enumerate(changed["events"]):
+        event["sequence_index"] = sequence_index
+    changed["actions"] = [changed["actions"][index] for index in (0, 2, 3)]
+    history = changed["version_history"][0]["entries"]
+    changed["version_history"][0]["entries"] = [history[index] for index in (0, 2, 3)]
+    changed["version_history"][0]["entries"][0]["valid_until_event_id"] = "e2"
+    for version_index, version in enumerate(changed["version_history"][0]["entries"]):
+        version["version_index"] = version_index
+    task = MemUpdateTaskV3.model_validate(changed)
+    replay = replay_task_v3(task)
+    entry = MemoryEntryRecordV3(
+        entry_id="old-explicit-x", content="x", object_key_candidate=task.target_objects[0],
+        value_candidate="x", version_index=0, source_event_ids=("e0",),
+    )
+    lifecycle = TargetLifecycleClassifierV3.for_query(task.queries[0], replay).classify_entry(entry)
+    assert lifecycle.obsolete is True
+    assert lifecycle.stale is False
+    assert lifecycle.forgotten is False
+
+    stale_score = _score_lifecycle_wiring(_task_with_family(task, "F"), (entry,), "x")
+    assert stale_score.retrieval_scores.stale_exposure_rate == 0.0
+    assert stale_score.retrieval_scores.stale_count_in_context == 0
+    assert stale_score.answer_scores.stale_copied == 0.0
+    assert not {"stale_retrieved", "stale_copied", "forgotten_value_exposed"} & set(stale_score.failure_flags)
+
+    forgotten_score = _score_lifecycle_wiring(_task_with_family(task, "E"), (entry,), "x")
+    assert forgotten_score.deletion_scores.forgotten_exposure_rate is None
+    assert forgotten_score.deletion_scores.forgotten_value_leakage_rate is None
+    assert forgotten_score.supported_metric_fields["deletion_scores.forgotten_exposure_rate"].reason is SupportReason.NOT_APPLICABLE
+    assert "forgotten_value_exposed" not in forgotten_score.failure_flags
+
+
+def test_future_ttl_tombstone_does_not_create_forgotten_applicability_or_exposure():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = ttl_horizon_payload("005", "v1")
+    changed["task_family"] = "E"
+    changed["queries"][0]["query_type"] = "current"
+    changed["queries"][0]["selector"] = {"kind": "current"}
+    task = MemUpdateTaskV3.model_validate(changed)
+    entry = MemoryEntryRecordV3(
+        entry_id="pre-expiry-current", content="v1", object_key_candidate=task.target_objects[0],
+        value_candidate="v1", version_index=1, source_event_ids=("e1",),
+    )
+
+    score = _score_lifecycle_wiring(task, (entry,), "v1")
+    for path in (
+        "deletion_scores.forgotten_exposure_rate",
+        "deletion_scores.forgotten_value_leakage_rate",
+    ):
+        assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
+    assert score.deletion_scores.forgotten_exposure_rate is None
+    assert score.deletion_scores.forgotten_value_leakage_rate is None
+    assert "forgotten_value_exposed" not in score.failure_flags
+
+
+def test_nested_unhashable_values_and_bool_int_distinction_reach_lifecycle_scores():
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    old_value = {"nested": [1, {"flag": 1}]}
+    current_value = {"nested": [True, {"flag": True}]}
+    changed = current_structured_payload(current_value, "object")
+    changed["task_family"] = "E"
+    changed["actions"][0]["value"] = old_value
+    changed["version_history"][0]["entries"][0]["value"] = old_value
+    task = MemUpdateTaskV3.model_validate(changed)
+    entry = MemoryEntryRecordV3(
+        entry_id="nested-old", content="nested", object_key_candidate=task.target_objects[0],
+        value_candidate=old_value, version_index=0, source_event_ids=("e0",),
+    )
+
+    stale_score = _score_lifecycle_wiring(_task_with_family(task, "F"), (entry,), old_value)
+    assert stale_score.retrieval_scores.stale_exposure_rate == 1.0
+    assert stale_score.retrieval_scores.stale_count_in_context == 1
+    assert stale_score.answer_scores.stale_copied == 1.0
+    assert {"stale_retrieved", "stale_copied", "forgotten_value_exposed"} <= set(stale_score.failure_flags)
+
+    forgotten_score = _score_lifecycle_wiring(_task_with_family(task, "E"), (entry,), old_value)
+    assert forgotten_score.deletion_scores.forgotten_exposure_rate == 1.0
+    assert forgotten_score.deletion_scores.forgotten_value_leakage_rate == 1.0
+    assert "forgotten_value_exposed" in forgotten_score.failure_flags
+
+
+def test_definite_and_ambiguous_target_entries_fail_closed_without_lifecycle_flags():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = current_structured_payload("x", "string")
+    changed["task_family"] = "E"
+    changed["actions"][0]["value"] = "x"
+    changed["version_history"][0]["entries"][0]["value"] = "x"
+    task = MemUpdateTaskV3.model_validate(changed)
+    key = task.target_objects[0]
+    entries = (
+        MemoryEntryRecordV3(
+            entry_id="definite-stale-forgotten", content="v1", object_key_candidate=key,
+            value_candidate="v1", version_index=1, source_event_ids=("e1",),
+        ),
+        MemoryEntryRecordV3(
+            entry_id="ambiguous-repeated-x", content="x", object_key_candidate=key,
+            value_candidate="x",
+        ),
+    )
+
+    stale_score = _score_lifecycle_wiring(_task_with_family(task, "F"), entries, "x")
+    for path in (
+        "retrieval_scores.stale_exposure_rate",
+        "retrieval_scores.stale_count_in_context",
+    ):
+        assert getattr(getattr(stale_score, path.split(".")[0]), path.split(".")[1]) is None
+        assert stale_score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+    assert "stale_retrieved" not in stale_score.failure_flags
+
+    forgotten_score = _score_lifecycle_wiring(_task_with_family(task, "E"), entries, "x")
+    path = "deletion_scores.forgotten_exposure_rate"
+    assert forgotten_score.deletion_scores.forgotten_exposure_rate is None
+    assert forgotten_score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
+    assert "forgotten_value_exposed" not in forgotten_score.failure_flags
+
+
+def test_forgotten_entry_exposure_remains_applicable_when_relearn_masks_value_leakage():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    changed = current_structured_payload("y", "string")
+    changed["task_family"] = "E"
+    changed["actions"][0]["value"] = "x"
+    changed["actions"][1]["operation"] = "DELETE"
+    changed["actions"][1].pop("value")
+    changed["actions"][2]["operation"] = "ADD"
+    changed["actions"][2]["value"] = "x"
+    changed["actions"][3]["operation"] = "UPDATE"
+    history = changed["version_history"][0]["entries"]
+    for entry, (status, value) in zip(
+        history,
+        (("present", "x"), ("tombstone", None), ("present", "x"), ("present", "y")),
+    ):
+        entry["status"] = status
+        if value is None:
+            entry.pop("value", None)
+        else:
+            entry["value"] = value
+    task = MemUpdateTaskV3.model_validate(changed)
+    old_entry = MemoryEntryRecordV3(
+        entry_id="old-x-before-delete", content="x",
+        object_key_candidate=task.target_objects[0], value_candidate="x",
+        version_index=0, source_event_ids=("e0",),
+    )
+
+    score = _score_lifecycle_wiring(task, (old_entry,), "y")
+    assert score.deletion_scores.forgotten_exposure_rate == 1.0
+    assert score.deletion_scores.forgotten_value_leakage_rate is None
+    assert score.supported_metric_fields[
+        "deletion_scores.forgotten_value_leakage_rate"
+    ].reason is SupportReason.NOT_APPLICABLE
+    assert "forgotten_value_exposed" in score.failure_flags

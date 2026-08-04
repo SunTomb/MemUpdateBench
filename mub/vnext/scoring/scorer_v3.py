@@ -17,6 +17,7 @@ from mub.vnext.contracts.v3.score import CORE_SCORE_LAYER_TYPES, ScoreRecordV3, 
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.io import sha256_model
 from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
+from mub.vnext.scoring.lifecycle_v3 import build_query_lifecycle_evidence_v3
 from mub.vnext.scoring.registry import METRIC_REGISTRY as METRIC_REGISTRY_V2, missing_capabilities as missing_capabilities_v2
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3, metric_applies_v3, missing_capabilities_v3
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
@@ -303,17 +304,6 @@ def _action_facts(task, run):
     return facts
 
 
-def _forgotten_values(replay):
-    values = []
-    for ledger in replay.ledgers:
-        versions = replay.active_versions(ledger)
-        for index, version in enumerate(versions):
-            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in versions[index + 1:]):
-                if not any(later.status == LedgerEntryStatus.PRESENT and _same(later.value, version.value) for later in versions[index + 1:]):
-                    values.append(version.value)
-    return values
-
-
 def _entry_value_status(entry, version):
     if version.status == LedgerEntryStatus.TOMBSTONE:
         tombstone_marker = entry.raw_metadata.get("is_tombstone") is True or entry.raw_metadata.get("status") == "tombstone"
@@ -410,48 +400,10 @@ def _obsolete_entry_conflicts_with_current(entry, replay):
     )
 
 
-def _entry_forgotten_status(entry, replay):
-    if entry.object_key_candidate is None:
-        return False
-    ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
-    if ledger is None:
-        return False
-    versions = replay.active_versions(ledger)
-    matched = None
-    if entry.version_index is not None and entry.version_index < len(versions):
-        matched = versions[entry.version_index]
-    elif entry.source_event_ids:
-        candidates = [
-            version
-            for version in versions
-            if set(entry.source_event_ids) & set(version.source_event_ids)
-        ]
-        statuses = [(version, _entry_value_status(entry, version)) for version in candidates]
-        consistent = [version for version, status in statuses if status is True]
-        if len(consistent) != 1:
-            return None if any(status is None for _, status in statuses) or len(consistent) > 1 else False
-        matched = consistent[0]
-    if matched is None:
-        return None
-    value_status = _entry_value_status(entry, matched)
-    if value_status is not True:
-        return value_status
-    return any(version.status == LedgerEntryStatus.TOMBSTONE for version in versions[matched.version_index + 1:])
-
-
 def _effective_current_retrieval_status(trace, selected_versions, replay):
     if trace.gold_in_context is not None:
         return trace.gold_in_context
     statuses = _current_retrieval_entry_statuses(trace, selected_versions, replay)
-    if any(status is None for status in statuses):
-        return None
-    return any(status is True for status in statuses)
-
-
-def _effective_stale_retrieval_status(trace, replay):
-    if trace.stale_in_context is not None:
-        return trace.stale_in_context
-    statuses = _obsolete_retrieval_entry_statuses(trace, replay)
     if any(status is None for status in statuses):
         return None
     return any(status is True for status in statuses)
@@ -472,20 +424,20 @@ def _current_retrieval_entry_statuses(trace, selected_versions, replay):
     return tuple(statuses)
 
 
-def _obsolete_retrieval_entry_statuses(trace, replay):
-    return tuple(
-        _entry_obsolete_status(entry, replay)
-        for entry in trace.retrieved_entries
-    )
-
-
 def _current_retrieval_ambiguity_detail(traces):
     if any(entry.value_candidate is None for trace in traces for entry in trace.retrieved_entries):
         return "value evidence is missing for version-bearing current retrieval entries"
     return "version identity is ambiguous for repeated-value current retrieval entries"
 
 
-def _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts):
+def _metric_value(
+    path, task, run, context, replay, resolutions, evidence, predictions, traces,
+    action_facts, lifecycle_by_query=None,
+):
+    if lifecycle_by_query is None:
+        lifecycle_by_query = build_query_lifecycle_evidence_v3(
+            task, replay, traces, predictions,
+        )
     layer, leaf = path.split(".", 1)
     snapshot = _final_snapshot(run, task)
     state = _snapshot_state(run, task)
@@ -590,18 +542,21 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
             return (_mean(reciprocal), None) if reciprocal else (None, "no ranked current rows")
         if leaf == "stale_exposure_rate":
             exposed = []
-            for _, trace in current_rows:
-                status = _effective_stale_retrieval_status(trace, replay)
+            for query, trace in current_rows:
+                status = lifecycle_by_query[query.query_id].stale_exposed
                 if status is None:
                     return None, "version identity is ambiguous for repeated-value retrieval entries"
                 exposed.append(status)
             return _mean([float(value) for value in exposed]), None
         if leaf == "stale_count_in_context":
             total = 0
-            for _, trace in current_rows:
+            for query, trace in current_rows:
                 if trace.stale_in_context is False:
                     continue
-                statuses = _obsolete_retrieval_entry_statuses(trace, replay)
+                statuses = tuple(
+                    status.stale
+                    for status in lifecycle_by_query[query.query_id].entry_statuses
+                )
                 if any(status is None for status in statuses):
                     return None, "version identity is ambiguous for repeated-value retrieval entries"
                 stale_count = sum(status is True for status in statuses)
@@ -631,8 +586,11 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
                 ]),
                 None,
             ) if applicable else (None, "no applicable current-state prediction rows")
-        obsolete = replay.obsolete_present_values
-        if leaf == "stale_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in obsolete)) for item in predictions.values()]), None
+        if leaf == "stale_copied":
+            return _mean([
+                float(lifecycle_by_query[item.query_id].stale_copied)
+                for item in predictions.values()
+            ]), None
         if leaf == "distractor_copied": return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and traces.get(item.query_id) is not None and traces[item.query_id].distractor_in_context is True and any(_answer_contains(item.parsed_answer, candidate) for candidate in _distractor_candidates(traces[item.query_id]))) for item in predictions.values()]), None
         if leaf == "gold_retrieved_wrong_answer":
             current_queries = [
@@ -710,16 +668,23 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
         if leaf == "relearn_accuracy":
             relearn = [ledger for ledger in replay.ledgers if any(v.status == LedgerEntryStatus.TOMBSTONE for v in ledger.versions[:-1]) and ledger.versions[-1].status == LedgerEntryStatus.PRESENT]
             return (_mean([float(ledger.object_key.canonical_id in state and _same(state[ledger.object_key.canonical_id], ledger.versions[-1].value)) for ledger in relearn]), None) if relearn and snapshot is not None else (None, "no observable relearn sequence")
-        forgotten = _forgotten_values(replay)
         if leaf == "forgotten_exposure_rate":
-            if not traces: return None, "retrieval traces missing"
-            classified = [tuple(_entry_forgotten_status(entry, replay) for entry in trace.retrieved_entries) for trace in traces.values()]
-            if any(status is None for statuses in classified for status in statuses):
+            if not traces:
+                return None, "retrieval traces missing"
+            classified = [
+                lifecycle_by_query[query_id].forgotten_exposed
+                for query_id in traces
+            ]
+            if any(status is None for status in classified):
                 return None, "version identity is ambiguous for forgotten-value retrieval entries"
-            return _mean([float(any(status is True for status in statuses)) for statuses in classified]), None
+            return _mean([float(status) for status in classified]), None
         if leaf == "forgotten_value_leakage_rate":
-            if not predictions: return None, "answer predictions missing"
-            return _mean([float(not _same(item.parsed_answer, evidence[item.query_id].answer) and any(_same(item.parsed_answer, value) for value in forgotten)) for item in predictions.values()]), None
+            if not predictions:
+                return None, "answer predictions missing"
+            return _mean([
+                float(lifecycle_by_query[item.query_id].forgotten_leaked)
+                for item in predictions.values()
+            ]), None
     if layer == "historical_scores":
         kinds = {
             "current_state_accuracy": {QueryTypeV3.CURRENT}, "previous_state_accuracy": {QueryTypeV3.PREVIOUS},
@@ -771,7 +736,9 @@ def _metric_value(path, task, run, context, replay, resolutions, evidence, predi
     return None, "metric artifact is unavailable"
 
 
-def _metric_applies_to_task_v3(path, task, replay):
+def _metric_applies_to_task_v3(path, task, replay, lifecycle_by_query=None):
+    if lifecycle_by_query is None:
+        lifecycle_by_query = build_query_lifecycle_evidence_v3(task, replay, {})
     if path.startswith("deletion_scores."):
         deletes = [action for action in task.actions if action.operation == Operation.DELETE]
         if not deletes:
@@ -784,8 +751,16 @@ def _metric_applies_to_task_v3(path, task, replay):
                 and ledger.versions[-1].status == LedgerEntryStatus.PRESENT
                 for ledger in replay.ledgers
             )
-        if path in {"deletion_scores.forgotten_exposure_rate", "deletion_scores.forgotten_value_leakage_rate"}:
-            return any(any(version.status == LedgerEntryStatus.TOMBSTONE for version in ledger.versions) for ledger in replay.ledgers)
+        if path == "deletion_scores.forgotten_exposure_rate":
+            return any(
+                item.has_forgotten_entry
+                for item in lifecycle_by_query.values()
+            )
+        if path == "deletion_scores.forgotten_value_leakage_rate":
+            return any(
+                item.has_forgotten_value
+                for item in lifecycle_by_query.values()
+            )
     if path == "synthesis_scores.stale_propagation_rate":
         return any(evidence.stale_alternative is not None for evidence in task.gold_evidence)
     return True
@@ -802,6 +777,9 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     resolutions = {query.query_id: resolve_query_v3(query, replay, task.events) for query in task.queries}
     if any(result.issues for result in resolutions.values()):
         raise ValueError("typed query resolution failed")
+    lifecycle_by_query = build_query_lifecycle_evidence_v3(
+        task, replay, traces, predictions,
+    )
     evidence = {item.query_id: item for item in task.gold_evidence}
     query_by_id = {query.query_id: query for query in task.queries}
     for item in task.gold_evidence:
@@ -823,7 +801,7 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     runtime_failed = run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL} or bool(run.exceptions)
     for path, descriptor in CORE_METRIC_REGISTRY_V3.items():
         layer, leaf = path.split(".", 1)
-        if not metric_applies_v3(descriptor, task.task_family, query_kinds) or not _metric_applies_to_task_v3(path, task, replay):
+        if not metric_applies_v3(descriptor, task.task_family, query_kinds) or not _metric_applies_to_task_v3(path, task, replay, lifecycle_by_query):
             support[path] = _support(SupportReason.NOT_APPLICABLE, "Metric does not apply to this family/query kind.")
             continue
         if path not in requested:
@@ -844,13 +822,20 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
         if missing:
             support[path] = _support(SupportReason.NOT_SUPPORTED, f"Verified adapter lacks capabilities: {', '.join(missing)}.")
             continue
-        value, detail = _metric_value(path, task, run, context, replay, resolutions, evidence, predictions, traces, action_facts)
+        value, detail = _metric_value(
+            path, task, run, context, replay, resolutions, evidence, predictions,
+            traces, action_facts, lifecycle_by_query,
+        )
         if value is None:
             support[path] = _support(SupportReason.MISSING_ARTIFACT, detail or "Required artifact is missing.")
         else:
             layers[layer][leaf] = value
     from mub.vnext.scoring.failures_v3 import derive_failure_flags_v3
-    flags = derive_failure_flags_v3(task=task, run=run, replay=replay, layer_values=layers, predictions=predictions, traces=traces, evidence=evidence, resolutions=resolutions)
+    flags = derive_failure_flags_v3(
+        task=task, run=run, replay=replay, layer_values=layers,
+        predictions=predictions, traces=traces, evidence=evidence,
+        resolutions=resolutions, lifecycle_by_query=lifecycle_by_query,
+    )
     return ScoreRecordV3.empty(
         task_id=task.task_id, run_id=run.run_id, adapter_id=run.adapter_id,
         task_family=task.task_family, difficulty=task.difficulty,

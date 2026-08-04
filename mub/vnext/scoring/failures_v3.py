@@ -11,6 +11,7 @@ from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.score import ScoreRecordV3, V3_FAILURE_FLAGS
 from mub.vnext.scoring.action_binding_v3 import bind_action_pairs_v3
+from mub.vnext.scoring.lifecycle_v3 import build_query_lifecycle_evidence_v3
 from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
 from mub.vnext.validation.replay_v3 import resolve_query_v3
 
@@ -37,16 +38,6 @@ def _contains_value(output, candidate):
     if isinstance(output, list):
         return any(_contains_value(value, candidate) for value in output)
     return False
-
-
-def _forgotten_values(replay):
-    values = []
-    for ledger in replay.ledgers:
-        versions = replay.active_versions(ledger)
-        for index, version in enumerate(versions):
-            if version.status == LedgerEntryStatus.PRESENT and any(later.status == LedgerEntryStatus.TOMBSTONE for later in versions[index + 1:]):
-                values.append(version.value)
-    return values
 
 
 def _entry_version_status(entry, replay):
@@ -87,7 +78,10 @@ def _entry_version_status(entry, replay):
     return obsolete, forgotten
 
 
-def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, traces, evidence, resolutions=None) -> tuple[str, ...]:
+def derive_failure_flags_v3(
+    *, task, run, replay, layer_values, predictions, traces, evidence,
+    resolutions=None, lifecycle_by_query=None,
+) -> tuple[str, ...]:
     flags: set[str] = set()
     if run.exceptions or run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL}:
         flags.add("system_exception")
@@ -127,13 +121,14 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     if deletion.get("collateral_damage_rate") not in {None, 0.0}: flags.update(("collateral_mutation", "collateral_corruption"))
     if deletion.get("ttl_compliance_rate") not in {None, 1.0}: flags.add("ttl_violation")
     if deletion.get("relearn_accuracy") not in {None, 1.0}: flags.add("current_state_missing")
-    forgotten = _forgotten_values(replay)
-    obsolete = replay.obsolete_present_values
     from mub.vnext.scoring.scorer_v3 import (
         _effective_current_retrieval_status,
-        _effective_stale_retrieval_status,
         _final_snapshot,
     )
+    if lifecycle_by_query is None:
+        lifecycle_by_query = build_query_lifecycle_evidence_v3(
+            task, replay, traces, predictions,
+        )
     final_snapshot = _final_snapshot(run, task)
     if final_snapshot is not None:
         observed_state = dict(final_snapshot.state_by_object)
@@ -168,14 +163,31 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
     }
     current_resolutions = {} if resolutions is None else resolutions
     if any(
-        _effective_stale_retrieval_status(traces[query_id], replay) is True
+        lifecycle_by_query[query_id].stale_exposed is True
         for query_id in current_queries
         if query_id in traces
     ):
         flags.add("stale_retrieved")
-    if any(any(_entry_version_status(entry, replay)[1] is True for entry in trace.retrieved_entries) for trace in traces.values()): flags.add("forgotten_value_exposed")
-    if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in obsolete) for prediction in predictions.values()): flags.add("stale_copied")
-    if any(not _same(prediction.parsed_answer, evidence[prediction.query_id].answer) and any(_same(prediction.parsed_answer, value) for value in forgotten) for prediction in predictions.values()): flags.add("forgotten_value_exposed")
+    forgotten_retrieval = [
+        lifecycle_by_query[query_id].forgotten_exposed
+        for query_id in traces
+    ]
+    if (
+        forgotten_retrieval
+        and all(status is not None for status in forgotten_retrieval)
+        and any(status is True for status in forgotten_retrieval)
+    ):
+        flags.add("forgotten_value_exposed")
+    if any(
+        lifecycle_by_query[prediction.query_id].stale_copied is True
+        for prediction in predictions.values()
+    ):
+        flags.add("stale_copied")
+    if any(
+        lifecycle_by_query[prediction.query_id].forgotten_leaked is True
+        for prediction in predictions.values()
+    ):
+        flags.add("forgotten_value_exposed")
     for query_id, prediction in predictions.items():
         gold_answer = evidence[query_id].answer
         if not prediction.format_valid and _same(prediction.parsed_answer, gold_answer):
