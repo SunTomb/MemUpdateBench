@@ -958,6 +958,7 @@ def _score_effective_current_retrieval(
     gold_in_context=None,
     stale_in_context=None,
     wrong_answer=True,
+    format_valid=True,
 ):
     from mub.vnext.contracts.v3.runtime import AnswerPredictionV3, MemoryEntryRecordV3, RetrievalTraceV3
     from mub.vnext.scoring.scorer_v3 import score_task_v3
@@ -992,7 +993,7 @@ def _score_effective_current_retrieval(
     )
     answer = "wrong" if wrong_answer else "x"
     prediction = AnswerPredictionV3(
-        query_id="q", raw_output=answer, parsed_answer=answer, format_valid=True,
+        query_id="q", raw_output=answer, parsed_answer=answer, format_valid=format_valid,
     )
     run = TaskRunRecordV3(
         task_id=task.task_id,
@@ -1057,6 +1058,19 @@ def test_effective_gold_status_keeps_recall_answer_metric_and_flags_in_parity(
             assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
         else:
             assert path not in score.supported_metric_fields
+
+
+def test_effective_gold_with_format_only_error_is_not_wrong_answer_attribution():
+    score = _score_effective_current_retrieval(
+        "empty",
+        gold_in_context=True,
+        wrong_answer=False,
+        format_valid=False,
+    )
+
+    assert score.answer_scores.gold_retrieved_wrong_answer == 0.0
+    assert "answer_format_only" in score.failure_flags
+    assert "gold_retrieved_wrong_answer" not in score.failure_flags
 
 
 @pytest.mark.parametrize(

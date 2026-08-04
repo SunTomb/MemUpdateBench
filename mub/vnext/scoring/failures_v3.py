@@ -187,7 +187,6 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
             continue
         gold_answer = evidence[query_id].answer
         semantic_wrong = not _same(prediction.parsed_answer, gold_answer)
-        wrong = not prediction.format_valid or semantic_wrong
         resolution = current_resolutions.get(query_id)
         if resolution is None and trace.gold_in_context is None:
             resolution = resolve_query_v3(current_queries[query_id], replay, task.events)
@@ -197,7 +196,7 @@ def derive_failure_flags_v3(*, task, run, replay, layer_values, predictions, tra
         )
         if gold_status is False:
             flags.add("current_not_retrieved")
-        if gold_status is True and wrong:
+        if gold_status is True and semantic_wrong:
             flags.add("gold_retrieved_wrong_answer")
         if trace.distractor_in_context is True:
             flags.add("distractor_retrieved")
