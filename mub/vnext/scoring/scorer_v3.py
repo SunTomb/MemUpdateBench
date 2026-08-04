@@ -308,7 +308,9 @@ def _action_facts(task, run):
 
 
 def _entry_current_match_status(entry, version, replay):
-    if entry.object_key_candidate is None or _identity(entry.object_key_candidate) != _identity(version.object_key):
+    if entry.object_key_candidate is None:
+        return None
+    if _identity(entry.object_key_candidate) != _identity(version.object_key):
         return False
     ledger = replay.ledger_by_identity.get(_identity(version.object_key))
     if ledger is None:
@@ -322,7 +324,7 @@ def _entry_current_match_status(entry, version, replay):
 
 def _entry_obsolete_status(entry, replay):
     if entry.object_key_candidate is None:
-        return False
+        return None
     ledger = replay.ledger_by_identity.get(_identity(entry.object_key_candidate))
     if ledger is None:
         return False

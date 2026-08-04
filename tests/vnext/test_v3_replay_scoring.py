@@ -1872,6 +1872,34 @@ def test_retrieval_metrics_fail_closed_on_split_source_provenance():
         assert score.supported_metric_fields[path].reason is SupportReason.MISSING_ARTIFACT
 
 
+def test_metrics_fail_closed_on_missing_object_identity():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
+
+    task = _two_version_current_task()
+    entry = MemoryEntryRecordV3(
+        entry_id="missing-object", content="new", value_candidate="new",
+    )
+    retrieval_path = "retrieval_scores.current_recall_at_k"
+    store_path = "store_scores.obsolete_version_count"
+
+    retrieval_score = _score_entry_attribution(
+        task, entry, (retrieval_path,), retrieve=True,
+    )
+    store_score = _score_entry_attribution(task, entry, (store_path,))
+
+    assert retrieval_score.retrieval_scores.current_recall_at_k is None
+    assert (
+        retrieval_score.supported_metric_fields[retrieval_path].reason
+        is SupportReason.MISSING_ARTIFACT
+    )
+    assert store_score.store_scores.obsolete_version_count is None
+    assert (
+        store_score.supported_metric_fields[store_path].reason
+        is SupportReason.MISSING_ARTIFACT
+    )
+
+
 def test_store_metrics_fail_closed_on_incomplete_present_value_evidence():
     from mub.vnext.contracts.enums import SupportReason
     from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3
