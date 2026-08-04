@@ -359,15 +359,20 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times
 def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) -> QueryResolutionV3:
     if replay.issues:
         return QueryResolutionV3(query_id=query.query_id, issues=replay.issues)
+    if isinstance(query.selector, EventAnchorSelector) and not events:
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            issues=(
+                _issue(
+                    "selector_missing_event_order",
+                    "event-anchor resolution requires ordered task events",
+                    f"queries.{query.query_id}.selector",
+                ),
+            ),
+        )
     ledgers = replay.ledger_by_identity
     event_positions = {event.event_id: event.sequence_index for event in events}
     event_times = {event.event_id: event.timestamp for event in events if event.timestamp is not None}
-    if not event_positions:
-        for ledger in replay.ledgers:
-            for version in ledger.versions:
-                for event_id in (version.valid_from_event_id, version.valid_until_event_id, *version.source_event_ids):
-                    if event_id is not None and event_id not in event_positions:
-                        event_positions[event_id] = len(event_positions)
     selected_by_object = []
     for key in query.target_object_keys:
         ledger = ledgers.get(_identity(key))

@@ -189,6 +189,12 @@ def test_event_anchor_does_not_look_ahead_at_equal_timestamp():
     assert resolution.answer == "v0"
     assert resolution.selected_event_ids == ("e0",)
 
+    missing_order = resolve_query_v3(task.queries[0], replay)
+    assert missing_order.answer is None
+    assert tuple(issue.code for issue in missing_order.issues) == (
+        "selector_missing_event_order",
+    )
+
 
 def test_event_anchor_accepts_globally_known_noop_inside_version_interval():
     changed = payload()
