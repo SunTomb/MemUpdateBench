@@ -19,6 +19,10 @@ from mub.vnext.generation.catalogs import (
     values_for_attribute,
 )
 from mub.vnext.generation.config import PilotConfig, load_pilot_config
+from mub.vnext.generation.core_build import (
+    CompiledCoreSnapshot,
+    compile_core_snapshot,
+)
 from mub.vnext.generation.core_catalogs import (
     CORE_REFERENCE_QUERY_TEMPLATE_SETS,
     CORE_SURFACE_CATALOG_V1,
@@ -83,6 +87,7 @@ __all__ = [
     "CORE_SURFACE_CATALOG_VERSION",
     "CORE_SURFACE_IDS",
     "CORE_SURFACE_TEMPLATE_SETS",
+    "CompiledCoreSnapshot",
     "CompiledPilotTasks",
     "CoreConfig",
     "CoreEvent",
@@ -109,6 +114,7 @@ __all__ = [
     "assign_splits",
     "build_pilot",
     "build_pilot_artifact_bundle",
+    "compile_core_snapshot",
     "compile_pilot_tasks",
     "core_id",
     "event_id",
