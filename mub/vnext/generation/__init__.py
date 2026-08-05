@@ -27,6 +27,7 @@ from mub.vnext.generation.core_catalogs import (
     CORE_SURFACE_TEMPLATE_SETS,
 )
 from mub.vnext.generation.core_config import CoreConfig, load_core_config
+from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.family_a import (
     generate_core_family_a_cores,
@@ -125,6 +126,7 @@ __all__ = [
     "publish_pilot_artifact_bundle",
     "query_id",
     "render_core",
+    "render_core_v3",
     "render_core_with_catalog",
     "select_conflicting_values",
     "source_id",
