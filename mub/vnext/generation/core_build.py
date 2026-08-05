@@ -87,6 +87,130 @@ def _validate_limit(config: CoreConfig, cores_per_family: int | None) -> int | N
     return cores_per_family
 
 
+def _validate_core_diagnostic_schedule(
+    cores: tuple[SemanticCore, ...],
+    config: CoreConfig,
+) -> None:
+    by_family = {
+        family: tuple(core for core in cores if core.task_family is family)
+        for family in _CORE_FAMILIES
+    }
+
+    family_a = config.families.repeated_same_slot_update
+    a_cores = by_family[TaskFamily.REPEATED_SAME_SLOT]
+    a_depths = Counter(core.profile["update_depth"] for core in a_cores)
+    if dict(a_depths) != {
+        depth: family_a.schedule.cores_per_update_depth
+        for depth in family_a.update_depths
+    }:
+        raise ValueError("Core Family A schedule depth marginal is invalid")
+    a_cells = Counter(
+        (core.profile["update_depth"], core.stratification.get("condition"))
+        for core in a_cores
+    )
+    expected_a_cells = {
+        (depth, condition): family_a.schedule.cores_per_depth_condition_cell
+        for depth in family_a.update_depths
+        for condition in family_a.conditions
+    }
+    if dict(a_cells) != expected_a_cells:
+        raise ValueError("Core Family A schedule condition cells are invalid")
+
+    family_b = config.families.interleaved_multi_slot_update
+    b_cores = by_family[TaskFamily.INTERLEAVED_MULTI_SLOT]
+    for core in b_cores:
+        profile_depth = core.profile["update_depth"]
+        strata_depth = core.stratification.get("update_depth")
+        if profile_depth != strata_depth:
+            raise ValueError("Core Family B schedule depth metadata is inconsistent")
+    b_depths = Counter(core.stratification.get("update_depth") for core in b_cores)
+    if dict(b_depths) != {
+        depth: family_b.schedule.cores_per_update_depth
+        for depth in family_b.update_depths
+    }:
+        raise ValueError("Core Family B schedule depth marginal is invalid")
+    b_active = Counter(core.stratification.get("active_object_count") for core in b_cores)
+    if dict(b_active) != {
+        count: family_b.schedule.cores_per_active_object_count
+        for count in family_b.active_object_counts
+    }:
+        raise ValueError("Core Family B schedule active-object marginal is invalid")
+    b_patterns = Counter(core.stratification.get("interleaving_pattern") for core in b_cores)
+    if dict(b_patterns) != {
+        pattern: family_b.schedule.cores_per_pattern_within_active_object_count
+        * len(family_b.active_object_counts)
+        for pattern in family_b.interleaving_patterns
+    }:
+        raise ValueError("Core Family B schedule pattern marginal is invalid")
+    b_cells = Counter(
+        (
+            core.stratification.get("active_object_count"),
+            core.stratification.get("update_depth"),
+            core.stratification.get("interleaving_pattern"),
+        )
+        for core in b_cores
+    )
+    expected_b_cells = {
+        (active_count, depth, pattern): b_cells[(active_count, depth, pattern)]
+        for active_count in family_b.active_object_counts
+        for depth in family_b.update_depths
+        for pattern in family_b.interleaving_patterns
+    }
+    for active_count in family_b.active_object_counts:
+        stratum_cells = [
+            b_cells[(active_count, depth, pattern)]
+            for depth in family_b.update_depths
+            for pattern in family_b.interleaving_patterns
+        ]
+        if set(stratum_cells) != {
+            family_b.schedule.depth_pattern_cell_min,
+            family_b.schedule.depth_pattern_cell_max,
+        } or max(stratum_cells) - min(stratum_cells) > family_b.schedule.max_depth_pattern_cell_imbalance:
+            raise ValueError("Core Family B schedule depth-pattern cells are invalid")
+    if dict(expected_b_cells) != dict(b_cells):
+        raise ValueError("Core Family B schedule contains unknown cells")
+
+    family_c = config.families.entity_attribute_grounding
+    c_cores = by_family[TaskFamily.ENTITY_ATTRIBUTE_GROUNDING]
+    c_cells = Counter(
+        (
+            core.stratification.get("entity_condition"),
+            core.stratification.get("attribute_condition"),
+        )
+        for core in c_cores
+    )
+    expected_c_cells = {
+        (entity_condition, attribute_condition): family_c.schedule.cores_per_entity_attribute_cell
+        for entity_condition in family_c.entity_conditions
+        for attribute_condition in family_c.attribute_conditions
+    }
+    if dict(c_cells) != expected_c_cells:
+        raise ValueError("Core Family C schedule condition cells are invalid")
+    c_outcomes = Counter(core.stratification.get("resolution_status") for core in c_cores)
+    if dict(c_outcomes) != {
+        status: family_c.schedule.cores_per_resolution_outcome
+        for status in ("unique", "ambiguous", "no_match")
+    }:
+        raise ValueError("Core Family C schedule resolution outcomes are invalid")
+
+    family_d = config.families.noop_write_discipline
+    d_cores = by_family[TaskFamily.NOOP_WRITE_DISCIPLINE]
+    d_cells = Counter(
+        (
+            core.stratification.get("trap_type"),
+            core.stratification.get("configured_noop_density"),
+        )
+        for core in d_cores
+    )
+    expected_d_cells = {
+        (trap, density): family_d.schedule.cores_per_trap_density_cell
+        for trap in family_d.trap_types
+        for density in family_d.noop_densities
+    }
+    if dict(d_cells) != expected_d_cells:
+        raise ValueError("Core Family D schedule trap-density cells are invalid")
+
+
 def _generated_cores(config: CoreConfig) -> tuple[SemanticCore, ...]:
     families = (
         generate_core_family_a_cores(config),
@@ -104,6 +228,7 @@ def _generated_cores(config: CoreConfig) -> tuple[SemanticCore, ...]:
     core_ids = [core.core_id for core in cores]
     if len(core_ids) != len(set(core_ids)):
         raise ValueError("Core generators returned duplicate semantic core IDs")
+    _validate_core_diagnostic_schedule(cores, config)
     return cores
 
 
@@ -143,7 +268,7 @@ def _select_and_assign(
     return tuple(assignments)
 
 
-def _validate_snapshot(snapshot: CompiledCoreSnapshot) -> None:
+def _validate_snapshot(snapshot: CompiledCoreSnapshot, config: CoreConfig) -> None:
     assignment_by_core = {
         assignment.semantic_core_id: assignment for assignment in snapshot.assignments
     }
@@ -225,6 +350,33 @@ def _validate_snapshot(snapshot: CompiledCoreSnapshot) -> None:
         raise ValueError("Core snapshot task counts are inconsistent")
     if len(snapshot.tasks) != len(snapshot.assignments) * _VARIANTS_PER_CORE:
         raise ValueError("Core snapshot total task count is inconsistent")
+    observed_family_split_counts = Counter(
+        (assignment.task_family.value, assignment.split.value)
+        for assignment in snapshot.assignments
+    )
+    for family in _CORE_FAMILIES:
+        family_name = family.value
+        selected_count = sum(
+            observed_family_split_counts[(family_name, split.value)]
+            for split in _SPLIT_ORDER
+        )
+        if selected_count == config.family_core_counts[family_name]:
+            family_config = getattr(config.families, family_name)
+            expected = family_config.schedule.split_core_counts.model_dump()
+        else:
+            expected = dict(
+                zip(
+                    (split.value for split in _SPLIT_ORDER),
+                    _split_quotas(selected_count, config.splits),
+                    strict=True,
+                )
+            )
+        observed = {
+            split.value: observed_family_split_counts[(family_name, split.value)]
+            for split in _SPLIT_ORDER
+        }
+        if observed != expected:
+            raise ValueError("Core snapshot per-family split schedule is invalid")
 
 
 def compile_core_snapshot(
@@ -275,7 +427,7 @@ def compile_core_snapshot(
         core_counts={split.value: core_counts[split.value] for split in _SPLIT_ORDER},
         task_counts={split.value: task_counts[split.value] for split in _SPLIT_ORDER},
     )
-    _validate_snapshot(snapshot)
+    _validate_snapshot(snapshot, config)
     return snapshot
 
 

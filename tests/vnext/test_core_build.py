@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 import mub.vnext.generation.core_build as core_build
-from mub.vnext.contracts import Split
+from mub.vnext.contracts import Split, TaskFamily
 from mub.vnext.generation import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.io import canonical_json_bytes, semantic_task_hash_v3
@@ -108,28 +108,13 @@ def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
         first.tasks = ()
 
 
-def test_compile_core_snapshot_honors_alternate_integral_split_ratios() -> None:
+def test_compile_core_snapshot_rejects_noncanonical_split_ratios() -> None:
     config = load_core_config(CORE_CONFIG_PATH)
     payload = config.model_dump(mode="json")
     payload["splits"] = {"train": 0.5, "dev": 0.25, "test": 0.25}
-    alternate = type(config).model_validate(payload)
 
-    snapshot = compile_core_snapshot(alternate, cores_per_family=4)
-
-    assert dict(snapshot.core_counts) == {"train": 8, "dev": 4, "test": 4}
-    assert Counter(
-        (assignment.task_family.value, assignment.split.value)
-        for assignment in snapshot.assignments
-    ) == {
-        (family, split): count
-        for family in (
-            "repeated_same_slot_update",
-            "interleaved_multi_slot_update",
-            "entity_attribute_grounding",
-            "noop_write_discipline",
-        )
-        for split, count in (("train", 2), ("dev", 1), ("test", 1))
-    }
+    with pytest.raises(ValidationError, match="Core split ratios"):
+        type(config).model_validate(payload)
 
 
 def test_compile_core_snapshot_rejects_nonintegral_selected_split_quotas() -> None:
@@ -137,3 +122,244 @@ def test_compile_core_snapshot_rejects_nonintegral_selected_split_quotas() -> No
 
     with pytest.raises(ValueError, match="whole number"):
         compile_core_snapshot(config, cores_per_family=4)
+
+
+def _replace_stratification(core, **changes):
+    stratification = dict(core.stratification)
+    stratification.update(changes)
+    return core.model_copy(update={"stratification": stratification})
+
+
+def _replace_profile_and_stratification(core, **changes):
+    profile = dict(core.profile)
+    stratification = dict(core.stratification)
+    profile.update(changes)
+    stratification.update(changes)
+    return core.model_copy(
+        update={"profile": profile, "stratification": stratification}
+    )
+
+
+def test_core_snapshot_rejects_aggregate_preserving_family_a_cell_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_a_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        victim_index = next(
+            index
+            for index, core in enumerate(cores)
+            if core.profile["update_depth"] == 1
+            and core.stratification["condition"] == "stale_burden"
+        )
+        cores[victim_index] = _replace_stratification(
+            cores[victim_index],
+            condition="duplicate_current",
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_a_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family A schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_aggregate_preserving_family_b_depth_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_b_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        victim_index = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["update_depth"] == 1
+        )
+        cores[victim_index] = _replace_profile_and_stratification(
+            cores[victim_index],
+            update_depth=4,
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_b_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family B schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_family_b_cell_imbalance_with_balanced_depth_marginal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_b_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        cells = Counter(
+            (
+                core.stratification["active_object_count"],
+                core.stratification["update_depth"],
+                core.stratification["interleaving_pattern"],
+            )
+            for core in cores
+        )
+        active_count = 2
+        pattern = "round_robin"
+        source_depth = next(
+            depth
+            for depth in (1, 4, 16)
+            if cells[(active_count, depth, pattern)] == min(
+                cells[(active_count, candidate, pattern)]
+                for candidate in (1, 4, 16)
+            )
+        )
+        target_depth = next(
+            depth
+            for depth in (1, 4, 16)
+            if cells[(active_count, depth, pattern)] == max(
+                cells[(active_count, candidate, pattern)]
+                for candidate in (1, 4, 16)
+            )
+            and depth != source_depth
+        )
+        first = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["active_object_count"] == active_count
+            and core.stratification["update_depth"] == source_depth
+            and core.stratification["interleaving_pattern"] == pattern
+        )
+        second = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["active_object_count"] == 4
+            and core.stratification["update_depth"] == target_depth
+            and core.stratification["interleaving_pattern"] == pattern
+        )
+        cores[first] = _replace_profile_and_stratification(
+            cores[first], update_depth=target_depth
+        )
+        cores[second] = _replace_profile_and_stratification(
+            cores[second], update_depth=source_depth
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_b_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family B schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_aggregate_preserving_family_c_cell_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_c_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        victim_index = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["entity_condition"] == "distinct"
+            and core.stratification["attribute_condition"] == "exact"
+        )
+        cores[victim_index] = _replace_stratification(
+            cores[victim_index],
+            entity_condition="alias",
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_c_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family C schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_family_c_resolution_outcome_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_c_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        victim_index = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["resolution_status"] == "unique"
+        )
+        cores[victim_index] = _replace_stratification(
+            cores[victim_index],
+            resolution_status="ambiguous",
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_c_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family C schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_aggregate_preserving_family_d_cell_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_d_cores
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        victim_index = next(
+            index
+            for index, core in enumerate(cores)
+            if core.stratification["configured_noop_density"] == 0.25
+            and core.stratification["trap_type"] == "transient"
+        )
+        cores[victim_index] = _replace_stratification(
+            cores[victim_index],
+            configured_noop_density=0.5,
+        )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_d_cores", corrupted)
+
+    with pytest.raises(ValueError, match="Core Family D schedule"):
+        core_build._generated_cores(config)
+
+
+def test_core_snapshot_rejects_aggregate_preserving_per_family_split_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build._select_and_assign
+
+    def corrupted(*args, **kwargs):
+        assignments = list(original(*args, **kwargs))
+        family_a_train = next(
+            index
+            for index, assignment in enumerate(assignments)
+            if assignment.task_family is TaskFamily.REPEATED_SAME_SLOT
+            and assignment.split is Split.TRAIN
+        )
+        family_c_dev = next(
+            index
+            for index, assignment in enumerate(assignments)
+            if assignment.task_family is TaskFamily.ENTITY_ATTRIBUTE_GROUNDING
+            and assignment.split is Split.DEV
+        )
+        assignments[family_a_train] = assignments[family_a_train].validated_replace(
+            split=Split.DEV
+        )
+        assignments[family_c_dev] = assignments[family_c_dev].validated_replace(
+            split=Split.TRAIN
+        )
+        return tuple(assignments)
+
+    monkeypatch.setattr(core_build, "_select_and_assign", corrupted)
+
+    with pytest.raises(ValueError, match="per-family split schedule"):
+        compile_core_snapshot(config, cores_per_family=10)

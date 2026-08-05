@@ -19,24 +19,43 @@ families:
     semantic_core_count: 480
     update_depths: [1, 2, 4, 8, 16, 32]
     conditions: [stale_burden, duplicate_current, other_attribute_distractor, same_name_other_entity_distractor]
+    schedule:
+      cores_per_update_depth: 80
+      cores_per_depth_condition_cell: 20
+      split_core_counts: {train: 336, dev: 48, test: 96}
   interleaved_multi_slot_update:
     enabled: true
     semantic_core_count: 480
     update_depths: [1, 4, 16]
     active_object_counts: [2, 4, 8, 12]
     interleaving_patterns: [round_robin, burst, adversarial_adjacent]
+    schedule:
+      cores_per_active_object_count: 120
+      cores_per_update_depth: 160
+      cores_per_pattern_within_active_object_count: 40
+      depth_pattern_cell_min: 13
+      depth_pattern_cell_max: 14
+      max_depth_pattern_cell_imbalance: 1
+      split_core_counts: {train: 336, dev: 48, test: 96}
   entity_attribute_grounding:
     enabled: true
     semantic_core_count: 420
     difficulties: [easy, medium, hard]
     entity_conditions: [distinct, same_name, alias, namespace_collision]
     attribute_conditions: [exact, paraphrase, near_name]
+    schedule:
+      cores_per_entity_attribute_cell: 35
+      cores_per_resolution_outcome: 140
+      split_core_counts: {train: 294, dev: 42, test: 84}
   noop_write_discipline:
     enabled: true
     semantic_core_count: 420
     difficulties: [easy, medium, hard]
     noop_densities: [0.25, 0.50, 0.75]
     trap_types: [transient, hypothetical, negated, uncertain, semantic_near_miss, duplicate_current, unsupported_inference]
+    schedule:
+      cores_per_trap_density_cell: 20
+      split_core_counts: {train: 294, dev: 42, test: 84}
 mechanism_slice:
   stale_counts: [1, 16]
   conditions:

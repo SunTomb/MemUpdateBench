@@ -12,27 +12,23 @@ from mub.vnext.generation.catalogs import (
 )
 from mub.vnext.generation.config import NoopWriteDisciplineConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
-from mub.vnext.generation.core_config import CoreConfig
+from mub.vnext.generation.core_config import (
+    CORE_FAMILY_D_DENSITIES,
+    CORE_FAMILY_D_TRAPS,
+    CoreConfig,
+)
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
 
 _FAMILY_NAME = TaskFamily.NOOP_WRITE_DISCIPLINE.value
-_DENSITIES = (0.25, 0.50, 0.75)
+_DENSITIES = CORE_FAMILY_D_DENSITIES
 _TRAPS = (
     "semantic_near_miss",
     "duplicate_current",
     "other_entity_correction",
     "other_attribute_correction",
 )
-_CORE_TRAPS = (
-    "transient",
-    "hypothetical",
-    "negated",
-    "uncertain",
-    "semantic_near_miss",
-    "duplicate_current",
-    "unsupported_inference",
-)
+_CORE_TRAPS = CORE_FAMILY_D_TRAPS
 _DENSITY_DIFFICULTY = {
     0.25: Difficulty.EASY,
     0.50: Difficulty.MEDIUM,
@@ -726,9 +722,12 @@ def generate_core_family_d_cores(config: CoreConfig) -> list[SemanticCore]:
     """Generate the deterministic 420-core Core NOOP/write-discipline grid."""
     family = _validate_core_config(config)
     cells = tuple(product(_CORE_TRAPS, family.noop_densities))
+    expected_per_cell = family.schedule.cores_per_trap_density_cell
     examples_per_cell, remainder = divmod(family.semantic_core_count, len(cells))
-    if remainder or examples_per_cell != 20:
-        raise ValueError("Core Family D requires exactly 20 cores per trap/density cell")
+    if remainder or examples_per_cell != expected_per_cell:
+        raise ValueError(
+            "Core Family D requires the configured cores_per_trap_density_cell"
+        )
 
     axes = _canonical_axis_order(config)
     cores = []

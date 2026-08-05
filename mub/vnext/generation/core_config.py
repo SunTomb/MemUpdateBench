@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import Field, model_validator
 
-from mub.vnext.contracts.common import ContractModel, StrictBool
+from mub.vnext.contracts.common import ContractModel, StrictBool, StrictNonnegativeInt
 from mub.vnext.generation.config import (
     EntityAttributeGroundingConfig,
     InterleavingPattern,
@@ -53,6 +53,14 @@ CORE_FAMILY_B_INTERLEAVING_PATTERNS = (
     "burst",
     "adversarial_adjacent",
 )
+CORE_FAMILY_C_ENTITY_CONDITIONS = (
+    "distinct",
+    "same_name",
+    "alias",
+    "namespace_collision",
+)
+CORE_FAMILY_C_ATTRIBUTE_CONDITIONS = ("exact", "paraphrase", "near_name")
+CORE_FAMILY_D_DENSITIES = (0.25, 0.50, 0.75)
 
 CoreFamilyDTrap = Literal[
     "transient",
@@ -73,6 +81,39 @@ CORE_FAMILY_D_TRAPS = (
     "unsupported_inference",
 )
 
+class CoreSplitCoreCounts(ContractModel):
+    train: StrictPositiveInt
+    dev: StrictPositiveInt
+    test: StrictPositiveInt
+
+
+class CoreFamilyASchedule(ContractModel):
+    cores_per_update_depth: StrictPositiveInt
+    cores_per_depth_condition_cell: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
+class CoreFamilyBSchedule(ContractModel):
+    cores_per_active_object_count: StrictPositiveInt
+    cores_per_update_depth: StrictPositiveInt
+    cores_per_pattern_within_active_object_count: StrictPositiveInt
+    depth_pattern_cell_min: StrictPositiveInt
+    depth_pattern_cell_max: StrictPositiveInt
+    max_depth_pattern_cell_imbalance: StrictNonnegativeInt
+    split_core_counts: CoreSplitCoreCounts
+
+
+class CoreFamilyCSchedule(ContractModel):
+    cores_per_entity_attribute_cell: StrictPositiveInt
+    cores_per_resolution_outcome: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
+class CoreFamilyDSchedule(ContractModel):
+    cores_per_trap_density_cell: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
 CORE_FAMILY_COUNTS = MappingProxyType(
     {
         "repeated_same_slot_update": 480,
@@ -92,6 +133,7 @@ class CoreRepeatedSameSlotUpdateConfig(ContractModel):
     semantic_core_count: StrictPositiveInt
     update_depths: NonEmptyPositiveInts
     conditions: Annotated[list[CoreFamilyACondition], Field(min_length=1)]
+    schedule: CoreFamilyASchedule
 
 
 class CoreInterleavedMultiSlotUpdateConfig(ContractModel):
@@ -100,15 +142,19 @@ class CoreInterleavedMultiSlotUpdateConfig(ContractModel):
     update_depths: NonEmptyPositiveInts
     active_object_counts: NonEmptyPositiveInts
     interleaving_patterns: Annotated[list[InterleavingPattern], Field(min_length=1)]
+    schedule: CoreFamilyBSchedule
 
 
 class CoreEntityAttributeGroundingConfig(EntityAttributeGroundingConfig):
     semantic_core_count: StrictPositiveInt
+    schedule: CoreFamilyCSchedule
 
 
 class CoreNoopWriteDisciplineConfig(NoopWriteDisciplineConfig):
     semantic_core_count: StrictPositiveInt
     trap_types: Annotated[list[CoreFamilyDTrap], Field(min_length=1)]
+    schedule: CoreFamilyDSchedule
+
 
 
 class CoreFamiliesConfig(ContractModel):
@@ -162,6 +208,12 @@ class CoreConfig(ContractModel):
             )
         if tuple(family_a.conditions) != CORE_FAMILY_A_CONDITIONS:
             raise ValueError("Core Family A conditions must match the approved order")
+        if family_a.schedule.model_dump(mode="python") != {
+            "cores_per_update_depth": 80,
+            "cores_per_depth_condition_cell": 20,
+            "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+        }:
+            raise ValueError("Core Family A approved schedule is invalid")
         family_b = self.families.interleaved_multi_slot_update
         if not family_b.enabled:
             raise ValueError("Core Family B must be enabled")
@@ -181,7 +233,37 @@ class CoreConfig(ContractModel):
             raise ValueError(
                 "Core Family B interleaving_patterns must match the approved order"
             )
+        if family_b.schedule.model_dump(mode="python") != {
+            "cores_per_active_object_count": 120,
+            "cores_per_update_depth": 160,
+            "cores_per_pattern_within_active_object_count": 40,
+            "depth_pattern_cell_min": 13,
+            "depth_pattern_cell_max": 14,
+            "max_depth_pattern_cell_imbalance": 1,
+            "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+        }:
+            raise ValueError("Core Family B approved schedule is invalid")
+        family_c = self.families.entity_attribute_grounding
+        if set(family_c.entity_conditions) != set(CORE_FAMILY_C_ENTITY_CONDITIONS):
+            raise ValueError("Core Family C entity_conditions universe is invalid")
+        if set(family_c.attribute_conditions) != set(CORE_FAMILY_C_ATTRIBUTE_CONDITIONS):
+            raise ValueError("Core Family C attribute_conditions universe is invalid")
+        if family_c.schedule.model_dump(mode="python") != {
+            "cores_per_entity_attribute_cell": 35,
+            "cores_per_resolution_outcome": 140,
+            "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+        }:
+            raise ValueError("Core Family C approved schedule is invalid")
         family_d = self.families.noop_write_discipline
+        if tuple(family_d.noop_densities) != CORE_FAMILY_D_DENSITIES:
+            raise ValueError(
+                "Core Family D noop_densities must be exactly 0.25, 0.50, and 0.75"
+            )
+        if family_d.schedule.model_dump(mode="python") != {
+            "cores_per_trap_density_cell": 20,
+            "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+        }:
+            raise ValueError("Core Family D approved schedule is invalid")
         if tuple(family_d.trap_types) != CORE_FAMILY_D_TRAPS:
             raise ValueError(
                 "Core Family D trap_types must match the seven approved traps in order"
@@ -192,6 +274,8 @@ class CoreConfig(ContractModel):
             "dev": self.splits.dev,
             "test": self.splits.test,
         }
+        if ratios != {"train": 0.70, "dev": 0.10, "test": 0.20}:
+            raise ValueError("Core split ratios must be exactly 70/10/20")
         if sum(Decimal(str(ratio)) for ratio in ratios.values()) != Decimal("1"):
             raise ValueError("split ratios must sum to 1")
         for family_name, family_count in self.family_core_counts.items():
@@ -259,10 +343,18 @@ __all__ = [
     "CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS",
     "CORE_FAMILY_B_DEPTHS",
     "CORE_FAMILY_B_INTERLEAVING_PATTERNS",
+    "CORE_FAMILY_C_ATTRIBUTE_CONDITIONS",
+    "CORE_FAMILY_C_ENTITY_CONDITIONS",
+    "CORE_FAMILY_D_DENSITIES",
     "CORE_FAMILY_D_TRAPS",
     "CORE_FAMILY_COUNTS",
     "CoreConfig",
     "CoreFamiliesConfig",
+    "CoreFamilyASchedule",
+    "CoreFamilyBSchedule",
+    "CoreFamilyCSchedule",
+    "CoreFamilyDSchedule",
+    "CoreSplitCoreCounts",
     "CoreFamilyACondition",
     "CoreFamilyDTrap",
     "CoreSurfaceDeclaration",

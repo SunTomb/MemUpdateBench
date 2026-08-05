@@ -607,9 +607,10 @@ def _build_core_family_a_core(
             "condition": condition,
             "axis_product_index": axis_index,
             "axis_product_size": axis_product_size,
-            "depth_allocation_count": 80,
-            "condition_allocation_count": 120,
-            "depth_condition_cell_count": 20,
+            "depth_allocation_count": config.families.repeated_same_slot_update.schedule.cores_per_update_depth,
+            "condition_allocation_count": config.families.repeated_same_slot_update.semantic_core_count
+            // len(config.families.repeated_same_slot_update.conditions),
+            "depth_condition_cell_count": config.families.repeated_same_slot_update.schedule.cores_per_depth_condition_cell,
         },
     )
 
@@ -624,11 +625,17 @@ def generate_core_family_a_cores(config: CoreConfig) -> list[SemanticCore]:
     if tuple(family.conditions) != CORE_FAMILY_A_CONDITIONS:
         raise ValueError("Core Family A conditions do not match the approved axes")
     axes = _canonical_axis_order(config)
+    depths = tuple(family.update_depths)
+    conditions = tuple(family.conditions)
+    cores_per_cell = family.schedule.cores_per_depth_condition_cell
+    cores_per_depth = family.schedule.cores_per_update_depth
+    if family.semantic_core_count != cores_per_depth * len(depths):
+        raise ValueError("Core Family A schedule does not match semantic_core_count")
     cores = []
-    cells_per_depth = len(CORE_FAMILY_A_CONDITIONS) * 20
+    cells_per_depth = len(conditions) * cores_per_cell
     for core_index in range(family.semantic_core_count):
-        depth = CORE_FAMILY_A_DEPTHS[core_index // cells_per_depth]
-        condition = CORE_FAMILY_A_CONDITIONS[(core_index % cells_per_depth) // 20]
+        depth = depths[core_index // cells_per_depth]
+        condition = conditions[(core_index % cells_per_depth) // cores_per_cell]
         axis_index = core_index % len(axes)
         cores.append(
             _build_core_family_a_core(

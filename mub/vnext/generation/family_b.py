@@ -664,7 +664,15 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
         raise ValueError("Core Family B patterns do not match the approved axes")
 
     axes = _canonical_axis_order(config)
-    groups_per_stratum = 120 // len(patterns)
+    schedule = family.schedule
+    depths = tuple(family.update_depths)
+    active_counts = tuple(family.active_object_counts)
+    patterns = tuple(family.interleaving_patterns)
+    groups_per_stratum = schedule.cores_per_active_object_count // len(patterns)
+    if schedule.cores_per_active_object_count != groups_per_stratum * len(patterns):
+        raise ValueError("Core Family B active-object schedule is not pattern-aligned")
+    if family.semantic_core_count != schedule.cores_per_active_object_count * len(active_counts):
+        raise ValueError("Core Family B schedule does not match semantic_core_count")
     density_by_count = {2: 0.0, 4: 0.25, 8: 0.5, 12: 0.5}
     cell_counts = Counter(
         (
@@ -682,7 +690,7 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
     difficulty_counts = Counter(
         _core_family_b_difficulty(active_count)
         for active_count in active_counts
-        for _ in range(120)
+        for _ in range(schedule.cores_per_active_object_count)
     )
     cores: list[SemanticCore] = []
     for active_stratum_index, active_object_count in enumerate(active_counts):
@@ -710,7 +718,7 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
                     distractor_count,
                 )
                 core_index = (
-                    active_stratum_index * 120
+                    active_stratum_index * schedule.cores_per_active_object_count
                     + group_in_stratum * len(patterns)
                     + pattern_index
                 )
@@ -729,7 +737,8 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
                     distractor_count,
                     trajectories,
                     cell_counts[(active_object_count, depth, pattern)],
-                    120 / (len(depths) * len(patterns)),
+                    schedule.cores_per_active_object_count
+                    / (len(depths) * len(patterns)),
                     difficulty_counts[difficulty],
                     family.semantic_core_count / len(_DIFFICULTIES),
                     semantic_profile="core",
@@ -737,7 +746,7 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
                 stratification = dict(core.stratification)
                 stratification.update(
                     {
-                        "active_object_stratum_count": 120,
+                        "active_object_stratum_count": schedule.cores_per_active_object_count,
                         "active_object_depth_pattern_cell_count": cell_counts[
                             (active_object_count, depth, pattern)
                         ],

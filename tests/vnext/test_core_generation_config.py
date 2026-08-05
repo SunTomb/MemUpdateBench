@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from mub.vnext.contracts.enums import Split
@@ -105,6 +106,88 @@ def test_core_config_rejects_noncanonical_ad_counts(family: str, count: int) -> 
     payload["families"][family]["semantic_core_count"] = count
 
     with pytest.raises(ValidationError, match="Core family counts"):
+        CoreConfig.model_validate(payload)
+
+
+def test_core_config_authenticates_approved_family_schedules() -> None:
+    _, load_core_config, _, _ = _core_api()
+
+    config = load_core_config(CORE_CONFIG_PATH)
+
+    assert config.families.repeated_same_slot_update.schedule.model_dump() == {
+        "cores_per_update_depth": 80,
+        "cores_per_depth_condition_cell": 20,
+        "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+    }
+    assert config.families.interleaved_multi_slot_update.schedule.model_dump() == {
+        "cores_per_active_object_count": 120,
+        "cores_per_update_depth": 160,
+        "cores_per_pattern_within_active_object_count": 40,
+        "depth_pattern_cell_min": 13,
+        "depth_pattern_cell_max": 14,
+        "max_depth_pattern_cell_imbalance": 1,
+        "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+    }
+    assert config.families.entity_attribute_grounding.schedule.model_dump() == {
+        "cores_per_entity_attribute_cell": 35,
+        "cores_per_resolution_outcome": 140,
+        "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+    }
+    assert config.families.noop_write_discipline.schedule.model_dump() == {
+        "cores_per_trap_density_cell": 20,
+        "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+    }
+
+
+def test_core_config_rejects_missing_schedule_metadata() -> None:
+    CoreConfig, _, _, _ = _core_api()
+    with CORE_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle)
+    payload["families"]["repeated_same_slot_update"].pop("schedule", None)
+
+    with pytest.raises(ValidationError, match="Field required"):
+        CoreConfig.model_validate(payload)
+
+
+def test_core_config_rejects_invalid_schedule_metadata() -> None:
+    CoreConfig, _, _, _ = _core_api()
+    with CORE_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle)
+    payload["families"]["repeated_same_slot_update"]["schedule"] = {
+        "cores_per_update_depth": 79,
+        "cores_per_depth_condition_cell": 20,
+        "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+    }
+
+    with pytest.raises(ValidationError, match="approved schedule"):
+        CoreConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("axis", "values"),
+    [
+        ("entity_conditions", ["distinct", "same_name", "alias"]),
+        ("attribute_conditions", ["exact", "paraphrase"]),
+    ],
+)
+def test_core_config_rejects_incomplete_family_c_axis_universe(
+    axis: str,
+    values: list[str],
+) -> None:
+    CoreConfig, load_core_config, _, _ = _core_api()
+    payload = load_core_config(CORE_CONFIG_PATH).model_dump(mode="json")
+    payload["families"]["entity_attribute_grounding"][axis] = values
+
+    with pytest.raises(ValidationError, match=f"Core Family C {axis}"):
+        CoreConfig.model_validate(payload)
+
+
+def test_core_config_rejects_wrong_family_d_density_bands() -> None:
+    CoreConfig, load_core_config, _, _ = _core_api()
+    payload = load_core_config(CORE_CONFIG_PATH).model_dump(mode="json")
+    payload["families"]["noop_write_discipline"]["noop_densities"] = [0.25, 0.5]
+
+    with pytest.raises(ValidationError, match="Core Family D noop_densities"):
         CoreConfig.model_validate(payload)
 
 

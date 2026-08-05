@@ -26,13 +26,17 @@ from mub.vnext.generation.catalogs import (
 )
 from mub.vnext.generation.config import EntityAttributeGroundingConfig, PilotConfig
 from mub.vnext.generation.core import CoreEvent, SemanticCore
-from mub.vnext.generation.core_config import CoreConfig
+from mub.vnext.generation.core_config import (
+    CORE_FAMILY_C_ATTRIBUTE_CONDITIONS,
+    CORE_FAMILY_C_ENTITY_CONDITIONS,
+    CoreConfig,
+)
 from mub.vnext.generation.identity import core_id, stable_id, trajectory_id
 
 
 _FAMILY_NAME = TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value
-_ENTITY_CONDITIONS = ("distinct", "same_name", "alias", "namespace_collision")
-_ATTRIBUTE_CONDITIONS = ("exact", "paraphrase", "near_name")
+_ENTITY_CONDITIONS = CORE_FAMILY_C_ENTITY_CONDITIONS
+_ATTRIBUTE_CONDITIONS = CORE_FAMILY_C_ATTRIBUTE_CONDITIONS
 
 _ATTRIBUTE_PARAPHRASE_MAPPINGS = (
     ("home_town", "city"),
@@ -613,9 +617,12 @@ def generate_core_family_c_cores(config: CoreConfig) -> list[SemanticCore]:
     """Generate the deterministic 420-core Core entity/attribute grid."""
     family = _validate_core_config(config)
     cells = tuple(product(family.entity_conditions, family.attribute_conditions))
+    expected_per_cell = family.schedule.cores_per_entity_attribute_cell
     examples_per_cell, remainder = divmod(family.semantic_core_count, len(cells))
-    if remainder or examples_per_cell != 35:
-        raise ValueError("Core Family C requires exactly 35 cores per condition cell")
+    if remainder or examples_per_cell != expected_per_cell:
+        raise ValueError(
+            "Core Family C requires the configured cores_per_entity_attribute_cell"
+        )
 
     cores = []
     for cell_index, (entity_condition, attribute_condition) in enumerate(cells):

@@ -55,7 +55,12 @@ from mub.vnext.generation.config import (
 from mub.vnext.generation.core_config import (
     CoreConfig,
     CoreEntityAttributeGroundingConfig,
+    CoreFamilyASchedule,
+    CoreFamilyBSchedule,
+    CoreFamilyCSchedule,
+    CoreFamilyDSchedule,
     CoreFamiliesConfig,
+    CoreSplitCoreCounts,
     CoreInterleavedMultiSlotUpdateConfig,
     CoreNoopWriteDisciplineConfig,
     CoreRepeatedSameSlotUpdateConfig,
@@ -185,32 +190,52 @@ class _FrozenPilotConfig(_FrozenConfigMixin, PilotConfig):
 _FrozenPilotConfig.model_rebuild()
 
 
+class _FrozenCoreSplitCoreCounts(_FrozenConfigMixin, CoreSplitCoreCounts):
+    pass
+
+
+class _FrozenCoreFamilyASchedule(_FrozenConfigMixin, CoreFamilyASchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
+class _FrozenCoreFamilyBSchedule(_FrozenConfigMixin, CoreFamilyBSchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
+class _FrozenCoreFamilyCSchedule(_FrozenConfigMixin, CoreFamilyCSchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
+class _FrozenCoreFamilyDSchedule(_FrozenConfigMixin, CoreFamilyDSchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
 class _FrozenCoreRepeatedSameSlotUpdateConfig(
     _FrozenConfigMixin,
     CoreRepeatedSameSlotUpdateConfig,
 ):
-    pass
+    schedule: _FrozenCoreFamilyASchedule
 
 
 class _FrozenCoreInterleavedMultiSlotUpdateConfig(
     _FrozenConfigMixin,
     CoreInterleavedMultiSlotUpdateConfig,
 ):
-    pass
+    schedule: _FrozenCoreFamilyBSchedule
 
 
 class _FrozenCoreEntityAttributeGroundingConfig(
     _FrozenConfigMixin,
     CoreEntityAttributeGroundingConfig,
 ):
-    pass
+    schedule: _FrozenCoreFamilyCSchedule
 
 
 class _FrozenCoreNoopWriteDisciplineConfig(
     _FrozenConfigMixin,
     CoreNoopWriteDisciplineConfig,
 ):
-    pass
+    schedule: _FrozenCoreFamilyDSchedule
 
 
 class _FrozenCoreFamiliesConfig(_FrozenConfigMixin, CoreFamiliesConfig):
