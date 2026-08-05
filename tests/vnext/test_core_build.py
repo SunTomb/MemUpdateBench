@@ -24,9 +24,26 @@ FAMILY_GENERATORS = (
 
 
 @pytest.fixture(scope="module")
-def full_snapshot_bundle():
+def core_config_and_cores():
     config = load_core_config(CORE_CONFIG_PATH)
-    return config, compile_core_snapshot(config), core_build._generated_cores(config)
+    return config, core_build._generated_cores(config)
+
+
+@pytest.fixture(scope="module")
+def full_snapshot_bundle(core_config_and_cores):
+    config, cores = core_config_and_cores
+    return config, compile_core_snapshot(config), cores
+
+
+@pytest.fixture(scope="module")
+def partial_snapshot_bundle(core_config_and_cores):
+    config, cores = core_config_and_cores
+    return (
+        config,
+        compile_core_snapshot(config, cores_per_family=10),
+        compile_core_snapshot(config, cores_per_family=20),
+        cores,
+    )
 
 
 def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
@@ -613,3 +630,90 @@ def test_snapshot_validation_rejects_inconsistent_family_core_counts() -> None:
             snapshot.validated_replace(family_core_counts=counts),
             config,
         )
+
+
+def _replace_family_selection(snapshot, donor, family):
+    assignments = tuple(
+        assignment
+        for assignment in snapshot.assignments
+        if assignment.task_family is not family
+    ) + tuple(
+        assignment
+        for assignment in donor.assignments
+        if assignment.task_family is family
+    )
+    tasks = tuple(
+        task for task in snapshot.tasks if task.task_family != family.value
+    ) + tuple(
+        task for task in donor.tasks if task.task_family == family.value
+    )
+    family_counts = Counter(
+        assignment.task_family.value for assignment in assignments
+    )
+    core_counts = Counter(assignment.split.value for assignment in assignments)
+    task_counts = Counter(task.metadata.split.value for task in tasks)
+    return snapshot.validated_replace(
+        assignments=assignments,
+        tasks=tasks,
+        family_core_counts=dict(family_counts),
+        core_counts={
+            split.value: core_counts[split.value]
+            for split in (Split.TRAIN, Split.DEV, Split.TEST)
+        },
+        task_counts={
+            split.value: task_counts[split.value]
+            for split in (Split.TRAIN, Split.DEV, Split.TEST)
+        },
+    )
+
+
+def test_snapshot_validation_rejects_unequal_partial_family_quotas(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, partial_20, expected_cores = partial_snapshot_bundle
+    corrupted = _replace_family_selection(
+        partial_10,
+        partial_20,
+        TaskFamily.INTERLEAVED_MULTI_SLOT,
+    )
+
+    with pytest.raises(ValueError, match="common cores_per_family quota"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_canonical_partial_core_id_substitution(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, partial_20, expected_cores = partial_snapshot_bundle
+    selected_ids = {
+        assignment.semantic_core_id for assignment in partial_10.assignments
+    }
+    victim, replacement = next(
+        (victim, replacement)
+        for victim in partial_10.assignments
+        if victim.task_family is TaskFamily.INTERLEAVED_MULTI_SLOT
+        for replacement in partial_20.assignments
+        if replacement.task_family is TaskFamily.INTERLEAVED_MULTI_SLOT
+        and replacement.semantic_core_id not in selected_ids
+        and replacement.split is victim.split
+    )
+    assignments = tuple(
+        replacement if assignment == victim else assignment
+        for assignment in partial_10.assignments
+    )
+    tasks = tuple(
+        task
+        for task in partial_10.tasks
+        if task.metadata.split_key.semantic_core_id != victim.semantic_core_id
+    ) + tuple(
+        task
+        for task in partial_20.tasks
+        if task.metadata.split_key.semantic_core_id == replacement.semantic_core_id
+    )
+    corrupted = partial_10.validated_replace(
+        assignments=assignments,
+        tasks=tasks,
+    )
+
+    with pytest.raises(ValueError, match="selected semantic core IDs"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)

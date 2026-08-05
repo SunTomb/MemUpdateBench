@@ -360,6 +360,30 @@ def _validate_snapshot(
     if dict(snapshot.family_core_counts) != expected_family_core_counts:
         raise ValueError("Core snapshot family counts are inconsistent")
 
+    canonical_cores = expected_cores if expected_cores is not None else _generated_cores(config)
+    _validate_core_diagnostic_schedule(canonical_cores, config)
+    if expected_family_core_counts != config.family_core_counts:
+        partial_family_quotas = set(expected_family_core_counts.values())
+        if len(partial_family_quotas) != 1:
+            raise ValueError(
+                "Partial Core snapshot families must share one common "
+                "cores_per_family quota"
+            )
+        common_quota = next(iter(partial_family_quotas))
+        expected_partial_ids = {
+            assignment.semantic_core_id
+            for assignment in _select_and_assign(
+                canonical_cores,
+                seed=config.seed,
+                splits=config.splits,
+                cores_per_family=common_quota,
+            )
+        }
+        if set(assignment_by_core) != expected_partial_ids:
+            raise ValueError(
+                "Partial Core snapshot selected semantic core IDs are invalid"
+            )
+
     diagnostic_records = {}
     for core_id, tasks in tasks_by_core.items():
         diagnostics = []
@@ -384,8 +408,6 @@ def _validate_snapshot(
             stratification=representative.metadata.extra["stratification"],
         )
 
-    canonical_cores = expected_cores if expected_cores is not None else _generated_cores(config)
-    _validate_core_diagnostic_schedule(canonical_cores, config)
     canonical_by_id = {core.core_id: core for core in canonical_cores}
     if len(canonical_by_id) != len(canonical_cores):
         raise ValueError("Expected Core diagnostics contain duplicate semantic core IDs")
