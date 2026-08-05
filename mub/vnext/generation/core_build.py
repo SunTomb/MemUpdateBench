@@ -276,7 +276,11 @@ def _select_and_assign(
     return tuple(assignments)
 
 
-def _validate_snapshot(snapshot: CompiledCoreSnapshot, config: CoreConfig) -> None:
+def _validate_snapshot(
+    snapshot: CompiledCoreSnapshot,
+    config: CoreConfig,
+    expected_cores: tuple[SemanticCore, ...] | None = None,
+) -> None:
     assignment_by_core = {
         assignment.semantic_core_id: assignment for assignment in snapshot.assignments
     }
@@ -355,26 +359,53 @@ def _validate_snapshot(snapshot: CompiledCoreSnapshot, config: CoreConfig) -> No
     }
     if dict(snapshot.family_core_counts) != expected_family_core_counts:
         raise ValueError("Core snapshot family counts are inconsistent")
-    if expected_family_core_counts == config.family_core_counts:
-        diagnostic_records = []
-        for core_id, tasks in tasks_by_core.items():
-            representative = next(
-                task
-                for task in tasks
-                if task.metadata.extra.get("surface_variant") == 0
-            )
-            stratification = representative.metadata.extra.get("stratification")
-            profile = representative.metadata.resolved_profile
+
+    diagnostic_records = {}
+    for core_id, tasks in tasks_by_core.items():
+        diagnostics = []
+        for task in tasks:
+            stratification = task.metadata.extra.get("stratification")
+            profile = task.metadata.resolved_profile
             if not isinstance(stratification, Mapping) or not isinstance(profile, Mapping):
                 raise ValueError("Core snapshot diagnostic metadata is invalid")
-            diagnostic_records.append(
-                _DiagnosticRecord(
-                    task_family=assignment_by_core[core_id].task_family,
-                    profile=profile,
-                    stratification=stratification,
-                )
+            diagnostics.append((profile, stratification))
+        if any(diagnostic != diagnostics[0] for diagnostic in diagnostics[1:]):
+            raise ValueError(
+                f"Core {core_id} has inconsistent diagnostic metadata across surfaces"
             )
-        _validate_core_diagnostic_schedule(tuple(diagnostic_records), config)
+        representative = next(
+            task
+            for task in tasks
+            if task.metadata.extra.get("surface_variant") == 0
+        )
+        diagnostic_records[core_id] = _DiagnosticRecord(
+            task_family=assignment_by_core[core_id].task_family,
+            profile=representative.metadata.resolved_profile,
+            stratification=representative.metadata.extra["stratification"],
+        )
+
+    canonical_cores = expected_cores if expected_cores is not None else _generated_cores(config)
+    _validate_core_diagnostic_schedule(canonical_cores, config)
+    canonical_by_id = {core.core_id: core for core in canonical_cores}
+    if len(canonical_by_id) != len(canonical_cores):
+        raise ValueError("Expected Core diagnostics contain duplicate semantic core IDs")
+    for core_id, record in diagnostic_records.items():
+        expected = canonical_by_id.get(core_id)
+        if expected is None:
+            raise ValueError("Core snapshot contains an unknown semantic core ID")
+        if (
+            record.task_family is not expected.task_family
+            or any(
+                record.profile.get(key) != value
+                for key, value in expected.profile.items()
+            )
+            or dict(record.stratification) != dict(expected.stratification)
+        ):
+            family_label = chr(ord("A") + _CORE_FAMILIES.index(expected.task_family))
+            raise ValueError(
+                "Core snapshot diagnostic metadata does not match "
+                f"Core Family {family_label} schedule"
+            )
 
     observed_core_counts = Counter(assignment.split.value for assignment in snapshot.assignments)
     observed_task_counts = Counter(task.metadata.split.value for task in snapshot.tasks)
@@ -465,7 +496,7 @@ def compile_core_snapshot(
         core_counts={split.value: core_counts[split.value] for split in _SPLIT_ORDER},
         task_counts={split.value: task_counts[split.value] for split in _SPLIT_ORDER},
     )
-    _validate_snapshot(snapshot, config)
+    _validate_snapshot(snapshot, config, cores)
     return snapshot
 
 

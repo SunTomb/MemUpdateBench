@@ -23,6 +23,12 @@ FAMILY_GENERATORS = (
 )
 
 
+@pytest.fixture(scope="module")
+def full_snapshot_bundle():
+    config = load_core_config(CORE_CONFIG_PATH)
+    return config, compile_core_snapshot(config), core_build._generated_cores(config)
+
+
 def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -331,18 +337,44 @@ def test_core_snapshot_rejects_aggregate_preserving_family_d_cell_corruption(
         core_build._generated_cores(config)
 
 
-def _replace_task_stratification(task, **changes):
+def _replace_task_diagnostics(task, *, profile_changes=None, stratification_changes=None):
+    profile = dict(task.metadata.resolved_profile)
+    profile.update(profile_changes or {})
     extra = dict(task.metadata.extra)
     stratification = dict(extra["stratification"])
-    stratification.update(changes)
+    stratification.update(stratification_changes or {})
     extra["stratification"] = stratification
-    metadata = task.metadata.validated_replace(extra=extra)
+    metadata = task.metadata.validated_replace(
+        resolved_profile=profile,
+        extra=extra,
+    )
     return task.validated_replace(metadata=metadata)
 
 
-def test_snapshot_validation_rejects_aggregate_preserving_family_a_corruption() -> None:
-    config = load_core_config(CORE_CONFIG_PATH)
-    snapshot = compile_core_snapshot(config)
+def _replace_core_diagnostics(
+    snapshot,
+    core_id,
+    *,
+    profile_changes=None,
+    stratification_changes=None,
+):
+    tasks = tuple(
+        _replace_task_diagnostics(
+            task,
+            profile_changes=profile_changes,
+            stratification_changes=stratification_changes,
+        )
+        if task.metadata.split_key.semantic_core_id == core_id
+        else task
+        for task in snapshot.tasks
+    )
+    return snapshot.validated_replace(tasks=tasks)
+
+
+def test_snapshot_validation_rejects_aggregate_preserving_family_a_corruption(
+    full_snapshot_bundle,
+) -> None:
+    config, snapshot, expected_cores = full_snapshot_bundle
     representatives = [
         task
         for task in snapshot.tasks
@@ -357,16 +389,14 @@ def test_snapshot_validation_rejects_aggregate_preserving_family_a_corruption() 
         for task in representatives
         if task.metadata.extra["stratification"]["condition"] == "stale_burden"
     )
-    corrupted_tasks = list(snapshot.tasks)
-    by_id = {task.task_id: index for index, task in enumerate(corrupted_tasks)}
-    corrupted_tasks[by_id[stale_task.task_id]] = _replace_task_stratification(
-        stale_task,
-        condition="duplicate_current",
+    corrupted = _replace_core_diagnostics(
+        snapshot,
+        stale_task.metadata.split_key.semantic_core_id,
+        stratification_changes={"condition": "duplicate_current"},
     )
-    corrupted = snapshot.validated_replace(tasks=tuple(corrupted_tasks))
 
     with pytest.raises(ValueError, match="Core Family A schedule"):
-        core_build._validate_snapshot(corrupted, config)
+        core_build._validate_snapshot(corrupted, config, expected_cores)
 
 
 def test_core_snapshot_rejects_aggregate_preserving_per_family_split_corruption(
@@ -401,3 +431,185 @@ def test_core_snapshot_rejects_aggregate_preserving_per_family_split_corruption(
 
     with pytest.raises(ValueError, match="per-family split schedule"):
         compile_core_snapshot(config, cores_per_family=10)
+
+
+def test_snapshot_validation_rejects_partial_aggregate_preserving_family_a_corruption() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    snapshot = compile_core_snapshot(config, cores_per_family=10)
+    representatives = [
+        task
+        for task in snapshot.tasks
+        if task.metadata.extra["surface_variant"] == 0
+        and task.task_family == TaskFamily.REPEATED_SAME_SLOT.value
+    ]
+    first, second = next(
+        (left, right)
+        for index, left in enumerate(representatives)
+        for right in representatives[index + 1 :]
+        if left.metadata.resolved_profile["update_depth"]
+        == right.metadata.resolved_profile["update_depth"]
+        and left.metadata.extra["stratification"]["condition"]
+        != right.metadata.extra["stratification"]["condition"]
+    )
+    first_condition = first.metadata.extra["stratification"]["condition"]
+    second_condition = second.metadata.extra["stratification"]["condition"]
+    corrupted = _replace_core_diagnostics(
+        _replace_core_diagnostics(
+            snapshot,
+            first.metadata.split_key.semantic_core_id,
+            stratification_changes={"condition": second_condition},
+        ),
+        second.metadata.split_key.semantic_core_id,
+        stratification_changes={"condition": first_condition},
+    )
+
+    with pytest.raises(ValueError, match="Core snapshot diagnostic metadata"):
+        core_build._validate_snapshot(corrupted, config)
+
+
+def test_snapshot_validation_rejects_aggregate_preserving_family_b_corruption(
+    full_snapshot_bundle,
+) -> None:
+    config, snapshot, expected_cores = full_snapshot_bundle
+    representatives = [
+        task
+        for task in snapshot.tasks
+        if task.metadata.extra["surface_variant"] == 0
+        and task.task_family == TaskFamily.INTERLEAVED_MULTI_SLOT.value
+    ]
+    first, second = next(
+        (left, right)
+        for index, left in enumerate(representatives)
+        for right in representatives[index + 1 :]
+        if left.metadata.extra["stratification"]["active_object_count"]
+        == right.metadata.extra["stratification"]["active_object_count"]
+        and left.metadata.extra["stratification"]["interleaving_pattern"]
+        == right.metadata.extra["stratification"]["interleaving_pattern"]
+        and left.metadata.resolved_profile["update_depth"]
+        != right.metadata.resolved_profile["update_depth"]
+    )
+    first_depth = first.metadata.resolved_profile["update_depth"]
+    second_depth = second.metadata.resolved_profile["update_depth"]
+    first_id = first.metadata.split_key.semantic_core_id
+    second_id = second.metadata.split_key.semantic_core_id
+    corrupted = _replace_core_diagnostics(
+        _replace_core_diagnostics(
+            snapshot,
+            first_id,
+            profile_changes={"update_depth": second_depth},
+            stratification_changes={"update_depth": second_depth},
+        ),
+        second_id,
+        profile_changes={"update_depth": first_depth},
+        stratification_changes={"update_depth": first_depth},
+    )
+
+    with pytest.raises(ValueError, match="Core Family B schedule"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_aggregate_preserving_family_c_corruption(
+    full_snapshot_bundle,
+) -> None:
+    config, snapshot, expected_cores = full_snapshot_bundle
+    representatives = [
+        task
+        for task in snapshot.tasks
+        if task.metadata.extra["surface_variant"] == 0
+        and task.task_family == TaskFamily.ENTITY_ATTRIBUTE_GROUNDING.value
+    ]
+    first, second = next(
+        (left, right)
+        for index, left in enumerate(representatives)
+        for right in representatives[index + 1 :]
+        if left.metadata.extra["stratification"]["attribute_condition"]
+        == right.metadata.extra["stratification"]["attribute_condition"]
+        and left.metadata.extra["stratification"]["entity_condition"]
+        != right.metadata.extra["stratification"]["entity_condition"]
+    )
+    first_entity = first.metadata.extra["stratification"]["entity_condition"]
+    second_entity = second.metadata.extra["stratification"]["entity_condition"]
+    corrupted = _replace_core_diagnostics(
+        _replace_core_diagnostics(
+            snapshot,
+            first.metadata.split_key.semantic_core_id,
+            stratification_changes={"entity_condition": second_entity},
+        ),
+        second.metadata.split_key.semantic_core_id,
+        stratification_changes={"entity_condition": first_entity},
+    )
+
+    with pytest.raises(ValueError, match="Core Family C schedule"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_aggregate_preserving_family_d_corruption(
+    full_snapshot_bundle,
+) -> None:
+    config, snapshot, expected_cores = full_snapshot_bundle
+    representatives = [
+        task
+        for task in snapshot.tasks
+        if task.metadata.extra["surface_variant"] == 0
+        and task.task_family == TaskFamily.NOOP_WRITE_DISCIPLINE.value
+    ]
+    first, second = next(
+        (left, right)
+        for index, left in enumerate(representatives)
+        for right in representatives[index + 1 :]
+        if left.metadata.extra["stratification"]["configured_noop_density"]
+        == right.metadata.extra["stratification"]["configured_noop_density"]
+        and left.metadata.extra["stratification"]["trap_type"]
+        != right.metadata.extra["stratification"]["trap_type"]
+    )
+    first_trap = first.metadata.extra["stratification"]["trap_type"]
+    second_trap = second.metadata.extra["stratification"]["trap_type"]
+    corrupted = _replace_core_diagnostics(
+        _replace_core_diagnostics(
+            snapshot,
+            first.metadata.split_key.semantic_core_id,
+            stratification_changes={"trap_type": second_trap},
+        ),
+        second.metadata.split_key.semantic_core_id,
+        stratification_changes={"trap_type": first_trap},
+    )
+
+    with pytest.raises(ValueError, match="Core Family D schedule"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_diagnostic_metadata_mismatch_across_surfaces() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    snapshot = compile_core_snapshot(config, cores_per_family=10)
+    task = next(
+        task
+        for task in snapshot.tasks
+        if task.metadata.extra["surface_variant"] == 1
+    )
+    corrupted = _replace_task_diagnostics(
+        task,
+        stratification_changes={"unexpected_surface_only": True},
+    )
+    corrupted_tasks = tuple(
+        corrupted if candidate.task_id == task.task_id else candidate
+        for candidate in snapshot.tasks
+    )
+
+    with pytest.raises(ValueError, match="diagnostic metadata"):
+        core_build._validate_snapshot(
+            snapshot.validated_replace(tasks=corrupted_tasks),
+            config,
+        )
+
+
+def test_snapshot_validation_rejects_inconsistent_family_core_counts() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    snapshot = compile_core_snapshot(config, cores_per_family=10)
+    counts = dict(snapshot.family_core_counts)
+    counts[TaskFamily.REPEATED_SAME_SLOT.value] += 1
+
+    with pytest.raises(ValueError, match="family counts are inconsistent"):
+        core_build._validate_snapshot(
+            snapshot.validated_replace(family_core_counts=counts),
+            config,
+        )
