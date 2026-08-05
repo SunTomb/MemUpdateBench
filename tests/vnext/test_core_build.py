@@ -277,6 +277,42 @@ def test_core_snapshot_rejects_family_b_cell_imbalance_with_balanced_depth_margi
         core_build._generated_cores(config)
 
 
+def test_core_snapshot_rejects_aggregate_preserving_family_b_per_active_pattern_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    original = core_build.generate_core_family_b_cores
+    moves = (
+        (2, 4, "burst", "round_robin"),
+        (2, 16, "adversarial_adjacent", "round_robin"),
+        (4, 4, "round_robin", "burst"),
+        (4, 1, "adversarial_adjacent", "burst"),
+        (8, 16, "round_robin", "adversarial_adjacent"),
+        (8, 1, "burst", "adversarial_adjacent"),
+    )
+
+    def corrupted(core_config):
+        cores = original(core_config)
+        for active_count, depth, source_pattern, target_pattern in moves:
+            victim_index = next(
+                index
+                for index, core in enumerate(cores)
+                if core.stratification["active_object_count"] == active_count
+                and core.stratification["update_depth"] == depth
+                and core.stratification["interleaving_pattern"] == source_pattern
+            )
+            cores[victim_index] = _replace_stratification(
+                cores[victim_index],
+                interleaving_pattern=target_pattern,
+            )
+        return cores
+
+    monkeypatch.setattr(core_build, "generate_core_family_b_cores", corrupted)
+
+    with pytest.raises(ValueError, match="pattern-within-active-object"):
+        core_build._generated_cores(config)
+
+
 def test_core_snapshot_rejects_aggregate_preserving_family_c_cell_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

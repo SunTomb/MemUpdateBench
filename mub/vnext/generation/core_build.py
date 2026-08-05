@@ -143,6 +143,24 @@ def _validate_core_diagnostic_schedule(
         for count in family_b.active_object_counts
     }:
         raise ValueError("Core Family B schedule active-object marginal is invalid")
+    b_patterns_within_active = Counter(
+        (
+            core.stratification.get("active_object_count"),
+            core.stratification.get("interleaving_pattern"),
+        )
+        for core in b_cores
+    )
+    expected_b_patterns_within_active = {
+        (active_count, pattern): (
+            family_b.schedule.cores_per_pattern_within_active_object_count
+        )
+        for active_count in family_b.active_object_counts
+        for pattern in family_b.interleaving_patterns
+    }
+    if dict(b_patterns_within_active) != expected_b_patterns_within_active:
+        raise ValueError(
+            "Core Family B schedule pattern-within-active-object quota is invalid"
+        )
     b_patterns = Counter(core.stratification.get("interleaving_pattern") for core in b_cores)
     if dict(b_patterns) != {
         pattern: family_b.schedule.cores_per_pattern_within_active_object_count
