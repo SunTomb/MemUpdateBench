@@ -306,6 +306,13 @@ def _validate_snapshot(
         for task in snapshot.tasks
     ):
         raise ValueError("Core snapshot does not match the canonical config hash")
+    if any(
+        task.source.generator.config_sha256 != canonical_config_hash
+        for task in snapshot.tasks
+    ):
+        raise ValueError(
+            "Core snapshot source generator config hash is not canonical"
+        )
 
     assignment_by_core = {
         assignment.semantic_core_id: assignment for assignment in snapshot.assignments

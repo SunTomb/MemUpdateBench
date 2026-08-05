@@ -844,6 +844,27 @@ def test_snapshot_validation_binds_snapshot_and_task_config_hashes(
         core_build._validate_snapshot(corrupted, config, expected_cores)
 
 
+def test_snapshot_validation_binds_source_generator_config_hash(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, _, expected_cores = partial_snapshot_bundle
+    wrong_hash = "0" * 64
+    tasks = tuple(
+        task.validated_replace(
+            source=task.source.validated_replace(
+                generator=task.source.generator.validated_replace(
+                    config_sha256=wrong_hash
+                )
+            )
+        )
+        for task in partial_10.tasks
+    )
+    corrupted = partial_10.validated_replace(tasks=tasks)
+
+    with pytest.raises(ValueError, match="source generator config hash"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
 def test_snapshot_validation_rejects_empty_zero_quota_snapshot(
     partial_snapshot_bundle,
 ) -> None:
