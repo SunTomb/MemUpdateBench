@@ -7,7 +7,11 @@ from mub.vnext.contracts.v3.enums import QueryTypeV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.generation.core import GenerationContext, SemanticCore
 from mub.vnext.generation.core_catalogs import CORE_SURFACE_CATALOG_V1
-from mub.vnext.generation.render import render_core_with_catalog
+from mub.vnext.generation.render import (
+    _payload_sha256,
+    _render_query_text,
+    render_core_with_catalog,
+)
 from mub.vnext.validation.replay_v3 import replay_task_v3
 
 
@@ -27,20 +31,27 @@ def _identity(value: Any) -> tuple[str, str, str, str | None]:
 
 
 def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
+    if len(task.gold.actions) != len(core.events):
+        raise ValueError("Core v3 promotion requires one action per semantic event")
     promoted = []
     family_e = core.task_family is TaskFamily.DELETION_FORGETTING
-    for action in task.gold.actions:
+    for action, core_event in zip(task.gold.actions, core.events):
         if action.operation is Operation.NOOP:
             scope = None
             targets = []
         elif family_e:
-            scope = action.scope.value
-            targets = [_key_payload(key) for key in action.target_object_keys]
+            scope = core_event.metadata["action_scope"]
+            targets = [_key_payload(key) for key in core_event.object_keys]
         else:
             if len(action.target_object_keys) != 1:
                 raise ValueError("Core v3 promotion requires one target per mutation")
             scope = ActionScope.OBJECT.value
             targets = [_key_payload(action.target_object_keys[0])]
+        effective_at = (
+            core_event.metadata.get("effective_at")
+            if family_e
+            else action.effective_at
+        )
         promoted.append(
             {
                 "action_id": action.action_id,
@@ -49,7 +60,7 @@ def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
                 "scope": scope,
                 "target_object_keys": targets,
                 "value": action.value,
-                "effective_at": action.effective_at,
+                "effective_at": effective_at,
                 "expected_effect": action.expected_effect,
             }
         )
@@ -231,10 +242,16 @@ def _promote_family_e_query_and_evidence(task, core: SemanticCore, version_histo
     answer = values
     answer_schema = AnswerSchema.LIST.value
 
+    surface_variant = task.metadata.extra["surface_variant"]
+    current_query_template = CORE_SURFACE_CATALOG_V1.template_sets[surface_variant][5]
+    query_text = _render_query_text(core, current_query_template) + (
+        " Return a list aligned to the target order, using null for a "
+        "missing current value."
+    )
     promoted_query = {
         "query_id": source_query.query_id,
         "query_type": query_type,
-        "text": source_query.text,
+        "text": query_text,
         "selector": selector,
         "target_object_keys": targets,
         "answer_schema": answer_schema,
@@ -365,7 +382,12 @@ def render_core_v3(
     surface_variant: int,
     context: GenerationContext,
 ) -> MemUpdateTaskV3:
-    """Render one Core A-D current-state semantic core as a strict v3 task."""
+    """Render one Core semantic core as a strict v3 task."""
+    family_e = core.task_family is TaskFamily.DELETION_FORGETTING
+    if family_e:
+        from mub.vnext.generation.family_e import validate_family_e_core
+
+        validate_family_e_core(core)
     task_v2 = render_core_with_catalog(
         core,
         split=split,
@@ -376,12 +398,26 @@ def render_core_v3(
     actions = _promote_actions(task_v2, core)
     version_history = _build_version_history(task_v2, actions)
     query, evidence = _promote_query_and_evidence(task_v2, version_history, core)
+    events = [event.model_dump(mode="python") for event in task_v2.events]
+    if family_e:
+        for event, core_event in zip(events, core.events):
+            event["timestamp"] = core_event.metadata["logical_time"]
 
     source = task_v2.source.model_dump(mode="python")
     source["provenance"] = dict(source["provenance"])
     source["provenance"]["schema_version"] = "3.0.0"
+    if family_e:
+        source["raw_hash"] = _payload_sha256(
+            {
+                "events": [
+                    {"raw_text": event["raw_text"], "speaker": event["speaker"]}
+                    for event in events
+                ],
+                "query_text": query["text"],
+            }
+        )
     metadata = task_v2.metadata.model_dump(mode="python")
-    if core.task_family is TaskFamily.DELETION_FORGETTING:
+    if family_e:
         protected_ids = [
             key.canonical_id
             for event in core.events
@@ -398,7 +434,7 @@ def render_core_v3(
         "task_family": task_v2.task_family,
         "difficulty": task_v2.difficulty,
         "source": source,
-        "events": [event.model_dump(mode="python") for event in task_v2.events],
+        "events": events,
         "target_objects": [_key_payload(key) for key in task_v2.target_objects],
         "actions": actions,
         "queries": [query],

@@ -716,6 +716,8 @@ def _metric_value(
 def _metric_applies_to_task_v3(path, task, replay, lifecycle_by_query=None):
     if lifecycle_by_query is None:
         lifecycle_by_query = build_query_lifecycle_evidence_v3(task, replay, {})
+    if path == "state_scores.expected_absence_accuracy":
+        return bool(replay.expected_absent)
     if path.startswith("deletion_scores."):
         deletes = [action for action in task.actions if action.operation == Operation.DELETE]
         if not deletes:

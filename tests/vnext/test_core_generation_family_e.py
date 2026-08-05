@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from mub.vnext.contracts.enums import ActionScope, AnswerSchema, EventRole, Operation, Split, TaskFamily
-from mub.vnext.generation.core import SemanticCore
+from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
+from mub.vnext.generation.core import GenerationContext, SemanticCore
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.validation.replay_v3 import replay_task_v3, resolve_query_v3
 
@@ -21,6 +22,88 @@ LIFECYCLE_CELLS = (
     "delete_then_relearn",
     "scoped_delete_protected_collateral",
 )
+_FAMILY_E_COMMON_PRINCIPAL_METRIC_PATHS = frozenset({
+    "action_scores.full_action_exact_match",
+    "answer_scores.exact_match",
+    "state_scores.final_state_accuracy",
+})
+_FAMILY_E_BASE_DELETION_METRIC_PATHS = frozenset({
+    "deletion_scores.deletion_accuracy",
+    "deletion_scores.delete_scope_accuracy",
+    "deletion_scores.collateral_damage_rate",
+    "deletion_scores.forgotten_exposure_rate",
+    "deletion_scores.forgotten_value_leakage_rate",
+})
+_FAMILY_E_ABSENCE_METRIC_PATH = "state_scores.expected_absence_accuracy"
+_FAMILY_E_DELETION_PRINCIPAL_METRIC_PATHS = (
+    _FAMILY_E_BASE_DELETION_METRIC_PATHS
+    | {
+        "deletion_scores.ttl_compliance_rate",
+        "deletion_scores.relearn_accuracy",
+    }
+)
+_FAMILY_E_PRINCIPAL_METRIC_PATHS = (
+    _FAMILY_E_COMMON_PRINCIPAL_METRIC_PATHS
+    | _FAMILY_E_DELETION_PRINCIPAL_METRIC_PATHS
+    | {_FAMILY_E_ABSENCE_METRIC_PATH}
+)
+_FAMILY_E_DELETION_CURRENT_PATHS = (
+    _FAMILY_E_COMMON_PRINCIPAL_METRIC_PATHS
+    | _FAMILY_E_BASE_DELETION_METRIC_PATHS
+    | {_FAMILY_E_ABSENCE_METRIC_PATH}
+)
+_FAMILY_E_METRIC_PATHS_BY_CELL = {
+    "explicit_object_or_attribute_deletion": _FAMILY_E_DELETION_CURRENT_PATHS,
+    "entity_wide_deletion": _FAMILY_E_DELETION_CURRENT_PATHS,
+    "namespace_privacy_wipe": _FAMILY_E_DELETION_CURRENT_PATHS,
+    "correction_versus_deletion_hard_negative": _FAMILY_E_COMMON_PRINCIPAL_METRIC_PATHS,
+    "logical_ttl_expiry": _FAMILY_E_DELETION_CURRENT_PATHS | {
+        "deletion_scores.ttl_compliance_rate"
+    },
+    "post_delete_similar_retrieval": _FAMILY_E_DELETION_CURRENT_PATHS,
+    "delete_then_relearn": (
+        _FAMILY_E_COMMON_PRINCIPAL_METRIC_PATHS
+        | _FAMILY_E_BASE_DELETION_METRIC_PATHS
+        | {"deletion_scores.relearn_accuracy"}
+    ),
+    "scoped_delete_protected_collateral": _FAMILY_E_DELETION_CURRENT_PATHS,
+}
+_FULL_FAMILY_E_CAPABILITIES = AdapterCapabilitiesV3(
+    supports_isolated_reset=True,
+    supports_event_ingest=True,
+    supports_add=True,
+    supports_update=True,
+    supports_noop=True,
+    supports_delete=True,
+    supports_ttl=True,
+    supports_native_answer=True,
+    supports_scoped_delete=True,
+    supports_historical_query=True,
+    supports_multi_object_query=True,
+    exports_version_history=True,
+    exports_entries=True,
+    exports_raw_state=True,
+    exports_source_event_ids=True,
+    exports_timestamps_or_order=True,
+    exports_object_keys=True,
+    exports_values=True,
+    exports_retrieval_ids=True,
+    exports_retrieval_scores=True,
+    exports_action_trace=True,
+    exports_evidence_linkage=True,
+)
+_FAMILY_E_ORACLE_INFO = AdapterInfoV3(
+    adapter_id="family-e-oracle",
+    adapter_version="1",
+    system_name="reference",
+    system_version="1",
+    configuration_hash="a" * 64,
+)
+
+
+def _metric_value(score, path):
+    layer, leaf = path.split(".", 1)
+    return getattr(getattr(score, layer), leaf)
 
 
 def _api():
@@ -151,6 +234,102 @@ def test_family_e_profiles_report_actual_peak_active_object_counts():
             for core in cores
             if core.stratification["lifecycle_cell"] == cell
         } == counts
+
+
+def test_untrusted_core_metadata_cannot_change_shared_v2_action_scope_or_time():
+    from mub.vnext.generation.core_catalogs import CORE_SURFACE_CATALOG_V1
+    from mub.vnext.generation.family_a import generate_core_family_a_cores
+    from mub.vnext.generation.render import render_core_with_catalog
+
+    config = _config()
+    core = generate_core_family_a_cores(config)[0]
+    payload = core.model_dump(mode="python")
+    payload["events"][0]["metadata"].update({
+        "action_scope": ActionScope.NAMESPACE.value,
+        "logical_time": "99999998",
+        "effective_at": "99999999",
+    })
+    malformed = SemanticCore.model_validate(payload)
+    context = GenerationContext(config=config, code_revision="4bbc446")
+
+    baseline = render_core_with_catalog(
+        core, split=Split.TEST, surface_variant=0, context=context,
+        surface_catalog=CORE_SURFACE_CATALOG_V1,
+    )
+    rendered = render_core_with_catalog(
+        malformed, split=Split.TEST, surface_variant=0, context=context,
+        surface_catalog=CORE_SURFACE_CATALOG_V1,
+    )
+
+    assert [
+        (action.scope, action.effective_at)
+        for action in rendered.gold.actions
+    ] == [
+        (action.scope, action.effective_at)
+        for action in baseline.gold.actions
+    ]
+    assert [event.timestamp for event in rendered.events] == [
+        event.timestamp for event in baseline.events
+    ]
+    assert all(action.effective_at is None for action in rendered.gold.actions)
+    assert all(event.timestamp is None for event in rendered.events)
+
+
+def test_unapproved_family_e_core_rejects_before_v3_list_instruction():
+    from mub.vnext.generation.core_render_v3 import render_core_v3
+
+    generate, _, _ = _api()
+    config = _config()
+    core = generate(config)[0]
+    payload = core.model_dump(mode="python")
+    payload["stratification"]["lifecycle_cell"] = "unapproved_boolean_delete"
+    payload["expected_answer"] = True
+    malformed = SemanticCore.model_validate(payload)
+    context = GenerationContext(config=config, code_revision="4bbc446")
+
+    with pytest.raises(ValueError, match="lifecycle cell"):
+        render_core_v3(
+            malformed,
+            split=Split.TEST,
+            surface_variant=0,
+            context=context,
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("delete_scope", "write_time", "coordinated_scope"),
+)
+def test_family_e_v3_promotion_rejects_noncanonical_scope_and_time(corruption):
+    from mub.vnext.generation.core_render_v3 import render_core_v3
+
+    generate, _, _ = _api()
+    config = _config()
+    core = generate(config)[0]
+    payload = core.model_dump(mode="python")
+    if corruption in {"delete_scope", "coordinated_scope"}:
+        delete = next(event for event in payload["events"] if event["operation"] is Operation.DELETE)
+        delete["metadata"]["action_scope"] = ActionScope.NAMESPACE.value
+        if corruption == "coordinated_scope":
+            payload["profile"]["deletion_scope"] = ActionScope.NAMESPACE.value
+            payload["stratification"]["deletion_scope"] = ActionScope.NAMESPACE.value
+            expected_error = "lifecycle cell"
+        else:
+            expected_error = "deletion scope"
+    else:
+        write = next(event for event in payload["events"] if event["operation"] is Operation.ADD)
+        write["metadata"]["effective_at"] = "99999999"
+        expected_error = "logical time"
+    malformed = SemanticCore.model_validate(payload)
+    context = GenerationContext(config=config, code_revision="4bbc446")
+
+    with pytest.raises(ValueError, match=expected_error):
+        render_core_v3(
+            malformed,
+            split=Split.TEST,
+            surface_variant=0,
+            context=context,
+        )
 
 
 def test_family_e_scoped_gold_actions_enumerate_exact_keys_and_protect_collateral():
@@ -427,48 +606,85 @@ def test_family_e_corrupted_oracle_detects_forgotten_value_leakage():
     assert "forgotten_value_exposed" in score.failure_flags
 
 
-def test_family_e_reference_oracle_is_perfect_on_every_applicable_principal_metric():
-    from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
+def test_family_e_reference_oracle_has_exact_per_cell_applicable_metric_paths():
+    from mub.vnext.contracts.enums import SupportReason
     from mub.vnext.scoring.registry_v3 import CORE_METRIC_REGISTRY_V3
     from mub.vnext.scoring.scorer_v3 import score_task_v3
 
     _, _, compile_micro = _api()
     snapshot = compile_micro(_config(), code_revision="4bbc446")
-    caps = AdapterCapabilitiesV3(
-        supports_isolated_reset=True, supports_event_ingest=True, supports_add=True,
-        supports_update=True, supports_noop=True, supports_delete=True, supports_ttl=True,
-        supports_native_answer=True, supports_scoped_delete=True,
-        supports_historical_query=True, supports_multi_object_query=True,
-        exports_version_history=True, exports_entries=True, exports_raw_state=True,
-        exports_source_event_ids=True, exports_timestamps_or_order=True,
-        exports_object_keys=True, exports_values=True, exports_retrieval_ids=True,
-        exports_retrieval_scores=True, exports_action_trace=True,
-        exports_evidence_linkage=True,
-    )
-    info = AdapterInfoV3(
-        adapter_id="family-e-oracle", adapter_version="1", system_name="reference",
-        system_version="1", configuration_hash="a" * 64,
-    )
-    observed_paths = set()
+    registered_principal_paths = {
+        path
+        for path, descriptor in CORE_METRIC_REGISTRY_V3.items()
+        if descriptor.principal
+    }
+    assert _FAMILY_E_PRINCIPAL_METRIC_PATHS <= registered_principal_paths
     for task in snapshot.tasks:
+        cell = task.metadata.extra["stratification"]["lifecycle_cell"]
+        expected_paths = _FAMILY_E_METRIC_PATHS_BY_CELL[cell]
         run = _oracle_run(task)
-        score = score_task_v3(task, run, _authenticated_score_context(task, run, info, caps))
-        for path, descriptor in CORE_METRIC_REGISTRY_V3.items():
-            if not descriptor.principal:
+        score = score_task_v3(
+            task,
+            run,
+            _authenticated_score_context(
+                task, run, _FAMILY_E_ORACLE_INFO, _FULL_FAMILY_E_CAPABILITIES
+            ),
+        )
+        observed_paths = {
+            path
+            for path in _FAMILY_E_PRINCIPAL_METRIC_PATHS
+            if _metric_value(score, path) is not None
+        }
+        assert observed_paths == expected_paths, (task.task_id, observed_paths)
+        for path in _FAMILY_E_PRINCIPAL_METRIC_PATHS:
+            value = _metric_value(score, path)
+            if path not in expected_paths:
+                assert value is None
+                assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
                 continue
-            layer, leaf = path.split(".", 1)
-            value = getattr(getattr(score, layer), leaf)
-            if value is None:
-                continue
-            observed_paths.add(path)
-            expected = 0.0 if descriptor.direction == "lower" else 1.0
-            assert value == expected, (task.task_id, path, value)
-    assert {
-        "deletion_scores.deletion_accuracy",
-        "deletion_scores.delete_scope_accuracy",
-        "deletion_scores.collateral_damage_rate",
-        "deletion_scores.ttl_compliance_rate",
-        "deletion_scores.relearn_accuracy",
-        "deletion_scores.forgotten_exposure_rate",
-        "deletion_scores.forgotten_value_leakage_rate",
-    } <= observed_paths
+            descriptor = CORE_METRIC_REGISTRY_V3[path]
+            expected_value = 0.0 if descriptor.direction == "lower" else 1.0
+            assert value == expected_value, (task.task_id, path, value)
+        for path in registered_principal_paths - _FAMILY_E_PRINCIPAL_METRIC_PATHS:
+            assert _metric_value(score, path) is None, (task.task_id, path)
+            assert score.supported_metric_fields[path].reason is SupportReason.NOT_APPLICABLE
+
+
+def test_family_e_withheld_capabilities_never_fabricate_unsupported_zeroes():
+    from mub.vnext.contracts.enums import SupportReason
+    from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    _, _, compile_micro = _api()
+    snapshot = compile_micro(_config(), code_revision="4bbc446")
+    representatives = {
+        task.metadata.extra["stratification"]["lifecycle_cell"]: task
+        for task in reversed(snapshot.tasks)
+        if task.metadata.extra["surface_variant"] == 0
+    }
+    assert set(representatives) == set(LIFECYCLE_CELLS)
+
+    observed_unsupported = set()
+    for cell, task in representatives.items():
+        expected_paths = (
+            _FAMILY_E_METRIC_PATHS_BY_CELL[cell]
+            & _FAMILY_E_DELETION_PRINCIPAL_METRIC_PATHS
+        )
+        run = _oracle_run(task)
+        score = score_task_v3(
+            task,
+            run,
+            _authenticated_score_context(
+                task, run, _FAMILY_E_ORACLE_INFO, AdapterCapabilitiesV3()
+            ),
+        )
+        for path in _FAMILY_E_DELETION_PRINCIPAL_METRIC_PATHS:
+            assert _metric_value(score, path) is None, (task.task_id, path)
+            support = score.supported_metric_fields[path]
+            if path in expected_paths:
+                observed_unsupported.add(path)
+                assert support.reason is SupportReason.NOT_SUPPORTED
+                assert "lacks capabilities" in support.detail
+            else:
+                assert support.reason is SupportReason.NOT_APPLICABLE
+    assert observed_unsupported == _FAMILY_E_DELETION_PRINCIPAL_METRIC_PATHS

@@ -51,6 +51,7 @@ from mub.vnext.generation.family_d import (
 )
 from mub.vnext.generation.family_e import (
     CompiledFamilyEMicroPilot,
+    FAMILY_E_DELETE_SCOPES_BY_CELL,
     FAMILY_E_LIFECYCLE_CELLS,
     FAMILY_E_MICRO_PROFILE_ID,
     compile_family_e_micro_pilot,
@@ -101,6 +102,7 @@ __all__ = [
     "CoreConfig",
     "CoreEvent",
     "CoreSplitAssignment",
+    "FAMILY_E_DELETE_SCOPES_BY_CELL",
     "FAMILY_E_LIFECYCLE_CELLS",
     "FAMILY_E_MICRO_PROFILE_ID",
     "GenerationContext",

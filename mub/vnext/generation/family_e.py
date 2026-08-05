@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from mub.vnext.contracts.common import MemoryObjectKey
@@ -23,6 +24,19 @@ FAMILY_E_LIFECYCLE_CELLS = (
     "delete_then_relearn",
     "scoped_delete_protected_collateral",
 )
+FAMILY_E_DELETE_SCOPES_BY_CELL = MappingProxyType({
+    "explicit_object_or_attribute_deletion": (
+        ActionScope.OBJECT,
+        ActionScope.ATTRIBUTE,
+    ),
+    "entity_wide_deletion": (ActionScope.ENTITY,),
+    "namespace_privacy_wipe": (ActionScope.NAMESPACE,),
+    "correction_versus_deletion_hard_negative": (ActionScope.OBJECT,),
+    "logical_ttl_expiry": (ActionScope.TTL,),
+    "post_delete_similar_retrieval": (ActionScope.OBJECT,),
+    "delete_then_relearn": (ActionScope.OBJECT,),
+    "scoped_delete_protected_collateral": (ActionScope.ATTRIBUTE,),
+})
 FAMILY_E_MICRO_PROFILE_ID = "family_e_diagnostic_micro_v1"
 _EXAMPLES_PER_CELL = 3
 
@@ -126,6 +140,13 @@ def _peak_active_object_count(events: list[CoreEvent]) -> int:
     return peak
 
 
+def _scope_for_cell(cell: str, example: int) -> ActionScope:
+    permitted = FAMILY_E_DELETE_SCOPES_BY_CELL[cell]
+    if len(permitted) == 1:
+        return permitted[0]
+    return permitted[0] if example == 0 else permitted[1]
+
+
 def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
     namespace = f"family_e_ns_{core_index:02d}"
     entity = f"synthetic_subject_{example}"
@@ -135,18 +156,16 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
     query_targets: list[MemoryObjectKey]
     expected_answer: Any
     relearning = "none"
-    scope = ActionScope.OBJECT
+    scope = _scope_for_cell(cell, example)
 
     if cell == "explicit_object_or_attribute_deletion":
-        if example == 0:
+        if scope is ActionScope.OBJECT:
             targets = [primary]
-            scope = ActionScope.OBJECT
         else:
             targets = [
                 _key(namespace, entity, "contact_channel", "primary"),
                 _key(namespace, entity, "contact_channel", "backup"),
             ]
-            scope = ActionScope.ATTRIBUTE
         events = [
             *[_event(Operation.ADD, [key], f"synthetic_value_{core_index:02d}_{i}", "seed", 10 + i) for i, key in enumerate(targets)],
             _event(Operation.DELETE, targets, None, "explicit_delete", 20, scope=scope),
@@ -155,7 +174,6 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
         expected_answer = None
     elif cell == "entity_wide_deletion":
         targets = [primary, _key(namespace, entity, "preferred_locale")]
-        scope = ActionScope.ENTITY
         events = [
             _event(Operation.ADD, [targets[0]], old, "seed", 10),
             _event(Operation.ADD, [targets[1]], f"synthetic_locale_{example}", "seed", 11),
@@ -169,7 +187,6 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
             _key(namespace, f"synthetic_subject_{example}_peer", "contact_channel"),
             _key(namespace, entity, "privacy_note"),
         ]
-        scope = ActionScope.NAMESPACE
         events = [
             *[
                 _event(
@@ -197,7 +214,7 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
         expiry = 20 + example
         events = [
             _event(Operation.ADD, [primary], old, "ttl_seed", 10),
-            _event(Operation.DELETE, [primary], None, "ttl_schedule", 11, scope=ActionScope.TTL, effective_at=expiry),
+            _event(Operation.DELETE, [primary], None, "ttl_schedule", 11, scope=scope, effective_at=expiry),
             CoreEvent(
                 operation=Operation.NOOP,
                 object_keys=[],
@@ -214,20 +231,19 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
         ]
         query_targets = [primary]
         expected_answer = None
-        scope = ActionScope.TTL
     elif cell == "post_delete_similar_retrieval":
         similar = _key(namespace, f"synthetic_subject_{example}_similar", "contact_channel")
         events = [
             _event(Operation.ADD, [primary], old, "seed", 10),
             _event(Operation.ADD, [similar], new, "similar_protected", 11, protected=True),
-            _event(Operation.DELETE, [primary], None, "delete_before_similar_probe", 20),
+            _event(Operation.DELETE, [primary], None, "delete_before_similar_probe", 20, scope=scope),
         ]
         query_targets = [primary, similar]
         expected_answer = _mixed_absence_answer(query_targets, {primary.canonical_id})
     elif cell == "delete_then_relearn":
         events = [
             _event(Operation.ADD, [primary], old, "seed", 10),
-            _event(Operation.DELETE, [primary], None, "delete", 20),
+            _event(Operation.DELETE, [primary], None, "delete", 20, scope=scope),
             _event(Operation.ADD, [primary], new, "relearn", 30),
         ]
         query_targets = [primary]
@@ -239,7 +255,6 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
             _key(namespace, entity, "contact_channel", "backup"),
         ]
         collateral = _key(namespace, entity, "contact_channel_note")
-        scope = ActionScope.ATTRIBUTE
         events = [
             _event(Operation.ADD, [targets[0]], old, "seed", 10),
             _event(Operation.ADD, [targets[1]], new, "seed", 11),
@@ -314,20 +329,54 @@ def validate_family_e_core(core: SemanticCore) -> None:
     cell = core.stratification.get("lifecycle_cell")
     if cell not in FAMILY_E_LIFECYCLE_CELLS:
         raise ValueError("Family E lifecycle cell is not approved")
-    if core.profile.get("deletion_scope") != core.stratification.get("deletion_scope"):
-        raise ValueError("Family E deletion scope profile mismatch")
+    permitted_scopes = FAMILY_E_DELETE_SCOPES_BY_CELL[cell]
+    try:
+        profile_scope = ActionScope(core.profile["deletion_scope"])
+        stratification_scope = ActionScope(core.stratification["deletion_scope"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("Family E deletion scope is invalid") from exc
+    if (
+        profile_scope is not stratification_scope
+        or profile_scope not in permitted_scopes
+    ):
+        raise ValueError("Family E deletion scope is not permitted for its lifecycle cell")
     if core.profile.get("relearning_condition") != core.stratification.get("relearning_condition"):
         raise ValueError("Family E relearning profile mismatch")
+    expected_delete_scope = stratification_scope
 
     state: dict[tuple[str, str, str, str | None], Any] = {}
     known: dict[tuple[str, str, str, str | None], MemoryObjectKey] = {}
     protected: set[tuple[str, str, str, str | None]] = set()
     delete_events: list[CoreEvent] = []
+    previous_logical_time: str | None = None
     for event in core.events:
         try:
             scope = ActionScope(event.metadata["action_scope"])
         except (KeyError, ValueError) as exc:
             raise ValueError("Family E event requires a valid action scope") from exc
+        logical_time = event.metadata.get("logical_time")
+        effective_at = event.metadata.get("effective_at")
+        if (
+            type(logical_time) is not str
+            or len(logical_time) != 8
+            or not logical_time.isdecimal()
+            or type(effective_at) is not str
+            or len(effective_at) != 8
+            or not effective_at.isdecimal()
+            or (
+                previous_logical_time is not None
+                and logical_time <= previous_logical_time
+            )
+        ):
+            raise ValueError("Family E events require strictly increasing canonical logical times")
+        previous_logical_time = logical_time
+        if event.operation is Operation.DELETE:
+            if scope is not expected_delete_scope:
+                raise ValueError("Family E deletion scope does not match its lifecycle profile")
+        elif scope is not ActionScope.OBJECT:
+            raise ValueError("Family E non-delete events require object scope")
+        if scope is not ActionScope.TTL and effective_at != logical_time:
+            raise ValueError("Family E effective logical time must equal its event logical time")
         if event.metadata.get("protected_collateral") is True:
             protected.update(_identity(key) for key in event.object_keys)
         if event.operation in {Operation.ADD, Operation.UPDATE}:
@@ -477,6 +526,7 @@ def compile_family_e_micro_pilot(
 
 __all__ = [
     "CompiledFamilyEMicroPilot",
+    "FAMILY_E_DELETE_SCOPES_BY_CELL",
     "FAMILY_E_LIFECYCLE_CELLS",
     "FAMILY_E_MICRO_PROFILE_ID",
     "compile_family_e_micro_pilot",
