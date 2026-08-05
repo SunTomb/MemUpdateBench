@@ -25,6 +25,7 @@ from mub.vnext.contracts.enums import (
     QueryType,
     SourceType,
     Split,
+    TaskFamily,
 )
 from mub.vnext.contracts.task import (
     CanonicalAnswer,
@@ -564,18 +565,25 @@ def _build_render_plan(
                 f"render_core event {index} uses reserved renderer metadata key "
                 f"'{_RENDERER_METADATA_KEY}'"
             )
+        action_scope = core_event.metadata.get("action_scope")
+        if action_scope is None:
+            resolved_scope = (
+                ActionScope.OBJECT
+                if core_event.operation == Operation.NOOP
+                else ActionScope.ATTRIBUTE
+            )
+        else:
+            resolved_scope = ActionScope(action_scope)
+        logical_time = core_event.metadata.get("logical_time")
+        effective_at = core_event.metadata.get("effective_at", logical_time)
         action = GoldAction(
             action_id=rendered_action_ids[index],
             event_id=rendered_event_ids[index],
             operation=core_event.operation,
-            scope=(
-                ActionScope.OBJECT
-                if core_event.operation == Operation.NOOP
-                else ActionScope.ATTRIBUTE
-            ),
+            scope=resolved_scope,
             target_object_keys=[_copy_key(key) for key in core_event.object_keys],
             value=_plain(core_event.value),
-            effective_at=None,
+            effective_at=effective_at,
             expected_effect={},
         )
         raw_text = _render_event_text(core_event, operation_templates)
@@ -584,7 +592,7 @@ def _build_render_plan(
         event = MemoryEvent(
             event_id=rendered_event_ids[index],
             sequence_index=index,
-            timestamp=None,
+            timestamp=logical_time,
             raw_text=raw_text,
             normalized_text=_normalized_event_text(core_event),
             speaker=surface_catalog.speakers[surface_variant],
@@ -609,13 +617,22 @@ def _build_render_plan(
             surface_catalog,
         )
     else:
-        query_template = _select_query_template(
-            query_type,
-            answer_schema,
-            current_query_template,
-            deletion_templates,
+        query_template = (
+            current_query_template
+            if core.task_family is TaskFamily.DELETION_FORGETTING
+            else _select_query_template(
+                query_type,
+                answer_schema,
+                current_query_template,
+                deletion_templates,
+            )
         )
         query_text = _render_query_text(core, query_template)
+        if core.task_family is TaskFamily.DELETION_FORGETTING:
+            query_text += (
+                " Return a list aligned to the target order, using null for a "
+                "missing current value."
+            )
     query = MemoryQuery(
         query_id=rendered_query_id,
         query_type=query_type,

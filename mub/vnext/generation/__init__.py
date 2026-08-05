@@ -49,6 +49,14 @@ from mub.vnext.generation.family_d import (
     generate_core_family_d_cores,
     generate_family_d_cores,
 )
+from mub.vnext.generation.family_e import (
+    CompiledFamilyEMicroPilot,
+    FAMILY_E_LIFECYCLE_CELLS,
+    FAMILY_E_MICRO_PROFILE_ID,
+    compile_family_e_micro_pilot,
+    generate_core_family_e_cores,
+    validate_family_e_core,
+)
 from mub.vnext.generation.identity import (
     action_id,
     core_id,
@@ -88,10 +96,13 @@ __all__ = [
     "CORE_SURFACE_IDS",
     "CORE_SURFACE_TEMPLATE_SETS",
     "CompiledCoreSnapshot",
+    "CompiledFamilyEMicroPilot",
     "CompiledPilotTasks",
     "CoreConfig",
     "CoreEvent",
     "CoreSplitAssignment",
+    "FAMILY_E_LIFECYCLE_CELLS",
+    "FAMILY_E_MICRO_PROFILE_ID",
     "GenerationContext",
     "InMemoryPilotArtifact",
     "NAMESPACES",
@@ -115,6 +126,7 @@ __all__ = [
     "build_pilot",
     "build_pilot_artifact_bundle",
     "compile_core_snapshot",
+    "compile_family_e_micro_pilot",
     "compile_pilot_tasks",
     "core_id",
     "event_id",
@@ -122,6 +134,7 @@ __all__ = [
     "generate_core_family_b_cores",
     "generate_core_family_c_cores",
     "generate_core_family_d_cores",
+    "generate_core_family_e_cores",
     "generate_family_a_cores",
     "generate_family_b_cores",
     "generate_family_c_cores",
@@ -139,4 +152,5 @@ __all__ = [
     "stable_id",
     "task_id",
     "trajectory_id",
+    "validate_family_e_core",
 ]
