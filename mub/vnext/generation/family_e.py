@@ -42,6 +42,128 @@ _EXAMPLES_PER_CELL = 3
 
 
 @dataclass(frozen=True, slots=True)
+class _FamilyECellShape:
+    operations: tuple[Operation, ...]
+    lifecycles: tuple[str, ...]
+    query_target_count: int
+    delete_target_count: int
+    unique_object_count: int
+    protected_count: int
+    final_present_count: int
+    peak_active_object_count: int
+
+    @property
+    def roles(self) -> tuple[EventRole, ...]:
+        return tuple(
+            EventRole.DELETION
+            if operation is Operation.DELETE
+            else EventRole.NEUTRAL
+            if operation is Operation.NOOP
+            else EventRole.LATEST_GOLD
+            for operation in self.operations
+        )
+
+
+_FAMILY_E_CELL_SHAPES = MappingProxyType({
+    ("explicit_object_or_attribute_deletion", ActionScope.OBJECT): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.DELETE),
+        lifecycles=("seed", "explicit_delete"),
+        query_target_count=1,
+        delete_target_count=1,
+        unique_object_count=1,
+        protected_count=0,
+        final_present_count=0,
+        peak_active_object_count=1,
+    ),
+    ("explicit_object_or_attribute_deletion", ActionScope.ATTRIBUTE): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.ADD, Operation.DELETE),
+        lifecycles=("seed", "seed", "explicit_delete"),
+        query_target_count=2,
+        delete_target_count=2,
+        unique_object_count=2,
+        protected_count=0,
+        final_present_count=0,
+        peak_active_object_count=2,
+    ),
+    ("entity_wide_deletion", ActionScope.ENTITY): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.ADD, Operation.DELETE),
+        lifecycles=("seed", "seed", "entity_wide_delete"),
+        query_target_count=2,
+        delete_target_count=2,
+        unique_object_count=2,
+        protected_count=0,
+        final_present_count=0,
+        peak_active_object_count=2,
+    ),
+    ("namespace_privacy_wipe", ActionScope.NAMESPACE): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.ADD, Operation.ADD, Operation.DELETE),
+        lifecycles=(
+            "synthetic_private_seed",
+            "synthetic_private_seed",
+            "synthetic_private_seed",
+            "namespace_privacy_wipe",
+        ),
+        query_target_count=3,
+        delete_target_count=3,
+        unique_object_count=3,
+        protected_count=0,
+        final_present_count=0,
+        peak_active_object_count=3,
+    ),
+    ("correction_versus_deletion_hard_negative", ActionScope.OBJECT): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.UPDATE),
+        lifecycles=("seed", "correction_not_deletion"),
+        query_target_count=1,
+        delete_target_count=0,
+        unique_object_count=1,
+        protected_count=0,
+        final_present_count=1,
+        peak_active_object_count=1,
+    ),
+    ("logical_ttl_expiry", ActionScope.TTL): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.DELETE, Operation.NOOP),
+        lifecycles=("ttl_seed", "ttl_schedule", "ttl_boundary_probe"),
+        query_target_count=1,
+        delete_target_count=1,
+        unique_object_count=1,
+        protected_count=0,
+        final_present_count=0,
+        peak_active_object_count=1,
+    ),
+    ("post_delete_similar_retrieval", ActionScope.OBJECT): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.ADD, Operation.DELETE),
+        lifecycles=("seed", "similar_protected", "delete_before_similar_probe"),
+        query_target_count=2,
+        delete_target_count=1,
+        unique_object_count=2,
+        protected_count=1,
+        final_present_count=1,
+        peak_active_object_count=2,
+    ),
+    ("delete_then_relearn", ActionScope.OBJECT): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.DELETE, Operation.ADD),
+        lifecycles=("seed", "delete", "relearn"),
+        query_target_count=1,
+        delete_target_count=1,
+        unique_object_count=1,
+        protected_count=0,
+        final_present_count=1,
+        peak_active_object_count=1,
+    ),
+    ("scoped_delete_protected_collateral", ActionScope.ATTRIBUTE): _FamilyECellShape(
+        operations=(Operation.ADD, Operation.ADD, Operation.ADD, Operation.DELETE),
+        lifecycles=("seed", "seed", "protected_seed", "scoped_delete"),
+        query_target_count=3,
+        delete_target_count=2,
+        unique_object_count=3,
+        protected_count=1,
+        final_present_count=1,
+        peak_active_object_count=3,
+    ),
+})
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledFamilyEMicroPilot:
     profile_id: str
     cores: tuple[SemanticCore, ...]
@@ -399,6 +521,38 @@ def validate_family_e_core(core: SemanticCore) -> None:
                 raise ValueError("Family E DELETE must enumerate exact scope targets")
             for identity in enumerated:
                 state.pop(identity, None)
+
+    shape = _FAMILY_E_CELL_SHAPES[(cell, expected_delete_scope)]
+    observed_operations = tuple(event.operation for event in core.events)
+    observed_roles = tuple(event.role for event in core.events)
+    observed_lifecycles = tuple(
+        str(event.metadata.get("lifecycle")) for event in core.events
+    )
+    query_identities = {_identity(key) for key in core.query_targets}
+    delete_target_count = sum(len(event.object_keys) for event in delete_events)
+    structural_shape = (
+        observed_operations == shape.operations
+        and observed_roles == shape.roles
+        and observed_lifecycles == shape.lifecycles
+        and len(query_identities) == shape.query_target_count
+        and query_identities == set(known)
+        and delete_target_count == shape.delete_target_count
+        and len(known) == shape.unique_object_count
+        and len(protected) == shape.protected_count
+        and len(state) == shape.final_present_count
+        and _peak_active_object_count(list(core.events))
+        == shape.peak_active_object_count
+    )
+    derived_signature = ",".join(operation.value for operation in observed_operations)
+    if (
+        not structural_shape
+        or core.stratification.get("operation_signature") != derived_signature
+    ):
+        raise ValueError("Family E lifecycle structural shape is invalid")
+    if core.profile.get("active_object_count") != shape.peak_active_object_count:
+        raise ValueError("Family E profile active_object_count is stale")
+    if core.profile.get("context_length") != len(shape.operations):
+        raise ValueError("Family E profile context_length is stale")
 
     if cell == "correction_versus_deletion_hard_negative":
         if delete_events or not any(event.operation is Operation.UPDATE for event in core.events):

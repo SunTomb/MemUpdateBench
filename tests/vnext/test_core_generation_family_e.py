@@ -215,6 +215,72 @@ def test_family_e_visible_queries_match_typed_v3_current_state_answers():
         assert resolution.answer == evidence.answer
 
 
+def test_family_e_v3_surface_text_exposes_scope_enumeration_and_logical_time():
+    _, _, compile_micro = _api()
+    snapshot = compile_micro(_config(), code_revision="4bbc446")
+
+    for task in snapshot.tasks:
+        delete_actions = [
+            action for action in task.actions if action.operation is Operation.DELETE
+        ]
+        query_text = task.queries[0].text
+        if not delete_actions:
+            assert "UPDATE_NOT_DELETE" in query_text
+            continue
+        assert len(delete_actions) == 1
+        action = delete_actions[0]
+        event = next(event for event in task.events if event.event_id == action.event_id)
+        scope_cue = f"scope={action.scope.value}"
+        target_cue = "enumerated_targets=" + ",".join(
+            key.canonical_id for key in action.target_object_keys
+        )
+        assert scope_cue in event.raw_text
+        assert scope_cue in query_text
+        assert target_cue in event.raw_text
+        assert target_cue in query_text
+        assert f"event_logical_time={event.timestamp}" in event.raw_text
+        assert f"effective_at={action.effective_at}" in event.raw_text
+        assert f"effective_at={action.effective_at}" in query_text
+        if action.scope is ActionScope.TTL:
+            boundary = task.queries[0].selector.logical_time
+            assert f"scheduled_at={event.timestamp}" in event.raw_text
+            assert f"scheduled_at={event.timestamp}" in query_text
+            assert f"boundary_anchor={boundary}" in query_text
+
+
+def test_family_e_validator_rejects_coordinated_namespace_shape_removal():
+    generate, validate, _ = _api()
+    core = next(
+        core
+        for core in generate(_config())
+        if core.stratification["lifecycle_cell"] == "namespace_privacy_wipe"
+    )
+
+    def remove_one_complete_target(payload):
+        payload["events"].pop(0)
+        delete = next(event for event in payload["events"] if event["operation"] is Operation.DELETE)
+        delete["object_keys"].pop(0)
+        payload["query_targets"].pop(0)
+        payload["profile"]["active_object_count"] = 2
+        payload["profile"]["context_length"] = 3
+        payload["stratification"]["operation_signature"] = "ADD,ADD,DELETE"
+
+    with pytest.raises(ValueError, match="structural shape"):
+        validate(_mutate_core(core, remove_one_complete_target))
+
+
+@pytest.mark.parametrize("profile_field", ("active_object_count", "context_length"))
+def test_family_e_validator_rejects_stale_profile_counts(profile_field):
+    generate, validate, _ = _api()
+    core = generate(_config())[0]
+
+    def tamper(payload):
+        payload["profile"][profile_field] += 1
+
+    with pytest.raises(ValueError, match=profile_field):
+        validate(_mutate_core(core, tamper))
+
+
 def test_family_e_profiles_report_actual_peak_active_object_counts():
     generate, _, _ = _api()
     cores = generate(_config())
@@ -407,7 +473,7 @@ def test_family_e_validator_fails_closed_on_required_corrupted_controls():
         })
         payload["expected_answer"] = forgotten
 
-    with pytest.raises(ValueError, match="forgotten value"):
+    with pytest.raises(ValueError, match="forgotten value|structural shape"):
         validate(_mutate_core(by_cell["delete_then_relearn"], retain_forgotten_value))
 
     def fail_relearn(payload):

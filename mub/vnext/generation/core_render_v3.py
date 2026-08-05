@@ -30,6 +30,50 @@ def _identity(value: Any) -> tuple[str, str, str, str | None]:
     return value.namespace, value.entity, value.attribute, value.subkey
 
 
+def _inject_family_e_surface_cues(
+    actions: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    query: dict[str, Any],
+) -> None:
+    deletes = [action for action in actions if action["operation"] == Operation.DELETE.value]
+    if not deletes:
+        query["text"] += " UPDATE_NOT_DELETE: apply the correction as an update."
+        return
+    event_by_id = {event["event_id"]: event for event in events}
+    for action in deletes:
+        event = event_by_id[action["event_id"]]
+        target_ids = ",".join(
+            "|".join(
+                (
+                    key["namespace"],
+                    key["entity"],
+                    key["attribute"],
+                    key.get("subkey") or "",
+                )
+            )
+            for key in action["target_object_keys"]
+        )
+        scope = action["scope"]
+        logical_time = event["timestamp"]
+        effective_at = action["effective_at"]
+        common = (
+            f"scope={scope}; enumerated_targets={target_ids}; "
+            f"event_logical_time={logical_time}; effective_at={effective_at}"
+        )
+        if scope == ActionScope.TTL.value:
+            event["raw_text"] += (
+                f" [{common}; scheduled_at={logical_time}]"
+            )
+            boundary = query["selector"]["logical_time"]
+            query["text"] += (
+                f" [{common}; scheduled_at={logical_time}; "
+                f"boundary_anchor={boundary}]"
+            )
+        else:
+            event["raw_text"] += f" [{common}]"
+            query["text"] += f" [{common}]"
+
+
 def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
     if len(task.gold.actions) != len(core.events):
         raise ValueError("Core v3 promotion requires one action per semantic event")
@@ -402,6 +446,7 @@ def render_core_v3(
     if family_e:
         for event, core_event in zip(events, core.events):
             event["timestamp"] = core_event.metadata["logical_time"]
+        _inject_family_e_surface_cues(actions, events, query)
 
     source = task_v2.source.model_dump(mode="python")
     source["provenance"] = dict(source["provenance"])
