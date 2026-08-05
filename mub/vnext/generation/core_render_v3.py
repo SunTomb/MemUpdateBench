@@ -92,12 +92,95 @@ def _build_version_history(task, actions: list[dict[str, Any]]) -> list[dict[str
     ]
 
 
+def _promote_reference_query_and_evidence(task, query, version_history):
+    targets = [_key_payload(key) for key in query.target_object_keys]
+    selector = {
+        "kind": "reference_resolution",
+        "reference_candidates": [
+            {
+                "candidate_id": candidate.candidate_id,
+                "object_key": _key_payload(candidate.object_key),
+                "evidence": candidate.evidence,
+                "source_anchors": [
+                    anchor.model_dump(mode="python")
+                    for anchor in candidate.source_anchors
+                ],
+            }
+            for candidate in query.reference_candidates
+        ],
+        "surface_references": [
+            reference.model_dump(mode="python")
+            for reference in query.surface_references
+        ],
+    }
+    promoted_query = {
+        "query_id": query.query_id,
+        "query_type": QueryTypeV3.UNRESOLVED_REFERENCE.value,
+        "text": query.text,
+        "selector": selector,
+        "target_object_keys": targets,
+        "answer_schema": query.answer_schema.value,
+        "evaluation_mode": query.evaluation_mode.value,
+        "synthesis": None,
+    }
+
+    history_by_identity = {
+        _identity(ledger["object_key"]): ledger for ledger in version_history
+    }
+    supporting_events = []
+    steps = []
+    for index, key in enumerate(query.target_object_keys):
+        ledger = history_by_identity[_identity(key)]
+        event_ids = list(ledger["entries"][-1]["source_event_ids"])
+        supporting_events.extend(event_ids)
+        steps.append(
+            {
+                "step_id": f"derive_{query.query_id}_{index}",
+                "operation": "read_current",
+                "input_step_ids": [],
+                "supporting_object_keys": [_key_payload(key)],
+                "supporting_event_ids": event_ids,
+            }
+        )
+    final_step_id = steps[0]["step_id"]
+    if len(steps) > 1:
+        final_step_id = f"derive_{query.query_id}_reference"
+        steps.append(
+            {
+                "step_id": final_step_id,
+                "operation": "collect",
+                "input_step_ids": [step["step_id"] for step in steps],
+                "supporting_object_keys": targets,
+                "supporting_event_ids": list(dict.fromkeys(supporting_events)),
+            }
+        )
+    canonical = task.gold.canonical_answers.get(query.query_id)
+    if canonical is None:
+        raise ValueError("Core v3 reference-resolution query requires a canonical answer")
+    evidence = {
+        "query_id": query.query_id,
+        "answer": canonical.value,
+        "disposition": canonical.disposition.value,
+        "resolution_status": canonical.resolution_status.value,
+        "selected_candidate_ids": list(canonical.selected_candidate_ids),
+        "abstention_reason": canonical.abstention_reason,
+        "supporting_object_keys": targets,
+        "supporting_event_ids": list(dict.fromkeys(supporting_events)),
+        "derivation_steps": steps,
+        "final_derivation_step_id": final_step_id,
+        "stale_alternative": None,
+    }
+    return promoted_query, evidence
+
+
 def _promote_query_and_evidence(task, version_history):
     if len(task.queries) != 1:
         raise ValueError("Core v3 promotion requires exactly one query")
     query = task.queries[0]
+    if query.query_type is QueryType.UNRESOLVED_REFERENCE:
+        return _promote_reference_query_and_evidence(task, query, version_history)
     if query.query_type is not QueryType.CURRENT_STATE:
-        raise ValueError("Core v3 promotion currently supports current-state queries only")
+        raise ValueError("Core v3 promotion supports current-state and unresolved-reference queries only")
 
     targets = [_key_payload(key) for key in query.target_object_keys]
     multi_object = len(targets) > 1

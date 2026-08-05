@@ -41,6 +41,20 @@ def test_v3_schema_export_is_deterministic_and_separate(tmp_path: Path) -> None:
     assert all(b'"$schema":"https://json-schema.org/draft/2020-12/schema"' in path.read_bytes() for path in first)
 
 
+def test_checked_in_v3_task_schema_exports_reference_resolution_discriminator() -> None:
+    schema_path = Path(__file__).resolve().parents[2] / "schemas" / "vnext" / "v3" / "mem_update_task.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    selector = schema["$defs"]["MemoryQueryV3"]["properties"]["selector"]
+    assert selector["discriminator"]["propertyName"] == "kind"
+    assert selector["discriminator"]["mapping"]["reference_resolution"] == "#/$defs/ReferenceResolutionSelector"
+    assert {branch["$ref"] for branch in selector["oneOf"]} >= {
+        "#/$defs/ReferenceResolutionSelector"
+    }
+    reference_kind = schema["$defs"]["ReferenceResolutionSelector"]["properties"]["kind"]
+    assert reference_kind["const"] == "reference_resolution"
+
+
 def test_v3_task_run_schema_requires_action_id(tmp_path: Path) -> None:
     exported = {path.name: path for path in export_schemas(tmp_path / "v3", version="3.0.0")}
     schema = json.loads(exported["task_run_record.schema.json"].read_text(encoding="utf-8"))

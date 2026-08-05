@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
+from typing_extensions import Self
 
 from mub.vnext.contracts.common import FrozenDict, ImmutableContractModel, freeze_mapping
-from mub.vnext.contracts.enums import AnswerSchema, Operation
+from mub.vnext.contracts.enums import AnswerDisposition, AnswerSchema, Operation, ReferenceResolutionStatus
 from mub.vnext.contracts.v3.common import FrozenJsonValue, MemoryObjectKeyV3, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3
 from mub.vnext.contracts.v3.task import (
@@ -20,6 +21,7 @@ from mub.vnext.contracts.v3.task import (
     OrderedHistorySelector,
     PreviousSelector,
     QueryGoldEvidenceV3,
+    ReferenceResolutionSelector,
     TransitionSelector,
     _derivation_consumed_input_indices,
     _derivation_step_reads_support,
@@ -100,10 +102,49 @@ class ReplayResultV3(ImmutableContractModel):
 class QueryResolutionV3(ImmutableContractModel):
     query_id: str
     answer: FrozenJsonValue | None = None
+    disposition: AnswerDisposition | None = None
+    resolution_status: ReferenceResolutionStatus | None = None
+    selected_candidate_ids: tuple[str, ...] = ()
     selected_versions: tuple[ReplayVersionV3, ...] = ()
     selected_event_ids: tuple[str, ...] = ()
     selected_object_keys: tuple[MemoryObjectKeyV3, ...] = ()
     issues: tuple[ValidationIssue, ...] = ()
+
+    @model_validator(mode="after")
+    def _typed_reference_resolution(self) -> Self:
+        typed = self.disposition is not None or self.resolution_status is not None
+        if not typed:
+            if self.selected_candidate_ids:
+                raise ValueError("ordinary query resolution cannot select reference candidates")
+            return self
+        if self.disposition is None or self.resolution_status is None:
+            raise ValueError("typed reference resolution requires disposition and resolution_status")
+        if self.disposition == AnswerDisposition.ANSWERED:
+            if self.resolution_status != ReferenceResolutionStatus.UNIQUE:
+                raise ValueError("ANSWERED resolution must be UNIQUE")
+            if len(self.selected_candidate_ids) != 1 or self.answer is None:
+                raise ValueError("ANSWERED resolution requires one candidate and a non-null answer")
+            if len(self.selected_versions) != 1 or len(self.selected_object_keys) != 1:
+                raise ValueError("ANSWERED resolution requires one selected replay version and object key")
+            if not self.selected_event_ids:
+                raise ValueError("ANSWERED resolution requires selected source events")
+        elif self.disposition == AnswerDisposition.ABSTAINED:
+            if self.resolution_status not in {
+                ReferenceResolutionStatus.AMBIGUOUS,
+                ReferenceResolutionStatus.NO_MATCH,
+            }:
+                raise ValueError("ABSTAINED resolution requires AMBIGUOUS or NO_MATCH")
+            if (
+                self.selected_candidate_ids
+                or self.answer is not None
+                or self.selected_versions
+                or self.selected_event_ids
+                or self.selected_object_keys
+            ):
+                raise ValueError("ABSTAINED resolution cannot carry selected candidates, versions, events, objects, or answer")
+        else:
+            raise ValueError("UNAVAILABLE is not a resolved gold-query disposition")
+        return self
 
     @property
     def valid(self) -> bool:
@@ -273,8 +314,16 @@ def replay_task_v3(task: MemUpdateTaskV3) -> ReplayResultV3:
         if query.query_type in synthesis_kinds:
             continue
         resolved = resolve_query_v3(query, replay, task.events)
-        if resolved.issues or not _same(resolved.answer, evidence[query.query_id].answer):
-            return ReplayResultV3(current_state={}, ledgers=(), expected_present=(), expected_absent=(), protected_collateral=(), mutation_count=0, issues=(_issue("query_gold_answer_mismatch", "typed selector answer does not equal declared gold evidence answer", f"gold_evidence.{query.query_id}.answer"),))
+        gold = evidence[query.query_id]
+        mismatch = resolved.issues or not _same(resolved.answer, gold.answer)
+        if query.query_type == QueryTypeV3.UNRESOLVED_REFERENCE:
+            mismatch = mismatch or (
+                resolved.disposition != gold.disposition
+                or resolved.resolution_status != gold.resolution_status
+                or resolved.selected_candidate_ids != gold.selected_candidate_ids
+            )
+        if mismatch:
+            return ReplayResultV3(current_state={}, ledgers=(), expected_present=(), expected_absent=(), protected_collateral=(), mutation_count=0, issues=(_issue("query_gold_answer_mismatch", "typed selector resolution does not equal declared gold evidence", f"gold_evidence.{query.query_id}"),))
     return replay
 
 
@@ -356,9 +405,101 @@ def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times
     raise TypeError("unknown typed selector")
 
 
+def _resolve_reference_query(
+    query: MemoryQueryV3,
+    replay: ReplayResultV3,
+) -> QueryResolutionV3:
+    selector = query.selector
+    if not isinstance(selector, ReferenceResolutionSelector):
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            issues=(
+                _issue(
+                    "unsupported_reference_selector",
+                    "unresolved-reference query requires a reference-resolution selector",
+                    f"queries.{query.query_id}.selector",
+                ),
+            ),
+        )
+    ledgers = replay.ledger_by_identity
+    current_by_candidate = {}
+    for candidate in selector.reference_candidates:
+        ledger = ledgers.get(_identity(candidate.object_key))
+        if ledger is None:
+            return QueryResolutionV3(
+                query_id=query.query_id,
+                issues=(
+                    _issue(
+                        "reference_candidate_missing_object",
+                        "reference candidate has no replay ledger",
+                        f"queries.{query.query_id}.selector.reference_candidates",
+                    ),
+                ),
+            )
+        active = replay.active_versions(ledger)
+        if not active or active[-1].status != LedgerEntryStatus.PRESENT:
+            return QueryResolutionV3(
+                query_id=query.query_id,
+                issues=(
+                    _issue(
+                        "reference_candidate_missing_current_version",
+                        "reference candidate has no horizon-active current value",
+                        f"queries.{query.query_id}.selector.reference_candidates",
+                    ),
+                ),
+            )
+        current_by_candidate[candidate.candidate_id] = (candidate.object_key, active[-1])
+
+    linked_candidate_ids = tuple(
+        dict.fromkeys(
+            candidate_id
+            for reference in selector.surface_references
+            for candidate_id in reference.candidate_ids
+        )
+    )
+    if any(candidate_id not in current_by_candidate for candidate_id in linked_candidate_ids):
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            issues=(
+                _issue(
+                    "reference_graph_unknown_candidate",
+                    "surface reference links an undeclared candidate",
+                    f"queries.{query.query_id}.selector.surface_references",
+                ),
+            ),
+        )
+    if not linked_candidate_ids:
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            disposition=AnswerDisposition.ABSTAINED,
+            resolution_status=ReferenceResolutionStatus.NO_MATCH,
+        )
+    if len(linked_candidate_ids) > 1:
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            disposition=AnswerDisposition.ABSTAINED,
+            resolution_status=ReferenceResolutionStatus.AMBIGUOUS,
+        )
+
+    candidate_id = linked_candidate_ids[0]
+    key, version = current_by_candidate[candidate_id]
+    return QueryResolutionV3(
+        query_id=query.query_id,
+        answer=version.value,
+        disposition=AnswerDisposition.ANSWERED,
+        resolution_status=ReferenceResolutionStatus.UNIQUE,
+        selected_candidate_ids=(candidate_id,),
+        selected_versions=(version,),
+        selected_event_ids=version.source_event_ids,
+        selected_object_keys=(key,),
+    )
+
+
 def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) -> QueryResolutionV3:
     if replay.issues:
         return QueryResolutionV3(query_id=query.query_id, issues=replay.issues)
+    if query.query_type == QueryTypeV3.UNRESOLVED_REFERENCE:
+        return _resolve_reference_query(query, replay)
     if isinstance(query.selector, EventAnchorSelector) and not events:
         return QueryResolutionV3(
             query_id=query.query_id,

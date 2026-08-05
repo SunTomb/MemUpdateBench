@@ -488,8 +488,6 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
         if not typed_reference_fields:
             if self.selected_candidate_ids or self.abstention_reason is not None:
                 raise ValueError("ordinary gold evidence cannot carry reference-resolution fields")
-            if self.answer is None:
-                raise ValueError("ordinary gold evidence requires a non-null answer")
             return self
         if self.disposition is None or self.resolution_status is None:
             raise ValueError("typed reference gold requires disposition and resolution_status")
