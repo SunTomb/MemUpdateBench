@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated
 
@@ -39,6 +40,13 @@ _CORE_FAMILIES = (
 _SPLIT_ORDER = (Split.TRAIN, Split.DEV, Split.TEST)
 _VARIANTS_PER_CORE = 4
 HashString = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", strict=True)]
+
+
+@dataclass(frozen=True)
+class _DiagnosticRecord:
+    task_family: TaskFamily
+    profile: Mapping[str, object]
+    stratification: Mapping[str, object]
 
 
 class CompiledCoreSnapshot(ImmutableContractModel):
@@ -88,7 +96,7 @@ def _validate_limit(config: CoreConfig, cores_per_family: int | None) -> int | N
 
 
 def _validate_core_diagnostic_schedule(
-    cores: tuple[SemanticCore, ...],
+    cores: tuple[SemanticCore | _DiagnosticRecord, ...],
     config: CoreConfig,
 ) -> None:
     by_family = {
@@ -337,6 +345,36 @@ def _validate_snapshot(snapshot: CompiledCoreSnapshot, config: CoreConfig) -> No
         for right in _SPLIT_ORDER[index + 1 :]:
             if not hashes[left].isdisjoint(hashes[right]):
                 raise ValueError("Core snapshot has cross-split semantic hash overlap")
+
+    observed_family_core_counts = Counter(
+        assignment.task_family.value for assignment in snapshot.assignments
+    )
+    expected_family_core_counts = {
+        family.value: observed_family_core_counts[family.value]
+        for family in _CORE_FAMILIES
+    }
+    if dict(snapshot.family_core_counts) != expected_family_core_counts:
+        raise ValueError("Core snapshot family counts are inconsistent")
+    if expected_family_core_counts == config.family_core_counts:
+        diagnostic_records = []
+        for core_id, tasks in tasks_by_core.items():
+            representative = next(
+                task
+                for task in tasks
+                if task.metadata.extra.get("surface_variant") == 0
+            )
+            stratification = representative.metadata.extra.get("stratification")
+            profile = representative.metadata.resolved_profile
+            if not isinstance(stratification, Mapping) or not isinstance(profile, Mapping):
+                raise ValueError("Core snapshot diagnostic metadata is invalid")
+            diagnostic_records.append(
+                _DiagnosticRecord(
+                    task_family=assignment_by_core[core_id].task_family,
+                    profile=profile,
+                    stratification=stratification,
+                )
+            )
+        _validate_core_diagnostic_schedule(tuple(diagnostic_records), config)
 
     observed_core_counts = Counter(assignment.split.value for assignment in snapshot.assignments)
     observed_task_counts = Counter(task.metadata.split.value for task in snapshot.tasks)

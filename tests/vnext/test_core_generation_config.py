@@ -191,6 +191,16 @@ def test_core_config_rejects_wrong_family_d_density_bands() -> None:
         CoreConfig.model_validate(payload)
 
 
+@pytest.mark.parametrize("family", ["entity_attribute_grounding", "noop_write_discipline"])
+def test_core_config_rejects_disabled_family_c_or_d(family: str) -> None:
+    CoreConfig, load_core_config, _, _ = _core_api()
+    payload = load_core_config(CORE_CONFIG_PATH).model_dump(mode="json")
+    payload["families"][family]["enabled"] = False
+
+    with pytest.raises(ValidationError, match="all four Pilot families must be enabled"):
+        CoreConfig.model_validate(payload)
+
+
 def test_core_surface_catalog_is_versioned_immutable_and_operation_complete() -> None:
     _, _, surface_catalog, _ = _core_api()
 

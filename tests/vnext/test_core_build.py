@@ -331,6 +331,44 @@ def test_core_snapshot_rejects_aggregate_preserving_family_d_cell_corruption(
         core_build._generated_cores(config)
 
 
+def _replace_task_stratification(task, **changes):
+    extra = dict(task.metadata.extra)
+    stratification = dict(extra["stratification"])
+    stratification.update(changes)
+    extra["stratification"] = stratification
+    metadata = task.metadata.validated_replace(extra=extra)
+    return task.validated_replace(metadata=metadata)
+
+
+def test_snapshot_validation_rejects_aggregate_preserving_family_a_corruption() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    snapshot = compile_core_snapshot(config)
+    representatives = [
+        task
+        for task in snapshot.tasks
+        if task.task_family == TaskFamily.REPEATED_SAME_SLOT.value
+        and task.metadata.extra["surface_variant"] == 0
+        and task.metadata.extra["stratification"].get("condition")
+        in {"stale_burden", "duplicate_current"}
+        and task.metadata.extra["stratification"].get("stale_same_slot_count") == 1
+    ]
+    stale_task = next(
+        task
+        for task in representatives
+        if task.metadata.extra["stratification"]["condition"] == "stale_burden"
+    )
+    corrupted_tasks = list(snapshot.tasks)
+    by_id = {task.task_id: index for index, task in enumerate(corrupted_tasks)}
+    corrupted_tasks[by_id[stale_task.task_id]] = _replace_task_stratification(
+        stale_task,
+        condition="duplicate_current",
+    )
+    corrupted = snapshot.validated_replace(tasks=tuple(corrupted_tasks))
+
+    with pytest.raises(ValueError, match="Core Family A schedule"):
+        core_build._validate_snapshot(corrupted, config)
+
+
 def test_core_snapshot_rejects_aggregate_preserving_per_family_split_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
