@@ -620,7 +620,7 @@ def evaluate_evidence_v3(
                 for identity in targets
             }
             if query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY:
-                _validate_consistency_read_eligibility(
+                primary_version_set = _validate_consistency_read_eligibility(
                     evidence,
                     targets,
                     replay.ledger_by_identity,
@@ -629,13 +629,15 @@ def evaluate_evidence_v3(
                     version_rows=replay.active_versions,
                 )
                 if stale_alternative is not None:
-                    _validate_consistency_read_eligibility(
+                    stale_version_set = _validate_consistency_read_eligibility(
                         stale_alternative,
                         targets,
                         replay.ledger_by_identity,
                         require_exact_event_coverage=True,
                         version_rows=replay.active_versions,
                     )
+                    if stale_version_set == primary_version_set:
+                        raise ValueError("stale alternative resolves the same ledger versions; version set must differ")
             else:
                 _validate_multi_hop_read_eligibility(
                     evidence,

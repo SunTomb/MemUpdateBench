@@ -3830,6 +3830,63 @@ def test_multi_object_consistency_does_not_count_non_target_read_support(locatio
         MemUpdateTaskV3.model_validate(changed)
 
 
+def test_consistency_stale_alternative_must_resolve_different_version_set():
+    changed = g_horizon_payload("multi_object_current_consistency")
+    first, second = changed["target_objects"]
+    alternative = changed["gold_evidence"][0]["stale_alternative"]
+    alternative.update(
+        answer=True,
+        supporting_event_ids=["e0", "e1"],
+        derivation_steps=[
+            {"step_id": "alternate-first", "operation": "read_version", "supporting_object_keys": [first], "supporting_event_ids": ["e1"]},
+            {"step_id": "alternate-second", "operation": "read_version", "supporting_object_keys": [second], "supporting_event_ids": ["e0"]},
+            {"step_id": "first-value", "operation": "identity", "input_step_ids": ["alternate-first"]},
+            {"step_id": "second-value", "operation": "identity", "input_step_ids": ["alternate-second"]},
+            {"step_id": "alternate-equals", "operation": "equals", "input_step_ids": ["first-value", "second-value"]},
+        ],
+        final_derivation_step_id="alternate-equals",
+    )
+
+    with pytest.raises(ValueError, match="stale alternative.*version set"):
+        MemUpdateTaskV3.model_validate(changed)
+
+
+@pytest.mark.parametrize("operation", ["add", "all", "any", "count"])
+def test_task_contract_rejects_zero_operand_aggregate_operations(operation):
+    from mub.vnext.contracts.v3.task import QueryGoldEvidenceV3
+
+    key = payload()["target_objects"][0]
+    with pytest.raises(ValueError, match=rf"{operation} requires at least one operand"):
+        QueryGoldEvidenceV3(
+            query_id="zero-operand",
+            answer=True,
+            supporting_object_keys=(key,),
+            supporting_event_ids=("e3",),
+            derivation_steps=({"step_id": "aggregate", "operation": operation},),
+            final_derivation_step_id="aggregate",
+        )
+
+
+@pytest.mark.parametrize("operation", ["add", "all", "any", "count"])
+def test_task_contract_accepts_one_operand_aggregate_operations(operation):
+    from mub.vnext.contracts.v3.task import QueryGoldEvidenceV3
+
+    key = payload()["target_objects"][0]
+    evidence = QueryGoldEvidenceV3(
+        query_id="one-operand",
+        answer=True,
+        supporting_object_keys=(key,),
+        supporting_event_ids=("e3",),
+        derivation_steps=(
+            {"step_id": "source", "operation": "read", "supporting_object_keys": (key,), "supporting_event_ids": ("e3",)},
+            {"step_id": "aggregate", "operation": operation, "input_step_ids": ("source",)},
+        ),
+        final_derivation_step_id="aggregate",
+    )
+
+    assert evidence.derivation_steps[-1].input_step_ids == ("source",)
+
+
 @pytest.mark.parametrize("operand_count", [0, 1])
 def test_evidence_evaluator_rejects_vacuous_equals(operand_count):
     from mub.vnext.contracts.v3.task import QueryGoldEvidenceV3

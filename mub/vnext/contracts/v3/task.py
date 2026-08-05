@@ -768,7 +768,7 @@ class MemUpdateTaskV3(ImmutableContractModel):
                     or not targets <= influential_objects
                 ):
                     raise ValueError("G derivation does not satisfy minimum_objects or target influence")
-                _validate_consistency_read_eligibility(
+                primary_version_set = _validate_consistency_read_eligibility(
                     evidence,
                     targets,
                     histories,
@@ -795,23 +795,15 @@ class MemUpdateTaskV3(ImmutableContractModel):
                         or not targets <= stale_influential_objects
                     ):
                         raise ValueError("stale alternative does not satisfy minimum_objects or target influence")
-                    _validate_consistency_read_eligibility(
+                    stale_version_set = _validate_consistency_read_eligibility(
                         alternative,
                         targets,
                         histories,
                         require_exact_event_coverage=True,
                         version_rows=derivation_version_rows,
                     )
-                    if _derivation_resolved_version_set(
-                        alternative,
-                        histories,
-                        derivation_version_rows,
-                    ) == _derivation_resolved_version_set(
-                        evidence,
-                        histories,
-                        derivation_version_rows,
-                    ):
-                        raise ValueError("stale alternative resolves the same ledger versions as the primary derivation")
+                    if stale_version_set == primary_version_set:
+                        raise ValueError("stale alternative resolves the same ledger versions; version set must differ")
         semantic_queries = [
             _canonical_bytes(_query_semantic_projection(query, event_position))
             for query in self.queries
@@ -960,10 +952,11 @@ def _validate_consistency_read_eligibility(
     selected_by_target=None,
     require_exact_event_coverage=False,
     version_rows=None,
-) -> None:
+) -> frozenset[tuple[tuple[str, str, str, str | None], int]]:
     if version_rows is None:
         version_rows = lambda ledger: ledger.entries
     consumed_events = set()
+    resolved_versions = set()
     for step in evidence.derivation_steps:
         if not _derivation_step_reads_support(step):
             continue
@@ -977,6 +970,7 @@ def _validate_consistency_read_eligibility(
         identity, version = components[0]
         if identity not in targets:
             continue
+        resolved_versions.add((identity, version.version_index))
         if selected_by_target is not None and all(
             version.version_index != selected.version_index
             for selected in selected_by_target[identity]
@@ -985,6 +979,7 @@ def _validate_consistency_read_eligibility(
         consumed_events.update(authenticated_events)
     if require_exact_event_coverage and consumed_events != set(evidence.supporting_event_ids):
         raise ValueError("derivation read provenance is not eligible for authenticated evidence support")
+    return frozenset(resolved_versions)
 
 
 def _validate_reference_resolution_binding(
@@ -1330,27 +1325,6 @@ def _derivation_influential_objects(
                 for identity in influences[step.input_step_ids[index]]
             }
     return influences[evidence.final_derivation_step_id]
-
-
-def _derivation_resolved_version_set(
-    evidence,
-    ledgers,
-    version_rows,
-) -> frozenset[tuple[tuple[str, str, str, str | None], int]]:
-    resolved_versions = set()
-    for step in evidence.derivation_steps:
-        if not _derivation_step_reads_support(step):
-            continue
-        components, _ = _resolved_derivation_read_components(
-            step,
-            ledgers,
-            version_rows,
-        )
-        resolved_versions.update(
-            (identity, version.version_index)
-            for identity, version in components
-        )
-    return frozenset(resolved_versions)
 
 
 def _derivation_read_support(
