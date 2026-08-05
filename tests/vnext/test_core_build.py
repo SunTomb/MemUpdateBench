@@ -753,3 +753,108 @@ def test_snapshot_validation_rejects_canonical_partial_core_id_substitution(
 
     with pytest.raises(ValueError, match="selected semantic core IDs"):
         core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_canonical_split_assignment_swap(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, _, expected_cores = partial_snapshot_bundle
+    train_assignment = next(
+        assignment
+        for assignment in partial_10.assignments
+        if assignment.task_family is TaskFamily.INTERLEAVED_MULTI_SLOT
+        and assignment.split is Split.TRAIN
+    )
+    test_assignment = next(
+        assignment
+        for assignment in partial_10.assignments
+        if assignment.task_family is TaskFamily.INTERLEAVED_MULTI_SLOT
+        and assignment.split is Split.TEST
+    )
+    swapped_splits = {
+        train_assignment.semantic_core_id: Split.TEST,
+        test_assignment.semantic_core_id: Split.TRAIN,
+    }
+    assignments = tuple(
+        assignment.validated_replace(
+            split=swapped_splits[assignment.semantic_core_id]
+        )
+        if assignment.semantic_core_id in swapped_splits
+        else assignment
+        for assignment in partial_10.assignments
+    )
+    tasks = tuple(
+        task.validated_replace(
+            metadata=task.metadata.validated_replace(
+                split=swapped_splits[task.metadata.split_key.semantic_core_id]
+            )
+        )
+        if task.metadata.split_key.semantic_core_id in swapped_splits
+        else task
+        for task in partial_10.tasks
+    )
+    corrupted = partial_10.validated_replace(
+        assignments=assignments,
+        tasks=tasks,
+    )
+
+    with pytest.raises(ValueError, match="canonical Core split assignment"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_coherent_derived_profile_corruption(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, _, expected_cores = partial_snapshot_bundle
+    core_id = partial_10.assignments[0].semantic_core_id
+    corrupted = _replace_core_diagnostics(
+        partial_10,
+        core_id,
+        profile_changes={
+            "task_family": TaskFamily.NOOP_WRITE_DISCIPLINE.value,
+            "difficulty": "hard",
+            "profile_name": "hard",
+            "profile_version": "corrupted-profile-v0",
+        },
+    )
+
+    with pytest.raises(ValueError, match="canonical resolved profile"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_binds_snapshot_and_task_config_hashes(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, _, expected_cores = partial_snapshot_bundle
+    wrong_hash = "0" * 64
+    tasks = tuple(
+        task.validated_replace(
+            metadata=task.metadata.validated_replace(
+                generation_config_hash=wrong_hash
+            )
+        )
+        for task in partial_10.tasks
+    )
+    corrupted = partial_10.validated_replace(
+        config_sha256=wrong_hash,
+        tasks=tasks,
+    )
+
+    with pytest.raises(ValueError, match="canonical config hash"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
+
+
+def test_snapshot_validation_rejects_empty_zero_quota_snapshot(
+    partial_snapshot_bundle,
+) -> None:
+    config, partial_10, _, expected_cores = partial_snapshot_bundle
+    corrupted = partial_10.validated_replace(
+        assignments=(),
+        tasks=(),
+        family_core_counts={family: 0 for family in partial_10.family_core_counts},
+        core_counts={split.value: 0 for split in (Split.TRAIN, Split.DEV, Split.TEST)},
+        task_counts={split.value: 0 for split in (Split.TRAIN, Split.DEV, Split.TEST)},
+    )
+
+    with pytest.raises(ValueError, match="positive cores_per_family quota"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)

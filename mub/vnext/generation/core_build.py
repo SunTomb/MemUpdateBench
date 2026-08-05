@@ -23,12 +23,13 @@ from mub.vnext.generation.family_a import generate_core_family_a_cores
 from mub.vnext.generation.family_b import generate_core_family_b_cores
 from mub.vnext.generation.family_c import generate_core_family_c_cores
 from mub.vnext.generation.family_d import generate_core_family_d_cores
+from mub.vnext.generation.render import _resolve_core_profile
 from mub.vnext.generation.splits import (
     CoreSplitAssignment,
     _ranking_sha256,
     _resolved_strata,
 )
-from mub.vnext.io import semantic_task_hash_v3
+from mub.vnext.io import semantic_task_hash_v3, sha256_model
 
 
 _CORE_FAMILIES = (
@@ -299,6 +300,13 @@ def _validate_snapshot(
     config: CoreConfig,
     expected_cores: tuple[SemanticCore, ...] | None = None,
 ) -> None:
+    canonical_config_hash = sha256_model(config)
+    if snapshot.config_sha256 != canonical_config_hash or any(
+        task.metadata.generation_config_hash != canonical_config_hash
+        for task in snapshot.tasks
+    ):
+        raise ValueError("Core snapshot does not match the canonical config hash")
+
     assignment_by_core = {
         assignment.semantic_core_id: assignment for assignment in snapshot.assignments
     }
@@ -380,27 +388,35 @@ def _validate_snapshot(
 
     canonical_cores = expected_cores if expected_cores is not None else _generated_cores(config)
     _validate_core_diagnostic_schedule(canonical_cores, config)
-    if expected_family_core_counts != config.family_core_counts:
+    if not snapshot.assignments:
+        raise ValueError("Core snapshot requires a positive cores_per_family quota")
+    if expected_family_core_counts == config.family_core_counts:
+        selection_limit = None
+    else:
         partial_family_quotas = set(expected_family_core_counts.values())
         if len(partial_family_quotas) != 1:
             raise ValueError(
                 "Partial Core snapshot families must share one common "
                 "cores_per_family quota"
             )
-        common_quota = next(iter(partial_family_quotas))
-        expected_partial_ids = {
-            assignment.semantic_core_id
-            for assignment in _select_and_assign(
-                canonical_cores,
-                seed=config.seed,
-                splits=config.splits,
-                cores_per_family=common_quota,
-            )
-        }
-        if set(assignment_by_core) != expected_partial_ids:
-            raise ValueError(
-                "Partial Core snapshot selected semantic core IDs are invalid"
-            )
+        selection_limit = next(iter(partial_family_quotas))
+        if selection_limit <= 0:
+            raise ValueError("Core snapshot requires a positive cores_per_family quota")
+    canonical_assignments = _select_and_assign(
+        canonical_cores,
+        seed=config.seed,
+        splits=config.splits,
+        cores_per_family=selection_limit,
+    )
+    canonical_assignment_by_core = {
+        assignment.semantic_core_id: assignment
+        for assignment in canonical_assignments
+    }
+    if assignment_by_core != canonical_assignment_by_core:
+        raise ValueError(
+            "Core snapshot selected semantic core IDs or canonical Core split "
+            "assignments are invalid"
+        )
 
     diagnostic_records = {}
     for core_id, tasks in tasks_by_core.items():
@@ -433,15 +449,17 @@ def _validate_snapshot(
         expected = canonical_by_id.get(core_id)
         if expected is None:
             raise ValueError("Core snapshot contains an unknown semantic core ID")
+        family_label = chr(ord("A") + _CORE_FAMILIES.index(expected.task_family))
+        expected_profile = _resolve_core_profile(expected, expected.query_type)
         if (
             record.task_family is not expected.task_family
-            or any(
-                record.profile.get(key) != value
-                for key, value in expected.profile.items()
-            )
-            or dict(record.stratification) != dict(expected.stratification)
+            or dict(record.profile) != dict(expected_profile)
         ):
-            family_label = chr(ord("A") + _CORE_FAMILIES.index(expected.task_family))
+            raise ValueError(
+                "Core snapshot canonical resolved profile does not match "
+                f"Core Family {family_label} schedule"
+            )
+        if dict(record.stratification) != dict(expected.stratification):
             raise ValueError(
                 "Core snapshot diagnostic metadata does not match "
                 f"Core Family {family_label} schedule"
