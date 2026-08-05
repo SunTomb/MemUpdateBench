@@ -26,15 +26,6 @@ CORE_CELLS = {
     for entity_condition in ("distinct", "same_name", "alias", "namespace_collision")
     for attribute_condition in ("exact", "paraphrase", "near_name")
 }
-CORE_TRAPS = (
-    "transient",
-    "hypothetical",
-    "negated",
-    "uncertain",
-    "semantic_near_miss",
-    "duplicate_current",
-    "unsupported_inference",
-)
 CORE_DENSITIES = (0.25, 0.50, 0.75)
 
 
@@ -163,9 +154,13 @@ def test_core_family_c_is_deterministic_and_does_not_mutate_config():
     assert config.model_dump(mode="json") == before
 
 
-def test_core_family_d_is_exact_seven_by_three_by_twenty_cartesian_product():
+def test_core_family_d_config_and_generator_agree_on_seven_by_three_grid():
     config = load_core_config(CORE_CONFIG_PATH)
     cores = family_d.generate_core_family_d_cores(config)
+    configured_traps = tuple(config.families.noop_write_discipline.trap_types)
+    generated_traps = tuple(
+        dict.fromkeys(core.stratification["trap_type"] for core in cores)
+    )
     cells = Counter(
         (
             core.stratification["trap_type"],
@@ -174,10 +169,16 @@ def test_core_family_d_is_exact_seven_by_three_by_twenty_cartesian_product():
         for core in cores
     )
 
+    assert len(configured_traps) == 7
+    assert generated_traps == configured_traps
     assert len(cores) == 420
     assert [core.core_index for core in cores] == list(range(420))
     assert cells == Counter(
-        {(trap, density): 20 for trap in CORE_TRAPS for density in CORE_DENSITIES}
+        {
+            (trap, density): 20
+            for trap in configured_traps
+            for density in CORE_DENSITIES
+        }
     )
     assert len({core.core_id for core in cores}) == 420
     assert len({core.trajectory_id for core in cores}) == 420

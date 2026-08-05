@@ -106,3 +106,34 @@ def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
 
     with pytest.raises(ValidationError, match="frozen"):
         first.tasks = ()
+
+
+def test_compile_core_snapshot_honors_alternate_integral_split_ratios() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    payload = config.model_dump(mode="json")
+    payload["splits"] = {"train": 0.5, "dev": 0.25, "test": 0.25}
+    alternate = type(config).model_validate(payload)
+
+    snapshot = compile_core_snapshot(alternate, cores_per_family=4)
+
+    assert dict(snapshot.core_counts) == {"train": 8, "dev": 4, "test": 4}
+    assert Counter(
+        (assignment.task_family.value, assignment.split.value)
+        for assignment in snapshot.assignments
+    ) == {
+        (family, split): count
+        for family in (
+            "repeated_same_slot_update",
+            "interleaved_multi_slot_update",
+            "entity_attribute_grounding",
+            "noop_write_discipline",
+        )
+        for split, count in (("train", 2), ("dev", 1), ("test", 1))
+    }
+
+
+def test_compile_core_snapshot_rejects_nonintegral_selected_split_quotas() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+
+    with pytest.raises(ValueError, match="whole number"):
+        compile_core_snapshot(config, cores_per_family=4)

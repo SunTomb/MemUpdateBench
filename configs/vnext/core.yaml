@@ -36,7 +36,7 @@ families:
     semantic_core_count: 420
     difficulties: [easy, medium, hard]
     noop_densities: [0.25, 0.50, 0.75]
-    trap_types: [semantic_near_miss, duplicate_current, other_entity_correction, other_attribute_correction]
+    trap_types: [transient, hypothetical, negated, uncertain, semantic_near_miss, duplicate_current, unsupported_inference]
 mechanism_slice:
   stale_counts: [1, 16]
   conditions:

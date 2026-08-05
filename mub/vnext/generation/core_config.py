@@ -54,6 +54,25 @@ CORE_FAMILY_B_INTERLEAVING_PATTERNS = (
     "adversarial_adjacent",
 )
 
+CoreFamilyDTrap = Literal[
+    "transient",
+    "hypothetical",
+    "negated",
+    "uncertain",
+    "semantic_near_miss",
+    "duplicate_current",
+    "unsupported_inference",
+]
+CORE_FAMILY_D_TRAPS = (
+    "transient",
+    "hypothetical",
+    "negated",
+    "uncertain",
+    "semantic_near_miss",
+    "duplicate_current",
+    "unsupported_inference",
+)
+
 CORE_FAMILY_COUNTS = MappingProxyType(
     {
         "repeated_same_slot_update": 480,
@@ -89,6 +108,7 @@ class CoreEntityAttributeGroundingConfig(EntityAttributeGroundingConfig):
 
 class CoreNoopWriteDisciplineConfig(NoopWriteDisciplineConfig):
     semantic_core_count: StrictPositiveInt
+    trap_types: Annotated[list[CoreFamilyDTrap], Field(min_length=1)]
 
 
 class CoreFamiliesConfig(ContractModel):
@@ -160,6 +180,11 @@ class CoreConfig(ContractModel):
         ):
             raise ValueError(
                 "Core Family B interleaving_patterns must match the approved order"
+            )
+        family_d = self.families.noop_write_discipline
+        if tuple(family_d.trap_types) != CORE_FAMILY_D_TRAPS:
+            raise ValueError(
+                "Core Family D trap_types must match the seven approved traps in order"
             )
 
         ratios = {
@@ -234,10 +259,12 @@ __all__ = [
     "CORE_FAMILY_B_ACTIVE_OBJECT_COUNTS",
     "CORE_FAMILY_B_DEPTHS",
     "CORE_FAMILY_B_INTERLEAVING_PATTERNS",
+    "CORE_FAMILY_D_TRAPS",
     "CORE_FAMILY_COUNTS",
     "CoreConfig",
     "CoreFamiliesConfig",
     "CoreFamilyACondition",
+    "CoreFamilyDTrap",
     "CoreSurfaceDeclaration",
     "CoreSurfaceId",
     "load_core_config",

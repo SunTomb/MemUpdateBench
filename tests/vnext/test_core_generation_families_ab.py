@@ -175,6 +175,9 @@ def test_core_family_b_balances_depth_pattern_cells_inside_each_object_stratum()
     assert Counter(core.profile["active_object_count"] for core in cores) == {
         count: 120 for count in (2, 4, 8, 12)
     }
+    assert Counter(core.profile["update_depth"] for core in cores) == {
+        depth: 160 for depth in (1, 4, 16)
+    }
     for active_count in (2, 4, 8, 12):
         stratum = [
             core for core in cores if core.profile["active_object_count"] == active_count

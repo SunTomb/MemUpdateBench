@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -13,6 +14,7 @@ from mub.vnext.contracts.common import (
 )
 from mub.vnext.contracts.enums import Split, TaskFamily
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.generation.config import SplitConfig
 from mub.vnext.generation.core import GenerationContext, SemanticCore
 from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.core_render_v3 import render_core_v3
@@ -35,7 +37,6 @@ _CORE_FAMILIES = (
     TaskFamily.NOOP_WRITE_DISCIPLINE,
 )
 _SPLIT_ORDER = (Split.TRAIN, Split.DEV, Split.TEST)
-_SPLIT_WEIGHTS = (7, 1, 2)
 _VARIANTS_PER_CORE = 4
 HashString = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", strict=True)]
 
@@ -54,15 +55,35 @@ class CompiledCoreSnapshot(ImmutableContractModel):
         return freeze_mapping(value)
 
 
+def _split_quotas(
+    selected_count: int,
+    splits: SplitConfig,
+) -> tuple[int, int, int]:
+    ratios = (splits.train, splits.dev, splits.test)
+    quotas = []
+    for split, ratio in zip(_SPLIT_ORDER, ratios, strict=True):
+        quota = Decimal(selected_count) * Decimal(str(ratio))
+        if quota != quota.to_integral_value():
+            raise ValueError(
+                f"selected Core family count {selected_count} must allocate a whole "
+                f"number of cores to split {split.value}"
+            )
+        quotas.append(int(quota))
+    if sum(quotas) != selected_count:
+        raise ValueError("configured Core split quotas must preserve the selected count")
+    return tuple(quotas)
+
+
 def _validate_limit(config: CoreConfig, cores_per_family: int | None) -> int | None:
     if cores_per_family is None:
         return None
     if type(cores_per_family) is not int:
         raise TypeError("cores_per_family must be an exact integer or None")
-    if cores_per_family <= 0 or cores_per_family % 10:
-        raise ValueError("cores_per_family must be a positive multiple of 10")
+    if cores_per_family <= 0:
+        raise ValueError("cores_per_family must be positive")
     if any(cores_per_family > count for count in config.family_core_counts.values()):
         raise ValueError("cores_per_family cannot exceed any configured family count")
+    _split_quotas(cores_per_family, config.splits)
     return cores_per_family
 
 
@@ -90,6 +111,7 @@ def _select_and_assign(
     cores: tuple[SemanticCore, ...],
     *,
     seed: int,
+    splits: SplitConfig,
     cores_per_family: int | None,
 ) -> tuple[CoreSplitAssignment, ...]:
     assignments = []
@@ -103,9 +125,7 @@ def _select_and_assign(
             ranked.append((ranking, core.core_id, core, strata))
         ranked.sort(key=lambda item: (item[0], item[1]))
         selected = ranked[:cores_per_family] if cores_per_family is not None else ranked
-        if len(selected) % 10:
-            raise ValueError("selected Core family counts must be divisible by 10")
-        quotas = tuple(len(selected) * weight // 10 for weight in _SPLIT_WEIGHTS)
+        quotas = _split_quotas(len(selected), splits)
         offset = 0
         for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
             for ranking, _, core, strata in selected[offset : offset + quota]:
@@ -230,6 +250,7 @@ def compile_core_snapshot(
     assignments = _select_and_assign(
         cores,
         seed=config.seed,
+        splits=config.splits,
         cores_per_family=limit,
     )
     core_by_id = {core.core_id: core for core in cores}

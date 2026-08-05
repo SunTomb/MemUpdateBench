@@ -669,12 +669,15 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
     cell_counts = Counter(
         (
             active_count,
-            depths[group_in_stratum % len(depths)],
+            depths[
+                (group_in_stratum + pattern_index + active_stratum_index)
+                % len(depths)
+            ],
             pattern,
         )
-        for active_count in active_counts
+        for active_stratum_index, active_count in enumerate(active_counts)
         for group_in_stratum in range(groups_per_stratum)
-        for pattern in patterns
+        for pattern_index, pattern in enumerate(patterns)
     )
     difficulty_counts = Counter(
         _core_family_b_difficulty(active_count)
@@ -687,22 +690,25 @@ def generate_core_family_b_cores(config: CoreConfig) -> list[SemanticCore]:
         difficulty = _core_family_b_difficulty(active_object_count)
         for group_in_stratum in range(groups_per_stratum):
             group_index = active_stratum_index * groups_per_stratum + group_in_stratum
-            depth = depths[group_in_stratum % len(depths)]
             axis_index = group_index % len(axes)
-            base_event_count = active_object_count + depth
-            distractor_count = canonical_cross_slot_update_count(
-                base_event_count,
-                density,
-            )
-            trajectories = _build_core_family_b_trajectories(
-                config,
-                group_index,
-                axes[axis_index],
-                depth,
-                active_object_count,
-                distractor_count,
-            )
             for pattern_index, pattern in enumerate(patterns):
+                depth = depths[
+                    (group_in_stratum + pattern_index + active_stratum_index)
+                    % len(depths)
+                ]
+                base_event_count = active_object_count + depth
+                distractor_count = canonical_cross_slot_update_count(
+                    base_event_count,
+                    density,
+                )
+                trajectories = _build_core_family_b_trajectories(
+                    config,
+                    group_index,
+                    axes[axis_index],
+                    depth,
+                    active_object_count,
+                    distractor_count,
+                )
                 core_index = (
                     active_stratum_index * 120
                     + group_in_stratum * len(patterns)
