@@ -10,7 +10,18 @@ from pydantic import BaseModel, Field, JsonValue, field_validator, model_validat
 from typing_extensions import Self
 
 from mub.vnext.contracts.common import ImmutableContractModel
-from mub.vnext.contracts.enums import ActionScope, AnswerSchema, Difficulty, EvaluationMode, EventRole, Operation, SourceType, Split
+from mub.vnext.contracts.enums import (
+    ActionScope,
+    AnswerDisposition,
+    AnswerSchema,
+    Difficulty,
+    EvaluationMode,
+    EventRole,
+    Operation,
+    ReferenceResolutionStatus,
+    SourceType,
+    Split,
+)
 from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, FrozenJsonValue, MemoryObjectKeyV3, StrictIdentifier, object_identity, validate_action_coherence
 from mub.vnext.contracts.v3.enums import LedgerEntryStatus, QueryTypeV3, SynthesisKindV3
 from mub.vnext.contracts.v3.version import SCHEMA_VERSION_V3
@@ -172,6 +183,28 @@ class GoldActionV3(ImmutableContractModel):
         return self
 
 
+class ReferenceCandidateV3(ImmutableContractModel):
+    candidate_id: StrictString
+    object_key: MemoryObjectKeyV3
+    evidence: str | None = Field(default=None, strict=True)
+    source_anchors: tuple[FrozenJsonObjectV3, ...] = ()
+
+
+class SurfaceReferenceV3(ImmutableContractModel):
+    reference_id: StrictString
+    surface_text: str = Field(strict=True)
+    normalized_text: str = Field(strict=True)
+    condition_kind: str | None = Field(default=None, strict=True)
+    evidence_kind: str | None = Field(default=None, strict=True)
+    candidate_ids: tuple[StrictString, ...] = ()
+
+    @model_validator(mode="after")
+    def _unique_candidate_links(self) -> Self:
+        if len(self.candidate_ids) != len(set(self.candidate_ids)):
+            raise ValueError("surface reference candidate IDs must be unique")
+        return self
+
+
 class CurrentSelector(ImmutableContractModel):
     kind: Literal["current"] = "current"
 
@@ -229,9 +262,36 @@ class MultiObjectCurrentSelector(ImmutableContractModel):
         return self
 
 
+class ReferenceResolutionSelector(ImmutableContractModel):
+    kind: Literal["reference_resolution"] = "reference_resolution"
+    reference_candidates: tuple[ReferenceCandidateV3, ...] = Field(min_length=1)
+    surface_references: tuple[SurfaceReferenceV3, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _coherent_reference_graph(self) -> Self:
+        candidate_ids = tuple(candidate.candidate_id for candidate in self.reference_candidates)
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("reference candidate IDs must be unique")
+        candidate_identities = tuple(_identity(candidate.object_key) for candidate in self.reference_candidates)
+        if len(candidate_identities) != len(set(candidate_identities)):
+            raise ValueError("reference candidate object identities must be unique")
+        reference_ids = tuple(reference.reference_id for reference in self.surface_references)
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("surface reference IDs must be unique")
+        declared = set(candidate_ids)
+        for reference in self.surface_references:
+            missing = set(reference.candidate_ids) - declared
+            if missing:
+                raise ValueError(
+                    f"surface reference {reference.reference_id} references unknown candidates {sorted(missing)}"
+                )
+        return self
+
+
 SelectorV3 = Annotated[
     CurrentSelector | PreviousSelector | ExactVersionSelector | EventAnchorSelector |
-    LogicalTimeAnchorSelector | TransitionSelector | OrderedHistorySelector | MultiObjectCurrentSelector,
+    LogicalTimeAnchorSelector | TransitionSelector | OrderedHistorySelector |
+    MultiObjectCurrentSelector | ReferenceResolutionSelector,
     Field(discriminator="kind"),
 ]
 
@@ -273,6 +333,7 @@ class MemoryQueryV3(ImmutableContractModel):
             QueryTypeV3.MULTI_OBJECT_CURRENT: {"multi_object_current"},
             QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP: {"current", "previous", "exact_version", "event_anchor", "logical_time_anchor", "transition", "ordered_history", "multi_object_current"},
             QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY: {"multi_object_current"},
+            QueryTypeV3.UNRESOLVED_REFERENCE: {"reference_resolution"},
         }
         if self.selector.kind not in allowed[self.query_type]:
             raise ValueError("selector kind does not match query_type")
@@ -289,6 +350,11 @@ class MemoryQueryV3(ImmutableContractModel):
                 raise ValueError("multi-object selector scope must match query targets")
             if self.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT and len(self.target_object_keys) > 1 and self.answer_schema not in {AnswerSchema.LIST, AnswerSchema.OBJECT}:
                 raise ValueError("direct multi-object current queries require list/object answer schema")
+        if isinstance(self.selector, ReferenceResolutionSelector):
+            if {_identity(candidate.object_key) for candidate in self.selector.reference_candidates} != {
+                _identity(key) for key in self.target_object_keys
+            }:
+                raise ValueError("reference-resolution candidate scope must match query targets")
         _require_unique_objects(self.target_object_keys, "query targets")
         return self
 
@@ -402,7 +468,11 @@ class StaleAlternativeEvidenceV3(ImmutableContractModel):
 
 class QueryGoldEvidenceV3(ImmutableContractModel):
     query_id: StrictString
-    answer: FrozenJsonValue
+    answer: FrozenJsonValue | None = None
+    disposition: AnswerDisposition | None = None
+    resolution_status: ReferenceResolutionStatus | None = None
+    selected_candidate_ids: tuple[StrictString, ...] = ()
+    abstention_reason: str | None = Field(default=None, strict=True)
     supporting_object_keys: tuple[MemoryObjectKeyV3, ...] = Field(min_length=1)
     supporting_event_ids: tuple[StrictString, ...] = Field(min_length=1)
     derivation_steps: tuple[DerivationStepV3, ...] = Field(min_length=1)
@@ -411,7 +481,42 @@ class QueryGoldEvidenceV3(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _validate_graph(self) -> Self:
-        return _validate_derivation_graph(self)
+        _validate_derivation_graph(self)
+        if len(self.selected_candidate_ids) != len(set(self.selected_candidate_ids)):
+            raise ValueError("selected candidate IDs must be unique")
+        typed_reference_fields = self.disposition is not None or self.resolution_status is not None
+        if not typed_reference_fields:
+            if self.selected_candidate_ids or self.abstention_reason is not None:
+                raise ValueError("ordinary gold evidence cannot carry reference-resolution fields")
+            if self.answer is None:
+                raise ValueError("ordinary gold evidence requires a non-null answer")
+            return self
+        if self.disposition is None or self.resolution_status is None:
+            raise ValueError("typed reference gold requires disposition and resolution_status")
+        if self.disposition == AnswerDisposition.UNAVAILABLE:
+            raise ValueError("UNAVAILABLE is runtime-only")
+        if self.disposition == AnswerDisposition.ANSWERED:
+            if self.resolution_status != ReferenceResolutionStatus.UNIQUE:
+                raise ValueError("ANSWERED reference gold must have UNIQUE resolution_status")
+            if len(self.selected_candidate_ids) != 1:
+                raise ValueError("ANSWERED reference gold must select exactly one candidate")
+            if self.answer is None:
+                raise ValueError("ANSWERED reference gold requires a non-null answer")
+            if self.abstention_reason is not None:
+                raise ValueError("ANSWERED reference gold cannot carry abstention_reason")
+        elif self.disposition == AnswerDisposition.ABSTAINED:
+            if self.resolution_status not in {
+                ReferenceResolutionStatus.AMBIGUOUS,
+                ReferenceResolutionStatus.NO_MATCH,
+            }:
+                raise ValueError("ABSTAINED reference gold requires AMBIGUOUS or NO_MATCH resolution_status")
+            if self.selected_candidate_ids:
+                raise ValueError("ABSTAINED reference gold cannot select candidates")
+            if self.answer is not None:
+                raise ValueError("ABSTAINED reference gold cannot carry an answer value")
+            if self.abstention_reason is None or not self.abstention_reason.strip():
+                raise ValueError("ABSTAINED reference gold requires a nonblank abstention_reason")
+        return self
 
 
 class MemUpdateTaskV3(ImmutableContractModel):
@@ -553,6 +658,19 @@ class MemUpdateTaskV3(ImmutableContractModel):
                 raise ValueError("answer evidence is not coherent with query targets")
             if set(evidence.supporting_event_ids) - set(event_ids):
                 raise ValueError("gold evidence references unknown event")
+            if isinstance(selector, ReferenceResolutionSelector):
+                for step in evidence.derivation_steps:
+                    if {_identity(key) for key in step.supporting_object_keys} - evidence_objects:
+                        raise ValueError("derivation uses object outside evidence scope")
+                    if set(step.supporting_event_ids) - set(evidence.supporting_event_ids):
+                        raise ValueError("derivation uses event outside evidence scope")
+                _validate_reference_resolution_binding(selector, evidence)
+                if evidence.disposition == AnswerDisposition.ANSWERED:
+                    _validate_answer_schema(evidence.answer, query.answer_schema)
+                _validate_derivation_read_bindings(evidence, histories)
+                continue
+            if evidence.disposition is not None:
+                raise ValueError("typed reference gold requires a reference-resolution selector")
             _validate_answer_schema(evidence.answer, query.answer_schema)
             selected_entries_by_target = {
                 target: _selector_entries(query.selector, histories[target], event_position, event_times, task_horizon)
@@ -871,6 +989,34 @@ def _validate_consistency_read_eligibility(
         raise ValueError("derivation read provenance is not eligible for authenticated evidence support")
 
 
+def _validate_reference_resolution_binding(
+    selector: ReferenceResolutionSelector,
+    evidence: QueryGoldEvidenceV3,
+) -> None:
+    if evidence.disposition is None or evidence.resolution_status is None:
+        raise ValueError("reference-resolution queries require typed gold disposition and resolution_status")
+    candidate_ids = {candidate.candidate_id for candidate in selector.reference_candidates}
+    linked_candidate_ids = {
+        candidate_id
+        for reference in selector.surface_references
+        for candidate_id in reference.candidate_ids
+    }
+    selected_candidate_ids = set(evidence.selected_candidate_ids)
+    if selected_candidate_ids - candidate_ids:
+        raise ValueError("reference gold selects unknown candidates")
+    if selected_candidate_ids - linked_candidate_ids:
+        raise ValueError("reference gold selects candidates not linked by the surface reference")
+    if evidence.resolution_status == ReferenceResolutionStatus.UNIQUE:
+        if len(linked_candidate_ids) != 1 or selected_candidate_ids != linked_candidate_ids:
+            raise ValueError("UNIQUE reference resolution must link and select exactly one candidate")
+    elif evidence.resolution_status == ReferenceResolutionStatus.AMBIGUOUS:
+        if len(linked_candidate_ids) < 2:
+            raise ValueError("AMBIGUOUS reference resolution must link multiple candidates")
+    elif evidence.resolution_status == ReferenceResolutionStatus.NO_MATCH:
+        if linked_candidate_ids:
+            raise ValueError("NO_MATCH reference resolution cannot link candidates")
+
+
 def _require_unique_objects(keys: tuple[MemoryObjectKeyV3, ...], label: str) -> None:
     if len({_identity(key) for key in keys}) != len(keys):
         raise ValueError(f"{label} must contain unique canonical identities")
@@ -886,7 +1032,31 @@ def _semantic_anchor_projection(anchor: Mapping[str, JsonValue]) -> Mapping[str,
 
 
 def _query_semantic_projection(query: MemoryQueryV3, event_index: Mapping[str, int]) -> Mapping[str, JsonValue]:
-    selector = _semantic_value(query.selector)
+    if isinstance(query.selector, ReferenceResolutionSelector):
+        candidate_indices = {
+            candidate.candidate_id: index
+            for index, candidate in enumerate(query.selector.reference_candidates)
+        }
+        selector = {
+            "kind": query.selector.kind,
+            "reference_candidates": [
+                {"object_key": _semantic_value(candidate.object_key)}
+                for candidate in query.selector.reference_candidates
+            ],
+            "surface_references": [
+                {
+                    "condition_kind": reference.condition_kind,
+                    "evidence_kind": reference.evidence_kind,
+                    "candidate_indices": [
+                        candidate_indices[candidate_id]
+                        for candidate_id in reference.candidate_ids
+                    ],
+                }
+                for reference in query.selector.surface_references
+            ],
+        }
+    else:
+        selector = _semantic_value(query.selector)
     if isinstance(query.selector, EventAnchorSelector):
         try:
             selector["event_id"] = event_index[query.selector.event_id]
@@ -996,9 +1166,10 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
         })
     histories.sort(key=lambda item: _canonical_bytes(item["object_key"]))
     evidence_by_query = {}
+    query_by_id = {query.query_id: query for query in task.queries}
     for gold in task.gold_evidence:
         alternative = gold.stale_alternative
-        evidence_by_query[gold.query_id] = {
+        projection = {
             "answer": _semantic_value(gold.answer),
             "supporting_objects": sorted((_semantic_value(key) for key in gold.supporting_object_keys), key=_canonical_bytes),
             "supporting_event_indices": sorted(event_ref(event_id) for event_id in gold.supporting_event_ids),
@@ -1010,6 +1181,23 @@ def _semantic_task_projection(task: MemUpdateTaskV3) -> Mapping[str, JsonValue]:
                 "derivation_graph": _derivation_semantic_projection(alternative, event_index),
             },
         }
+        if gold.disposition is not None:
+            query = query_by_id[gold.query_id]
+            if not isinstance(query.selector, ReferenceResolutionSelector):
+                raise ValueError("typed reference gold requires a reference-resolution selector")
+            candidate_indices = {
+                candidate.candidate_id: index
+                for index, candidate in enumerate(query.selector.reference_candidates)
+            }
+            projection["reference_resolution"] = {
+                "disposition": gold.disposition.value,
+                "resolution_status": gold.resolution_status.value,
+                "selected_candidate_indices": [
+                    candidate_indices[candidate_id]
+                    for candidate_id in gold.selected_candidate_ids
+                ],
+            }
+        evidence_by_query[gold.query_id] = projection
     bundles = [
         {
             "query": query_projection_by_id[query.query_id],
@@ -1223,7 +1411,7 @@ __all__ = [
     "GeneratorProvenanceV3", "GoldActionV3", "GoldEvidenceV3", "HistorySelector",
     "LedgerEntryStatus", "LegacyProvenanceV3", "LogicalTimeAnchorSelector", "LogicalTimeSelector", "MemUpdateTaskV3", "MemoryEventV3", "MemoryQueryV3",
     "MultiObjectCurrentConsistencySynthesis", "MultiObjectCurrentSelector", "MultiObjectCurrentStateSelector", "OrderedHistorySelector",
-    "PreviousSelector", "QueryGoldEvidenceV3", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "StaleAlternativeEvidenceV3", "SynthesisSpecV3", "TaskMetadataV3",
+    "PreviousSelector", "QueryGoldEvidenceV3", "ReferenceCandidateV3", "ReferenceResolutionSelector", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "StaleAlternativeEvidenceV3", "SurfaceReferenceV3", "SynthesisSpecV3", "TaskMetadataV3",
     "TransitionSelector", "UpdateSensitiveMultiHopSynthesis", "VersionHistoryEntry", "VersionHistoryLedger",
     "VersionIndexSelector", "VersionLedgerEntryV3", "VersionLedgerV3",
 ]

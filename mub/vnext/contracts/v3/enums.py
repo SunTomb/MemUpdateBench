@@ -10,6 +10,7 @@ class QueryTypeV3(StringEnum):
     MULTI_OBJECT_CURRENT = "multi_object_current"
     UPDATE_SENSITIVE_MULTI_HOP = "update_sensitive_multi_hop"
     MULTI_OBJECT_CURRENT_CONSISTENCY = "multi_object_current_consistency"
+    UNRESOLVED_REFERENCE = "unresolved_reference"
 
 
 class SynthesisKindV3(StringEnum):
