@@ -56,6 +56,57 @@ families:
     schedule:
       cores_per_trap_density_cell: 20
       split_core_counts: {train: 294, dev: 42, test: 84}
+  deletion_forgetting:
+    enabled: true
+    semantic_core_count: 480
+    lifecycle_cells:
+      - explicit_object_or_attribute_deletion
+      - entity_wide_deletion
+      - namespace_privacy_wipe
+      - correction_versus_deletion_hard_negative
+      - logical_ttl_expiry
+      - post_delete_similar_retrieval
+      - delete_then_relearn
+      - scoped_delete_protected_collateral
+    difficulties: [easy, medium, hard]
+    deletion_positions: [early, middle, final]
+    schedule:
+      cores_per_lifecycle_cell: 60
+      cores_per_difficulty: 160
+      cores_per_deletion_position: 140
+      non_deletion_hard_negative_count: 60
+      split_core_counts: {train: 336, dev: 48, test: 96}
+  current_historical_query:
+    enabled: true
+    semantic_core_count: 420
+    selector_kinds:
+      - current
+      - previous
+      - exact_version
+      - event_anchor
+      - logical_time_anchor
+      - transition
+      - ordered_history
+    minimum_present_versions: 4
+    schedule:
+      trajectory_count: 60
+      selectors_per_trajectory: 7
+      present_versions_per_trajectory: 4
+      split_core_counts: {train: 294, dev: 42, test: 84}
+  long_horizon_memory_synthesis:
+    enabled: true
+    semantic_core_count: 300
+    synthesis_kinds: [update_sensitive_multi_hop, multi_object_current_consistency]
+    hop_counts: [2, 3, 4]
+    consistency_object_counts: [3, 5, 8]
+    consistency_answer_kinds: [boolean_consistency, exact_inconsistent_object]
+    schedule:
+      update_sensitive_core_count: 180
+      cores_per_hop_count: 60
+      consistency_core_count: 120
+      cores_per_object_count: 40
+      cores_per_object_answer_kind_cell: 20
+      split_core_counts: {train: 210, dev: 30, test: 60}
 mechanism_slice:
   stale_counts: [1, 16]
   conditions:

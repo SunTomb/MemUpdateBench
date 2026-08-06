@@ -143,6 +143,47 @@ def test_family_e_generator_balances_exactly_three_cores_per_approved_cell():
         validate(core)
 
 
+def test_family_e_full_schedule_has_eight_sixty_core_cells_and_balanced_axes():
+    generate, _, _ = _api()
+
+    cores = generate(_config(), profile="full")
+
+    assert len(cores) == 480
+    assert Counter(core.stratification["lifecycle_cell"] for core in cores) == {
+        cell: 60 for cell in LIFECYCLE_CELLS
+    }
+    assert Counter(core.difficulty.value for core in cores) == {
+        "easy": 160,
+        "medium": 160,
+        "hard": 160,
+    }
+    assert Counter(core.stratification["deletion_position"] for core in cores) == {
+        "early": 140,
+        "middle": 140,
+        "final": 140,
+        "not_applicable": 60,
+    }
+    assert len({core.core_id for core in cores}) == 480
+    for core in cores:
+        delete_indices = [
+            index
+            for index, event in enumerate(core.events)
+            if event.operation is Operation.DELETE
+        ]
+        position = core.stratification["deletion_position"]
+        if not delete_indices:
+            assert position == "not_applicable"
+            continue
+        relative_position = delete_indices[0] / (len(core.events) - 1)
+        if position == "early":
+            assert relative_position < 1 / 3
+        elif position == "middle":
+            assert 1 / 3 <= relative_position <= 2 / 3
+        else:
+            assert relative_position > 2 / 3
+
+
+
 def test_family_e_core_semantics_preserve_scope_ttl_relearn_and_privacy_invariants():
     generate, _, _ = _api()
     cores = generate(_config())

@@ -165,6 +165,74 @@ def test_family_f_generator_has_three_trajectories_and_exactly_seven_typed_selec
             assert not any("selector" in key for event in core.events for key in event.metadata)
 
 
+def test_family_f_full_schedule_has_sixty_seven_selector_trajectories():
+    from mub.vnext.generation.core_render_v3 import render_core_v3
+    from mub.vnext.generation.identity import stable_id
+
+    generate, _, _, _ = _api()
+    config = _config()
+    cores = generate(config, profile="full")
+
+    assert len(cores) == 420
+    assert len({core.core_id for core in cores}) == 420
+    assert Counter(core.difficulty.value for core in cores) == {
+        "easy": 140,
+        "medium": 140,
+        "hard": 140,
+    }
+    by_trajectory = defaultdict(list)
+    for core in cores:
+        by_trajectory[core.trajectory_id].append(core)
+        assert len(core.events) >= 4
+        assert not any(event.operation is Operation.DELETE for event in core.events)
+    assert len(by_trajectory) == 60
+    assert all(len(group) == 7 for group in by_trajectory.values())
+    assert all(
+        Counter(core.query_selector.kind for core in group)
+        == Counter({kind: 1 for kind in SELECTOR_KINDS})
+        for group in by_trajectory.values()
+    )
+
+    group = next(iter(by_trajectory.values()))
+    tasks = [
+        render_core_v3(
+            core,
+            split=Split.TRAIN,
+            surface_variant=0,
+            context=GenerationContext(config=config, code_revision="task-561-red"),
+        )
+        for core in group
+    ]
+    expected_version_group = stable_id(
+        "version_group", {"trajectory_id": group[0].trajectory_id}
+    )
+    assert {task.metadata.split_key.trajectory_id for task in tasks} == {
+        group[0].trajectory_id
+    }
+    assert {task.metadata.split_key.version_group_id for task in tasks} == {
+        expected_version_group
+    }
+    assert {task.metadata.split for task in tasks} == {Split.TRAIN}
+
+
+def test_family_f_full_validator_authenticates_core_and_trajectory_groups():
+    from mub.vnext.generation.family_f import validate_family_f_full_core
+
+    cores = _api()[0](_config(), profile="full")
+    source = cores[0]
+    other = next(core for core in cores if core.trajectory_id != source.trajectory_id)
+
+    wrong_trajectory = source.model_copy(
+        update={"trajectory_id": other.trajectory_id}
+    )
+    with pytest.raises(ValueError, match="trajectory|canonical"):
+        validate_family_f_full_core(wrong_trajectory, _config())
+
+    wrong_core_id = source.model_copy(update={"core_id": other.core_id})
+    with pytest.raises(ValueError, match="core|canonical"):
+        validate_family_f_full_core(wrong_core_id, _config())
+
+
 @pytest.mark.parametrize(
     ("selector_kind", "selected_index"),
     (

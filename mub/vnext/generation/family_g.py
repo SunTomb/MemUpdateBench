@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EvaluationMode, EventRole, Operation, QueryType, Split, TaskFamily
@@ -79,6 +79,49 @@ _CONSISTENCY_SPECS = tuple(
 )
 
 
+def _full_multi_hop_specs(
+    hop_counts: tuple[int, ...],
+    cores_per_hop: int,
+) -> tuple[_MultiHopSpec, ...]:
+    specs: list[_MultiHopSpec] = []
+    for hop_count in hop_counts:
+        positions = ("early", "final") if hop_count == 2 else (
+            "early",
+            "middle",
+            "final",
+        )
+        per_position = cores_per_hop // len(positions)
+        for position in positions:
+            for local_index in range(per_position):
+                if position == "early":
+                    stale_index = 0
+                elif position == "final":
+                    stale_index = hop_count - 1
+                else:
+                    stale_index = 1 + local_index % (hop_count - 2)
+                specs.append(_MultiHopSpec(hop_count, position, stale_index))
+    return tuple(specs)
+
+
+def _full_consistency_specs(
+    object_counts: tuple[int, ...],
+    cores_per_object: int,
+) -> tuple[_ConsistencySpec, ...]:
+    scenarios = (
+        ("boolean_consistency", "currently_consistent"),
+        ("boolean_consistency", "currently_inconsistent"),
+        ("exact_inconsistent_object", "first_exact"),
+        ("exact_inconsistent_object", "last_exact"),
+    )
+    per_scenario = cores_per_object // len(scenarios)
+    return tuple(
+        _ConsistencySpec(object_count, answer_kind, scenario)
+        for object_count in object_counts
+        for answer_kind, scenario in scenarios
+        for _ in range(per_scenario)
+    )
+
+
 def _identity(key: Any) -> tuple[str, str, str, str | None]:
     if isinstance(key, dict):
         return key["namespace"], key["entity"], key["attribute"], key.get("subkey")
@@ -147,18 +190,54 @@ def _profile(query_type: QueryType, object_count: int, reasoning_depth: int) -> 
     }
 
 
-def _core_identifier(kind: str, index: int, payload: dict[str, Any]) -> str:
-    canonical_payload = {
+def _canonical_family_g_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
         key: list(value) if isinstance(value, tuple) else value
         for key, value in payload.items()
     }
+
+
+def _core_identifier(
+    kind: str,
+    index: int,
+    payload: dict[str, Any],
+    *,
+    profile: Literal["micro", "full"] = "micro",
+) -> str:
+    canonical_payload = _canonical_family_g_payload(payload)
+    index_key = "micro_index" if profile == "micro" else "full_index"
     return core_id(
         TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS.value,
-        {"family_g_kind": kind, "micro_index": index, **canonical_payload},
+        {"family_g_kind": kind, index_key: index, **canonical_payload},
     )
 
 
-def _build_multi_hop(index: int, spec: _MultiHopSpec) -> SemanticCore:
+def _full_evidence_metadata(
+    kind: str,
+    payload: dict[str, Any],
+) -> tuple[str, str, str]:
+    canonical_payload = _canonical_family_g_payload(payload)
+    fingerprint = stable_id(
+        "evidence_fingerprint",
+        {
+            "family_g_kind": kind,
+            **canonical_payload,
+        },
+    )
+    group_id = stable_id(
+        "evidence_group",
+        {"evidence_fingerprint": fingerprint},
+    )
+    trajectory = stable_id("trajectory", {"evidence_group_id": group_id})
+    return fingerprint, group_id, trajectory
+
+
+def _build_multi_hop(
+    index: int,
+    spec: _MultiHopSpec,
+    *,
+    profile: Literal["micro", "full"] = "micro",
+) -> SemanticCore:
     keys = _keys("update_sensitive_multi_hop", index, spec.hop_count)
     current = tuple(30 + index * 7 + operand * 3 for operand in range(spec.hop_count))
     previous = tuple(
@@ -175,24 +254,36 @@ def _build_multi_hop(index: int, spec: _MultiHopSpec) -> SemanticCore:
         "current": current,
         "previous": previous,
     }
+    stratification: dict[str, Any] = {
+        "synthesis_kind": "update_sensitive_multi_hop",
+        "hop_count": spec.hop_count,
+        "stale_sensitive_position": spec.stale_sensitive_position,
+        "stale_operand_index": spec.stale_operand_index,
+    }
+    trajectory = _trajectory_identifier("update_sensitive_multi_hop")
+    if profile == "full":
+        fingerprint, group_id, trajectory = _full_evidence_metadata(
+            "update_sensitive_multi_hop", payload
+        )
+        stratification.update({
+            "evidence_fingerprint": fingerprint,
+            "evidence_group_id": group_id,
+        })
     return SemanticCore(
-        core_id=_core_identifier("update_sensitive_multi_hop", index, payload),
+        core_id=_core_identifier(
+            "update_sensitive_multi_hop", index, payload, profile=profile
+        ),
         task_family=TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS,
         difficulty={2: Difficulty.EASY, 3: Difficulty.MEDIUM, 4: Difficulty.HARD}[spec.hop_count],
         core_index=index,
-        trajectory_id=_trajectory_identifier("update_sensitive_multi_hop"),
+        trajectory_id=trajectory,
         events=_events(keys, previous, current, index),
         query_targets=list(keys),
         query_type=QueryType.MULTI_OBJECT,
         query_selector=MultiObjectCurrentSelector(object_keys=keys),
         expected_answer=answer,
         profile=_profile(QueryType.MULTI_OBJECT, len(keys), spec.hop_count),
-        stratification={
-            "synthesis_kind": "update_sensitive_multi_hop",
-            "hop_count": spec.hop_count,
-            "stale_sensitive_position": spec.stale_sensitive_position,
-            "stale_operand_index": spec.stale_operand_index,
-        },
+        stratification=stratification,
     )
 
 
@@ -233,8 +324,14 @@ def _consistency_values(index: int, spec: _ConsistencySpec) -> tuple[tuple[int, 
     return tuple(previous), tuple(current), answer, stale_answer, stale_indices[0], stale_indices
 
 
-def _build_consistency(local_index: int, spec: _ConsistencySpec) -> SemanticCore:
-    core_index = len(_MULTI_HOP_SPECS) + local_index
+def _build_consistency(
+    local_index: int,
+    spec: _ConsistencySpec,
+    *,
+    multi_hop_count: int = len(_MULTI_HOP_SPECS),
+    profile: Literal["micro", "full"] = "micro",
+) -> SemanticCore:
+    core_index = multi_hop_count + local_index
     keys = _keys("multi_object_current_consistency", core_index, spec.object_count)
     previous, current, answer, stale_answer, stale_object_index, stale_indices = _consistency_values(local_index, spec)
     payload = {
@@ -245,27 +342,44 @@ def _build_consistency(local_index: int, spec: _ConsistencySpec) -> SemanticCore
         "previous": previous,
         "stale_indices": stale_indices,
     }
+    stratification: dict[str, Any] = {
+        "synthesis_kind": "multi_object_current_consistency",
+        "object_count": spec.object_count,
+        "answer_kind": spec.answer_kind,
+        "scenario": spec.scenario,
+        "stale_object_index": stale_object_index,
+        "stale_indices": ",".join(str(value) for value in stale_indices),
+        "stale_answer": stale_answer,
+    }
+    trajectory = _trajectory_identifier("multi_object_current_consistency")
+    identifier_index = local_index
+    if profile == "full":
+        identifier_index = core_index
+        fingerprint, group_id, trajectory = _full_evidence_metadata(
+            "multi_object_current_consistency", payload
+        )
+        stratification.update({
+            "evidence_fingerprint": fingerprint,
+            "evidence_group_id": group_id,
+        })
     return SemanticCore(
-        core_id=_core_identifier("multi_object_current_consistency", local_index, payload),
+        core_id=_core_identifier(
+            "multi_object_current_consistency",
+            identifier_index,
+            payload,
+            profile=profile,
+        ),
         task_family=TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS,
         difficulty={3: Difficulty.EASY, 5: Difficulty.MEDIUM, 8: Difficulty.HARD}[spec.object_count],
         core_index=core_index,
-        trajectory_id=_trajectory_identifier("multi_object_current_consistency"),
+        trajectory_id=trajectory,
         events=_events(keys, previous, current, core_index),
         query_targets=list(keys),
         query_type=QueryType.MULTI_OBJECT,
         query_selector=MultiObjectCurrentSelector(object_keys=keys),
         expected_answer=answer,
         profile=_profile(QueryType.MULTI_OBJECT, len(keys), 2),
-        stratification={
-            "synthesis_kind": "multi_object_current_consistency",
-            "object_count": spec.object_count,
-            "answer_kind": spec.answer_kind,
-            "scenario": spec.scenario,
-            "stale_object_index": stale_object_index,
-            "stale_indices": ",".join(str(value) for value in stale_indices),
-            "stale_answer": stale_answer,
-        },
+        stratification=stratification,
     )
 
 
@@ -396,6 +510,58 @@ def validate_family_g_core(core: SemanticCore) -> None:
         ):
             raise ValueError("Family G consistency answer or stale derivation is invalid")
 
+    fingerprint = core.stratification.get("evidence_fingerprint")
+    evidence_group_id = core.stratification.get("evidence_group_id")
+    if fingerprint is not None or evidence_group_id is not None:
+        if kind == "update_sensitive_multi_hop":
+            evidence_payload = {
+                "hop_count": core.stratification["hop_count"],
+                "stale_sensitive_position": core.stratification[
+                    "stale_sensitive_position"
+                ],
+                "stale_operand_index": core.stratification["stale_operand_index"],
+                "current": tuple(current_values),
+                "previous": tuple(previous_values),
+            }
+        else:
+            stale_index_tuple = tuple(
+                int(value)
+                for value in core.stratification["stale_indices"].split(",")
+            )
+            evidence_payload = {
+                "object_count": core.stratification["object_count"],
+                "answer_kind": core.stratification["answer_kind"],
+                "scenario": core.stratification["scenario"],
+                "current": tuple(current_values),
+                "previous": tuple(previous_values),
+                "stale_indices": stale_index_tuple,
+            }
+        expected_fingerprint, expected_group, expected_trajectory = (
+            _full_evidence_metadata(kind, evidence_payload)
+        )
+        if (
+            fingerprint != expected_fingerprint
+            or evidence_group_id != expected_group
+            or core.trajectory_id != expected_trajectory
+        ):
+            raise ValueError("Family G evidence fingerprint or group binding is invalid")
+
+
+def validate_family_g_full_core(core: SemanticCore) -> None:
+    validate_family_g_core(core)
+    fingerprint = core.stratification.get("evidence_fingerprint")
+    evidence_group_id = core.stratification.get("evidence_group_id")
+    if (
+        type(fingerprint) is not str
+        or not fingerprint.startswith("evidence_fingerprint_")
+        or type(evidence_group_id) is not str
+        or not evidence_group_id.startswith("evidence_group_")
+    ):
+        raise ValueError(
+            "Family G full core requires evidence fingerprint and evidence group"
+        )
+
+
 
 def validate_family_g_micro_core(core: SemanticCore) -> None:
     validate_family_g_core(core)
@@ -414,17 +580,60 @@ def _canonical_cores() -> list[SemanticCore]:
     ]
 
 
-def generate_core_family_g_cores(config: CoreConfig) -> list[SemanticCore]:
+def generate_core_family_g_cores(
+    config: CoreConfig,
+    *,
+    profile: Literal["micro", "full"] = "micro",
+) -> list[SemanticCore]:
     if not isinstance(config, CoreConfig):
         raise TypeError("config must be a CoreConfig")
-    cores = _canonical_cores()
+    if profile == "micro":
+        cores = _canonical_cores()
+        expected = Counter({
+            "update_sensitive_multi_hop": 12,
+            "multi_object_current_consistency": 12,
+        })
+    elif profile == "full":
+        family = config.families.long_horizon_memory_synthesis
+        schedule = family.schedule
+        multi_hop_specs = _full_multi_hop_specs(
+            tuple(family.hop_counts),
+            schedule.cores_per_hop_count,
+        )
+        consistency_specs = _full_consistency_specs(
+            tuple(family.consistency_object_counts),
+            schedule.cores_per_object_count,
+        )
+        cores = [
+            *(
+                _build_multi_hop(index, spec, profile="full")
+                for index, spec in enumerate(multi_hop_specs)
+            ),
+            *(
+                _build_consistency(
+                    index,
+                    spec,
+                    multi_hop_count=len(multi_hop_specs),
+                    profile="full",
+                )
+                for index, spec in enumerate(consistency_specs)
+            ),
+        ]
+        expected = Counter({
+            "update_sensitive_multi_hop": schedule.update_sensitive_core_count,
+            "multi_object_current_consistency": schedule.consistency_core_count,
+        })
+    else:
+        raise ValueError("Family G profile must be micro or full")
+
     for core in cores:
-        validate_family_g_core(core)
-    if len(cores) != 24 or Counter(core.stratification["synthesis_kind"] for core in cores) != Counter({
-        "update_sensitive_multi_hop": 12,
-        "multi_object_current_consistency": 12,
-    }):
-        raise ValueError("Family G micro-pilot requires exactly two twelve-core synthesis groups")
+        if profile == "micro":
+            validate_family_g_core(core)
+        else:
+            validate_family_g_full_core(core)
+    counts = Counter(core.stratification["synthesis_kind"] for core in cores)
+    if len(cores) != sum(expected.values()) or counts != expected:
+        raise ValueError(f"Family G {profile} synthesis schedule is invalid")
     return cores
 
 
@@ -732,6 +941,7 @@ __all__ = [
     "compile_family_g_micro_pilot",
     "generate_core_family_g_cores",
     "validate_family_g_core",
+    "validate_family_g_full_core",
     "validate_family_g_micro_core",
     "validate_family_g_micro_task",
     "validate_family_g_task",

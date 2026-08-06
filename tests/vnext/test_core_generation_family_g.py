@@ -283,6 +283,107 @@ def test_family_g_generator_has_exact_selected_micro_pilot_marginals():
     assert all(len({core.trajectory_id for core in group}) == 1 for group in by_group.values())
 
 
+def test_family_g_full_schedule_has_exact_synthesis_strata_and_evidence_groups():
+    generate, _, _, _, _, _ = _api()
+
+    cores = generate(_config(), profile="full")
+
+    assert len(cores) == 300
+    assert len({core.core_id for core in cores}) == 300
+    assert len({core.trajectory_id for core in cores}) == 300
+    assert Counter(core.stratification["synthesis_kind"] for core in cores) == {
+        "update_sensitive_multi_hop": 180,
+        "multi_object_current_consistency": 120,
+    }
+
+    multi_hop = [
+        core
+        for core in cores
+        if core.stratification["synthesis_kind"] == "update_sensitive_multi_hop"
+    ]
+    assert Counter(core.stratification["hop_count"] for core in multi_hop) == {
+        2: 60,
+        3: 60,
+        4: 60,
+    }
+    expected_positions = {
+        2: {"early": 30, "final": 30},
+        3: {"early": 20, "middle": 20, "final": 20},
+        4: {"early": 20, "middle": 20, "final": 20},
+    }
+    for hop_count, expected in expected_positions.items():
+        assert Counter(
+            core.stratification["stale_sensitive_position"]
+            for core in multi_hop
+            if core.stratification["hop_count"] == hop_count
+        ) == expected
+
+    consistency = [
+        core
+        for core in cores
+        if core.stratification["synthesis_kind"]
+        == "multi_object_current_consistency"
+    ]
+    assert Counter(core.stratification["object_count"] for core in consistency) == {
+        3: 40,
+        5: 40,
+        8: 40,
+    }
+    for object_count in (3, 5, 8):
+        stratum = [
+            core
+            for core in consistency
+            if core.stratification["object_count"] == object_count
+        ]
+        assert Counter(core.stratification["answer_kind"] for core in stratum) == {
+            "boolean_consistency": 20,
+            "exact_inconsistent_object": 20,
+        }
+        assert Counter(core.stratification["scenario"] for core in stratum) == {
+            "currently_consistent": 10,
+            "currently_inconsistent": 10,
+            "first_exact": 10,
+            "last_exact": 10,
+        }
+
+    fingerprints = {
+        core.stratification["evidence_fingerprint"] for core in cores
+    }
+    evidence_groups = {core.stratification["evidence_group_id"] for core in cores}
+    assert len(fingerprints) == 300
+    assert len(evidence_groups) == 300
+
+
+
+def test_family_g_full_validator_requires_semantic_evidence_group_binding():
+    from mub.vnext.generation.family_g import validate_family_g_full_core
+
+    generate, validate_core, _, _, _, _ = _api()
+    cores = generate(_config(), profile="full")
+    source = cores[0]
+    other = cores[1]
+
+    payload = source.model_dump(mode="python")
+    payload["stratification"].pop("evidence_fingerprint")
+    payload["stratification"].pop("evidence_group_id")
+    missing = type(source).model_validate(payload)
+    with pytest.raises(ValueError, match="evidence fingerprint|evidence group"):
+        validate_family_g_full_core(missing)
+
+    wrong_trajectory = source.model_copy(
+        update={"trajectory_id": other.trajectory_id}
+    )
+    with pytest.raises(ValueError, match="evidence fingerprint|group binding"):
+        validate_family_g_full_core(wrong_trajectory)
+
+    reindexed = source.model_copy(update={"core_index": source.core_index + 1000})
+    assert reindexed.stratification["evidence_fingerprint"] == source.stratification[
+        "evidence_fingerprint"
+    ]
+    validate_core(reindexed)
+
+
+
 def test_family_g_compiler_renders_exactly_four_replayable_v3_surfaces_per_core():
     _, _, validate_task, _, validate_micro_task, compile_micro = _api()
     compiled = compile_micro(_config(), code_revision="5423ef7")

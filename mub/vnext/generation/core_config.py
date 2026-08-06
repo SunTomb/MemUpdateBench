@@ -80,6 +80,67 @@ CORE_FAMILY_D_TRAPS = (
     "duplicate_current",
     "unsupported_inference",
 )
+CoreDifficulty = Literal["easy", "medium", "hard"]
+CoreFamilyELifecycleCell = Literal[
+    "explicit_object_or_attribute_deletion",
+    "entity_wide_deletion",
+    "namespace_privacy_wipe",
+    "correction_versus_deletion_hard_negative",
+    "logical_ttl_expiry",
+    "post_delete_similar_retrieval",
+    "delete_then_relearn",
+    "scoped_delete_protected_collateral",
+]
+CoreFamilyEDeletionPosition = Literal["early", "middle", "final"]
+CoreFamilyFSelectorKind = Literal[
+    "current",
+    "previous",
+    "exact_version",
+    "event_anchor",
+    "logical_time_anchor",
+    "transition",
+    "ordered_history",
+]
+CoreFamilyGSynthesisKind = Literal[
+    "update_sensitive_multi_hop",
+    "multi_object_current_consistency",
+]
+CoreFamilyGAnswerKind = Literal[
+    "boolean_consistency",
+    "exact_inconsistent_object",
+]
+CORE_FAMILY_E_LIFECYCLE_CELLS = (
+    "explicit_object_or_attribute_deletion",
+    "entity_wide_deletion",
+    "namespace_privacy_wipe",
+    "correction_versus_deletion_hard_negative",
+    "logical_ttl_expiry",
+    "post_delete_similar_retrieval",
+    "delete_then_relearn",
+    "scoped_delete_protected_collateral",
+)
+CORE_DIFFICULTIES = ("easy", "medium", "hard")
+CORE_FAMILY_E_DELETION_POSITIONS = ("early", "middle", "final")
+CORE_FAMILY_F_SELECTOR_KINDS = (
+    "current",
+    "previous",
+    "exact_version",
+    "event_anchor",
+    "logical_time_anchor",
+    "transition",
+    "ordered_history",
+)
+CORE_FAMILY_G_SYNTHESIS_KINDS = (
+    "update_sensitive_multi_hop",
+    "multi_object_current_consistency",
+)
+CORE_FAMILY_G_HOP_COUNTS = (2, 3, 4)
+CORE_FAMILY_G_OBJECT_COUNTS = (3, 5, 8)
+CORE_FAMILY_G_ANSWER_KINDS = (
+    "boolean_consistency",
+    "exact_inconsistent_object",
+)
+
 
 class CoreSplitCoreCounts(ContractModel):
     train: StrictPositiveInt
@@ -114,12 +175,39 @@ class CoreFamilyDSchedule(ContractModel):
     split_core_counts: CoreSplitCoreCounts
 
 
+class CoreFamilyESchedule(ContractModel):
+    cores_per_lifecycle_cell: StrictPositiveInt
+    cores_per_difficulty: StrictPositiveInt
+    cores_per_deletion_position: StrictPositiveInt
+    non_deletion_hard_negative_count: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
+class CoreFamilyFSchedule(ContractModel):
+    trajectory_count: StrictPositiveInt
+    selectors_per_trajectory: StrictPositiveInt
+    present_versions_per_trajectory: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
+class CoreFamilyGSchedule(ContractModel):
+    update_sensitive_core_count: StrictPositiveInt
+    cores_per_hop_count: StrictPositiveInt
+    consistency_core_count: StrictPositiveInt
+    cores_per_object_count: StrictPositiveInt
+    cores_per_object_answer_kind_cell: StrictPositiveInt
+    split_core_counts: CoreSplitCoreCounts
+
+
 CORE_FAMILY_COUNTS = MappingProxyType(
     {
         "repeated_same_slot_update": 480,
         "interleaved_multi_slot_update": 480,
         "entity_attribute_grounding": 420,
         "noop_write_discipline": 420,
+        "deletion_forgetting": 480,
+        "current_historical_query": 420,
+        "long_horizon_memory_synthesis": 300,
     }
 )
 
@@ -156,12 +244,45 @@ class CoreNoopWriteDisciplineConfig(NoopWriteDisciplineConfig):
     schedule: CoreFamilyDSchedule
 
 
+class CoreDeletionForgettingConfig(ContractModel):
+    enabled: StrictBool
+    semantic_core_count: StrictPositiveInt
+    lifecycle_cells: Annotated[list[CoreFamilyELifecycleCell], Field(min_length=1)]
+    difficulties: Annotated[list[CoreDifficulty], Field(min_length=1)]
+    deletion_positions: Annotated[
+        list[CoreFamilyEDeletionPosition], Field(min_length=1)
+    ]
+    schedule: CoreFamilyESchedule
+
+
+class CoreCurrentHistoricalQueryConfig(ContractModel):
+    enabled: StrictBool
+    semantic_core_count: StrictPositiveInt
+    selector_kinds: Annotated[list[CoreFamilyFSelectorKind], Field(min_length=1)]
+    minimum_present_versions: StrictPositiveInt
+    schedule: CoreFamilyFSchedule
+
+
+class CoreLongHorizonMemorySynthesisConfig(ContractModel):
+    enabled: StrictBool
+    semantic_core_count: StrictPositiveInt
+    synthesis_kinds: Annotated[list[CoreFamilyGSynthesisKind], Field(min_length=1)]
+    hop_counts: NonEmptyPositiveInts
+    consistency_object_counts: NonEmptyPositiveInts
+    consistency_answer_kinds: Annotated[
+        list[CoreFamilyGAnswerKind], Field(min_length=1)
+    ]
+    schedule: CoreFamilyGSchedule
+
 
 class CoreFamiliesConfig(ContractModel):
     repeated_same_slot_update: CoreRepeatedSameSlotUpdateConfig
     interleaved_multi_slot_update: CoreInterleavedMultiSlotUpdateConfig
     entity_attribute_grounding: CoreEntityAttributeGroundingConfig
     noop_write_discipline: CoreNoopWriteDisciplineConfig
+    deletion_forgetting: CoreDeletionForgettingConfig
+    current_historical_query: CoreCurrentHistoricalQueryConfig
+    long_horizon_memory_synthesis: CoreLongHorizonMemorySynthesisConfig
 
 
 class CoreConfig(ContractModel):
@@ -197,7 +318,8 @@ class CoreConfig(ContractModel):
             )
         if self.family_core_counts != dict(CORE_FAMILY_COUNTS):
             raise ValueError(
-                "Core family counts must be A=480, B=480, C=420, and D=420"
+                "Core family counts must be A=480, B=480, C=420, D=420, "
+                "E=480, F=420, and G=300"
             )
         family_a = self.families.repeated_same_slot_update
         if not family_a.enabled:
@@ -268,6 +390,59 @@ class CoreConfig(ContractModel):
             raise ValueError(
                 "Core Family D trap_types must match the seven approved traps in order"
             )
+        family_e = self.families.deletion_forgetting
+        if not family_e.enabled:
+            raise ValueError("Core Family E must be enabled")
+        if tuple(family_e.lifecycle_cells) != CORE_FAMILY_E_LIFECYCLE_CELLS:
+            raise ValueError("Core Family E lifecycle_cells must match the approved order")
+        if tuple(family_e.difficulties) != CORE_DIFFICULTIES:
+            raise ValueError("Core Family E difficulties must be easy/medium/hard")
+        if tuple(family_e.deletion_positions) != CORE_FAMILY_E_DELETION_POSITIONS:
+            raise ValueError("Core Family E deletion_positions must be early/middle/final")
+        if family_e.schedule.model_dump(mode="python") != {
+            "cores_per_lifecycle_cell": 60,
+            "cores_per_difficulty": 160,
+            "cores_per_deletion_position": 140,
+            "non_deletion_hard_negative_count": 60,
+            "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+        }:
+            raise ValueError("Core Family E approved schedule is invalid")
+        family_f = self.families.current_historical_query
+        if not family_f.enabled:
+            raise ValueError("Core Family F must be enabled")
+        if tuple(family_f.selector_kinds) != CORE_FAMILY_F_SELECTOR_KINDS:
+            raise ValueError("Core Family F selector_kinds must match the approved order")
+        if family_f.minimum_present_versions != 4:
+            raise ValueError("Core Family F requires at least four present versions")
+        if family_f.schedule.model_dump(mode="python") != {
+            "trajectory_count": 60,
+            "selectors_per_trajectory": 7,
+            "present_versions_per_trajectory": 4,
+            "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+        }:
+            raise ValueError("Core Family F approved schedule is invalid")
+        family_g = self.families.long_horizon_memory_synthesis
+        if not family_g.enabled:
+            raise ValueError("Core Family G must be enabled")
+        if tuple(family_g.synthesis_kinds) != CORE_FAMILY_G_SYNTHESIS_KINDS:
+            raise ValueError("Core Family G synthesis_kinds must match the approved order")
+        if tuple(family_g.hop_counts) != CORE_FAMILY_G_HOP_COUNTS:
+            raise ValueError("Core Family G hop_counts must be [2, 3, 4]")
+        if tuple(family_g.consistency_object_counts) != CORE_FAMILY_G_OBJECT_COUNTS:
+            raise ValueError("Core Family G consistency_object_counts must be [3, 5, 8]")
+        if tuple(family_g.consistency_answer_kinds) != CORE_FAMILY_G_ANSWER_KINDS:
+            raise ValueError(
+                "Core Family G consistency_answer_kinds must match the approved order"
+            )
+        if family_g.schedule.model_dump(mode="python") != {
+            "update_sensitive_core_count": 180,
+            "cores_per_hop_count": 60,
+            "consistency_core_count": 120,
+            "cores_per_object_count": 40,
+            "cores_per_object_answer_kind_cell": 20,
+            "split_core_counts": {"train": 210, "dev": 30, "test": 60},
+        }:
+            raise ValueError("Core Family G approved schedule is invalid")
 
         ratios = {
             "train": self.splits.train,
@@ -347,6 +522,14 @@ __all__ = [
     "CORE_FAMILY_C_ENTITY_CONDITIONS",
     "CORE_FAMILY_D_DENSITIES",
     "CORE_FAMILY_D_TRAPS",
+    "CORE_DIFFICULTIES",
+    "CORE_FAMILY_E_DELETION_POSITIONS",
+    "CORE_FAMILY_E_LIFECYCLE_CELLS",
+    "CORE_FAMILY_F_SELECTOR_KINDS",
+    "CORE_FAMILY_G_ANSWER_KINDS",
+    "CORE_FAMILY_G_HOP_COUNTS",
+    "CORE_FAMILY_G_OBJECT_COUNTS",
+    "CORE_FAMILY_G_SYNTHESIS_KINDS",
     "CORE_FAMILY_COUNTS",
     "CoreConfig",
     "CoreFamiliesConfig",
@@ -354,7 +537,19 @@ __all__ = [
     "CoreFamilyBSchedule",
     "CoreFamilyCSchedule",
     "CoreFamilyDSchedule",
+    "CoreFamilyESchedule",
+    "CoreFamilyFSchedule",
+    "CoreFamilyGSchedule",
+    "CoreDeletionForgettingConfig",
+    "CoreCurrentHistoricalQueryConfig",
+    "CoreLongHorizonMemorySynthesisConfig",
     "CoreSplitCoreCounts",
+    "CoreDifficulty",
+    "CoreFamilyELifecycleCell",
+    "CoreFamilyEDeletionPosition",
+    "CoreFamilyFSelectorKind",
+    "CoreFamilyGSynthesisKind",
+    "CoreFamilyGAnswerKind",
     "CoreFamilyACondition",
     "CoreFamilyDTrap",
     "CoreSurfaceDeclaration",

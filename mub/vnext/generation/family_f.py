@@ -4,7 +4,7 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from mub.vnext.contracts.common import MemoryObjectKey, thaw_json
 from mub.vnext.contracts.enums import (
@@ -106,6 +106,28 @@ _TRAJECTORIES = (
         difficulty=Difficulty.HARD,
     ),
 )
+
+
+def _full_trajectories(count: int, version_count: int) -> tuple[_TrajectorySpec, ...]:
+    difficulties = (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+    return tuple(
+        _TrajectorySpec(
+            namespace=f"family_f_full_{index:03d}",
+            entity=f"synthetic_subject_{index:03d}",
+            attribute="versioned_status",
+            subkey="primary" if index % 2 else None,
+            values=tuple(
+                f"synthetic_value_{index:03d}_{version_index}"
+                for version_index in range(version_count)
+            ),
+            logical_times=tuple(
+                f"{index * 100 + 10 + version_index * 10:08d}"
+                for version_index in range(version_count)
+            ),
+            difficulty=difficulties[index % len(difficulties)],
+        )
+        for index in range(count)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,8 +385,12 @@ def _profile(query_type: QueryType, distance: int) -> dict[str, Any]:
     }
 
 
-def _build_core(trajectory_index: int, selector_index: int) -> SemanticCore:
-    trajectory = _TRAJECTORIES[trajectory_index]
+def _build_core(
+    trajectory_index: int,
+    selector_index: int,
+    trajectories: tuple[_TrajectorySpec, ...] = _TRAJECTORIES,
+) -> SemanticCore:
+    trajectory = trajectories[trajectory_index]
     selector_spec = _SELECTOR_SPECS[selector_index]
     key = MemoryObjectKey(
         object_type="slot",
@@ -570,22 +596,93 @@ def validate_family_f_micro_core(core: SemanticCore) -> None:
         raise ValueError("Family F semantic core identifier is not canonical")
 
 
-def generate_core_family_f_cores(config: CoreConfig) -> list[SemanticCore]:
+def validate_family_f_full_core(core: SemanticCore, config: CoreConfig) -> None:
+    validate_family_f_core(core)
     if not isinstance(config, CoreConfig):
         raise TypeError("config must be a CoreConfig")
+    schedule = config.families.current_historical_query.schedule
+    trajectories = _full_trajectories(
+        schedule.trajectory_count,
+        schedule.present_versions_per_trajectory,
+    )
+    identity = _identity(core.query_targets[0])
+    values = tuple(event.value for event in core.events)
+    logical_times = tuple(event.metadata.get("logical_time") for event in core.events)
+    matches = [
+        (index, spec)
+        for index, spec in enumerate(trajectories)
+        if identity == (spec.namespace, spec.entity, spec.attribute, spec.subkey)
+        and values == spec.values
+        and logical_times == spec.logical_times
+        and core.difficulty is spec.difficulty
+    ]
+    if len(matches) != 1:
+        raise ValueError("Family F full trajectory is not canonical")
+    trajectory_index, trajectory = matches[0]
+    selector_index, selector_spec = _match_selector(core.query_selector, trajectory)
+    expected_index = trajectory_index * len(_SELECTOR_SPECS) + selector_index
+    expected_profile = _profile(
+        selector_spec.core_query_type,
+        selector_spec.requested_version_distance,
+    )
+    expected_stratification = {
+        "query_type": selector_spec.core_query_type.value,
+        "requested_version_distance": selector_spec.requested_version_distance,
+    }
+    if (
+        len(core.events) != schedule.present_versions_per_trajectory
+        or core.core_index != expected_index
+        or core.trajectory_id != _trajectory_identifier(trajectory)
+        or core.core_id != _core_identifier(trajectory, core.query_selector)
+        or dict(core.profile) != expected_profile
+        or dict(core.stratification) != expected_stratification
+    ):
+        raise ValueError("Family F full core or trajectory binding is not canonical")
+
+
+
+def generate_core_family_f_cores(
+    config: CoreConfig,
+    *,
+    profile: Literal["micro", "full"] = "micro",
+) -> list[SemanticCore]:
+    if not isinstance(config, CoreConfig):
+        raise TypeError("config must be a CoreConfig")
+    if profile == "micro":
+        trajectories = _TRAJECTORIES
+    elif profile == "full":
+        schedule = config.families.current_historical_query.schedule
+        trajectories = _full_trajectories(
+            schedule.trajectory_count,
+            schedule.present_versions_per_trajectory,
+        )
+    else:
+        raise ValueError("Family F profile must be micro or full")
+
     cores = [
-        _build_core(trajectory_index, selector_index)
-        for trajectory_index in range(len(_TRAJECTORIES))
+        _build_core(trajectory_index, selector_index, trajectories)
+        for trajectory_index in range(len(trajectories))
         for selector_index in range(len(_SELECTOR_SPECS))
     ]
     for core in cores:
-        validate_family_f_micro_core(core)
+        if profile == "micro":
+            validate_family_f_micro_core(core)
+        else:
+            validate_family_f_full_core(core, config)
     counts = Counter(core.trajectory_id for core in cores)
     selector_counts = Counter(core.query_selector.kind for core in cores)
-    if len(cores) != 21 or counts != Counter({trajectory_id: 7 for trajectory_id in counts}):
-        raise ValueError("Family F micro-pilot requires exactly three seven-core trajectories")
-    if selector_counts != Counter({kind: 3 for kind in FAMILY_F_SELECTOR_KINDS}):
-        raise ValueError("Family F micro-pilot requires exactly three of every typed selector")
+    expected_trajectory_count = len(trajectories)
+    expected_total = expected_trajectory_count * len(_SELECTOR_SPECS)
+    if (
+        len(cores) != expected_total
+        or len(counts) != expected_trajectory_count
+        or set(counts.values()) != {len(_SELECTOR_SPECS)}
+    ):
+        raise ValueError(f"Family F {profile} trajectory schedule is invalid")
+    if selector_counts != Counter(
+        {kind: expected_trajectory_count for kind in FAMILY_F_SELECTOR_KINDS}
+    ):
+        raise ValueError(f"Family F {profile} selector schedule is invalid")
     return cores
 
 
@@ -1066,6 +1163,7 @@ __all__ = [
     "resolve_family_f_core_selector",
     "resolve_family_f_selector",
     "validate_family_f_core",
+    "validate_family_f_full_core",
     "validate_family_f_micro_core",
     "validate_family_f_micro_task",
     "validate_family_f_task",

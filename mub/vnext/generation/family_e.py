@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import ActionScope, Difficulty, EventRole, Operation, Split, TaskFamily
@@ -39,6 +39,11 @@ FAMILY_E_DELETE_SCOPES_BY_CELL = MappingProxyType({
 })
 FAMILY_E_MICRO_PROFILE_ID = "family_e_diagnostic_micro_v1"
 _EXAMPLES_PER_CELL = 3
+_FAMILY_E_POSITION_PADDING = MappingProxyType({
+    "early": (0, 7),
+    "middle": (3, 4),
+    "final": (7, 0),
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +274,15 @@ def _scope_for_cell(cell: str, example: int) -> ActionScope:
     return permitted[0] if example == 0 else permitted[1]
 
 
-def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
+def _build_cell_core(
+    cell: str,
+    example: int,
+    core_index: int,
+    *,
+    difficulty: Difficulty | None = None,
+    deletion_position: str | None = None,
+    scope_override: ActionScope | None = None,
+) -> SemanticCore:
     namespace = f"family_e_ns_{core_index:02d}"
     entity = f"synthetic_subject_{example}"
     primary = _key(namespace, entity, "contact_channel")
@@ -278,7 +291,7 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
     query_targets: list[MemoryObjectKey]
     expected_answer: Any
     relearning = "none"
-    scope = _scope_for_cell(cell, example)
+    scope = scope_override or _scope_for_cell(cell, example)
 
     if cell == "explicit_object_or_attribute_deletion":
         if scope is ActionScope.OBJECT:
@@ -388,6 +401,35 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
     else:
         raise ValueError(f"unsupported Family E lifecycle cell {cell}")
 
+    if deletion_position is not None:
+        if cell == "correction_versus_deletion_hard_negative":
+            if deletion_position != "not_applicable":
+                raise ValueError("Family E correction hard negative has no deletion position")
+        else:
+            if deletion_position not in _FAMILY_E_POSITION_PADDING:
+                raise ValueError("Family E deletion position must be early, middle, or final")
+            before_count, after_count = _FAMILY_E_POSITION_PADDING[deletion_position]
+
+            def padding_event(logical_time: int) -> CoreEvent:
+                return CoreEvent(
+                    operation=Operation.NOOP,
+                    object_keys=[],
+                    value=None,
+                    role=EventRole.NEUTRAL,
+                    metadata={
+                        "lifecycle": "position_padding",
+                        "action_scope": ActionScope.OBJECT.value,
+                        "logical_time": f"{logical_time:08d}",
+                        "effective_at": f"{logical_time:08d}",
+                    },
+                )
+
+            events = [
+                *(padding_event(1 + index) for index in range(before_count)),
+                *events,
+                *(padding_event(90 + index) for index in range(after_count)),
+            ]
+
     payload = {
         "family": TaskFamily.DELETION_FORGETTING.value,
         "cell": cell,
@@ -401,8 +443,14 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
         "cell_example": example,
         "deletion_scope": scope.value,
         "relearning_condition": relearning,
-        "operation_signature": ",".join(event.operation.value for event in events),
+        "operation_signature": ",".join(
+            event.operation.value
+            for event in events
+            if event.metadata.get("lifecycle") != "position_padding"
+        ),
     }
+    if deletion_position is not None:
+        stratification["deletion_position"] = deletion_position
     if cell == "logical_ttl_expiry":
         expiry_at = next(event.metadata["effective_at"] for event in events if event.operation is Operation.DELETE)
         stratification["ttl_expiry_at"] = expiry_at
@@ -412,7 +460,7 @@ def _build_cell_core(cell: str, example: int, core_index: int) -> SemanticCore:
     return SemanticCore(
         core_id=identifier,
         task_family=TaskFamily.DELETION_FORGETTING,
-        difficulty=(Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)[example],
+        difficulty=difficulty or (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)[example],
         core_index=core_index,
         trajectory_id=trajectory_id(identifier, f"{cell}:{example}"),
         events=events,
@@ -470,8 +518,14 @@ def validate_family_e_core(core: SemanticCore) -> None:
     known: dict[tuple[str, str, str, str | None], MemoryObjectKey] = {}
     protected: set[tuple[str, str, str, str | None]] = set()
     delete_events: list[CoreEvent] = []
+    padding_events: list[CoreEvent] = []
+    lifecycle_events: list[CoreEvent] = []
     previous_logical_time: str | None = None
     for event in core.events:
+        if event.metadata.get("lifecycle") == "position_padding":
+            padding_events.append(event)
+        else:
+            lifecycle_events.append(event)
         try:
             scope = ActionScope(event.metadata["action_scope"])
         except (KeyError, ValueError) as exc:
@@ -522,11 +576,46 @@ def validate_family_e_core(core: SemanticCore) -> None:
             for identity in enumerated:
                 state.pop(identity, None)
 
+    deletion_position = core.stratification.get("deletion_position")
+    if deletion_position is None:
+        if padding_events:
+            raise ValueError("Family E position padding requires declared deletion position")
+    elif cell == "correction_versus_deletion_hard_negative":
+        if deletion_position != "not_applicable" or padding_events:
+            raise ValueError("Family E correction hard negative deletion position is invalid")
+    else:
+        if deletion_position not in _FAMILY_E_POSITION_PADDING:
+            raise ValueError("Family E deletion position is invalid")
+        before_count, after_count = _FAMILY_E_POSITION_PADDING[deletion_position]
+        first_lifecycle = next(
+            index
+            for index, event in enumerate(core.events)
+            if event.metadata.get("lifecycle") != "position_padding"
+        )
+        last_lifecycle = max(
+            index
+            for index, event in enumerate(core.events)
+            if event.metadata.get("lifecycle") != "position_padding"
+        )
+        if (
+            first_lifecycle != before_count
+            or len(core.events) - last_lifecycle - 1 != after_count
+            or len(padding_events) != before_count + after_count
+            or any(
+                event.operation is not Operation.NOOP
+                or event.role is not EventRole.NEUTRAL
+                or event.object_keys
+                or event.value is not None
+                for event in padding_events
+            )
+        ):
+            raise ValueError("Family E deletion position padding is invalid")
+
     shape = _FAMILY_E_CELL_SHAPES[(cell, expected_delete_scope)]
-    observed_operations = tuple(event.operation for event in core.events)
-    observed_roles = tuple(event.role for event in core.events)
+    observed_operations = tuple(event.operation for event in lifecycle_events)
+    observed_roles = tuple(event.role for event in lifecycle_events)
     observed_lifecycles = tuple(
-        str(event.metadata.get("lifecycle")) for event in core.events
+        str(event.metadata.get("lifecycle")) for event in lifecycle_events
     )
     query_identities = {_identity(key) for key in core.query_targets}
     delete_target_count = sum(len(event.object_keys) for event in delete_events)
@@ -551,7 +640,7 @@ def validate_family_e_core(core: SemanticCore) -> None:
         raise ValueError("Family E lifecycle structural shape is invalid")
     if core.profile.get("active_object_count") != shape.peak_active_object_count:
         raise ValueError("Family E profile active_object_count is stale")
-    if core.profile.get("context_length") != len(shape.operations):
+    if core.profile.get("context_length") != len(core.events):
         raise ValueError("Family E profile context_length is stale")
 
     if cell == "correction_versus_deletion_hard_negative":
@@ -606,19 +695,59 @@ def validate_family_e_core(core: SemanticCore) -> None:
             raise ValueError("Family E forgotten value retention is forbidden")
 
 
-def generate_core_family_e_cores(config: CoreConfig) -> list[SemanticCore]:
+def generate_core_family_e_cores(
+    config: CoreConfig,
+    *,
+    profile: Literal["micro", "full"] = "micro",
+) -> list[SemanticCore]:
     if not isinstance(config, CoreConfig):
         raise TypeError("config must be a CoreConfig")
-    cores = [
-        _build_cell_core(cell, example, cell_index * _EXAMPLES_PER_CELL + example)
-        for cell_index, cell in enumerate(FAMILY_E_LIFECYCLE_CELLS)
-        for example in range(_EXAMPLES_PER_CELL)
-    ]
+    if profile == "micro":
+        cores = [
+            _build_cell_core(cell, example, cell_index * _EXAMPLES_PER_CELL + example)
+            for cell_index, cell in enumerate(FAMILY_E_LIFECYCLE_CELLS)
+            for example in range(_EXAMPLES_PER_CELL)
+        ]
+        expected_counts = Counter({cell: 3 for cell in FAMILY_E_LIFECYCLE_CELLS})
+        expected_total = 24
+    elif profile == "full":
+        schedule = config.families.deletion_forgetting.schedule
+        per_cell = schedule.cores_per_lifecycle_cell
+        difficulties = (Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD)
+        positions = tuple(config.families.deletion_forgetting.deletion_positions)
+        cores = []
+        for cell_index, cell in enumerate(FAMILY_E_LIFECYCLE_CELLS):
+            permitted_scopes = FAMILY_E_DELETE_SCOPES_BY_CELL[cell]
+            for example in range(per_cell):
+                position = (
+                    "not_applicable"
+                    if cell == "correction_versus_deletion_hard_negative"
+                    else positions[
+                        example // (per_cell // len(positions))
+                    ]
+                )
+                cores.append(
+                    _build_cell_core(
+                        cell,
+                        example,
+                        cell_index * per_cell + example,
+                        difficulty=difficulties[example % len(difficulties)],
+                        deletion_position=position,
+                        scope_override=permitted_scopes[example % len(permitted_scopes)],
+                    )
+                )
+        expected_counts = Counter(
+            {cell: per_cell for cell in FAMILY_E_LIFECYCLE_CELLS}
+        )
+        expected_total = config.families.deletion_forgetting.semantic_core_count
+    else:
+        raise ValueError("Family E profile must be micro or full")
+
     for core in cores:
         validate_family_e_core(core)
     counts = Counter(core.stratification["lifecycle_cell"] for core in cores)
-    if len(cores) != 24 or counts != Counter({cell: 3 for cell in FAMILY_E_LIFECYCLE_CELLS}):
-        raise ValueError("Family E micro-pilot requires exactly 24 cores and three per lifecycle cell")
+    if len(cores) != expected_total or counts != expected_counts:
+        raise ValueError(f"Family E {profile} schedule counts are invalid")
     return cores
 
 

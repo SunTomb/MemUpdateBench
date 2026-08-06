@@ -44,7 +44,7 @@ def _set_path(
     target[path[-1]] = value
 
 
-def test_core_config_loads_exact_ad_counts_four_surfaces_and_group_first_split() -> None:
+def test_core_config_loads_exact_ag_counts_four_surfaces_and_group_first_split() -> None:
     _, load_core_config, surface_catalog, _ = _core_api()
 
     config = load_core_config(CORE_CONFIG_PATH)
@@ -54,6 +54,9 @@ def test_core_config_loads_exact_ad_counts_four_surfaces_and_group_first_split()
         "interleaved_multi_slot_update": 480,
         "entity_attribute_grounding": 420,
         "noop_write_discipline": 420,
+        "deletion_forgetting": 480,
+        "current_historical_query": 420,
+        "long_horizon_memory_synthesis": 300,
     }
     assert config.surface_ids == (
         "explicit_canonical",
@@ -63,10 +66,10 @@ def test_core_config_loads_exact_ad_counts_four_surfaces_and_group_first_split()
     )
     assert config.surface_ids == surface_catalog.surface_ids
     assert config.split_strategy == "group_first"
-    assert config.total_semantic_cores == 1800
-    assert config.total_tasks == 7200
-    assert config.expected_split_cores == {"train": 1260, "dev": 180, "test": 360}
-    assert config.expected_split_tasks == {"train": 5040, "dev": 720, "test": 1440}
+    assert config.total_semantic_cores == 3000
+    assert config.total_tasks == 12000
+    assert config.expected_split_cores == {"train": 2100, "dev": 300, "test": 600}
+    assert config.expected_split_tasks == {"train": 8400, "dev": 1200, "test": 2400}
 
 
 @pytest.mark.parametrize(
@@ -98,9 +101,12 @@ def test_core_config_rejects_unknown_keys_at_each_new_contract_level(
         ("interleaved_multi_slot_update", 481),
         ("entity_attribute_grounding", 419),
         ("noop_write_discipline", 421),
+        ("deletion_forgetting", 479),
+        ("current_historical_query", 421),
+        ("long_horizon_memory_synthesis", 301),
     ],
 )
-def test_core_config_rejects_noncanonical_ad_counts(family: str, count: int) -> None:
+def test_core_config_rejects_noncanonical_ag_counts(family: str, count: int) -> None:
     CoreConfig, load_core_config, _, _ = _core_api()
     payload = load_core_config(CORE_CONFIG_PATH).model_dump(mode="json")
     payload["families"][family]["semantic_core_count"] = count
@@ -136,6 +142,27 @@ def test_core_config_authenticates_approved_family_schedules() -> None:
     assert config.families.noop_write_discipline.schedule.model_dump() == {
         "cores_per_trap_density_cell": 20,
         "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+    }
+    assert config.families.deletion_forgetting.schedule.model_dump() == {
+        "cores_per_lifecycle_cell": 60,
+        "cores_per_difficulty": 160,
+        "cores_per_deletion_position": 140,
+        "non_deletion_hard_negative_count": 60,
+        "split_core_counts": {"train": 336, "dev": 48, "test": 96},
+    }
+    assert config.families.current_historical_query.schedule.model_dump() == {
+        "trajectory_count": 60,
+        "selectors_per_trajectory": 7,
+        "present_versions_per_trajectory": 4,
+        "split_core_counts": {"train": 294, "dev": 42, "test": 84},
+    }
+    assert config.families.long_horizon_memory_synthesis.schedule.model_dump() == {
+        "update_sensitive_core_count": 180,
+        "cores_per_hop_count": 60,
+        "consistency_core_count": 120,
+        "cores_per_object_count": 40,
+        "cores_per_object_answer_kind_cell": 20,
+        "split_core_counts": {"train": 210, "dev": 30, "test": 60},
     }
 
 
