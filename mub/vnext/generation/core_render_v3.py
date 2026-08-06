@@ -444,6 +444,26 @@ def _family_g_ordered_keys(core: SemanticCore):
     return tuple(ordered)
 
 
+def _family_g_event_staging_core(core: SemanticCore) -> SemanticCore:
+    from mub.vnext.generation.family_g import validate_family_g_core
+
+    validate_family_g_core(core)
+    current_by_identity = {}
+    for event in core.events:
+        for key in event.object_keys:
+            if event.operation in {Operation.ADD, Operation.UPDATE}:
+                current_by_identity[_identity(key)] = event.value
+    try:
+        values = [
+            current_by_identity[_identity(key)] for key in core.query_targets
+        ]
+    except KeyError as exc:
+        raise ValueError(
+            "Core Family G staging requires one current value per operand"
+        ) from exc
+    return core.model_copy(update={"expected_answer": values})
+
+
 def _family_g_query_text(task, core: SemanticCore, keys) -> str:
     kind = core.stratification["synthesis_kind"]
     object_order = ", ".join(key.canonical_id for key in keys)
@@ -550,20 +570,16 @@ def _promote_family_g_query_and_evidence(task, core: SemanticCore, version_histo
         for key in keys
     ]
     kind = core.stratification["synthesis_kind"]
+    query_targets = [_key_payload(key) for key in keys]
+    selector = {"kind": "multi_object_current", "object_keys": query_targets}
     if kind == "update_sensitive_multi_hop":
         query_type = QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP.value
-        query_targets = [_key_payload(core.query_targets[0])]
-        selector = {"kind": "current"}
         synthesis = {"kind": kind, "minimum_hops": core.stratification["hop_count"]}
         derivation_kind = kind
         answer_schema = AnswerSchema.NUMBER.value
-        stale_indices = {
-            next(index for index, key in enumerate(keys) if _identity(key) == _identity(core.query_targets[0]))
-        }
+        stale_indices = {core.stratification["stale_operand_index"]}
     else:
         query_type = QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY.value
-        query_targets = [_key_payload(key) for key in keys]
-        selector = {"kind": "multi_object_current", "object_keys": query_targets}
         synthesis = {"kind": kind, "minimum_objects": core.stratification["object_count"]}
         derivation_kind = core.stratification["answer_kind"]
         answer_schema = (
@@ -730,27 +746,9 @@ def render_core_v3(
         from mub.vnext.generation.family_f import validate_family_f_core
 
         validate_family_f_core(core)
-    if family_g:
-        from mub.vnext.generation.family_g import validate_family_g_core
-
-        validate_family_g_core(core)
     render_source_core = core
     if family_g:
-        current_by_identity = {}
-        for semantic_event in core.events:
-            for key in semantic_event.object_keys:
-                if semantic_event.operation in {Operation.ADD, Operation.UPDATE}:
-                    current_by_identity[_identity(key)] = semantic_event.value
-        direct_values = [
-            current_by_identity[_identity(key)] for key in core.query_targets
-        ]
-        render_source_core = core.model_copy(
-            update={
-                "expected_answer": direct_values[0]
-                if len(direct_values) == 1
-                else direct_values
-            }
-        )
+        render_source_core = _family_g_event_staging_core(core)
     task_v2 = render_core_with_catalog(
         render_source_core,
         split=split,

@@ -7,7 +7,7 @@ from typing import Any
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, QueryType, Split, TaskFamily
 from mub.vnext.contracts.v3.enums import QueryTypeV3
-from mub.vnext.contracts.v3.task import CurrentSelector, MemUpdateTaskV3, MultiObjectCurrentSelector
+from mub.vnext.contracts.v3.task import MemUpdateTaskV3, MultiObjectCurrentSelector
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.core_render_v3 import render_core_v3
@@ -173,11 +173,11 @@ def _build_multi_hop(index: int, spec: _MultiHopSpec) -> SemanticCore:
         core_index=index,
         trajectory_id=_trajectory_identifier("update_sensitive_multi_hop"),
         events=_events(keys, previous, current, index),
-        query_targets=[keys[spec.stale_operand_index]],
-        query_type=QueryType.CURRENT_STATE,
-        query_selector=CurrentSelector(),
+        query_targets=list(keys),
+        query_type=QueryType.MULTI_OBJECT,
+        query_selector=MultiObjectCurrentSelector(object_keys=keys),
         expected_answer=answer,
-        profile=_profile(QueryType.CURRENT_STATE, len(keys), spec.hop_count),
+        profile=_profile(QueryType.MULTI_OBJECT, len(keys), spec.hop_count),
         stratification={
             "synthesis_kind": "update_sensitive_multi_hop",
             "hop_count": spec.hop_count,
@@ -302,18 +302,26 @@ def validate_family_g_core(core: SemanticCore) -> None:
         for value in (*current_values, *previous_values)
     ):
         raise ValueError("Family G derivation operands must be exact numeric values")
+    if (
+        not isinstance(core.query_selector, MultiObjectCurrentSelector)
+        or core.query_type is not QueryType.MULTI_OBJECT
+    ):
+        raise ValueError("Family G cores require typed multi-object current selection")
+    selector_identities = tuple(
+        _identity(key) for key in core.query_selector.object_keys
+    )
+    if selector_identities != query_target_identities:
+        raise ValueError("Family G selector order must equal exact query target order")
+    if query_target_identities != event_identities:
+        raise ValueError("Family G query targets must equal event operand order")
+    if core.profile.get("query_type") != QueryType.MULTI_OBJECT.value:
+        raise ValueError("Family G profile query type must be multi_object")
     if kind == "update_sensitive_multi_hop":
-        if not isinstance(core.query_selector, CurrentSelector) or core.query_type is not QueryType.CURRENT_STATE:
-            raise ValueError("Family G multi-hop cores require a typed current selector")
-        if len(core.query_targets) != 1 or query_target_identities[0] not in histories:
-            raise ValueError("Family G multi-hop requires one update-sensitive query target")
         if core.stratification.get("hop_count") != len(histories):
             raise ValueError("Family G multi-hop operand count must equal hop_count")
         stale_index = core.stratification.get("stale_operand_index")
         if type(stale_index) is not int or stale_index not in range(len(histories)):
             raise ValueError("Family G stale-sensitive operand index is invalid")
-        if event_identities[stale_index] != query_target_identities[0]:
-            raise ValueError("Family G query target must be the stale-sensitive operand")
         expected_position = (
             "early"
             if stale_index == 0
@@ -330,12 +338,6 @@ def validate_family_g_core(core: SemanticCore) -> None:
         if core.expected_answer != expected_answer or stale_answer == expected_answer:
             raise ValueError("Family G multi-hop answer or stale derivation is invalid")
     else:
-        if not isinstance(core.query_selector, MultiObjectCurrentSelector) or core.query_type is not QueryType.MULTI_OBJECT:
-            raise ValueError("Family G consistency cores require typed multi-object current selection")
-        if tuple(_identity(key) for key in core.query_selector.object_keys) != query_target_identities:
-            raise ValueError("Family G selector order must equal exact query target order")
-        if query_target_identities != event_identities:
-            raise ValueError("Family G consistency targets must cover every exact object identity")
         if core.stratification.get("object_count") != len(core.query_targets):
             raise ValueError("Family G consistency target count must equal object_count")
         answer_kind = core.stratification.get("answer_kind")

@@ -480,33 +480,91 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
         if isinstance(query.selector, (EventAnchorSelector, LogicalTimeAnchorSelector)) and len(selected) != 1:
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_ambiguous_version", "typed selector resolved more than one version", f"queries.{query.query_id}.selector"),))
         selected_by_object.append((key, selected))
+    versions = tuple(item for _, selected in selected_by_object for item in selected)
+    event_ids = tuple(dict.fromkeys(event_id for item in versions for event_id in item.source_event_ids))
+    selected_objects = tuple(key for key, _ in selected_by_object)
     try:
-        if query.query_type in {
-            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
-            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
-        }:
+        if (
+            query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP
+            and isinstance(query.selector, MultiObjectCurrentSelector)
+        ):
+            if query.answer_schema is not AnswerSchema.NUMBER:
+                return QueryResolutionV3(
+                    query_id=query.query_id,
+                    selected_versions=versions,
+                    selected_event_ids=event_ids,
+                    selected_object_keys=selected_objects,
+                    issues=(
+                        _issue(
+                            "unsupported_g_answer_schema",
+                            "update-sensitive multi-hop resolution requires number answer schema",
+                            f"queries.{query.query_id}.answer_schema",
+                        ),
+                    ),
+                )
             selected_values = [items[-1].value for _, items in selected_by_object]
-            answer = selected_values[0] if len(selected_values) == 1 else selected_values
-        elif isinstance(query.selector, TransitionSelector):
-            answers = [{"from": items[0].value, "to": items[1].value} for _, items in selected_by_object]
-        elif isinstance(query.selector, OrderedHistorySelector):
-            answers = [[item.value for item in items] for _, items in selected_by_object]
+            answer = selected_values[0]
+            for value in selected_values[1:]:
+                answer -= value
+        elif (
+            query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY
+            and isinstance(query.selector, MultiObjectCurrentSelector)
+        ):
+            selected_values = [items[-1].value for _, items in selected_by_object]
+            if query.answer_schema is AnswerSchema.BOOLEAN:
+                answer = all(
+                    _same(value, selected_values[0])
+                    for value in selected_values[1:]
+                )
+            elif query.answer_schema is AnswerSchema.NUMBER:
+                answer = sum(selected_values)
+            else:
+                return QueryResolutionV3(
+                    query_id=query.query_id,
+                    selected_versions=versions,
+                    selected_event_ids=event_ids,
+                    selected_object_keys=selected_objects,
+                    issues=(
+                        _issue(
+                            "unsupported_g_answer_schema",
+                            "multi-object consistency resolution requires boolean or number answer schema",
+                            f"queries.{query.query_id}.answer_schema",
+                        ),
+                    ),
+                )
         else:
-            answers = [items[-1].value for _, items in selected_by_object]
-        if query.query_type not in {
-            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
-            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
-        }:
+            if isinstance(query.selector, TransitionSelector):
+                answers = [
+                    {"from": items[0].value, "to": items[1].value}
+                    for _, items in selected_by_object
+                ]
+            elif isinstance(query.selector, OrderedHistorySelector):
+                answers = [
+                    [item.value for item in items]
+                    for _, items in selected_by_object
+                ]
+            else:
+                answers = [items[-1].value for _, items in selected_by_object]
             keys = [key for key, _ in selected_by_object]
             if isinstance(query.selector, (TransitionSelector, OrderedHistorySelector)):
                 answer = answers[0] if len(answers) == 1 else _shape(answers, keys, query.answer_schema)
             else:
                 answer = _shape(answers, keys, query.answer_schema)
     except Exception as exc:
-        return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_answer_shape_error", str(exc), f"queries.{query.query_id}.answer_schema"),))
-    versions = tuple(item for _, selected in selected_by_object for item in selected)
-    event_ids = tuple(dict.fromkeys(event_id for item in versions for event_id in item.source_event_ids))
-    return QueryResolutionV3(query_id=query.query_id, answer=answer, selected_versions=versions, selected_event_ids=event_ids, selected_object_keys=tuple(key for key, _ in selected_by_object))
+        return QueryResolutionV3(
+            query_id=query.query_id,
+            selected_versions=versions,
+            selected_event_ids=event_ids,
+            selected_object_keys=selected_objects,
+            issues=(_issue("selector_answer_shape_error", str(exc), f"queries.{query.query_id}.answer_schema"),),
+        )
+    return QueryResolutionV3(
+        query_id=query.query_id,
+        answer=answer,
+        selected_versions=versions,
+        selected_event_ids=event_ids,
+        selected_object_keys=selected_objects,
+    )
 
 
 def _read_step_value(step, replay: ReplayResultV3):

@@ -3097,6 +3097,12 @@ def test_evidence_metrics_tag_identifier_domains_before_overlap():
 
 def test_g_gold_contract_registers_strict_stale_alternative_derivation():
     task = MemUpdateTaskV3.model_validate(g_stale_payload())
+    replay = replay_task_v3(task)
+    resolution = resolve_query_v3(task.queries[0], replay, task.events)
+    assert resolution.issues == ()
+    assert resolution.answer == "v2"
+    assert resolution.selected_object_keys == task.queries[0].target_object_keys
+    assert resolution.selected_versions[-1].value == "v2"
     alternative = task.gold_evidence[0].stale_alternative
     assert alternative.answer == "v1"
     assert alternative.supporting_event_ids == ("e1",)

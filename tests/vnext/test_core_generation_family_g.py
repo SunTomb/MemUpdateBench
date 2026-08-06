@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from mub.vnext.contracts.enums import Split, SupportReason, TaskFamily
+from mub.vnext.contracts.enums import AnswerSchema, QueryType, Split, SupportReason, TaskFamily
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
 from mub.vnext.contracts.v3.enums import QueryTypeV3
-from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.contracts.v3.task import CurrentSelector, MemUpdateTaskV3, MultiObjectCurrentSelector
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
 
@@ -97,6 +97,79 @@ def _mutate_core(core, mutate):
     payload = core.model_dump(mode="python")
     mutate(payload)
     return SemanticCore.model_validate(payload)
+
+
+def _identity(key):
+    return key.namespace, key.entity, key.attribute, key.subkey
+
+
+def _event_operand_order(core):
+    return tuple(
+        dict.fromkeys(
+            _identity(key)
+            for event in core.events
+            for key in event.object_keys
+        )
+    )
+
+
+def test_family_g_all_core_operand_orders_match_and_current_selector_laundering_rejects():
+    generate, validate_core, _, _, _, _ = _api()
+    cores = generate(_config())
+
+    for core in cores:
+        target_order = tuple(_identity(key) for key in core.query_targets)
+        assert core.query_type is QueryType.MULTI_OBJECT
+        assert isinstance(core.query_selector, MultiObjectCurrentSelector)
+        assert core.profile["query_type"] == QueryType.MULTI_OBJECT.value
+        assert tuple(_identity(key) for key in core.query_selector.object_keys) == target_order
+        assert target_order == _event_operand_order(core)
+        validate_core(core)
+
+    source = next(
+        core
+        for core in cores
+        if core.stratification["synthesis_kind"] == "update_sensitive_multi_hop"
+    )
+
+    def launder_as_one_target_current(payload):
+        stale_index = payload["stratification"]["stale_operand_index"]
+        payload["query_targets"] = [payload["query_targets"][stale_index]]
+        payload["query_type"] = QueryType.CURRENT_STATE
+        payload["query_selector"] = CurrentSelector().model_dump(mode="python")
+        payload["profile"]["query_type"] = QueryType.CURRENT_STATE.value
+
+    laundered = _mutate_core(source, launder_as_one_target_current)
+    with pytest.raises(ValueError, match="multi-object|selector|target|operand|order"):
+        validate_core(laundered)
+
+
+def test_family_g_event_staging_core_is_honest_ordered_multi_object_current():
+    from mub.vnext.generation.core_render_v3 import _family_g_event_staging_core
+
+    generate, _, _, _, _, _ = _api()
+    for core in generate(_config()):
+        staging = _family_g_event_staging_core(core)
+        operand_order = _event_operand_order(core)
+        current_by_identity = {
+            _identity(key): event.value
+            for event in core.events
+            if event.operation.value in {"ADD", "UPDATE"}
+            for key in event.object_keys
+        }
+        expected_values = [current_by_identity[identity] for identity in operand_order]
+
+        assert staging.query_type is QueryType.MULTI_OBJECT
+        assert staging.profile["query_type"] == QueryType.MULTI_OBJECT.value
+        assert isinstance(staging.query_selector, MultiObjectCurrentSelector)
+        assert tuple(_identity(key) for key in staging.query_targets) == operand_order
+        assert tuple(_identity(key) for key in staging.query_selector.object_keys) == operand_order
+        assert list(staging.expected_answer) == expected_values
+        assert staging.stratification == core.stratification
+        assert QueryType.CURRENT_STATE.value not in {
+            staging.query_type.value,
+            staging.profile["query_type"],
+        }
 
 
 def test_family_g_generic_core_validation_is_reusable_but_micro_validation_is_exact():
@@ -264,6 +337,66 @@ def test_family_g_compiler_renders_exactly_four_replayable_v3_surfaces_per_core(
         assert len({task.semantic_hash for task in surfaces}) == 1
         assert len({task.task_id for task in surfaces}) == 4
         assert len({task.source.raw_hash for task in surfaces}) == 4
+
+
+def test_family_g_all_generated_query_resolutions_equal_gold_and_preserve_operand_order():
+    _, _, _, _, _, compile_micro = _api()
+    tasks = compile_micro(_config(), code_revision="5423ef7").tasks
+
+    assert len(tasks) == 96
+    for task in tasks:
+        query = task.queries[0]
+        evidence = task.gold_evidence[0]
+        replay = replay_task_v3(task)
+        resolution = resolve_query_v3(query, replay, task.events)
+        target_order = tuple(_identity(key) for key in query.target_object_keys)
+        selector_order = tuple(_identity(key) for key in query.selector.object_keys)
+        ledger_order = tuple(_identity(ledger.object_key) for ledger in task.version_history)
+        evidence_order = tuple(_identity(key) for key in evidence.supporting_object_keys)
+        read_order = tuple(
+            _identity(step.supporting_object_keys[0])
+            for step in evidence.derivation_steps
+            if step.operation == "read_current"
+        )
+
+        assert resolution.issues == ()
+        assert resolution.answer == evidence.answer
+        assert target_order == selector_order == ledger_order == evidence_order == read_order
+        assert tuple(_identity(key) for key in resolution.selected_object_keys) == target_order
+        assert tuple(version.value for version in resolution.selected_versions) == tuple(
+            ledger.entries[-1].value for ledger in task.version_history
+        )
+
+
+def test_family_g_replay_unsupported_answer_schema_returns_issue_with_selection_provenance():
+    _, _, _, _, _, compile_micro = _api()
+    tasks = compile_micro(_config(), code_revision="5423ef7").tasks
+    representatives = {
+        task.queries[0].query_type: task
+        for task in tasks
+        if task.metadata.extra["surface_variant"] == 0
+    }
+
+    for query_type in (
+        QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+        QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+    ):
+        task = representatives[query_type]
+        replay = replay_task_v3(task)
+        query = task.queries[0].model_copy(update={"answer_schema": AnswerSchema.STRING})
+        resolution = resolve_query_v3(query, replay, task.events)
+
+        assert tuple(issue.code for issue in resolution.issues) == (
+            "unsupported_g_answer_schema",
+        )
+        assert resolution.answer is None
+        assert tuple(_identity(key) for key in resolution.selected_object_keys) == tuple(
+            _identity(key) for key in query.target_object_keys
+        )
+        assert tuple(version.value for version in resolution.selected_versions) == tuple(
+            ledger.entries[-1].value for ledger in task.version_history
+        )
+        assert resolution.selected_event_ids
 
 
 def _derivation_depth(item):
