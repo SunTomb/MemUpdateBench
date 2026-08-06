@@ -217,6 +217,35 @@ def test_family_f_generic_single_version_json_values_render_with_canonical_schem
     validate_task(task)
 
 
+def test_family_f_generic_event_values_may_contain_anchor_label_literals():
+    from mub.vnext.generation.core_render_v3 import render_core_v3
+
+    generate, validate_core, validate_task, _ = _api()
+    source = next(
+        core for core in generate(_config()) if core.query_selector.kind == "current"
+    )
+    values = tuple(
+        f"value-{index} includes version_index= event_id= logical_time="
+        for index in range(4)
+    )
+    payload = source.model_dump(mode="python")
+    for event, value in zip(payload["events"], values):
+        event["value"] = value
+    payload["expected_answer"] = values[-1]
+    core = SemanticCore.model_validate(payload)
+
+    validate_core(core)
+    task = render_core_v3(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=GenerationContext(config=_config(), code_revision="8d8c3ea"),
+    )
+
+    assert thaw_json(task.gold_evidence[0].answer) == values[-1]
+    validate_task(task)
+
+
 def test_family_f_micro_single_version_values_remain_exact_strings():
     generate, _, _, _ = _api()
     expected_trajectories = {
@@ -411,7 +440,20 @@ def test_family_f_generic_validator_rejects_duplicate_contradictory_event_anchor
     _, _, validate_task, compile_micro = _api()
     task = compile_micro(_config(), code_revision="4d3f9a6").tasks[0]
     payload = task.model_dump(mode="python")
-    payload["events"][0]["raw_text"] += f" [{label}={contradictory_value}]"
+    entry = payload["version_history"][0]["entries"][0]
+    anchor = {
+        "version_index": str(entry["version_index"]),
+        "event_id": entry["source_event_ids"][0],
+        "logical_time": entry["logical_time"],
+    }
+    anchor[label] = contradictory_value
+    payload["events"][0]["raw_text"] += (
+        " ["
+        f"version_index={anchor['version_index']}; "
+        f"event_id={anchor['event_id']}; "
+        f"logical_time={anchor['logical_time']}"
+        "]"
+    )
     contradictory = MemUpdateTaskV3.model_validate(payload)
 
     with pytest.raises(ValueError, match="visible version ledger anchors"):

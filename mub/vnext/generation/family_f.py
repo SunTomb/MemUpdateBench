@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -58,6 +59,10 @@ FAMILY_F_SELECTOR_KINDS = (
 )
 _VERSION_COUNT = 4
 _EVENT_ANCHOR_NAME = "version_event_2"
+_EVENT_ANCHOR_BLOCK = re.compile(
+    r" \[version_index=([^;\]\r\n]+); event_id=([^;\]\r\n]+); "
+    r"logical_time=([^;\]\r\n]+)\]"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -648,6 +653,10 @@ def family_f_query_tokens(selector, selected, entries) -> tuple[str, ...]:
     return tuple(dict.fromkeys(tokens))
 
 
+def _event_anchor_blocks(raw_text: str) -> tuple[tuple[str, str, str], ...]:
+    return tuple(match.groups() for match in _EVENT_ANCHOR_BLOCK.finditer(raw_text))
+
+
 def _task_semantic_binding(task, query, entries) -> tuple[_TrajectorySpec, SelectorV3]:
     task_identity = _identity(task.version_history[0].object_key)
     values = tuple(entry.value for entry in entries)
@@ -772,20 +781,26 @@ def validate_family_f_task(task: MemUpdateTaskV3) -> None:
     event_by_id = {event.event_id: event for event in task.events}
     for entry in entries:
         event_id = entry.source_event_ids[0]
-        required = (
-            f"version_index={entry.version_index}",
-            f"event_id={event_id}",
-            f"logical_time={entry.logical_time}",
-        )
         raw_text = event_by_id[event_id].raw_text
-        exact_anchor_suffix = " [" + "; ".join(required) + "]"
+        expected_anchor = (
+            str(entry.version_index),
+            event_id,
+            entry.logical_time,
+        )
+        expected_suffix = (
+            " ["
+            f"version_index={expected_anchor[0]}; "
+            f"event_id={expected_anchor[1]}; "
+            f"logical_time={expected_anchor[2]}"
+            "]"
+        )
         if (
-            not raw_text.endswith(exact_anchor_suffix)
-            or raw_text.count("version_index=") != 1
-            or raw_text.count("event_id=") != 1
-            or raw_text.count("logical_time=") != 1
+            not raw_text.endswith(expected_suffix)
+            or _event_anchor_blocks(raw_text) != (expected_anchor,)
         ):
-            raise ValueError("Family F visible version ledger anchors are incomplete or contradictory")
+            raise ValueError(
+                "Family F visible version ledger anchors are incomplete or contradictory"
+            )
     stratification = task.metadata.extra.get("stratification", {})
     if (
         stratification.get("query_type")
