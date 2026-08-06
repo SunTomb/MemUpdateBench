@@ -225,7 +225,8 @@ def test_family_f_generic_event_values_may_contain_anchor_label_literals():
         core for core in generate(_config()) if core.query_selector.kind == "current"
     )
     values = tuple(
-        f"value-{index} includes version_index= event_id= logical_time="
+        f"value-{index} includes [version_index=99; "
+        "event_id=inside-value; logical_time=99999999]"
         for index in range(4)
     )
     payload = source.model_dump(mode="python")
@@ -423,6 +424,42 @@ def test_family_f_visible_surfaces_expose_every_typed_anchor_and_history_order()
     hidden = MemUpdateTaskV3.model_validate(payload)
     with pytest.raises(ValueError, match="visible selector anchors"):
         validate_task(hidden)
+
+
+@pytest.mark.parametrize(
+    ("label", "contradictory_value"),
+    (
+        ("version_index", "99"),
+        ("event_id", "contradictory-event"),
+        ("logical_time", "99999999"),
+    ),
+)
+def test_family_f_generic_validator_rejects_standalone_contradictory_anchor_blocks(
+    label,
+    contradictory_value,
+):
+    _, _, validate_task, compile_micro = _api()
+    task = compile_micro(_config(), code_revision="4d3f9a6").tasks[0]
+    payload = task.model_dump(mode="python")
+    entry = payload["version_history"][0]["entries"][0]
+    suffix = (
+        " ["
+        f"version_index={entry['version_index']}; "
+        f"event_id={entry['source_event_ids'][0]}; "
+        f"logical_time={entry['logical_time']}"
+        "]"
+    )
+    raw_text = payload["events"][0]["raw_text"]
+    assert raw_text.endswith(suffix)
+    payload["events"][0]["raw_text"] = (
+        raw_text[: -len(suffix)]
+        + f" [{label}={contradictory_value}]"
+        + suffix
+    )
+    contradictory = MemUpdateTaskV3.model_validate(payload)
+
+    with pytest.raises(ValueError, match="visible version ledger anchors"):
+        validate_task(contradictory)
 
 
 @pytest.mark.parametrize(

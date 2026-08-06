@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import json
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -59,9 +59,10 @@ FAMILY_F_SELECTOR_KINDS = (
 )
 _VERSION_COUNT = 4
 _EVENT_ANCHOR_NAME = "version_event_2"
-_EVENT_ANCHOR_BLOCK = re.compile(
-    r" \[version_index=([^;\]\r\n]+); event_id=([^;\]\r\n]+); "
-    r"logical_time=([^;\]\r\n]+)\]"
+_RESERVED_EVENT_ANCHOR_LABELS = (
+    "version_index",
+    "event_id",
+    "logical_time",
 )
 
 
@@ -653,8 +654,36 @@ def family_f_query_tokens(selector, selected, entries) -> tuple[str, ...]:
     return tuple(dict.fromkeys(tokens))
 
 
-def _event_anchor_blocks(raw_text: str) -> tuple[tuple[str, str, str], ...]:
-    return tuple(match.groups() for match in _EVENT_ANCHOR_BLOCK.finditer(raw_text))
+def _canonical_json_text(value: Any) -> str:
+    return json.dumps(
+        thaw_json(value),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _contains_reserved_anchor_block(text: str) -> bool:
+    cursor = 0
+    while True:
+        start = text.find("[", cursor)
+        if start < 0:
+            return False
+        end = text.find("]", start + 1)
+        if end < 0:
+            return False
+        block = text[start + 1 : end]
+        for label in _RESERVED_EVENT_ANCHOR_LABELS:
+            token = f"{label}="
+            position = block.find(token)
+            while position >= 0:
+                if position == 0 or not (
+                    block[position - 1].isalnum() or block[position - 1] == "_"
+                ):
+                    return True
+                position = block.find(token, position + len(token))
+        cursor = end + 1
 
 
 def _task_semantic_binding(task, query, entries) -> tuple[_TrajectorySpec, SelectorV3]:
@@ -779,6 +808,7 @@ def validate_family_f_task(task: MemUpdateTaskV3) -> None:
             "Family F visible selector anchors are incomplete, hidden, or contradictory"
         )
     event_by_id = {event.event_id: event for event in task.events}
+    action_by_event_id = {action.event_id: action for action in task.actions}
     for entry in entries:
         event_id = entry.source_event_ids[0]
         raw_text = event_by_id[event_id].raw_text
@@ -794,10 +824,11 @@ def validate_family_f_task(task: MemUpdateTaskV3) -> None:
             f"logical_time={expected_anchor[2]}"
             "]"
         )
-        if (
-            not raw_text.endswith(expected_suffix)
-            or _event_anchor_blocks(raw_text) != (expected_anchor,)
-        ):
+        has_expected_suffix = raw_text.endswith(expected_suffix)
+        prefix = raw_text[: -len(expected_suffix)] if has_expected_suffix else raw_text
+        value_text = _canonical_json_text(action_by_event_id[event_id].value)
+        masked_prefix = prefix.replace(value_text, "")
+        if not has_expected_suffix or _contains_reserved_anchor_block(masked_prefix):
             raise ValueError(
                 "Family F visible version ledger anchors are incomplete or contradictory"
             )
