@@ -440,6 +440,58 @@ def test_family_g_validator_rejects_coordinated_add_derivation_that_disagrees_wi
         validate_task(mutated)
 
 
+def test_family_g_micro_validator_rejects_equivalent_noncanonical_derivation_graph():
+    _, _, validate_task, _, validate_micro_task, compile_micro = _api()
+    compiled = compile_micro(_config(), code_revision="5423ef7")
+    core = next(
+        item
+        for item in compiled.cores
+        if item.stratification["synthesis_kind"] == "update_sensitive_multi_hop"
+        and item.stratification["hop_count"] == 3
+    )
+    source = next(
+        task
+        for task in compiled.tasks
+        if task.metadata.split_key.semantic_core_id == core.core_id
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    payload = source.model_dump(mode="json")
+    evidence = payload["gold_evidence"][0]
+    for item in (evidence, evidence["stale_alternative"]):
+        reads = [
+            step
+            for step in item["derivation_steps"]
+            if step["operation"] in {"read_current", "read_version"}
+        ]
+        derived = [
+            step
+            for step in item["derivation_steps"]
+            if step["operation"] == "subtract"
+        ]
+        assert len(reads) == 3
+        assert len(derived) == 2
+        derived[0]["operation"] = "add"
+        derived[0]["input_step_ids"] = [reads[1]["step_id"], reads[2]["step_id"]]
+        derived[1]["input_step_ids"] = [reads[0]["step_id"], derived[0]["step_id"]]
+
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    replay = replay_task_v3(mutated)
+    evaluated = evaluate_evidence_v3(
+        mutated.gold_evidence[0],
+        replay,
+        mutated.gold_evidence[0].stale_alternative,
+        mutated.queries[0],
+        mutated.events,
+    )
+    assert replay.issues == ()
+    assert evaluated.issues == ()
+    assert evaluated.answer == source.gold_evidence[0].answer
+    assert evaluated.stale_alternative_answer == source.gold_evidence[0].stale_alternative.answer
+    validate_task(mutated)
+    with pytest.raises(ValueError, match="canonical|query|evidence|derivation"):
+        validate_micro_task(mutated, core)
+
+
 def test_family_g_reversed_selector_controls_replay_order_hash_and_validation():
     _, _, validate_task, _, _, compile_micro = _api()
     source = next(

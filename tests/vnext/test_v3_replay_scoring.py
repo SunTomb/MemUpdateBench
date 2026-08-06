@@ -4634,6 +4634,23 @@ def _two_object_shared_value_collision_payload():
     return changed
 
 
+def test_non_g_direct_multi_object_selector_order_is_scope_only():
+    source = MemUpdateTaskV3.model_validate(_two_object_shared_value_collision_payload())
+    payload = source.model_dump(mode="json")
+    payload["queries"][0]["selector"]["object_keys"].reverse()
+    reversed_selector = MemUpdateTaskV3.model_validate(payload)
+
+    assert reversed_selector.semantic_hash == source.semantic_hash
+    replay = replay_task_v3(reversed_selector)
+    resolution = resolve_query_v3(
+        reversed_selector.queries[0], replay, reversed_selector.events
+    )
+    assert replay.issues == ()
+    assert resolution.issues == ()
+    assert resolution.answer == source.gold_evidence[0].answer
+    assert resolution.selected_object_keys == source.queries[0].target_object_keys
+
+
 def _task_with_family(task, family):
     data = task.model_dump(mode="python")
     data["task_family"] = family

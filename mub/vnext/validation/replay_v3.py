@@ -470,12 +470,20 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
     event_positions = {event.event_id: event.sequence_index for event in events}
     event_times = {event.event_id: event.timestamp for event in events if event.timestamp is not None}
     selected_by_object = []
-    ordered_query_keys = (
+    ordered_g_selector = (
+        query.query_type
+        in {
+            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+        }
+        and isinstance(query.selector, MultiObjectCurrentSelector)
+    )
+    selection_keys = (
         query.selector.object_keys
-        if isinstance(query.selector, MultiObjectCurrentSelector)
+        if ordered_g_selector
         else query.target_object_keys
     )
-    for key in ordered_query_keys:
+    for key in selection_keys:
         ledger = ledgers.get(_identity(key))
         if ledger is None:
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_missing_object", "selector target has no replay ledger", f"queries.{query.query_id}.target_object_keys"),))
@@ -491,7 +499,7 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
     try:
         if (
             query.query_type == QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP
-            and isinstance(query.selector, MultiObjectCurrentSelector)
+            and ordered_g_selector
         ):
             if query.answer_schema is not AnswerSchema.NUMBER:
                 return QueryResolutionV3(
@@ -513,7 +521,7 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
                 answer -= value
         elif (
             query.query_type == QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY
-            and isinstance(query.selector, MultiObjectCurrentSelector)
+            and ordered_g_selector
         ):
             selected_values = [items[-1].value for _, items in selected_by_object]
             if query.answer_schema is AnswerSchema.BOOLEAN:

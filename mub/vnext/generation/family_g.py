@@ -8,10 +8,18 @@ from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, QueryType, Split, TaskFamily
 from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import QueryTypeV3
-from mub.vnext.contracts.v3.task import MemUpdateTaskV3, MultiObjectCurrentSelector
+from mub.vnext.contracts.v3.task import (
+    MemUpdateTaskV3,
+    MemoryQueryV3,
+    MultiObjectCurrentSelector,
+    QueryGoldEvidenceV3,
+)
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.core_config import CoreConfig
-from mub.vnext.generation.core_render_v3 import render_core_v3
+from mub.vnext.generation.core_render_v3 import (
+    _promote_family_g_query_and_evidence,
+    render_core_v3,
+)
 from mub.vnext.generation.identity import core_id, stable_id, task_id
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
 
@@ -589,6 +597,29 @@ def _validate_family_g_micro_event_binding(
             raise ValueError("Family G micro event/action binding differs from canonical core")
 
 
+def _validate_family_g_micro_query_binding(
+    task: MemUpdateTaskV3,
+    core: SemanticCore,
+) -> None:
+    query_payload, evidence_payload = _promote_family_g_query_and_evidence(
+        task,
+        core,
+        [ledger.model_dump(mode="python") for ledger in task.version_history],
+    )
+    canonical_query = MemoryQueryV3.model_validate(query_payload)
+    canonical_evidence = QueryGoldEvidenceV3.model_validate(evidence_payload)
+    if not typed_json_equal(
+        task.queries[0].model_dump(mode="python"),
+        canonical_query.model_dump(mode="python"),
+    ):
+        raise ValueError("Family G micro query differs from canonical promotion")
+    if not typed_json_equal(
+        task.gold_evidence[0].model_dump(mode="python"),
+        canonical_evidence.model_dump(mode="python"),
+    ):
+        raise ValueError("Family G micro evidence differs from canonical promotion")
+
+
 def validate_family_g_micro_task(
     task: MemUpdateTaskV3,
     core: SemanticCore | None = None,
@@ -614,6 +645,7 @@ def validate_family_g_micro_task(
     ):
         raise ValueError("Family G micro task/core binding is not canonical")
     _validate_family_g_micro_event_binding(task, canonical)
+    _validate_family_g_micro_query_binding(task, canonical)
     expected_version_group = stable_id(
         "version_group", {"trajectory_id": canonical.trajectory_id}
     )
