@@ -34,6 +34,7 @@ from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.identity import core_id, stable_id, task_id
+from mub.vnext.generation.render import _answer_schema
 from mub.vnext.validation.replay_v3 import (
     evaluate_evidence_v3,
     replay_task_v3,
@@ -227,8 +228,8 @@ def resolve_family_f_selector(
         schema = AnswerSchema.LIST
         distance = selected_indices[-1] - selected_indices[0]
     else:
-        answer = selected[-1].value
-        schema = AnswerSchema.STRING
+        answer = thaw_json(selected[-1].value)
+        schema = _answer_schema(answer)
         distance = len(entries) - 1 - selected_indices[-1]
     return FamilyFSelectorResolution(
         selected_indices=selected_indices,
@@ -776,8 +777,15 @@ def validate_family_f_task(task: MemUpdateTaskV3) -> None:
             f"event_id={event_id}",
             f"logical_time={entry.logical_time}",
         )
-        if any(token not in event_by_id[event_id].raw_text for token in required):
-            raise ValueError("Family F visible version ledger anchors are incomplete")
+        raw_text = event_by_id[event_id].raw_text
+        exact_anchor_suffix = " [" + "; ".join(required) + "]"
+        if (
+            not raw_text.endswith(exact_anchor_suffix)
+            or raw_text.count("version_index=") != 1
+            or raw_text.count("event_id=") != 1
+            or raw_text.count("logical_time=") != 1
+        ):
+            raise ValueError("Family F visible version ledger anchors are incomplete or contradictory")
     stratification = task.metadata.extra.get("stratification", {})
     if (
         stratification.get("query_type")
