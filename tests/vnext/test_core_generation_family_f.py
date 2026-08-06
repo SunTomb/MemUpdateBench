@@ -215,6 +215,30 @@ def test_family_f_full_schedule_has_sixty_seven_selector_trajectories():
     assert {task.metadata.split for task in tasks} == {Split.TRAIN}
 
 
+def test_family_f_full_generator_builds_trajectory_material_once_per_trajectory(
+    monkeypatch,
+):
+    import mub.vnext.generation.family_f as family_f
+
+    config = _config()
+    schedule = config.families.current_historical_query.schedule
+    original_core_event = family_f.CoreEvent
+    construction_count = 0
+
+    def instrumented_core_event(*args, **kwargs):
+        nonlocal construction_count
+        construction_count += 1
+        return original_core_event(*args, **kwargs)
+
+    monkeypatch.setattr(family_f, "CoreEvent", instrumented_core_event)
+    cores = family_f.generate_core_family_f_cores(config, profile="full")
+
+    assert len(cores) == schedule.trajectory_count * len(SELECTOR_KINDS)
+    assert construction_count == (
+        schedule.trajectory_count * schedule.present_versions_per_trajectory
+    )
+
+
 def test_family_f_full_validator_authenticates_core_and_trajectory_groups():
     from mub.vnext.generation.family_f import validate_family_f_full_core
 

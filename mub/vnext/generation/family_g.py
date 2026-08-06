@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -547,6 +548,69 @@ def validate_family_g_core(core: SemanticCore) -> None:
             raise ValueError("Family G evidence fingerprint or group binding is invalid")
 
 
+def _full_core_index_from_targets(core: SemanticCore, kind: str) -> int:
+    expected_namespace = (
+        "family_g_multihop"
+        if kind == "update_sensitive_multi_hop"
+        else "family_g_consistency"
+    )
+    expected_attribute = (
+        "operand"
+        if kind == "update_sensitive_multi_hop"
+        else "consistency_code"
+    )
+    case_indices: set[int] = set()
+    for operand_index, key in enumerate(core.query_targets):
+        match = re.fullmatch(
+            r"synthetic_case_(0|[1-9][0-9]*)_object_(0|[1-9][0-9]*)",
+            key.entity,
+        )
+        if (
+            match is None
+            or int(match.group(2)) != operand_index
+            or key.namespace != expected_namespace
+            or key.attribute != expected_attribute
+            or key.subkey != f"ordered_{operand_index}"
+        ):
+            raise ValueError("Family G full core canonical object index is invalid")
+        case_indices.add(int(match.group(1)))
+    if len(case_indices) != 1:
+        raise ValueError("Family G full core canonical object indices disagree")
+    return case_indices.pop()
+
+
+def _full_core_identifier_payload(core: SemanticCore, kind: str) -> dict[str, Any]:
+    histories = {
+        _identity(key): []
+        for key in core.query_targets
+    }
+    for event in core.events:
+        histories[_identity(event.object_keys[0])].append(event)
+    previous = tuple(events[0].value for events in histories.values())
+    current = tuple(events[-1].value for events in histories.values())
+    if kind == "update_sensitive_multi_hop":
+        return {
+            "hop_count": core.stratification["hop_count"],
+            "stale_sensitive_position": core.stratification[
+                "stale_sensitive_position"
+            ],
+            "stale_operand_index": core.stratification["stale_operand_index"],
+            "current": current,
+            "previous": previous,
+        }
+    return {
+        "object_count": core.stratification["object_count"],
+        "answer_kind": core.stratification["answer_kind"],
+        "scenario": core.stratification["scenario"],
+        "current": current,
+        "previous": previous,
+        "stale_indices": tuple(
+            int(value)
+            for value in core.stratification["stale_indices"].split(",")
+        ),
+    }
+
+
 def validate_family_g_full_core(core: SemanticCore) -> None:
     validate_family_g_core(core)
     fingerprint = core.stratification.get("evidence_fingerprint")
@@ -560,6 +624,18 @@ def validate_family_g_full_core(core: SemanticCore) -> None:
         raise ValueError(
             "Family G full core requires evidence fingerprint and evidence group"
         )
+    kind = core.stratification["synthesis_kind"]
+    expected_index = _full_core_index_from_targets(core, kind)
+    if core.core_index != expected_index:
+        raise ValueError("Family G full core index is not canonical")
+    expected_identifier = _core_identifier(
+        kind,
+        expected_index,
+        _full_core_identifier_payload(core, kind),
+        profile="full",
+    )
+    if core.core_id != expected_identifier:
+        raise ValueError("Family G full core identifier is not canonical")
 
 
 

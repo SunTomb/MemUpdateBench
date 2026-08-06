@@ -385,13 +385,14 @@ def _profile(query_type: QueryType, distance: int) -> dict[str, Any]:
     }
 
 
-def _build_core(
-    trajectory_index: int,
-    selector_index: int,
-    trajectories: tuple[_TrajectorySpec, ...] = _TRAJECTORIES,
-) -> SemanticCore:
-    trajectory = trajectories[trajectory_index]
-    selector_spec = _SELECTOR_SPECS[selector_index]
+@dataclass(frozen=True, slots=True)
+class _TrajectoryMaterial:
+    key: MemoryObjectKey
+    events: tuple[CoreEvent, ...]
+    trajectory_id: str
+
+
+def _build_trajectory_material(trajectory: _TrajectorySpec) -> _TrajectoryMaterial:
     key = MemoryObjectKey(
         object_type="slot",
         namespace=trajectory.namespace,
@@ -399,14 +400,14 @@ def _build_core(
         attribute=trajectory.attribute,
         subkey=trajectory.subkey,
     )
-    events = [
+    events = tuple(
         CoreEvent(
             operation=Operation.ADD if version_index == 0 else Operation.UPDATE,
             object_keys=[key],
             value=value,
             role=(
                 EventRole.LATEST_GOLD
-                if version_index == _VERSION_COUNT - 1
+                if version_index == len(trajectory.values) - 1
                 else EventRole.HISTORICAL_SUPPORT
             ),
             metadata={
@@ -415,7 +416,26 @@ def _build_core(
             },
         )
         for version_index, value in enumerate(trajectory.values)
-    ]
+    )
+    return _TrajectoryMaterial(
+        key=events[0].object_keys[0],
+        events=events,
+        trajectory_id=_trajectory_identifier(trajectory),
+    )
+
+
+def _build_core(
+    trajectory_index: int,
+    selector_index: int,
+    trajectories: tuple[_TrajectorySpec, ...] = _TRAJECTORIES,
+    *,
+    trajectory_material: _TrajectoryMaterial | None = None,
+) -> SemanticCore:
+    trajectory = trajectories[trajectory_index]
+    selector_spec = _SELECTOR_SPECS[selector_index]
+    material = trajectory_material or _build_trajectory_material(trajectory)
+    key = material.key
+    events = material.events
     selector = selector_spec.selector.model_copy()
     if isinstance(selector, LogicalTimeAnchorSelector):
         selector = LogicalTimeAnchorSelector(
@@ -436,8 +456,8 @@ def _build_core(
         task_family=TaskFamily.CURRENT_HISTORICAL_QUERY,
         difficulty=trajectory.difficulty,
         core_index=trajectory_index * len(_SELECTOR_SPECS) + selector_index,
-        trajectory_id=_trajectory_identifier(trajectory),
-        events=events,
+        trajectory_id=material.trajectory_id,
+        events=list(events),
         query_targets=[key],
         query_type=selector_spec.core_query_type,
         query_selector=selector,
@@ -659,8 +679,21 @@ def generate_core_family_f_cores(
     else:
         raise ValueError("Family F profile must be micro or full")
 
+    trajectory_materials: tuple[_TrajectoryMaterial | None, ...]
+    if profile == "full":
+        trajectory_materials = tuple(
+            _build_trajectory_material(trajectory)
+            for trajectory in trajectories
+        )
+    else:
+        trajectory_materials = (None,) * len(trajectories)
     cores = [
-        _build_core(trajectory_index, selector_index, trajectories)
+        _build_core(
+            trajectory_index,
+            selector_index,
+            trajectories,
+            trajectory_material=trajectory_materials[trajectory_index],
+        )
         for trajectory_index in range(len(trajectories))
         for selector_index in range(len(_SELECTOR_SPECS))
     ]

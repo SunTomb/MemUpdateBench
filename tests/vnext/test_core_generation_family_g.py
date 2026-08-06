@@ -383,6 +383,26 @@ def test_family_g_full_validator_requires_semantic_evidence_group_binding():
     validate_core(reindexed)
 
 
+def test_family_g_full_validator_rejects_swapped_canonical_core_id():
+    from mub.vnext.generation.family_g import validate_family_g_full_core
+
+    cores = _api()[0](_config(), profile="full")
+    swapped = cores[0].model_copy(update={"core_id": cores[1].core_id})
+
+    with pytest.raises(ValueError, match="core.*identifier|canonical"):
+        validate_family_g_full_core(swapped)
+
+
+def test_family_g_full_validator_rejects_drifted_canonical_core_index():
+    from mub.vnext.generation.family_g import validate_family_g_full_core
+
+    source = _api()[0](_config(), profile="full")[0]
+    drifted = source.model_copy(update={"core_index": source.core_index + 1000})
+
+    with pytest.raises(ValueError, match="core.*index|canonical"):
+        validate_family_g_full_core(drifted)
+
+
 
 def test_family_g_compiler_renders_exactly_four_replayable_v3_surfaces_per_core():
     _, _, validate_task, _, validate_micro_task, compile_micro = _api()
