@@ -296,6 +296,11 @@ def _query_semantics(
             resolution.answer_schema,
         )
 
+    if core.task_family is TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS:
+        if core.expected_answer is None:
+            raise ValueError("render_core Family G requires a synthesis answer")
+        return core.query_type, expected, _answer_schema(expected)
+
     if all(present):
         if core.expected_answer is None:
             raise ValueError(

@@ -80,6 +80,7 @@ def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
     promoted = []
     family_e = core.task_family is TaskFamily.DELETION_FORGETTING
     family_f = core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY
+    family_g = core.task_family is TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS
     for action, core_event in zip(task.gold.actions, core.events):
         if action.operation is Operation.NOOP:
             scope = None
@@ -96,7 +97,7 @@ def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
             core_event.metadata.get("effective_at")
             if family_e
             else core_event.metadata.get("logical_time")
-            if family_f
+            if family_f or family_g
             else action.effective_at
         )
         promoted.append(
@@ -423,6 +424,197 @@ def _promote_family_f_query_and_evidence(task, core: SemanticCore, version_histo
     return promoted_query, evidence
 
 
+_FAMILY_G_QUERY_TEMPLATES = (
+    "Use the listed objects in order. $instruction",
+    "For the ordered object sequence, $instruction",
+    "Follow the typed derivation over the objects in their displayed order: $instruction",
+    "Resolve the ordered current-state derivation. $instruction",
+)
+
+
+def _family_g_ordered_keys(core: SemanticCore):
+    ordered = []
+    seen = set()
+    for event in core.events:
+        for key in event.object_keys:
+            identity = _identity(key)
+            if identity not in seen:
+                ordered.append(key)
+                seen.add(identity)
+    return tuple(ordered)
+
+
+def _family_g_query_text(task, core: SemanticCore, keys) -> str:
+    kind = core.stratification["synthesis_kind"]
+    object_order = ", ".join(key.canonical_id for key in keys)
+    if kind == "update_sensitive_multi_hop":
+        instruction = (
+            "read each object's current numeric operand, start with the first operand, "
+            "then subtract each later operand from the running result; return only the final number."
+        )
+    elif core.stratification["answer_kind"] == "boolean_consistency":
+        instruction = (
+            "read every current consistency code and return true exactly when all codes are equal, "
+            "otherwise false."
+        )
+    else:
+        instruction = (
+            "read every current discrepancy code and add them; code 0 means consistent and a positive "
+            "code is the exact 1-based position of the inconsistent object; return only that position."
+        )
+    template = _FAMILY_G_QUERY_TEMPLATES[task.metadata.extra["surface_variant"]]
+    return template.replace("$instruction", instruction) + f" [object_order={object_order}]"
+
+
+def _family_g_derivation(query_id, keys, selected_entries, *, kind: str, prefix: str):
+    key_payloads = [_key_payload(key) for key in keys]
+    steps = []
+    supporting_events = []
+    values = []
+    for index, (key, entry, stale) in enumerate(selected_entries):
+        event_ids = list(entry["source_event_ids"])
+        supporting_events.extend(event_ids)
+        values.append(entry["value"])
+        steps.append(
+            {
+                "step_id": f"{prefix}_{query_id}_read_{index}",
+                "operation": "read_version" if stale else "read_current",
+                "input_step_ids": [],
+                "supporting_object_keys": [_key_payload(key)],
+                "supporting_event_ids": event_ids,
+            }
+        )
+    if kind == "update_sensitive_multi_hop":
+        answer = values[0]
+        left_step = steps[0]["step_id"]
+        for index, value in enumerate(values[1:], start=1):
+            answer -= value
+            final_step = f"{prefix}_{query_id}_subtract_{index}"
+            steps.append(
+                {
+                    "step_id": final_step,
+                    "operation": "subtract",
+                    "input_step_ids": [left_step, steps[index]["step_id"]],
+                    "supporting_object_keys": [],
+                    "supporting_event_ids": [],
+                }
+            )
+            left_step = final_step
+        final_step_id = left_step
+    elif kind == "boolean_consistency":
+        answer = all(value == values[0] for value in values[1:])
+        final_step_id = f"{prefix}_{query_id}_equals"
+        steps.append(
+            {
+                "step_id": final_step_id,
+                "operation": "equals",
+                "input_step_ids": [step["step_id"] for step in steps],
+                "supporting_object_keys": [],
+                "supporting_event_ids": [],
+            }
+        )
+    else:
+        answer = sum(values)
+        final_step_id = f"{prefix}_{query_id}_add"
+        steps.append(
+            {
+                "step_id": final_step_id,
+                "operation": "add",
+                "input_step_ids": [step["step_id"] for step in steps],
+                "supporting_object_keys": [],
+                "supporting_event_ids": [],
+            }
+        )
+    return {
+        "answer": answer,
+        "supporting_object_keys": key_payloads,
+        "supporting_event_ids": list(dict.fromkeys(supporting_events)),
+        "derivation_steps": steps,
+        "final_derivation_step_id": final_step_id,
+    }
+
+
+def _promote_family_g_query_and_evidence(task, core: SemanticCore, version_history):
+    if len(task.queries) != 1:
+        raise ValueError("Core Family G v3 promotion requires exactly one query")
+    source_query = task.queries[0]
+    keys = _family_g_ordered_keys(core)
+    history_by_identity = {
+        _identity(ledger["object_key"]): ledger["entries"]
+        for ledger in version_history
+    }
+    if set(history_by_identity) != {_identity(key) for key in keys}:
+        raise ValueError("Core Family G promoted ledgers differ from semantic operands")
+    current_entries = [
+        (key, history_by_identity[_identity(key)][-1], False)
+        for key in keys
+    ]
+    kind = core.stratification["synthesis_kind"]
+    if kind == "update_sensitive_multi_hop":
+        query_type = QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP.value
+        query_targets = [_key_payload(core.query_targets[0])]
+        selector = {"kind": "current"}
+        synthesis = {"kind": kind, "minimum_hops": core.stratification["hop_count"]}
+        derivation_kind = kind
+        answer_schema = AnswerSchema.NUMBER.value
+        stale_indices = {
+            next(index for index, key in enumerate(keys) if _identity(key) == _identity(core.query_targets[0]))
+        }
+    else:
+        query_type = QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY.value
+        query_targets = [_key_payload(key) for key in keys]
+        selector = {"kind": "multi_object_current", "object_keys": query_targets}
+        synthesis = {"kind": kind, "minimum_objects": core.stratification["object_count"]}
+        derivation_kind = core.stratification["answer_kind"]
+        answer_schema = (
+            AnswerSchema.BOOLEAN.value
+            if derivation_kind == "boolean_consistency"
+            else AnswerSchema.NUMBER.value
+        )
+        stale_indices = {
+            int(value)
+            for value in core.stratification["stale_indices"].split(",")
+        }
+    stale_entries = [
+        (
+            key,
+            history_by_identity[_identity(key)][0 if index in stale_indices else -1],
+            index in stale_indices,
+        )
+        for index, key in enumerate(keys)
+    ]
+    primary = _family_g_derivation(
+        source_query.query_id,
+        keys,
+        current_entries,
+        kind=derivation_kind,
+        prefix="gold",
+    )
+    stale = _family_g_derivation(
+        source_query.query_id,
+        keys,
+        stale_entries,
+        kind=derivation_kind,
+        prefix="stale",
+    )
+    promoted_query = {
+        "query_id": source_query.query_id,
+        "query_type": query_type,
+        "text": _family_g_query_text(task, core, keys),
+        "selector": selector,
+        "target_object_keys": query_targets,
+        "answer_schema": answer_schema,
+        "evaluation_mode": source_query.evaluation_mode.value,
+        "synthesis": synthesis,
+    }
+    evidence = {
+        "query_id": source_query.query_id,
+        **primary,
+        "stale_alternative": stale,
+    }
+    return promoted_query, evidence
+
+
 def _inject_family_f_event_cues(events, version_history) -> None:
     event_by_id = {event["event_id"]: event for event in events}
     for entry in version_history[0]["entries"]:
@@ -441,6 +633,8 @@ def _promote_query_and_evidence(task, version_history, core: SemanticCore):
         return _promote_family_e_query_and_evidence(task, core, version_history)
     if core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY:
         return _promote_family_f_query_and_evidence(task, core, version_history)
+    if core.task_family is TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS:
+        return _promote_family_g_query_and_evidence(task, core, version_history)
     if len(task.queries) != 1:
         raise ValueError("Core v3 promotion requires exactly one query")
     query = task.queries[0]
@@ -527,6 +721,7 @@ def render_core_v3(
     """Render one Core semantic core as a strict v3 task."""
     family_e = core.task_family is TaskFamily.DELETION_FORGETTING
     family_f = core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY
+    family_g = core.task_family is TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS
     if family_e:
         from mub.vnext.generation.family_e import validate_family_e_core
 
@@ -535,8 +730,29 @@ def render_core_v3(
         from mub.vnext.generation.family_f import validate_family_f_core
 
         validate_family_f_core(core)
+    if family_g:
+        from mub.vnext.generation.family_g import validate_family_g_core
+
+        validate_family_g_core(core)
+    render_source_core = core
+    if family_g:
+        current_by_identity = {}
+        for semantic_event in core.events:
+            for key in semantic_event.object_keys:
+                if semantic_event.operation in {Operation.ADD, Operation.UPDATE}:
+                    current_by_identity[_identity(key)] = semantic_event.value
+        direct_values = [
+            current_by_identity[_identity(key)] for key in core.query_targets
+        ]
+        render_source_core = core.model_copy(
+            update={
+                "expected_answer": direct_values[0]
+                if len(direct_values) == 1
+                else direct_values
+            }
+        )
     task_v2 = render_core_with_catalog(
-        core,
+        render_source_core,
         split=split,
         surface_variant=surface_variant,
         context=context,
@@ -546,7 +762,7 @@ def render_core_v3(
     version_history = _build_version_history(task_v2, actions)
     query, evidence = _promote_query_and_evidence(task_v2, version_history, core)
     events = [event.model_dump(mode="python") for event in task_v2.events]
-    if family_e or family_f:
+    if family_e or family_f or family_g:
         for event, core_event in zip(events, core.events):
             event["timestamp"] = core_event.metadata["logical_time"]
     if family_e:
@@ -557,7 +773,7 @@ def render_core_v3(
     source = task_v2.source.model_dump(mode="python")
     source["provenance"] = dict(source["provenance"])
     source["provenance"]["schema_version"] = "3.0.0"
-    if family_e or family_f:
+    if family_e or family_f or family_g:
         source["raw_hash"] = _payload_sha256(
             {
                 "events": [
@@ -602,6 +818,10 @@ def render_core_v3(
         from mub.vnext.generation.family_f import validate_family_f_task
 
         validate_family_f_task(promoted)
+    if family_g:
+        from mub.vnext.generation.family_g import validate_family_g_task
+
+        validate_family_g_task(promoted)
     return promoted
 
 

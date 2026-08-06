@@ -481,17 +481,27 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_ambiguous_version", "typed selector resolved more than one version", f"queries.{query.query_id}.selector"),))
         selected_by_object.append((key, selected))
     try:
-        if isinstance(query.selector, TransitionSelector):
+        if query.query_type in {
+            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+        }:
+            selected_values = [items[-1].value for _, items in selected_by_object]
+            answer = selected_values[0] if len(selected_values) == 1 else selected_values
+        elif isinstance(query.selector, TransitionSelector):
             answers = [{"from": items[0].value, "to": items[1].value} for _, items in selected_by_object]
         elif isinstance(query.selector, OrderedHistorySelector):
             answers = [[item.value for item in items] for _, items in selected_by_object]
         else:
             answers = [items[-1].value for _, items in selected_by_object]
-        keys = [key for key, _ in selected_by_object]
-        if isinstance(query.selector, (TransitionSelector, OrderedHistorySelector)):
-            answer = answers[0] if len(answers) == 1 else _shape(answers, keys, query.answer_schema)
-        else:
-            answer = _shape(answers, keys, query.answer_schema)
+        if query.query_type not in {
+            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+        }:
+            keys = [key for key, _ in selected_by_object]
+            if isinstance(query.selector, (TransitionSelector, OrderedHistorySelector)):
+                answer = answers[0] if len(answers) == 1 else _shape(answers, keys, query.answer_schema)
+            else:
+                answer = _shape(answers, keys, query.answer_schema)
     except Exception as exc:
         return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_answer_shape_error", str(exc), f"queries.{query.query_id}.answer_schema"),))
     versions = tuple(item for _, selected in selected_by_object for item in selected)
