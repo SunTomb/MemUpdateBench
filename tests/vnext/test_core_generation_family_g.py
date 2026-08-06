@@ -492,6 +492,68 @@ def test_family_g_micro_validator_rejects_equivalent_noncanonical_derivation_gra
         validate_micro_task(mutated, core)
 
 
+def test_family_g_micro_validator_rejects_noncanonical_evaluation_mode():
+    _, _, validate_task, _, validate_micro_task, compile_micro = _api()
+    compiled = compile_micro(_config(), code_revision="5423ef7")
+    core = compiled.cores[0]
+    source = next(
+        task
+        for task in compiled.tasks
+        if task.metadata.split_key.semantic_core_id == core.core_id
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    assert source.queries[0].evaluation_mode.value == "retrieved_prompt"
+    payload = source.model_dump(mode="json")
+    payload["queries"][0]["evaluation_mode"] = "state_direct"
+
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    validate_task(mutated)
+    with pytest.raises(ValueError, match="canonical|evaluation|query"):
+        validate_micro_task(mutated, core)
+
+
+def test_family_g_micro_validator_rejects_coordinated_query_id_drift():
+    from mub.vnext.generation.identity import query_id
+
+    _, _, validate_task, _, validate_micro_task, compile_micro = _api()
+    compiled = compile_micro(_config(), code_revision="5423ef7")
+    core = compiled.cores[0]
+    source = next(
+        task
+        for task in compiled.tasks
+        if task.metadata.split_key.semantic_core_id == core.core_id
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    assert source.queries[0].query_id == query_id(source.task_id, 0)
+    payload = source.model_dump(mode="json")
+    original_query_id = payload["queries"][0]["query_id"]
+    drifted_query_id = "query_drifted_under_original_task_id"
+    payload["queries"][0]["query_id"] = drifted_query_id
+    evidence = payload["gold_evidence"][0]
+    evidence["query_id"] = drifted_query_id
+    for item in (evidence, evidence["stale_alternative"]):
+        step_id_map = {
+            step["step_id"]: step["step_id"].replace(
+                original_query_id, drifted_query_id
+            )
+            for step in item["derivation_steps"]
+        }
+        for step in item["derivation_steps"]:
+            step["step_id"] = step_id_map[step["step_id"]]
+            step["input_step_ids"] = [
+                step_id_map[input_step_id]
+                for input_step_id in step["input_step_ids"]
+            ]
+        item["final_derivation_step_id"] = step_id_map[
+            item["final_derivation_step_id"]
+        ]
+
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    validate_task(mutated)
+    with pytest.raises(ValueError, match="canonical|query.*id"):
+        validate_micro_task(mutated, core)
+
+
 def test_family_g_reversed_selector_controls_replay_order_hash_and_validation():
     _, _, validate_task, _, _, compile_micro = _api()
     source = next(

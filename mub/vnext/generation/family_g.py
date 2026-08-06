@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mub.vnext.contracts.common import MemoryObjectKey
-from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, QueryType, Split, TaskFamily
+from mub.vnext.contracts.enums import Difficulty, EvaluationMode, EventRole, Operation, QueryType, Split, TaskFamily
 from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import QueryTypeV3
 from mub.vnext.contracts.v3.task import (
@@ -20,7 +20,7 @@ from mub.vnext.generation.core_render_v3 import (
     _promote_family_g_query_and_evidence,
     render_core_v3,
 )
-from mub.vnext.generation.identity import core_id, stable_id, task_id
+from mub.vnext.generation.identity import core_id, query_id, stable_id, task_id
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3, resolve_query_v3
 
 
@@ -601,6 +601,11 @@ def _validate_family_g_micro_query_binding(
     task: MemUpdateTaskV3,
     core: SemanticCore,
 ) -> None:
+    source_query = task.queries[0]
+    if source_query.query_id != query_id(task.task_id, 0):
+        raise ValueError("Family G micro query ID is not canonical for its task")
+    if source_query.evaluation_mode is not EvaluationMode.RETRIEVED_PROMPT:
+        raise ValueError("Family G micro query evaluation mode must be retrieved_prompt")
     query_payload, evidence_payload = _promote_family_g_query_and_evidence(
         task,
         core,
