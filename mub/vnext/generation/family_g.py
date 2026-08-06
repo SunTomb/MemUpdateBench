@@ -295,6 +295,13 @@ def validate_family_g_core(core: SemanticCore) -> None:
         or len(logical_times) != len(set(logical_times))
     ):
         raise ValueError("Family G requires unique increasing logical times")
+    current_values = [events[-1].value for events in histories.values()]
+    previous_values = [events[0].value for events in histories.values()]
+    if any(
+        type(value) not in {int, float}
+        for value in (*current_values, *previous_values)
+    ):
+        raise ValueError("Family G derivation operands must be exact numeric values")
     if kind == "update_sensitive_multi_hop":
         if not isinstance(core.query_selector, CurrentSelector) or core.query_type is not QueryType.CURRENT_STATE:
             raise ValueError("Family G multi-hop cores require a typed current selector")
@@ -302,6 +309,26 @@ def validate_family_g_core(core: SemanticCore) -> None:
             raise ValueError("Family G multi-hop requires one update-sensitive query target")
         if core.stratification.get("hop_count") != len(histories):
             raise ValueError("Family G multi-hop operand count must equal hop_count")
+        stale_index = core.stratification.get("stale_operand_index")
+        if type(stale_index) is not int or stale_index not in range(len(histories)):
+            raise ValueError("Family G stale-sensitive operand index is invalid")
+        if event_identities[stale_index] != query_target_identities[0]:
+            raise ValueError("Family G query target must be the stale-sensitive operand")
+        expected_position = (
+            "early"
+            if stale_index == 0
+            else "final"
+            if stale_index == len(histories) - 1
+            else "middle"
+        )
+        if core.stratification.get("stale_sensitive_position") != expected_position:
+            raise ValueError("Family G stale-sensitive position is invalid")
+        expected_answer = current_values[0] - sum(current_values[1:])
+        stale_values = list(current_values)
+        stale_values[stale_index] = previous_values[stale_index]
+        stale_answer = stale_values[0] - sum(stale_values[1:])
+        if core.expected_answer != expected_answer or stale_answer == expected_answer:
+            raise ValueError("Family G multi-hop answer or stale derivation is invalid")
     else:
         if not isinstance(core.query_selector, MultiObjectCurrentSelector) or core.query_type is not QueryType.MULTI_OBJECT:
             raise ValueError("Family G consistency cores require typed multi-object current selection")
@@ -311,11 +338,60 @@ def validate_family_g_core(core: SemanticCore) -> None:
             raise ValueError("Family G consistency targets must cover every exact object identity")
         if core.stratification.get("object_count") != len(core.query_targets):
             raise ValueError("Family G consistency target count must equal object_count")
+        answer_kind = core.stratification.get("answer_kind")
+        if answer_kind == "boolean_consistency":
+            expected_answer = all(value == current_values[0] for value in current_values[1:])
+        elif answer_kind == "exact_inconsistent_object":
+            marked = [
+                (index, value)
+                for index, value in enumerate(current_values)
+                if value != 0
+            ]
+            if len(marked) != 1 or marked[0][1] != marked[0][0] + 1:
+                raise ValueError("Family G exact inconsistency must encode one exact object position")
+            expected_answer = marked[0][1]
+        else:
+            raise ValueError("Family G consistency answer kind is invalid")
+        try:
+            stale_indices = {
+                int(value)
+                for value in core.stratification["stale_indices"].split(",")
+            }
+        except (AttributeError, KeyError, ValueError) as exc:
+            raise ValueError("Family G stale consistency indices are invalid") from exc
+        if not stale_indices or not stale_indices <= set(range(len(histories))):
+            raise ValueError("Family G stale consistency indices are invalid")
+        stale_values = [
+            previous_values[index] if index in stale_indices else value
+            for index, value in enumerate(current_values)
+        ]
+        stale_answer = (
+            all(value == stale_values[0] for value in stale_values[1:])
+            if answer_kind == "boolean_consistency"
+            else sum(stale_values)
+        )
+        if answer_kind == "exact_inconsistent_object":
+            stale_marked = [
+                (index, value)
+                for index, value in enumerate(stale_values)
+                if value != 0
+            ]
+            if len(stale_marked) != 1 or stale_marked[0][1] != stale_marked[0][0] + 1:
+                raise ValueError("Family G stale alternative must encode one exact object position")
+        if (
+            core.expected_answer != expected_answer
+            or core.stratification.get("stale_answer") != stale_answer
+            or stale_answer == expected_answer
+        ):
+            raise ValueError("Family G consistency answer or stale derivation is invalid")
 
 
 def validate_family_g_micro_core(core: SemanticCore) -> None:
     validate_family_g_core(core)
-    expected = _canonical_cores()[core.core_index]
+    canonical = _canonical_cores()
+    if core.core_index >= len(canonical):
+        raise ValueError("Family G micro-pilot semantic core index is not canonical")
+    expected = canonical[core.core_index]
     if core.model_dump(mode="python") != expected.model_dump(mode="python"):
         raise ValueError("Family G micro-pilot semantic core is not canonical")
 
@@ -396,15 +472,37 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
         raise ValueError("Family G task has an unsupported typed query")
     if query.synthesis is None or query.synthesis.kind != query.query_type.value:
         raise ValueError("Family G query requires its matching synthesis contract")
-    if "current" not in query.text.lower() or "object_order=" not in query.text:
+    visible_text = query.text.lower()
+    if (
+        "current" not in visible_text
+        or "object_order=" not in query.text
+        or any(key.canonical_id not in query.text for key in task.target_objects)
+    ):
         raise ValueError("Family G visible query must state current ordered derivation intent")
-    if "CURRENT_STATE" in query.text:
+    if "current_state" in visible_text:
         raise ValueError("Family G query cannot tunnel intent through CURRENT_STATE")
+    stratification = task.metadata.extra.get("stratification", {})
+    if query.query_type is QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP:
+        if "subtract" not in visible_text:
+            raise ValueError("Family G multi-hop query must visibly declare ordered subtraction")
+    elif stratification.get("answer_kind") == "boolean_consistency":
+        if "all codes are equal" not in visible_text:
+            raise ValueError("Family G boolean query must visibly declare consistency semantics")
+    elif (
+        stratification.get("answer_kind") != "exact_inconsistent_object"
+        or "add" not in visible_text
+        or "1-based position" not in visible_text
+    ):
+        raise ValueError("Family G exact query must visibly declare inconsistency semantics")
     if evidence.stale_alternative is None or evidence.answer == evidence.stale_alternative.answer:
         raise ValueError("Family G requires a distinct authenticated stale alternative")
+    declared_objects = {_identity(key) for key in task.target_objects}
     for item in (evidence, evidence.stale_alternative):
         read_objects, read_events = _read_support(item)
-        if read_objects != {_identity(key) for key in item.supporting_object_keys}:
+        if (
+            read_objects != declared_objects
+            or read_objects != {_identity(key) for key in item.supporting_object_keys}
+        ):
             raise ValueError("Family G top-level object support must be exactly consumed by reads")
         if read_events != set(item.supporting_event_ids):
             raise ValueError("Family G top-level event support must be exactly consumed by reads")
@@ -458,12 +556,11 @@ def validate_family_g_micro_task(
         raise ValueError("Family G derivation group must share one version group")
     if core is not None:
         validate_family_g_micro_core(core)
-        if core.core_id != canonical.core_id or evidence_answer(task) != core.expected_answer:
+        if (
+            core.core_id != canonical.core_id
+            or task.gold_evidence[0].answer != core.expected_answer
+        ):
             raise ValueError("Family G compiler task/core semantics differ")
-
-
-def evidence_answer(task: MemUpdateTaskV3):
-    return task.gold_evidence[0].answer
 
 
 def _validate_compiled(tasks: list[MemUpdateTaskV3], cores: list[SemanticCore]) -> None:
