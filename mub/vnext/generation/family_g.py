@@ -6,6 +6,7 @@ from typing import Any
 
 from mub.vnext.contracts.common import MemoryObjectKey
 from mub.vnext.contracts.enums import Difficulty, EventRole, Operation, QueryType, Split, TaskFamily
+from mub.vnext.contracts.v3.common import typed_json_equal
 from mub.vnext.contracts.v3.enums import QueryTypeV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3, MultiObjectCurrentSelector
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
@@ -445,8 +446,21 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
         raise ValueError("Family G task validator requires long_horizon_memory_synthesis")
     if len(task.queries) != 1 or len(task.gold_evidence) != 1:
         raise ValueError("Family G task requires one query and one evidence row")
-    if any(action.operation not in {Operation.ADD, Operation.UPDATE} for action in task.actions):
-        raise ValueError("Family G forbids deletion, history-only, and NOOP semantics")
+    event_ids = tuple(event.event_id for event in task.events)
+    action_event_ids = tuple(action.event_id for action in task.actions)
+    if event_ids != action_event_ids:
+        raise ValueError("Family G requires exact ordered event/action ownership")
+    if any(
+        event.gold_action_ids != (action.action_id,)
+        for event, action in zip(task.events, task.actions)
+    ):
+        raise ValueError("Family G events must each own exactly one ordered action")
+    if any(
+        action.operation not in {Operation.ADD, Operation.UPDATE}
+        or len(action.target_object_keys) != 1
+        for action in task.actions
+    ):
+        raise ValueError("Family G permits only exact-object ADD and UPDATE actions")
     histories = {_identity(ledger.object_key): ledger for ledger in task.version_history}
     if len(histories) != len(task.target_objects):
         raise ValueError("Family G requires one exact ledger per canonical object")
@@ -460,11 +474,25 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
         object_actions = [
             action
             for action in task.actions
-            if action.target_object_keys
-            and _identity(action.target_object_keys[0]) == identity
+            if _identity(action.target_object_keys[0]) == identity
         ]
         if tuple(action.operation for action in object_actions) != (Operation.ADD, Operation.UPDATE):
             raise ValueError("Family G object history must be ADD followed by UPDATE")
+        ledger_event_ids = tuple(
+            event_id
+            for entry in ledger.entries
+            for event_id in entry.source_event_ids
+        )
+        if ledger_event_ids != tuple(action.event_id for action in object_actions):
+            raise ValueError("Family G ledger sources must exactly cover object actions")
+    ledger_source_ids = [
+        event_id
+        for ledger in task.version_history
+        for entry in ledger.entries
+        for event_id in entry.source_event_ids
+    ]
+    if len(ledger_source_ids) != len(set(ledger_source_ids)) or set(ledger_source_ids) != set(event_ids):
+        raise ValueError("Family G ledger source union must exactly cover all events")
     query = task.queries[0]
     evidence = task.gold_evidence[0]
     if query.query_type not in {
@@ -474,6 +502,16 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
         raise ValueError("Family G task has an unsupported typed query")
     if query.synthesis is None or query.synthesis.kind != query.query_type.value:
         raise ValueError("Family G query requires its matching synthesis contract")
+    if not isinstance(query.selector, MultiObjectCurrentSelector):
+        raise ValueError("Family G queries require a multi-object current selector")
+    selector_order = tuple(_identity(key) for key in query.selector.object_keys)
+    query_target_order = tuple(_identity(key) for key in query.target_object_keys)
+    ledger_order = tuple(_identity(ledger.object_key) for ledger in task.version_history)
+    declared_order = tuple(_identity(key) for key in task.target_objects)
+    if not selector_order == query_target_order == ledger_order == declared_order:
+        raise ValueError(
+            "Family G selector, query target, ledger, and declared operand order must match"
+        )
     visible_text = query.text.lower()
     if (
         "current" not in visible_text
@@ -514,6 +552,8 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
     resolution = resolve_query_v3(query, replay, task.events)
     if resolution.issues:
         raise ValueError(f"Family G selector replay failed: {resolution.issues[0].code}")
+    if not typed_json_equal(resolution.answer, evidence.answer):
+        raise ValueError("Family G typed selector answer does not equal gold evidence")
     evaluated = evaluate_evidence_v3(
         evidence,
         replay,
@@ -525,6 +565,28 @@ def validate_family_g_task(task: MemUpdateTaskV3) -> None:
         raise ValueError(f"Family G evidence replay failed: {evaluated.issues[0].code}")
     if evaluated.answer != evidence.answer or evaluated.stale_alternative_answer != evidence.stale_alternative.answer:
         raise ValueError("Family G derivation answers are not replayable")
+
+
+def _validate_family_g_micro_event_binding(
+    task: MemUpdateTaskV3,
+    core: SemanticCore,
+) -> None:
+    if len(task.events) != len(task.actions) or len(task.events) != len(core.events):
+        raise ValueError("Family G micro task event count differs from canonical core")
+    for core_event, event, action in zip(core.events, task.events, task.actions):
+        logical_time = core_event.metadata.get("logical_time")
+        if (
+            event.event_id != action.event_id
+            or event.gold_action_ids != (action.action_id,)
+            or action.operation is not core_event.operation
+            or tuple(_identity(key) for key in action.target_object_keys)
+            != tuple(_identity(key) for key in core_event.object_keys)
+            or not typed_json_equal(action.value, core_event.value)
+            or event.timestamp != logical_time
+            or action.effective_at != logical_time
+            or event.role is not core_event.role
+        ):
+            raise ValueError("Family G micro event/action binding differs from canonical core")
 
 
 def validate_family_g_micro_task(
@@ -551,6 +613,7 @@ def validate_family_g_micro_task(
         or task.source.provenance.get("trajectory_id") != canonical.trajectory_id
     ):
         raise ValueError("Family G micro task/core binding is not canonical")
+    _validate_family_g_micro_event_binding(task, canonical)
     expected_version_group = stable_id(
         "version_group", {"trajectory_id": canonical.trajectory_id}
     )
@@ -560,7 +623,7 @@ def validate_family_g_micro_task(
         validate_family_g_micro_core(core)
         if (
             core.core_id != canonical.core_id
-            or task.gold_evidence[0].answer != core.expected_answer
+            or not typed_json_equal(task.gold_evidence[0].answer, core.expected_answer)
         ):
             raise ValueError("Family G compiler task/core semantics differ")
 

@@ -470,7 +470,12 @@ def resolve_query_v3(query: MemoryQueryV3, replay: ReplayResultV3, events=()) ->
     event_positions = {event.event_id: event.sequence_index for event in events}
     event_times = {event.event_id: event.timestamp for event in events if event.timestamp is not None}
     selected_by_object = []
-    for key in query.target_object_keys:
+    ordered_query_keys = (
+        query.selector.object_keys
+        if isinstance(query.selector, MultiObjectCurrentSelector)
+        else query.target_object_keys
+    )
+    for key in ordered_query_keys:
         ledger = ledgers.get(_identity(key))
         if ledger is None:
             return QueryResolutionV3(query_id=query.query_id, issues=(_issue("selector_missing_object", "selector target has no replay ledger", f"queries.{query.query_id}.target_object_keys"),))

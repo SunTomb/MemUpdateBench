@@ -399,6 +399,130 @@ def test_family_g_replay_unsupported_answer_schema_returns_issue_with_selection_
         assert resolution.selected_event_ids
 
 
+def test_family_g_validator_rejects_coordinated_add_derivation_that_disagrees_with_typed_query():
+    _, _, validate_task, _, _, compile_micro = _api()
+    source = next(
+        task
+        for task in compile_micro(_config(), code_revision="5423ef7").tasks
+        if task.queries[0].query_type is QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    payload = source.model_dump(mode="json")
+    evidence = payload["gold_evidence"][0]
+    current_values = [ledger["entries"][-1]["value"] for ledger in payload["version_history"]]
+    stale_values = list(current_values)
+    stale_index = payload["metadata"]["extra"]["stratification"]["stale_operand_index"]
+    stale_values[stale_index] = payload["version_history"][stale_index]["entries"][0]["value"]
+
+    for item, values in (
+        (evidence, current_values),
+        (evidence["stale_alternative"], stale_values),
+    ):
+        for step in item["derivation_steps"]:
+            if step["operation"] == "subtract":
+                step["operation"] = "add"
+        item["answer"] = sum(values)
+
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    replay = replay_task_v3(mutated)
+    evaluated = evaluate_evidence_v3(
+        mutated.gold_evidence[0],
+        replay,
+        mutated.gold_evidence[0].stale_alternative,
+        mutated.queries[0],
+        mutated.events,
+    )
+    assert replay.issues == ()
+    assert evaluated.issues == ()
+    assert evaluated.answer == mutated.gold_evidence[0].answer
+    assert evaluated.stale_alternative_answer == mutated.gold_evidence[0].stale_alternative.answer
+    with pytest.raises(ValueError, match="typed|selector|gold|answer"):
+        validate_task(mutated)
+
+
+def test_family_g_reversed_selector_controls_replay_order_hash_and_validation():
+    _, _, validate_task, _, _, compile_micro = _api()
+    source = next(
+        task
+        for task in compile_micro(_config(), code_revision="5423ef7").tasks
+        if task.queries[0].query_type is QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    payload = source.model_dump(mode="json")
+    payload["queries"][0]["selector"]["object_keys"].reverse()
+    reversed_task = MemUpdateTaskV3.model_validate(payload)
+    replay = replay_task_v3(reversed_task)
+    resolution = resolve_query_v3(reversed_task.queries[0], replay, reversed_task.events)
+    selector_order = tuple(
+        _identity(key) for key in reversed_task.queries[0].selector.object_keys
+    )
+    current_by_identity = {
+        _identity(ledger.object_key): ledger.entries[-1].value
+        for ledger in reversed_task.version_history
+    }
+    ordered_values = [current_by_identity[identity] for identity in selector_order]
+    expected = ordered_values[0]
+    for value in ordered_values[1:]:
+        expected -= value
+
+    assert reversed_task.semantic_hash != source.semantic_hash
+    assert tuple(_identity(key) for key in resolution.selected_object_keys) == selector_order
+    assert resolution.answer == expected
+    with pytest.raises(ValueError, match="selector|target|ledger|operand|order"):
+        validate_task(reversed_task)
+
+
+def test_family_g_generic_validator_rejects_unowned_contradictory_event():
+    _, _, validate_task, _, _, compile_micro = _api()
+    source = compile_micro(_config(), code_revision="5423ef7").tasks[0]
+    payload = source.model_dump(mode="json")
+    payload["events"].append(
+        {
+            "event_id": "event_unowned_contradiction",
+            "sequence_index": len(payload["events"]),
+            "timestamp": "99999999",
+            "raw_text": "Contradict every declared current operand.",
+            "normalized_text": "contradict every declared current operand",
+            "speaker": "system",
+            "gold_action_ids": [],
+            "role": "latest_gold",
+            "source_anchor": {"event_index": len(payload["events"])},
+            "metadata": {},
+        }
+    )
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    with pytest.raises(ValueError, match="event|action|ownership|extra"):
+        validate_task(mutated)
+
+
+def test_family_g_micro_validator_rejects_coordinated_action_ledger_value_drift():
+    _, validate_core, validate_task, _, validate_micro_task, compile_micro = _api()
+    compiled = compile_micro(_config(), code_revision="5423ef7")
+    core = compiled.cores[0]
+    validate_core(core)
+    source = next(
+        task
+        for task in compiled.tasks
+        if task.metadata.split_key.semantic_core_id == core.core_id
+        and task.metadata.extra["surface_variant"] == 0
+    )
+    payload = source.model_dump(mode="json")
+    drift_ledger = payload["version_history"][1]
+    drift_entry = drift_ledger["entries"][0]
+    drift_event_id = drift_entry["source_event_ids"][0]
+    drifted_value = drift_entry["value"] + 1000
+    drift_entry["value"] = drifted_value
+    drift_action = next(
+        action for action in payload["actions"] if action["event_id"] == drift_event_id
+    )
+    drift_action["value"] = drifted_value
+
+    mutated = MemUpdateTaskV3.model_validate(payload)
+    validate_task(mutated)
+    with pytest.raises(ValueError, match="canonical|core|event|action|value"):
+        validate_micro_task(mutated, core)
+
+
 def _derivation_depth(item):
     depths = {}
     for step in item.derivation_steps:

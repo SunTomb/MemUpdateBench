@@ -1057,15 +1057,26 @@ def _query_semantic_projection(query: MemoryQueryV3, event_index: Mapping[str, i
             raise ValueError(
                 f"query selector references missing event anchor {query.selector.event_id!r}"
             ) from exc
-    if isinstance(query.selector, MultiObjectCurrentSelector):
+    ordered_g_operands = (
+        query.query_type
+        in {
+            QueryTypeV3.UPDATE_SENSITIVE_MULTI_HOP,
+            QueryTypeV3.MULTI_OBJECT_CURRENT_CONSISTENCY,
+        }
+        and isinstance(query.selector, MultiObjectCurrentSelector)
+    )
+    if isinstance(query.selector, MultiObjectCurrentSelector) and not ordered_g_operands:
         selector["object_keys"] = sorted(
             (_semantic_value(key) for key in query.selector.object_keys),
             key=_canonical_bytes,
         )
+    targets = [_semantic_value(key) for key in query.target_object_keys]
+    if not ordered_g_operands:
+        targets = sorted(targets, key=_canonical_bytes)
     return {
         "query_type": query.query_type.value,
         "selector": selector,
-        "targets": sorted((_semantic_value(key) for key in query.target_object_keys), key=_canonical_bytes),
+        "targets": targets,
         "answer_schema": query.answer_schema.value,
         "evaluation_mode": query.evaluation_mode.value,
         "synthesis": _semantic_value(query.synthesis),
