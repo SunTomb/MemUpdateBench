@@ -61,7 +61,7 @@ def _derivation_consumed_input_indices(step):
         if size != 1:
             raise ValueError(f"{operation} requires one operand")
         return (0,)
-    if operation in {"subtract", "multiply"}:
+    if operation in {"subtract", "multiply", "transition"}:
         if size != 2:
             raise ValueError(f"{operation} requires two ordered operands")
         return (0, 1)
@@ -1224,6 +1224,92 @@ def _horizon_active_entries(entries, horizon: str | None):
     return entries if horizon is None else tuple(entry for entry in entries if entry.logical_time is None or entry.logical_time <= horizon)
 
 
+def resolve_selector_version_indices_v3(
+    selector: SelectorV3,
+    entries,
+    event_position: Mapping[str, int],
+    event_times: Mapping[str, str],
+    horizon: str | None = None,
+) -> tuple[int, ...]:
+    active_entries = _horizon_active_entries(entries, horizon)
+    if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
+        selected = active_entries[-1:]
+    elif isinstance(selector, PreviousSelector):
+        selected = active_entries[-2:-1]
+    elif isinstance(selector, ExactVersionSelector):
+        selected = active_entries[selector.version_index : selector.version_index + 1]
+    elif isinstance(selector, TransitionSelector):
+        if (
+            selector.from_version_index >= len(active_entries)
+            or selector.to_version_index >= len(active_entries)
+        ):
+            selected = ()
+        else:
+            selected = (
+                active_entries[selector.from_version_index],
+                active_entries[selector.to_version_index],
+            )
+    elif isinstance(selector, OrderedHistorySelector):
+        start = selector.start_version_index or 0
+        end = (
+            selector.end_version_index
+            if selector.end_version_index is not None
+            else len(active_entries) - 1
+        )
+        selected = active_entries[start : end + 1]
+    elif isinstance(selector, LogicalTimeAnchorSelector):
+        eligible = tuple(
+            entry
+            for entry in entries
+            if entry.logical_time is not None
+            and entry.logical_time <= selector.logical_time
+        )
+        if not eligible:
+            selected = ()
+        else:
+            latest = max(entry.logical_time for entry in eligible)
+            selected = tuple(
+                entry for entry in eligible if entry.logical_time == latest
+            )
+    elif isinstance(selector, EventAnchorSelector):
+        anchor = event_position.get(selector.event_id)
+        if anchor is None:
+            selected = ()
+        else:
+            matched = tuple(
+                entry
+                for entry in entries
+                if entry.valid_from_event_id is not None
+                and event_position[entry.valid_from_event_id] <= anchor
+                and (
+                    entry.valid_until_event_id is None
+                    or anchor < event_position[entry.valid_until_event_id]
+                )
+            )
+            event_time = event_times.get(selector.event_id)
+            scheduled = tuple(
+                entry
+                for entry in entries
+                if entry.valid_from_event_id is None
+                and entry.logical_time is not None
+                and event_time is not None
+                and entry.logical_time <= event_time
+                and all(
+                    event_position[event_id] <= anchor
+                    for event_id in entry.source_event_ids
+                )
+            )
+            eligible = (*matched, *scheduled)
+            selected = (
+                ()
+                if not eligible
+                else (max(eligible, key=lambda entry: entry.version_index),)
+            )
+    else:
+        raise TypeError("unknown selector")
+    return tuple(entry.version_index for entry in selected)
+
+
 def _selector_entries(
     selector: SelectorV3,
     ledger: VersionHistoryLedger,
@@ -1231,56 +1317,15 @@ def _selector_entries(
     event_times: Mapping[str, str],
     horizon: str | None = None,
 ) -> tuple[VersionHistoryEntry, ...]:
-    entries = ledger.entries
-    active_entries = _horizon_active_entries(entries, horizon)
-    if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
-        return active_entries[-1:]
-    if isinstance(selector, PreviousSelector):
-        return active_entries[-2:-1]
-    if isinstance(selector, ExactVersionSelector):
-        return active_entries[selector.version_index : selector.version_index + 1]
-    if isinstance(selector, TransitionSelector):
-        if (
-            selector.from_version_index >= len(active_entries)
-            or selector.to_version_index >= len(active_entries)
-        ):
-            return ()
-        return (active_entries[selector.from_version_index], active_entries[selector.to_version_index])
-    if isinstance(selector, OrderedHistorySelector):
-        start = selector.start_version_index or 0
-        end = selector.end_version_index if selector.end_version_index is not None else len(active_entries) - 1
-        return active_entries[start : end + 1]
-    if isinstance(selector, LogicalTimeAnchorSelector):
-        eligible = tuple(entry for entry in entries if entry.logical_time is not None and entry.logical_time <= selector.logical_time)
-        if not eligible:
-            return ()
-        latest = max(entry.logical_time for entry in eligible)
-        return tuple(entry for entry in eligible if entry.logical_time == latest)
-    if isinstance(selector, EventAnchorSelector):
-        anchor = event_position[selector.event_id]
-        matched = tuple(
-            entry
-            for entry in entries
-            if entry.valid_from_event_id is not None
-            and event_position[entry.valid_from_event_id] <= anchor
-            and (
-                entry.valid_until_event_id is None
-                or anchor < event_position[entry.valid_until_event_id]
-            )
-        )
-        event_time = event_times.get(selector.event_id)
-        scheduled = tuple(
-            entry
-            for entry in entries
-            if entry.valid_from_event_id is None
-            and entry.logical_time is not None
-            and event_time is not None
-            and entry.logical_time <= event_time
-            and all(event_position[event_id] <= anchor for event_id in entry.source_event_ids)
-        )
-        eligible = (*matched, *scheduled)
-        return () if not eligible else (max(eligible, key=lambda entry: entry.version_index),)
-    raise TypeError("unknown selector")
+    indices = resolve_selector_version_indices_v3(
+        selector,
+        ledger.entries,
+        event_position,
+        event_times,
+        horizon,
+    )
+    by_index = {entry.version_index: entry for entry in ledger.entries}
+    return tuple(by_index[index] for index in indices)
 
 
 def _validate_answer_schema(answer, schema: AnswerSchema) -> None:
@@ -1385,5 +1430,5 @@ __all__ = [
     "MultiObjectCurrentConsistencySynthesis", "MultiObjectCurrentSelector", "MultiObjectCurrentStateSelector", "OrderedHistorySelector",
     "PreviousSelector", "QueryGoldEvidenceV3", "ReferenceCandidateV3", "ReferenceResolutionSelector", "SelectorV3", "SourceRecordV3", "SplitKeyV3", "StaleAlternativeEvidenceV3", "SurfaceReferenceV3", "SynthesisSpecV3", "TaskMetadataV3",
     "TransitionSelector", "UpdateSensitiveMultiHopSynthesis", "VersionHistoryEntry", "VersionHistoryLedger",
-    "VersionIndexSelector", "VersionLedgerEntryV3", "VersionLedgerV3",
+    "VersionIndexSelector", "VersionLedgerEntryV3", "VersionLedgerV3", "resolve_selector_version_indices_v3",
 ]

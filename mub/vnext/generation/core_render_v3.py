@@ -4,7 +4,7 @@ from typing import Any
 
 from mub.vnext.contracts.enums import ActionScope, AnswerSchema, Operation, QueryType, Split, TaskFamily
 from mub.vnext.contracts.v3.enums import QueryTypeV3
-from mub.vnext.contracts.v3.task import MemUpdateTaskV3
+from mub.vnext.contracts.v3.task import MemUpdateTaskV3, VersionHistoryLedger
 from mub.vnext.generation.core import GenerationContext, SemanticCore
 from mub.vnext.generation.core_catalogs import CORE_SURFACE_CATALOG_V1
 from mub.vnext.generation.render import (
@@ -79,6 +79,7 @@ def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
         raise ValueError("Core v3 promotion requires one action per semantic event")
     promoted = []
     family_e = core.task_family is TaskFamily.DELETION_FORGETTING
+    family_f = core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY
     for action, core_event in zip(task.gold.actions, core.events):
         if action.operation is Operation.NOOP:
             scope = None
@@ -94,6 +95,8 @@ def _promote_actions(task, core: SemanticCore) -> list[dict[str, Any]]:
         effective_at = (
             core_event.metadata.get("effective_at")
             if family_e
+            else core_event.metadata.get("logical_time")
+            if family_f
             else action.effective_at
         )
         promoted.append(
@@ -340,9 +343,104 @@ def _promote_family_e_query_and_evidence(task, core: SemanticCore, version_histo
     return promoted_query, evidence
 
 
+def _family_f_query_material(task, core: SemanticCore, version_history):
+    from mub.vnext.generation.family_f import bind_family_f_core_selector
+
+    selector, resolution, selected, entries = bind_family_f_core_selector(
+        core,
+        tuple(event.event_id for event in task.events),
+    )
+    declared = VersionHistoryLedger.model_validate(version_history[0])
+    if declared.entries != entries:
+        raise ValueError("Core Family F promoted ledger differs from selector source")
+    return selector, resolution, selected
+
+
+def _promote_family_f_query_and_evidence(task, core: SemanticCore, version_history):
+    if len(task.queries) != 1 or len(version_history) != 1:
+        raise ValueError("Core Family F v3 promotion requires one query and one ledger")
+    source_query = task.queries[0]
+    selector, resolution, selected = _family_f_query_material(
+        task, core, version_history
+    )
+    kind = selector.kind
+    target = _key_payload(core.query_targets[0])
+    promoted_query = {
+        "query_id": source_query.query_id,
+        "query_type": resolution.task_query_type.value,
+        "text": source_query.text,
+        "selector": selector.model_dump(mode="python"),
+        "target_object_keys": [target],
+        "answer_schema": resolution.answer_schema.value,
+        "evaluation_mode": source_query.evaluation_mode.value,
+        "synthesis": None,
+    }
+    read_steps = [
+        {
+            "step_id": f"derive_{source_query.query_id}_{index}",
+            "operation": "read_current" if kind == "current" else "read_version",
+            "input_step_ids": [],
+            "supporting_object_keys": [target],
+            "supporting_event_ids": list(entry.source_event_ids),
+        }
+        for index, entry in enumerate(selected)
+    ]
+    final_step_id = read_steps[0]["step_id"]
+    steps = list(read_steps)
+    if len(read_steps) > 1:
+        final_step_id = f"derive_{source_query.query_id}_final"
+        steps.append(
+            {
+                "step_id": final_step_id,
+                "operation": "transition" if kind == "transition" else "ordered_history",
+                "input_step_ids": [step["step_id"] for step in read_steps],
+                "supporting_object_keys": [target],
+                "supporting_event_ids": list(
+                    dict.fromkeys(
+                        event_id
+                        for entry in selected
+                        for event_id in entry.source_event_ids
+                    )
+                ),
+            }
+        )
+    supporting_events = list(
+        dict.fromkeys(
+            event_id
+            for entry in selected
+            for event_id in entry.source_event_ids
+        )
+    )
+    evidence = {
+        "query_id": source_query.query_id,
+        "answer": resolution.answer,
+        "supporting_object_keys": [target],
+        "supporting_event_ids": supporting_events,
+        "derivation_steps": steps,
+        "final_derivation_step_id": final_step_id,
+        "stale_alternative": None,
+    }
+    return promoted_query, evidence
+
+
+def _inject_family_f_event_cues(events, version_history) -> None:
+    event_by_id = {event["event_id"]: event for event in events}
+    for entry in version_history[0]["entries"]:
+        event_id = entry["source_event_ids"][0]
+        event_by_id[event_id]["raw_text"] += (
+            " ["
+            f"version_index={entry['version_index']}; "
+            f"event_id={event_id}; "
+            f"logical_time={entry['logical_time']}"
+            "]"
+        )
+
+
 def _promote_query_and_evidence(task, version_history, core: SemanticCore):
     if core.task_family is TaskFamily.DELETION_FORGETTING:
         return _promote_family_e_query_and_evidence(task, core, version_history)
+    if core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY:
+        return _promote_family_f_query_and_evidence(task, core, version_history)
     if len(task.queries) != 1:
         raise ValueError("Core v3 promotion requires exactly one query")
     query = task.queries[0]
@@ -428,10 +526,15 @@ def render_core_v3(
 ) -> MemUpdateTaskV3:
     """Render one Core semantic core as a strict v3 task."""
     family_e = core.task_family is TaskFamily.DELETION_FORGETTING
+    family_f = core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY
     if family_e:
         from mub.vnext.generation.family_e import validate_family_e_core
 
         validate_family_e_core(core)
+    if family_f:
+        from mub.vnext.generation.family_f import validate_family_f_core
+
+        validate_family_f_core(core)
     task_v2 = render_core_with_catalog(
         core,
         split=split,
@@ -443,15 +546,18 @@ def render_core_v3(
     version_history = _build_version_history(task_v2, actions)
     query, evidence = _promote_query_and_evidence(task_v2, version_history, core)
     events = [event.model_dump(mode="python") for event in task_v2.events]
-    if family_e:
+    if family_e or family_f:
         for event, core_event in zip(events, core.events):
             event["timestamp"] = core_event.metadata["logical_time"]
+    if family_e:
         _inject_family_e_surface_cues(actions, events, query)
+    if family_f:
+        _inject_family_f_event_cues(events, version_history)
 
     source = task_v2.source.model_dump(mode="python")
     source["provenance"] = dict(source["provenance"])
     source["provenance"]["schema_version"] = "3.0.0"
-    if family_e:
+    if family_e or family_f:
         source["raw_hash"] = _payload_sha256(
             {
                 "events": [
@@ -492,6 +598,10 @@ def render_core_v3(
     if replay.issues:
         details = "; ".join(f"{issue.code}: {issue.message}" for issue in replay.issues)
         raise ValueError(f"Core v3 replay validation failed: {details}")
+    if family_f:
+        from mub.vnext.generation.family_f import validate_family_f_task
+
+        validate_family_f_task(promoted)
     return promoted
 
 

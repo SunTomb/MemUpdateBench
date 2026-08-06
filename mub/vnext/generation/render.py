@@ -25,6 +25,7 @@ from mub.vnext.contracts.enums import (
     QueryType,
     SourceType,
     Split,
+    TaskFamily,
 )
 from mub.vnext.contracts.task import (
     CanonicalAnswer,
@@ -38,6 +39,7 @@ from mub.vnext.contracts.task import (
     SurfaceReference,
     TaskMetadata,
 )
+from mub.vnext.contracts.v3.enums import QueryTypeV3
 from mub.vnext.generation.catalogs import REFERENCE_QUERY_TEMPLATE_SETS, SURFACE_TEMPLATE_SETS
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.surface_catalog import SurfaceCatalog
@@ -284,6 +286,16 @@ def _query_semantics(
     present = [target_id in replay.final_state for target_id in target_ids]
     expected = _plain(core.expected_answer)
 
+    if core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY:
+        from mub.vnext.generation.family_f import resolve_family_f_core_selector
+
+        resolution = resolve_family_f_core_selector(core)
+        return (
+            resolution.core_query_type,
+            _plain(resolution.answer),
+            resolution.answer_schema,
+        )
+
     if all(present):
         if core.expected_answer is None:
             raise ValueError(
@@ -394,6 +406,13 @@ def _gold_source_event_ids(
     core: SemanticCore,
     rendered_event_ids: list[str],
 ) -> list[str]:
+    if core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY:
+        from mub.vnext.generation.family_f import bind_family_f_core_selector
+
+        _, resolution, _, _ = bind_family_f_core_selector(
+            core, rendered_event_ids
+        )
+        return [rendered_event_ids[index] for index in resolution.selected_indices]
     latest_by_target: dict[str, int] = {}
     query_identities = {_identity(key) for key in core.query_targets}
     for index, event in enumerate(core.events):
@@ -616,6 +635,33 @@ def _build_render_plan(
             deletion_templates,
         )
         query_text = _render_query_text(core, query_template)
+    query_metadata = {_RENDERER_METADATA_KEY: dict(renderer_admin)}
+    if core.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY:
+        from mub.vnext.generation.family_f import (
+            FAMILY_F_QUERY_TEMPLATE,
+            bind_family_f_core_selector,
+            family_f_query_tokens,
+        )
+
+        selector, family_f_resolution, selected, entries = (
+            bind_family_f_core_selector(core, rendered_event_ids)
+        )
+        query_text = _render_query_text(core, FAMILY_F_QUERY_TEMPLATE)
+        query_text += " [" + "; ".join(
+            family_f_query_tokens(selector, selected, entries)
+        ) + "]"
+        if family_f_resolution.task_query_type is QueryTypeV3.ORDERED_HISTORY:
+            query_metadata["history_start_version_index"] = (
+                family_f_resolution.selected_indices[0]
+            )
+            query_metadata["history_end_version_index"] = (
+                family_f_resolution.selected_indices[-1]
+            )
+        elif family_f_resolution.core_query_type is QueryType.HISTORICAL_STATE:
+            query_metadata["version_index"] = family_f_resolution.selected_indices[-1]
+        elif family_f_resolution.core_query_type is QueryType.TRANSITION:
+            query_metadata["from_version_index"] = family_f_resolution.selected_indices[0]
+            query_metadata["to_version_index"] = family_f_resolution.selected_indices[-1]
     query = MemoryQuery(
         query_id=rendered_query_id,
         query_type=query_type,
@@ -631,7 +677,7 @@ def _build_render_plan(
         ],
         answer_schema=answer_schema,
         evaluation_mode=EvaluationMode.RETRIEVED_PROMPT,
-        metadata={_RENDERER_METADATA_KEY: dict(renderer_admin)},
+        metadata=query_metadata,
     )
 
     targets = _target_objects(core)

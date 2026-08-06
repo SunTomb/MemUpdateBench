@@ -66,6 +66,7 @@ from mub.vnext.generation.core_config import (
     CoreRepeatedSameSlotUpdateConfig,
     CoreSurfaceDeclaration,
 )
+from mub.vnext.contracts.v3.task import SelectorV3
 from mub.vnext.io import sha256_model
 from mub.vnext.version import COMPILER_VERSION
 
@@ -591,6 +592,10 @@ class SemanticCore(_FrozenCoreModel):
     events: list[CoreEvent] = Field(min_length=1)
     query_targets: list[MemoryObjectKey] = Field(min_length=1)
     query_type: QueryType = QueryType.CURRENT_STATE
+    query_selector: SelectorV3 | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     reference_candidates: list[ReferenceCandidate] = Field(default_factory=list)
     surface_references: list[SurfaceReference] = Field(default_factory=list)
     canonical_answer: CanonicalAnswer | None = None

@@ -209,6 +209,24 @@ def _resolve_query(
         ok, value = _resolved_shape(values, target_ids, schema)
         return ok, value, "current_state requires one target or a structured schema"
     if query_type == QueryType.HISTORICAL_STATE.value:
+        start = metadata.get("history_start_version_index")
+        end = metadata.get("history_end_version_index")
+        if start is not None or end is not None:
+            if (
+                metadata.get("version_index") is not None
+                or len(target_ids) != 1
+                or not isinstance(start, int)
+                or isinstance(start, bool)
+                or not isinstance(end, int)
+                or isinstance(end, bool)
+                or start < 0
+                or start > end
+            ):
+                return False, None, "ordered history requires strict ordered version bounds"
+            versions = replay.version_history.get(target_ids[0], [])
+            if end >= len(versions):
+                return False, None, "ordered historical version is unavailable"
+            return True, versions[start : end + 1], ""
         index = metadata.get("version_index")
         if len(target_ids) != 1 or not isinstance(index, int) or isinstance(index, bool) or index < 0:
             return False, None, "historical_state requires one target and strict version_index"

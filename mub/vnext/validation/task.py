@@ -888,9 +888,23 @@ def validate_task(task: MemUpdateTask) -> ValidationReport:
             if query_type == QueryType.HISTORICAL_STATE.value:
                 if not targets:
                     _issue(issues, "missing_historical_query_target", "historical-state query requires a target", f"queries[{query_index}].target_object_keys")
-                version_index = query_metadata.get("version_index")
-                if not isinstance(version_index, int) or isinstance(version_index, bool) or version_index < 0:
-                    _issue(issues, "invalid_historical_version_index", "historical version_index must be a strict nonnegative integer", f"queries[{query_index}].metadata.version_index")
+                history_start = query_metadata.get("history_start_version_index")
+                history_end = query_metadata.get("history_end_version_index")
+                if history_start is not None or history_end is not None:
+                    valid_history_bounds = (
+                        query_metadata.get("version_index") is None
+                        and isinstance(history_start, int)
+                        and not isinstance(history_start, bool)
+                        and isinstance(history_end, int)
+                        and not isinstance(history_end, bool)
+                        and 0 <= history_start <= history_end
+                    )
+                    if not valid_history_bounds:
+                        _issue(issues, "invalid_historical_version_index", "ordered history requires strict ordered version bounds", f"queries[{query_index}].metadata")
+                else:
+                    version_index = query_metadata.get("version_index")
+                    if not isinstance(version_index, int) or isinstance(version_index, bool) or version_index < 0:
+                        _issue(issues, "invalid_historical_version_index", "historical version_index must be a strict nonnegative integer", f"queries[{query_index}].metadata.version_index")
 
             for target_index, key in enumerate(targets):
                 canonical_id = _canonical_id(key)

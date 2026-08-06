@@ -24,6 +24,7 @@ from mub.vnext.contracts.v3.task import (
     ReferenceResolutionSelector,
     TransitionSelector,
     _derivation_consumed_input_indices,
+    resolve_selector_version_indices_v3,
     _derivation_step_reads_support,
     _resolve_derivation_read_versions,
     _validate_consistency_read_eligibility,
@@ -348,61 +349,15 @@ def _shape(values: list[Any], keys, schema) -> Any:
 
 
 def _selected_for(ledger: ReplayLedgerV3, selector, event_positions, event_times, horizon) -> tuple[ReplayVersionV3, ...]:
-    versions = ledger.versions
-    active_versions = versions if horizon is None else tuple(version for version in versions if version.logical_time is None or version.logical_time <= horizon)
-    if isinstance(selector, (CurrentSelector, MultiObjectCurrentSelector)):
-        return active_versions[-1:]
-    if isinstance(selector, PreviousSelector):
-        return active_versions[-2:-1]
-    if isinstance(selector, ExactVersionSelector):
-        return active_versions[selector.version_index:selector.version_index + 1]
-    if isinstance(selector, TransitionSelector):
-        if (
-            selector.from_version_index >= len(active_versions)
-            or selector.to_version_index >= len(active_versions)
-        ):
-            return ()
-        return (
-            active_versions[selector.from_version_index],
-            active_versions[selector.to_version_index],
-        )
-    if isinstance(selector, OrderedHistorySelector):
-        start = 0 if selector.start_version_index is None else selector.start_version_index
-        end = len(active_versions) - 1 if selector.end_version_index is None else selector.end_version_index
-        return active_versions[start:end + 1]
-    if isinstance(selector, EventAnchorSelector):
-        anchor = event_positions.get(selector.event_id)
-        if anchor is None:
-            return ()
-        matched = [
-            version
-            for version in versions
-            if version.valid_from_event_id is not None
-            and event_positions[version.valid_from_event_id] <= anchor
-            and (
-                version.valid_until_event_id is None
-                or anchor < event_positions[version.valid_until_event_id]
-            )
-        ]
-        event_time = event_times.get(selector.event_id)
-        scheduled = [
-            version
-            for version in versions
-            if version.valid_from_event_id is None
-            and version.logical_time is not None
-            and event_time is not None
-            and version.logical_time <= event_time
-            and all(event_positions[event_id] <= anchor for event_id in version.source_event_ids)
-        ]
-        eligible = (*matched, *scheduled)
-        return () if not eligible else (max(eligible, key=lambda version: version.version_index),)
-    if isinstance(selector, LogicalTimeAnchorSelector):
-        eligible = [version for version in versions if version.logical_time is not None and version.logical_time <= selector.logical_time]
-        if not eligible:
-            return ()
-        latest = max(version.logical_time for version in eligible)
-        return tuple(version for version in eligible if version.logical_time == latest)
-    raise TypeError("unknown typed selector")
+    indices = resolve_selector_version_indices_v3(
+        selector,
+        ledger.versions,
+        event_positions,
+        event_times,
+        horizon,
+    )
+    by_index = {version.version_index: version for version in ledger.versions}
+    return tuple(by_index[index] for index in indices)
 
 
 def _resolve_reference_query(
@@ -578,6 +533,8 @@ def evaluate_evidence_v3(
                 value = operands[0]
             elif operation in {"seed0", "seed1"}:
                 value = operands[0]
+            elif operation == "transition":
+                value = {"from": operands[0], "to": operands[1]}
             elif operation in {"list", "ordered_history", "collect", "combine", "merge"}:
                 value = operands if operands else _read_step_value(step, replay)
             elif operation in {"object", "multi_object", "consistency"}:
