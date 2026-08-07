@@ -23,6 +23,18 @@ from mub.vnext.generation.family_a import generate_core_family_a_cores
 from mub.vnext.generation.family_b import generate_core_family_b_cores
 from mub.vnext.generation.family_c import generate_core_family_c_cores
 from mub.vnext.generation.family_d import generate_core_family_d_cores
+from mub.vnext.generation.family_e import (
+    generate_core_family_e_cores,
+    validate_family_e_core,
+)
+from mub.vnext.generation.family_f import (
+    generate_core_family_f_cores,
+    validate_family_f_full_core,
+)
+from mub.vnext.generation.family_g import (
+    generate_core_family_g_cores,
+    validate_family_g_full_core,
+)
 from mub.vnext.generation.render import _resolve_core_profile
 from mub.vnext.generation.splits import (
     CoreSplitAssignment,
@@ -37,6 +49,9 @@ _CORE_FAMILIES = (
     TaskFamily.INTERLEAVED_MULTI_SLOT,
     TaskFamily.ENTITY_ATTRIBUTE_GROUNDING,
     TaskFamily.NOOP_WRITE_DISCIPLINE,
+    TaskFamily.DELETION_FORGETTING,
+    TaskFamily.CURRENT_HISTORICAL_QUERY,
+    TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS,
 )
 _SPLIT_ORDER = (Split.TRAIN, Split.DEV, Split.TEST)
 _VARIANTS_PER_CORE = 4
@@ -53,6 +68,7 @@ class _DiagnosticRecord:
 class CompiledCoreSnapshot(ImmutableContractModel):
     config_sha256: HashString
     assignments: tuple[CoreSplitAssignment, ...]
+    semantic_cores: tuple[SemanticCore, ...]
     tasks: tuple[MemUpdateTaskV3, ...]
     family_core_counts: FrozenNonnegativeIntMap
     core_counts: FrozenNonnegativeIntMap
@@ -237,6 +253,88 @@ def _validate_core_diagnostic_schedule(
     if dict(d_cells) != expected_d_cells:
         raise ValueError("Core Family D schedule trap-density cells are invalid")
 
+    family_e = config.families.deletion_forgetting
+    e_cores = by_family[TaskFamily.DELETION_FORGETTING]
+    for core in e_cores:
+        validate_family_e_core(core)
+    e_cells = Counter(core.stratification.get("lifecycle_cell") for core in e_cores)
+    if dict(e_cells) != {
+        cell: family_e.schedule.cores_per_lifecycle_cell
+        for cell in family_e.lifecycle_cells
+    }:
+        raise ValueError("Core Family E schedule lifecycle cells are invalid")
+    e_difficulties = Counter(core.difficulty.value for core in e_cores)
+    if dict(e_difficulties) != {
+        difficulty: family_e.schedule.cores_per_difficulty
+        for difficulty in family_e.difficulties
+    }:
+        raise ValueError("Core Family E schedule difficulty marginal is invalid")
+    e_positions = Counter(
+        core.stratification.get("deletion_position") for core in e_cores
+    )
+    expected_e_positions = {
+        position: family_e.schedule.cores_per_deletion_position
+        for position in family_e.deletion_positions
+    }
+    expected_e_positions["not_applicable"] = (
+        family_e.schedule.non_deletion_hard_negative_count
+    )
+    if dict(e_positions) != expected_e_positions:
+        raise ValueError("Core Family E schedule deletion-position marginal is invalid")
+
+    family_f = config.families.current_historical_query
+    f_cores = by_family[TaskFamily.CURRENT_HISTORICAL_QUERY]
+    for core in f_cores:
+        validate_family_f_full_core(core, config)
+    f_trajectories = Counter(core.trajectory_id for core in f_cores)
+    if len(f_trajectories) != family_f.schedule.trajectory_count or set(
+        f_trajectories.values()
+    ) != {family_f.schedule.selectors_per_trajectory}:
+        raise ValueError("Core Family F trajectory schedule is invalid")
+
+    family_g = config.families.long_horizon_memory_synthesis
+    g_cores = by_family[TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS]
+    for core in g_cores:
+        validate_family_g_full_core(core)
+    g_kinds = Counter(core.stratification.get("synthesis_kind") for core in g_cores)
+    if dict(g_kinds) != {
+        "update_sensitive_multi_hop": family_g.schedule.update_sensitive_core_count,
+        "multi_object_current_consistency": family_g.schedule.consistency_core_count,
+    }:
+        raise ValueError("Core Family G synthesis-kind schedule is invalid")
+    g_hops = Counter(
+        core.stratification.get("hop_count")
+        for core in g_cores
+        if core.stratification.get("synthesis_kind") == "update_sensitive_multi_hop"
+    )
+    if dict(g_hops) != {
+        hop: family_g.schedule.cores_per_hop_count for hop in family_g.hop_counts
+    }:
+        raise ValueError("Core Family G hop-count schedule is invalid")
+    g_consistency = Counter(
+        (
+            core.stratification.get("object_count"),
+            core.stratification.get("answer_kind"),
+        )
+        for core in g_cores
+        if core.stratification.get("synthesis_kind")
+        == "multi_object_current_consistency"
+    )
+    if dict(g_consistency) != {
+        (count, answer_kind): family_g.schedule.cores_per_object_answer_kind_cell
+        for count in family_g.consistency_object_counts
+        for answer_kind in family_g.consistency_answer_kinds
+    }:
+        raise ValueError("Core Family G consistency schedule is invalid")
+    fingerprints = {
+        core.stratification.get("evidence_fingerprint") for core in g_cores
+    }
+    evidence_groups = {
+        core.stratification.get("evidence_group_id") for core in g_cores
+    }
+    if len(fingerprints) != len(g_cores) or len(evidence_groups) != len(g_cores):
+        raise ValueError("Core Family G evidence identities must be unique")
+
 
 def _generated_cores(config: CoreConfig) -> tuple[SemanticCore, ...]:
     families = (
@@ -244,6 +342,9 @@ def _generated_cores(config: CoreConfig) -> tuple[SemanticCore, ...]:
         generate_core_family_b_cores(config),
         generate_core_family_c_cores(config),
         generate_core_family_d_cores(config),
+        generate_core_family_e_cores(config, profile="full"),
+        generate_core_family_f_cores(config, profile="full"),
+        generate_core_family_g_cores(config, profile="full"),
     )
     cores = tuple(core for family in families for core in family)
     expected = config.family_core_counts
@@ -276,22 +377,70 @@ def _select_and_assign(
             ranking = _ranking_sha256(core, strata, seed)
             ranked.append((ranking, core.core_id, core, strata))
         ranked.sort(key=lambda item: (item[0], item[1]))
-        selected = ranked[:cores_per_family] if cores_per_family is not None else ranked
-        quotas = _split_quotas(len(selected), splits)
-        offset = 0
-        for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
-            for ranking, _, core, strata in selected[offset : offset + quota]:
-                assignments.append(
-                    CoreSplitAssignment(
-                        semantic_core_id=core.core_id,
-                        task_family=core.task_family,
-                        difficulty=core.difficulty,
-                        strata=strata,
-                        split=split,
-                        ranking_sha256=ranking,
-                    )
+        if cores_per_family is not None:
+            selected = []
+            selected_trajectories = set()
+            for item in ranked:
+                trajectory_id = item[2].trajectory_id
+                if trajectory_id in selected_trajectories:
+                    continue
+                selected.append(item)
+                selected_trajectories.add(trajectory_id)
+                if len(selected) == cores_per_family:
+                    break
+            if len(selected) != cores_per_family:
+                raise ValueError(
+                    "partial Core selection cannot satisfy leakage-safe trajectory quota"
                 )
-            offset += quota
+            quotas = _split_quotas(len(selected), splits)
+            offset = 0
+            for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
+                for ranking, _, core, strata in selected[offset : offset + quota]:
+                    assignments.append(
+                        CoreSplitAssignment(
+                            semantic_core_id=core.core_id,
+                            task_family=core.task_family,
+                            difficulty=core.difficulty,
+                            strata=strata,
+                            split=split,
+                            ranking_sha256=ranking,
+                        )
+                    )
+                offset += quota
+            continue
+
+        grouped = defaultdict(list)
+        for item in ranked:
+            grouped[item[2].trajectory_id].append(item)
+        ranked_groups = sorted(
+            grouped.values(),
+            key=lambda group: (min(item[0] for item in group), group[0][2].trajectory_id),
+        )
+        quotas = _split_quotas(len(ranked), splits)
+        group_offset = 0
+        for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
+            allocated = 0
+            while allocated < quota and group_offset < len(ranked_groups):
+                group = ranked_groups[group_offset]
+                if allocated + len(group) > quota:
+                    raise ValueError(
+                        "Core split quota cannot be filled by complete trajectory groups"
+                    )
+                for ranking, _, core, strata in group:
+                    assignments.append(
+                        CoreSplitAssignment(
+                            semantic_core_id=core.core_id,
+                            task_family=core.task_family,
+                            difficulty=core.difficulty,
+                            strata=strata,
+                            split=split,
+                            ranking_sha256=ranking,
+                        )
+                    )
+                allocated += len(group)
+                group_offset += 1
+            if allocated != quota:
+                raise ValueError("Core split quota was not filled exactly")
     return tuple(assignments)
 
 
@@ -319,6 +468,8 @@ def _validate_snapshot(
     }
     if len(assignment_by_core) != len(snapshot.assignments):
         raise ValueError("Core snapshot contains duplicate split assignments")
+    if not snapshot.assignments:
+        raise ValueError("Core snapshot requires a positive cores_per_family quota")
     tasks_by_core: dict[str, list[MemUpdateTaskV3]] = defaultdict(list)
     for task in snapshot.tasks:
         core_id = task.metadata.split_key.semantic_core_id
@@ -353,6 +504,7 @@ def _validate_snapshot(
     split_key_fields = (
         "semantic_core_id",
         "source_group_id",
+        "source_document_id",
         "trajectory_id",
         "paraphrase_group_id",
         "version_group_id",
@@ -382,6 +534,31 @@ def _validate_snapshot(
         for right in _SPLIT_ORDER[index + 1 :]:
             if not hashes[left].isdisjoint(hashes[right]):
                 raise ValueError("Core snapshot has cross-split semantic hash overlap")
+    normalized_hashes = {
+        split: {
+            task.source.normalized_hash
+            for task in snapshot.tasks
+            if task.metadata.split is split
+        }
+        for split in _SPLIT_ORDER
+    }
+    evidence_fingerprints = {
+        split: {
+            task.metadata.extra["stratification"].get("evidence_fingerprint")
+            for task in snapshot.tasks
+            if task.metadata.split is split
+            and task.task_family == TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS.value
+        }
+        for split in _SPLIT_ORDER
+    }
+    for values, label in (
+        (normalized_hashes, "normalized source hash"),
+        (evidence_fingerprints, "Family G evidence fingerprint"),
+    ):
+        for index, left in enumerate(_SPLIT_ORDER):
+            for right in _SPLIT_ORDER[index + 1 :]:
+                if not values[left].isdisjoint(values[right]):
+                    raise ValueError(f"Core snapshot has cross-split {label} overlap")
 
     observed_family_core_counts = Counter(
         assignment.task_family.value for assignment in snapshot.assignments
@@ -395,8 +572,6 @@ def _validate_snapshot(
 
     canonical_cores = expected_cores if expected_cores is not None else _generated_cores(config)
     _validate_core_diagnostic_schedule(canonical_cores, config)
-    if not snapshot.assignments:
-        raise ValueError("Core snapshot requires a positive cores_per_family quota")
     if expected_family_core_counts == config.family_core_counts:
         selection_limit = None
     else:
@@ -458,10 +633,21 @@ def _validate_snapshot(
             raise ValueError("Core snapshot contains an unknown semantic core ID")
         family_label = chr(ord("A") + _CORE_FAMILIES.index(expected.task_family))
         expected_profile = _resolve_core_profile(expected, expected.query_type)
-        if (
-            record.task_family is not expected.task_family
-            or dict(record.profile) != dict(expected_profile)
-        ):
+        if expected.task_family in _CORE_FAMILIES[:4]:
+            profile_matches = dict(record.profile) == dict(expected_profile)
+        else:
+            profile_matches = all(
+                record.profile.get(key) == value
+                for key, value in expected.profile.items()
+            ) and all(
+                record.profile.get(key) == value
+                for key, value in {
+                    "task_family": expected.task_family.value,
+                    "difficulty": expected.difficulty.value,
+                    "profile_version": config.profile_version,
+                }.items()
+            )
+        if record.task_family is not expected.task_family or not profile_matches:
             raise ValueError(
                 "Core snapshot canonical resolved profile does not match "
                 f"Core Family {family_label} schedule"
@@ -556,6 +742,9 @@ def compile_core_snapshot(
     snapshot = CompiledCoreSnapshot(
         config_sha256=context.config_sha256,
         assignments=assignments,
+        semantic_cores=tuple(
+            core_by_id[assignment.semantic_core_id] for assignment in assignments
+        ),
         tasks=tasks,
         family_core_counts={family.value: family_counts[family.value] for family in _CORE_FAMILIES},
         core_counts={split.value: core_counts[split.value] for split in _SPLIT_ORDER},

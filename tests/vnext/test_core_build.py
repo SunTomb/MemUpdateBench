@@ -20,6 +20,9 @@ FAMILY_GENERATORS = (
     "generate_core_family_b_cores",
     "generate_core_family_c_cores",
     "generate_core_family_d_cores",
+    "generate_core_family_e_cores",
+    "generate_core_family_f_cores",
+    "generate_core_family_g_cores",
 )
 
 
@@ -53,10 +56,10 @@ def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
     first = compile_core_snapshot(config, cores_per_family=10)
     repeated = compile_core_snapshot(config, cores_per_family=10)
 
-    assert len(first.assignments) == 40
-    assert len(first.tasks) == 160
-    assert dict(first.core_counts) == {"train": 28, "dev": 4, "test": 8}
-    assert dict(first.task_counts) == {"train": 112, "dev": 16, "test": 32}
+    assert len(first.assignments) == 70
+    assert len(first.tasks) == 280
+    assert dict(first.core_counts) == {"train": 49, "dev": 7, "test": 14}
+    assert dict(first.task_counts) == {"train": 196, "dev": 28, "test": 56}
     assert Counter(
         (assignment.task_family.value, assignment.split.value)
         for assignment in first.assignments
@@ -67,6 +70,9 @@ def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
             "interleaved_multi_slot_update",
             "entity_attribute_grounding",
             "noop_write_discipline",
+            "deletion_forgetting",
+            "current_historical_query",
+            "long_horizon_memory_synthesis",
         )
         for split, count in (("train", 7), ("dev", 1), ("test", 2))
     }
@@ -120,8 +126,8 @@ def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
         monkeypatch.setattr(
             core_build,
             name,
-            lambda core_config, generator=original: tuple(
-                reversed(generator(core_config))
+            lambda core_config, *args, generator=original, **kwargs: tuple(
+                reversed(generator(core_config, *args, **kwargs))
             ),
         )
     reordered = compile_core_snapshot(config, cores_per_family=10)

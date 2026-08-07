@@ -23,6 +23,19 @@ from mub.vnext.generation.core_build import (
     CompiledCoreSnapshot,
     compile_core_snapshot,
 )
+from mub.vnext.generation.core_artifacts import (
+    CoreArtifactBundle,
+    CoreValidationReport,
+    build_core_artifact_bundle,
+)
+from mub.vnext.generation.core_hard_suite import (
+    CoreHardSuiteManifest,
+    build_core_hard_suite,
+)
+from mub.vnext.generation.core_orchestrate import (
+    StagedCoreCandidate,
+    stage_core_candidate,
+)
 from mub.vnext.generation.core_catalogs import (
     CORE_REFERENCE_QUERY_TEMPLATE_SETS,
     CORE_SURFACE_CATALOG_V1,
@@ -119,6 +132,9 @@ __all__ = [
     "CORE_SURFACE_IDS",
     "CORE_SURFACE_TEMPLATE_SETS",
     "CompiledCoreSnapshot",
+    "CoreArtifactBundle",
+    "CoreHardSuiteManifest",
+    "CoreValidationReport",
     "CompiledFamilyEMicroPilot",
     "CompiledFamilyFMicroPilot",
     "CompiledFamilyGMicroPilot",
@@ -149,12 +165,15 @@ __all__ = [
     "SplitAssignmentResult",
     "SplitBalanceCell",
     "SplitBalanceReport",
+    "StagedCoreCandidate",
     "VALUES",
     "values_for_attribute",
     "action_id",
     "assign_splits",
     "build_pilot",
     "build_pilot_artifact_bundle",
+    "build_core_artifact_bundle",
+    "build_core_hard_suite",
     "compile_core_snapshot",
     "compile_family_e_micro_pilot",
     "compile_family_f_micro_pilot",
@@ -184,6 +203,7 @@ __all__ = [
     "select_conflicting_values",
     "source_id",
     "stable_id",
+    "stage_core_candidate",
     "task_id",
     "trajectory_id",
     "validate_family_e_core",
