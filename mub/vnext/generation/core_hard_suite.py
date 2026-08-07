@@ -124,9 +124,12 @@ def build_core_hard_suite(
                 tasks_by_core[core_id],
                 key=lambda task: task.metadata.extra["surface_variant"],
             )
-            condition = str(
-                representative.metadata.extra["stratification"].get(condition_key)
-            )
+            if family is TaskFamily.CURRENT_HISTORICAL_QUERY:
+                condition = str(representative.queries[0].selector.kind)
+            else:
+                condition = str(
+                    representative.metadata.extra["stratification"].get(condition_key)
+                )
             candidates.append((_ranking(core_id, condition), core_id, condition))
         if len(candidates) < per_family:
             raise ValueError(f"Family {family.value} has too few eligible test cores")

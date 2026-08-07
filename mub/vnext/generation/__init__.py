@@ -25,6 +25,7 @@ from mub.vnext.generation.core_build import (
 )
 from mub.vnext.generation.core_artifacts import (
     CoreArtifactBundle,
+    CoreSplitBalance,
     CoreValidationReport,
     build_core_artifact_bundle,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "CompiledCoreSnapshot",
     "CoreArtifactBundle",
     "CoreHardSuiteManifest",
+    "CoreSplitBalance",
     "CoreValidationReport",
     "CompiledFamilyEMicroPilot",
     "CompiledFamilyFMicroPilot",

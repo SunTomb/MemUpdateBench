@@ -8,9 +8,25 @@ from pathlib import Path
 from mub.vnext.contracts import Split, TaskFamily
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
-from mub.vnext.generation.core_artifacts import CoreValidationReport
+from mub.vnext.generation.core_artifacts import (
+    CoreSplitBalance,
+    CoreValidationReport,
+    _VALIDATION_CHECKS,
+    _manifest,
+)
+from mub.vnext.generation.core_build import (
+    CompiledCoreSnapshot,
+    _generated_cores,
+    _select_and_assign,
+    _validate_snapshot,
+)
 from mub.vnext.generation.core_config import CoreConfig
-from mub.vnext.generation.core_hard_suite import CoreHardSuiteManifest
+from mub.vnext.generation.core import GenerationContext
+from mub.vnext.generation.core_render_v3 import render_core_v3
+from mub.vnext.generation.core_hard_suite import (
+    CoreHardSuiteManifest,
+    build_core_hard_suite,
+)
 from mub.vnext.io import canonical_json_bytes, read_models, semantic_task_hash_v3, sha256_model
 from mub.vnext.io.canonical import _canonical_payload_bytes
 from mub.vnext.validation.replay_v3 import replay_task_v3
@@ -83,6 +99,7 @@ def validate_core_release(
         raise ValueError(f"Core candidate must contain exactly {_ARTIFACTS}")
 
     config, config_bytes = _canonical_json(root / "generation_config.json", CoreConfig)
+    split_balance, _ = _canonical_json(root / "split_balance.json", CoreSplitBalance)
     manifest, manifest_bytes = _canonical_json(root / "task_manifest.json", TaskManifestV3)
     hard_suite, _ = _canonical_json(root / "core-hard-v1.json", CoreHardSuiteManifest)
     stored_report, _ = _canonical_json(root / "validation_report.json", CoreValidationReport)
@@ -113,6 +130,55 @@ def validate_core_release(
         raise ValueError("task record hashes are invalid")
 
     core_ids = {core["core_id"] for core in cores}
+    parsed_family_counts = Counter(core["task_family"] for core in cores)
+    canonical_cores = _generated_cores(config)
+    if len(cores) == config.total_semantic_cores:
+        selection_limit = None
+    else:
+        partial_counts = set(parsed_family_counts.values())
+        if len(partial_counts) != 1:
+            raise ValueError("bounded candidate families must share one selection quota")
+        selection_limit = next(iter(partial_counts))
+    canonical_assignments = _select_and_assign(
+        canonical_cores,
+        seed=config.seed,
+        splits=config.splits,
+        cores_per_family=selection_limit,
+    )
+    canonical_by_id = {core.core_id: core for core in canonical_cores}
+    expected_core_payloads = sorted(
+        (
+            canonical_by_id[assignment.semantic_core_id].model_dump(mode="json")
+            for assignment in canonical_assignments
+        ),
+        key=lambda core: core["core_id"],
+    )
+    if list(cores) != expected_core_payloads:
+        raise ValueError("semantic_cores.jsonl does not contain canonical selected cores")
+    revisions = {task.source.generator.code_revision for task in tasks}
+    generators = {task.source.generator.generator_name for task in tasks}
+    if len(revisions) != 1 or len(generators) != 1:
+        raise ValueError("candidate tasks must share one generator and code revision")
+    context = GenerationContext(
+        config=config,
+        code_revision=next(iter(revisions)),
+        generator_name=next(iter(generators)),
+    )
+    expected_tasks = tuple(sorted(
+        (
+            render_core_v3(
+                canonical_by_id[assignment.semantic_core_id],
+                split=assignment.split,
+                surface_variant=surface_variant,
+                context=context,
+            )
+            for assignment in canonical_assignments
+            for surface_variant in range(4)
+        ),
+        key=lambda task: task.task_id,
+    ))
+    if tasks != expected_tasks:
+        raise ValueError("tasks.jsonl does not match canonical Core rendering")
     tasks_by_core = defaultdict(list)
     for task in tasks:
         replay = replay_task_v3(task)
@@ -170,6 +236,37 @@ def validate_core_release(
         surfaces[0].metadata.split.value for surfaces in tasks_by_core.values()
     )
     split_task_counts = Counter(task.metadata.split.value for task in tasks)
+    reconstructed = CompiledCoreSnapshot(
+        config_sha256=sha256_model(config),
+        assignments=canonical_assignments,
+        semantic_cores=tuple(
+            canonical_by_id[assignment.semantic_core_id]
+            for assignment in canonical_assignments
+        ),
+        tasks=tasks,
+        family_core_counts=dict(family_core_counts),
+        core_counts={key: split_core_counts[key] for key in ("train", "dev", "test")},
+        task_counts={key: split_task_counts[key] for key in ("train", "dev", "test")},
+    )
+    _validate_snapshot(reconstructed, config, canonical_cores)
+    expected_split_balance = CoreSplitBalance(
+        family_core_counts=dict(family_core_counts),
+        split_core_counts={key: split_core_counts[key] for key in ("train", "dev", "test")},
+        split_task_counts={key: split_task_counts[key] for key in ("train", "dev", "test")},
+        total_semantic_cores=len(cores),
+        total_tasks=len(tasks),
+    )
+    if split_balance != expected_split_balance:
+        raise ValueError("split_balance.json does not match candidate records")
+    expected_manifest = _manifest(
+        reconstructed,
+        config,
+        task_ref=task_ref[0],
+        core_ref=core_ref[0],
+        config_ref=config_ref[0],
+    )
+    if manifest != expected_manifest:
+        raise ValueError("task_manifest.json does not match candidate provenance")
     if expected_full:
         if len(cores) != 3000 or len(tasks) != 12000:
             raise ValueError("full Core candidate must contain 3,000 cores and 12,000 tasks")
@@ -199,6 +296,13 @@ def validate_core_release(
 
     if hard_suite.source_task_manifest_hash != hashlib.sha256(manifest_bytes).hexdigest():
         raise ValueError("hard suite source manifest binding is invalid")
+    expected_hard_suite = build_core_hard_suite(
+        reconstructed,
+        source_task_manifest_hash=hashlib.sha256(manifest_bytes).hexdigest(),
+        per_family=hard_suite.per_family_core_count,
+    )
+    if hard_suite != expected_hard_suite:
+        raise ValueError("hard suite does not match deterministic selection policy")
     task_by_id = {task.task_id: task for task in tasks}
     if any(task_id not in task_by_id for task_id in hard_suite.task_ids):
         raise ValueError("hard suite references an unknown task")
@@ -247,7 +351,7 @@ def validate_core_release(
         split_core_counts={key: split_core_counts[key] for key in ("train", "dev", "test")},
         split_task_counts={key: split_task_counts[key] for key in ("train", "dev", "test")},
         family_core_counts=dict(family_core_counts),
-        checks=stored_report.checks,
+        checks=_VALIDATION_CHECKS,
     )
     if report != stored_report:
         raise ValueError("validation_report.json does not match candidate bytes")

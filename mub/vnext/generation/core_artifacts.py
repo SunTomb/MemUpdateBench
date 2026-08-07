@@ -9,11 +9,14 @@ from mub.vnext.contracts import ArtifactRef, Split
 from mub.vnext.contracts.common import ImmutableContractModel
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.generation.artifacts import InMemoryPilotArtifact
-from mub.vnext.generation.core_build import CompiledCoreSnapshot, _validate_snapshot
+from mub.vnext.generation.core_build import (
+    CompiledCoreSnapshot,
+    _generated_cores,
+    _validate_snapshot,
+)
 from mub.vnext.generation.core_config import CoreConfig
 from mub.vnext.generation.core_hard_suite import CoreHardSuiteManifest, build_core_hard_suite
 from mub.vnext.io import canonical_json_bytes, sha256_model
-from mub.vnext.io.canonical import _canonical_payload_bytes
 
 _JSON = "application/json"
 _JSONL = "application/x-ndjson"
@@ -26,6 +29,26 @@ _PATHS: Final = (
     "core-hard-v1.json",
     "validation_report.json",
 )
+
+
+_VALIDATION_CHECKS: Final = (
+    "canonical_artifact_bytes",
+    "exact_four_surfaces",
+    "family_and_split_quotas",
+    "group_leakage_zero",
+    "semantic_equivalence",
+    "v3_replay",
+    "hard_suite_authentication",
+    "source_config_and_revision",
+)
+
+
+class CoreSplitBalance(ImmutableContractModel):
+    family_core_counts: dict[str, int]
+    split_core_counts: dict[str, int]
+    split_task_counts: dict[str, int]
+    total_semantic_cores: int
+    total_tasks: int
 
 
 class CoreValidationReport(ImmutableContractModel):
@@ -121,7 +144,12 @@ def build_core_artifact_bundle(
         assignment.semantic_core_id for assignment in snapshot.assignments
     }:
         raise ValueError("snapshot semantic cores and assignments differ")
-    _validate_snapshot(snapshot, config)
+    canonical_by_id = {core.core_id: core for core in _generated_cores(config)}
+    if any(
+        canonical_by_id.get(core.core_id) != core for core in snapshot.semantic_cores
+    ):
+        raise ValueError("snapshot semantic core payload is not canonical")
+    _validate_snapshot(snapshot, config, tuple(canonical_by_id.values()))
 
     task_bytes = _jsonl(snapshot.tasks, key=lambda task: task.task_id)
     core_bytes = _jsonl(snapshot.semantic_cores, key=lambda core: core.core_id)
@@ -130,14 +158,14 @@ def build_core_artifact_bundle(
     core_artifact = _artifact(_PATHS[1], core_bytes, _JSONL, len(snapshot.semantic_cores))
     config_artifact = _artifact(_PATHS[2], config_bytes, _JSON, 1)
 
-    split_balance = {
-        "family_core_counts": dict(snapshot.family_core_counts),
-        "split_core_counts": dict(snapshot.core_counts),
-        "split_task_counts": dict(snapshot.task_counts),
-        "total_semantic_cores": len(snapshot.semantic_cores),
-        "total_tasks": len(snapshot.tasks),
-    }
-    split_artifact = _artifact(_PATHS[3], _canonical_payload_bytes(split_balance), _JSON, 1)
+    split_balance = CoreSplitBalance(
+        family_core_counts=dict(snapshot.family_core_counts),
+        split_core_counts=dict(snapshot.core_counts),
+        split_task_counts=dict(snapshot.task_counts),
+        total_semantic_cores=len(snapshot.semantic_cores),
+        total_tasks=len(snapshot.tasks),
+    )
+    split_artifact = _artifact(_PATHS[3], canonical_json_bytes(split_balance), _JSON, 1)
     task_manifest = _manifest(
         snapshot,
         config,
@@ -164,16 +192,7 @@ def build_core_artifact_bundle(
         split_core_counts=dict(snapshot.core_counts),
         split_task_counts=dict(snapshot.task_counts),
         family_core_counts=dict(snapshot.family_core_counts),
-        checks=(
-            "canonical_artifact_bytes",
-            "exact_four_surfaces",
-            "family_and_split_quotas",
-            "group_leakage_zero",
-            "semantic_equivalence",
-            "v3_replay",
-            "hard_suite_authentication",
-            "source_config_and_revision",
-        ),
+        checks=_VALIDATION_CHECKS,
     )
     report_artifact = _artifact(
         _PATHS[6], canonical_json_bytes(validation_report), _JSON, 1
@@ -201,6 +220,7 @@ def build_core_artifact_bundle(
 
 __all__ = [
     "CoreArtifactBundle",
+    "CoreSplitBalance",
     "CoreValidationReport",
     "build_core_artifact_bundle",
 ]

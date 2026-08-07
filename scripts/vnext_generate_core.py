@@ -6,17 +6,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from mub.vnext.generation.core_orchestrate import stage_core_candidate
 
 
 def _revision() -> str:
     for command in (("git", "diff", "--quiet"), ("git", "diff", "--cached", "--quiet")):
-        result = subprocess.run(command, check=False)
+        result = subprocess.run(command, check=False, cwd=PROJECT_ROOT)
         if result.returncode != 0:
             raise RuntimeError("Core candidate generation requires a clean tracked revision")
-    return subprocess.check_output(("git", "rev-parse", "HEAD"), text=True).strip()
+    return subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), text=True, cwd=PROJECT_ROOT
+    ).strip()
 
 
 def main() -> int:

@@ -33,8 +33,9 @@ def stage_core_candidate(
     config_path = Path(config_path)
     output_dir = Path(output_dir)
     config = load_core_config(config_path)
-    immutable = (config_path.resolve().parents[2] / config.output.release_dir).resolve()
-    if output_dir.resolve() == immutable:
+    immutable = (Path(__file__).resolve().parents[3] / config.output.release_dir).resolve()
+    resolved_output = output_dir.resolve()
+    if resolved_output == immutable or immutable in resolved_output.parents:
         raise ValueError("Core candidates must be staged outside the immutable release root")
     if output_dir.exists():
         raise FileExistsError(f"candidate output already exists: {output_dir}")
