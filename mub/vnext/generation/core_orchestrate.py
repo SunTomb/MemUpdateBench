@@ -23,6 +23,16 @@ class StagedCoreCandidate:
     hard_suite_task_count: int
 
 
+def _verify_staged_bundle(temporary: Path, bundle) -> None:
+    if {path.name for path in temporary.iterdir() if path.is_file()} != {
+        artifact.path for artifact in bundle.artifacts
+    }:
+        raise ValueError("staged Core artifact set is incomplete")
+    for artifact in bundle.artifacts:
+        if (temporary / artifact.path).read_bytes() != artifact.content:
+            raise ValueError(f"staged Core artifact bytes differ: {artifact.path}")
+
+
 def stage_core_candidate(
     *,
     config_path: str | Path,
@@ -52,7 +62,7 @@ def stage_core_candidate(
     try:
         for artifact in bundle.artifacts:
             (temporary / artifact.path).write_bytes(artifact.content)
-        validate_core_release(temporary, expected_full=cores_per_family is None)
+        _verify_staged_bundle(temporary, bundle)
         os.replace(temporary, output_dir)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

@@ -92,9 +92,18 @@ def test_hard_suite_is_manifest_only_and_authenticated():
         } == {selector_kind}
 
 
-def test_candidate_staging_is_transactional_and_standalone_validated(tmp_path):
+def test_candidate_staging_is_transactional_and_standalone_validated(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     config_path = ROOT / "configs" / "vnext" / "core.yaml"
     output = tmp_path / "candidate"
+    monkeypatch.setattr(
+        core_orchestrate,
+        "validate_core_release",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("staging repeated standalone validation")
+        ),
+    )
     result = stage_core_candidate(
         config_path=config_path,
         output_dir=output,
