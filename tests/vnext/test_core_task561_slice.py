@@ -83,9 +83,12 @@ def test_hard_suite_is_manifest_only_and_authenticated():
         if task.metadata.extra["surface_variant"] == 0
         and task.metadata.split_key.semantic_core_id in suite.semantic_core_ids
     }
-    for selector_kind, core_ids in suite.condition_coverage[
-        "current_historical_query"
-    ].items():
+    family_f_coverage = suite.condition_coverage["current_historical_query"]
+    assert any(condition.startswith("selector_kind=") for condition in family_f_coverage)
+    for condition, core_ids in family_f_coverage.items():
+        if not condition.startswith("selector_kind="):
+            continue
+        selector_kind = condition.split("=", 1)[1]
         assert {
             selected_tasks[core_id].queries[0].selector.kind
             for core_id in core_ids
@@ -131,7 +134,7 @@ def test_candidate_staging_rejects_immutable_release_descendants(
         "compile_core_snapshot",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("compiled")),
     )
-    with pytest.raises(ValueError, match="outside the immutable release root"):
+    with pytest.raises(ValueError, match="outside immutable release roots"):
         stage_core_candidate(
             config_path=config_path,
             output_dir=ROOT / "data" / "vnext" / "core" / "v3",

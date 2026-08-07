@@ -11,6 +11,12 @@ from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.validation.core_release import validate_core_release
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_IMMUTABLE_RELEASE_ROOTS = (
+    (_PROJECT_ROOT / "data" / "vnext" / "core").resolve(),
+    (_PROJECT_ROOT / "data" / "vnext" / "pilot").resolve(),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StagedCoreCandidate:
@@ -43,10 +49,12 @@ def stage_core_candidate(
     config_path = Path(config_path)
     output_dir = Path(output_dir)
     config = load_core_config(config_path)
-    immutable = (Path(__file__).resolve().parents[3] / config.output.release_dir).resolve()
     resolved_output = output_dir.resolve()
-    if resolved_output == immutable or immutable in resolved_output.parents:
-        raise ValueError("Core candidates must be staged outside the immutable release root")
+    if any(
+        resolved_output == immutable or immutable in resolved_output.parents
+        for immutable in _IMMUTABLE_RELEASE_ROOTS
+    ):
+        raise ValueError("Core candidates must be staged outside immutable release roots")
     if output_dir.exists():
         raise FileExistsError(f"candidate output already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)

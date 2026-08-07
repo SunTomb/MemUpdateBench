@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,14 +13,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from mub.vnext.generation.core_orchestrate import stage_core_candidate
 
 
-def _revision() -> str:
+def _revision(expected: str | None = None) -> str:
     for command in (("git", "diff", "--quiet"), ("git", "diff", "--cached", "--quiet")):
         result = subprocess.run(command, check=False, cwd=PROJECT_ROOT)
         if result.returncode != 0:
             raise RuntimeError("Core candidate generation requires a clean tracked revision")
-    return subprocess.check_output(
+    revision = subprocess.check_output(
         ("git", "rev-parse", "HEAD"), text=True, cwd=PROJECT_ROOT
     ).strip()
+    if expected is not None and revision != expected:
+        raise RuntimeError("Core candidate generation revision changed during staging")
+    return revision
 
 
 def main() -> int:
@@ -28,12 +32,20 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--cores-per-family", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    result = stage_core_candidate(
-        config_path=args.config,
-        output_dir=args.output_dir,
-        code_revision=_revision(),
-        cores_per_family=args.cores_per_family,
-    )
+    revision = _revision()
+    output_existed = args.output_dir.exists()
+    try:
+        result = stage_core_candidate(
+            config_path=args.config,
+            output_dir=args.output_dir,
+            code_revision=revision,
+            cores_per_family=args.cores_per_family,
+        )
+        _revision(revision)
+    except Exception:
+        if not output_existed and args.output_dir.is_dir():
+            shutil.rmtree(args.output_dir)
+        raise
     print(json.dumps({
         "status": "VALID_STAGED_CANDIDATE",
         "release_dir": str(result.release_dir),

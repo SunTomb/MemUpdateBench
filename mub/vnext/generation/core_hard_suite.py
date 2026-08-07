@@ -28,15 +28,84 @@ _FAMILIES = (
     TaskFamily.CURRENT_HISTORICAL_QUERY,
     TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS,
 )
-_CONDITION_KEYS = {
-    TaskFamily.REPEATED_SAME_SLOT: "condition",
-    TaskFamily.INTERLEAVED_MULTI_SLOT: "interleaving_pattern",
-    TaskFamily.ENTITY_ATTRIBUTE_GROUNDING: "resolution_status",
-    TaskFamily.NOOP_WRITE_DISCIPLINE: "trap_type",
-    TaskFamily.DELETION_FORGETTING: "lifecycle_cell",
-    TaskFamily.CURRENT_HISTORICAL_QUERY: "query_type",
-    TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS: "synthesis_kind",
+_REQUIRED_CONDITIONS = {
+    TaskFamily.REPEATED_SAME_SLOT: (
+        "condition=stale_burden",
+        "condition=duplicate_current",
+        "condition=other_attribute_distractor",
+        "condition=same_name_other_entity_distractor",
+        "update_depth=32",
+    ),
+    TaskFamily.INTERLEAVED_MULTI_SLOT: (
+        "interleaving_pattern=round_robin",
+        "interleaving_pattern=burst",
+        "interleaving_pattern=adversarial_adjacent",
+        "active_object_count=12",
+        "update_depth=16",
+    ),
+    TaskFamily.ENTITY_ATTRIBUTE_GROUNDING: (
+        "entity_condition=distinct",
+        "entity_condition=same_name",
+        "entity_condition=alias",
+        "entity_condition=namespace_collision",
+        "attribute_condition=exact",
+        "attribute_condition=paraphrase",
+        "attribute_condition=near_name",
+        "resolution_status=unique",
+        "resolution_status=ambiguous",
+        "resolution_status=no_match",
+    ),
+    TaskFamily.NOOP_WRITE_DISCIPLINE: tuple(
+        f"trap_type={trap}"
+        for trap in (
+            "transient",
+            "hypothetical",
+            "negated",
+            "uncertain",
+            "semantic_near_miss",
+            "duplicate_current",
+            "unsupported_inference",
+        )
+    ) + ("configured_noop_density=0.75",),
+    TaskFamily.DELETION_FORGETTING: tuple(
+        f"lifecycle_cell={cell}"
+        for cell in (
+            "explicit_object_or_attribute_deletion",
+            "entity_wide_deletion",
+            "namespace_privacy_wipe",
+            "correction_versus_deletion_hard_negative",
+            "logical_ttl_expiry",
+            "post_delete_similar_retrieval",
+            "delete_then_relearn",
+            "scoped_delete_protected_collateral",
+        )
+    ) + tuple(
+        f"deletion_position={position}"
+        for position in ("early", "middle", "final", "not_applicable")
+    ),
+    TaskFamily.CURRENT_HISTORICAL_QUERY: tuple(
+        f"selector_kind={selector}"
+        for selector in (
+            "current",
+            "previous",
+            "exact_version",
+            "event_anchor",
+            "logical_time_anchor",
+            "transition",
+            "ordered_history",
+        )
+    ),
+    TaskFamily.LONG_HORIZON_MEMORY_SYNTHESIS: (
+        "synthesis_kind=update_sensitive_multi_hop",
+        "synthesis_kind=multi_object_current_consistency",
+        "hop_count=4",
+        "object_count=8",
+        "answer_kind=boolean_consistency",
+        "answer_kind=exact_inconsistent_object",
+    ),
 }
+_DIFFICULTY_RANK = {"hard": 0, "challenge": 0, "medium": 1, "easy": 2}
+
 
 
 class CoreHardSuiteManifest(ImmutableContractModel):
@@ -90,6 +159,22 @@ def _ranking(core_id: str, condition: str) -> str:
     return hashlib.sha256(f"{_POLICY}|{condition}|{core_id}".encode("utf-8")).hexdigest()
 
 
+def _condition_labels(task, family: TaskFamily) -> frozenset[str]:
+    strata = task.metadata.extra["stratification"]
+    labels = {f"difficulty={task.difficulty.value}"}
+    for required in _REQUIRED_CONDITIONS[family]:
+        axis, expected = required.split("=", 1)
+        if axis == "selector_kind":
+            observed = task.queries[0].selector.kind
+        elif axis == "update_depth" and family is TaskFamily.REPEATED_SAME_SLOT:
+            observed = task.metadata.resolved_profile.get("update_depth")
+        else:
+            observed = strata.get(axis)
+        if str(observed) == expected:
+            labels.add(required)
+    return frozenset(labels)
+
+
 def build_core_hard_suite(
     snapshot: CompiledCoreSnapshot,
     *,
@@ -116,7 +201,6 @@ def build_core_hard_suite(
     family_counts = Counter()
     for family in _FAMILIES:
         candidates = []
-        condition_key = _CONDITION_KEYS[family]
         for core_id, assignment in assignment_by_core.items():
             if assignment.task_family is not family:
                 continue
@@ -124,33 +208,52 @@ def build_core_hard_suite(
                 tasks_by_core[core_id],
                 key=lambda task: task.metadata.extra["surface_variant"],
             )
-            if family is TaskFamily.CURRENT_HISTORICAL_QUERY:
-                condition = str(representative.queries[0].selector.kind)
-            else:
-                condition = str(
-                    representative.metadata.extra["stratification"].get(condition_key)
+            labels = _condition_labels(representative, family)
+            difficulty_rank = _DIFFICULTY_RANK[representative.difficulty.value]
+            candidates.append(
+                (
+                    difficulty_rank,
+                    _ranking(core_id, "hard-first-fixed-strata"),
+                    core_id,
+                    labels,
                 )
-            candidates.append((_ranking(core_id, condition), core_id, condition))
+            )
         if len(candidates) < per_family:
             raise ValueError(f"Family {family.value} has too few eligible test cores")
-        by_condition = defaultdict(list)
-        for candidate in candidates:
-            by_condition[candidate[2]].append(candidate)
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
         chosen = []
-        for condition in sorted(by_condition)[:per_family]:
-            chosen.append(min(by_condition[condition]))
-        chosen_ids = {item[1] for item in chosen}
-        remainder = sorted(
-            (item for item in candidates if item[1] not in chosen_ids),
-            key=lambda item: (item[0], item[1]),
+        chosen_ids = set()
+        required_conditions = (
+            _REQUIRED_CONDITIONS[family] if per_family == 20 else ()
         )
-        chosen.extend(remainder[: per_family - len(chosen)])
-        family_core_ids = sorted(item[1] for item in chosen)
+        for condition in required_conditions:
+            match = next(
+                (
+                    item
+                    for item in candidates
+                    if item[2] not in chosen_ids and condition in item[3]
+                ),
+                None,
+            )
+            if match is None:
+                raise ValueError(
+                    f"Family {family.value} cannot cover required hard condition {condition}"
+                )
+            chosen.append(match)
+            chosen_ids.add(match[2])
+        chosen.extend(
+            item
+            for item in candidates
+            if item[2] not in chosen_ids
+        )
+        chosen = chosen[:per_family]
+        family_core_ids = sorted(item[2] for item in chosen)
         selected_ids.update(family_core_ids)
         family_counts[family.value] = len(family_core_ids) * 4
+        selected_labels = sorted(set().union(*(item[3] for item in chosen)))
         coverage[family.value] = {
-            condition: sorted(item[1] for item in chosen if item[2] == condition)
-            for condition in sorted({item[2] for item in chosen})
+            condition: sorted(item[2] for item in chosen if condition in item[3])
+            for condition in selected_labels
         }
 
     task_ids = sorted(
