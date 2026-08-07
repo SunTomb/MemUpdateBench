@@ -395,3 +395,109 @@ def test_staged_candidate_cleanup_preserves_substituted_output(
         shutil.rmtree(output, ignore_errors=True)
         shutil.rmtree(verified_aside, ignore_errors=True)
 
+
+def test_verified_cleanup_cannot_delete_replacement_in_check_delete_window(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output = tmp_path / "candidate"
+    result = stage_core_candidate(
+        config_path=CORE_CONFIG_PATH,
+        output_dir=output,
+        code_revision=TEST_REVISION,
+        cores_per_family=10,
+    )
+    verified_aside = tmp_path / "verified-aside"
+    marker = output / "unrelated.txt"
+    real_rmtree = shutil.rmtree
+    injected = False
+
+    def substitute_before_delete(path, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            if output.exists():
+                os.replace(output, verified_aside)
+            output.mkdir()
+            marker.write_text("do not delete", encoding="utf-8")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(core_orchestrate.shutil, "rmtree", substitute_before_delete)
+    try:
+        assert result.remove_if_unchanged()
+        assert injected
+        assert marker.read_text(encoding="utf-8") == "do not delete"
+    finally:
+        real_rmtree(output, ignore_errors=True)
+        real_rmtree(verified_aside, ignore_errors=True)
+
+
+def test_temporary_cleanup_cannot_delete_replacement_in_check_delete_window(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    (temporary / "staged.txt").write_text("staged", encoding="utf-8")
+    temporary_identity = core_orchestrate._path_identity(temporary)
+    verified_aside = tmp_path / "verified-aside"
+    marker = temporary / "unrelated.txt"
+    real_rmtree = shutil.rmtree
+    injected = False
+
+    def substitute_before_delete(path, *args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            if temporary.exists():
+                os.replace(temporary, verified_aside)
+            temporary.mkdir()
+            marker.write_text("do not delete", encoding="utf-8")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(core_orchestrate.shutil, "rmtree", substitute_before_delete)
+    try:
+        core_orchestrate._remove_tree_if_identity_matches(
+            temporary,
+            temporary_identity,
+        )
+        assert injected
+        assert marker.read_text(encoding="utf-8") == "do not delete"
+    finally:
+        real_rmtree(temporary, ignore_errors=True)
+        real_rmtree(verified_aside, ignore_errors=True)
+
+
+def test_staged_candidate_constructor_remains_backward_compatible():
+    candidate = core_orchestrate.StagedCoreCandidate(
+        release_dir=Path("relative-candidate"),
+        semantic_core_count=1,
+        task_count=4,
+        split_core_counts={"test": 1},
+        split_task_counts={"test": 4},
+        hard_suite_core_count=1,
+        hard_suite_task_count=4,
+    )
+
+    assert candidate.release_dir == Path("relative-candidate")
+    assert not candidate.remove_if_unchanged()
+
+
+def test_staging_preserves_relative_release_dir_representation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    output = Path("relative-candidate")
+    result = stage_core_candidate(
+        config_path=CORE_CONFIG_PATH,
+        output_dir=output,
+        code_revision=TEST_REVISION,
+        cores_per_family=10,
+    )
+
+    try:
+        assert result.release_dir == output
+    finally:
+        assert result.remove_if_unchanged()
+

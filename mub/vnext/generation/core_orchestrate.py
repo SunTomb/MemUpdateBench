@@ -28,12 +28,22 @@ class StagedCoreCandidate:
     split_task_counts: dict[str, int]
     hard_suite_core_count: int
     hard_suite_task_count: int
-    _destination_identity: tuple[int, int] = field(repr=False)
-    _artifact_hashes: tuple[tuple[str, str], ...] = field(repr=False)
+    _cleanup_path: Path | None = field(default=None, repr=False)
+    _destination_identity: tuple[int, int] | None = field(default=None, repr=False)
+    _artifact_hashes: tuple[tuple[str, str], ...] | None = field(
+        default=None,
+        repr=False,
+    )
 
     def remove_if_unchanged(self) -> bool:
+        if (
+            self._cleanup_path is None
+            or self._destination_identity is None
+            or self._artifact_hashes is None
+        ):
+            return False
         return _remove_tree_if_verified(
-            self.release_dir,
+            self._cleanup_path,
             self._destination_identity,
             self._artifact_hashes,
         )
@@ -52,6 +62,13 @@ class _StagingPathBinding:
 class _VerifiedTemporaryTree:
     identity: tuple[int, int]
     artifact_hashes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _QuarantinedTree:
+    original_path: Path
+    holder_path: Path
+    captured_path: Path
 
 
 def _resolve_path(path: Path) -> Path:
@@ -188,31 +205,104 @@ def _recheck_verified_tree(
         raise ValueError("installed object is not the verified temporary tree")
 
 
+def _quarantine_tree(path: Path) -> _QuarantinedTree | None:
+    try:
+        holder = Path(
+            tempfile.mkdtemp(
+                prefix=f".{path.name}.cleanup-",
+                dir=path.parent,
+            )
+        )
+    except OSError:
+        return None
+    captured = holder / "tree"
+    try:
+        os.replace(path, captured)
+    except OSError:
+        try:
+            holder.rmdir()
+        except OSError:
+            pass
+        return None
+    return _QuarantinedTree(
+        original_path=path,
+        holder_path=holder,
+        captured_path=captured,
+    )
+
+
+def _restore_quarantined_tree(quarantined: _QuarantinedTree) -> None:
+    if os.path.lexists(quarantined.original_path):
+        return
+    try:
+        os.rename(
+            quarantined.captured_path,
+            quarantined.original_path,
+        )
+    except OSError:
+        return
+    try:
+        quarantined.holder_path.rmdir()
+    except OSError:
+        pass
+
+
+def _delete_quarantined_tree(quarantined: _QuarantinedTree) -> bool:
+    try:
+        shutil.rmtree(quarantined.captured_path)
+    except OSError:
+        return False
+    try:
+        quarantined.holder_path.rmdir()
+    except OSError:
+        pass
+    return True
+
+
 def _remove_tree_if_verified(
     path: Path,
     expected_identity: tuple[int, int],
     artifact_hashes: tuple[tuple[str, str], ...],
 ) -> bool:
-    try:
-        if _path_identity(path) != expected_identity:
-            return False
-        if not _tree_matches_hashes(path, artifact_hashes):
-            return False
-    except (FileNotFoundError, OSError, ValueError):
+    quarantined = _quarantine_tree(path)
+    if quarantined is None:
         return False
-    shutil.rmtree(path)
-    return True
+    try:
+        identity_matches = (
+            _path_identity(quarantined.captured_path)
+            == expected_identity
+        )
+        content_matches = _tree_matches_hashes(
+            quarantined.captured_path,
+            artifact_hashes,
+        )
+    except (FileNotFoundError, OSError, ValueError):
+        identity_matches = False
+        content_matches = False
+    if not identity_matches or not content_matches:
+        _restore_quarantined_tree(quarantined)
+        return False
+    return _delete_quarantined_tree(quarantined)
 
 
 def _remove_tree_if_identity_matches(
     path: Path,
     expected_identity: tuple[int, int],
 ) -> None:
-    try:
-        if _path_identity(path) == expected_identity:
-            shutil.rmtree(path)
-    except (FileNotFoundError, OSError, ValueError):
+    quarantined = _quarantine_tree(path)
+    if quarantined is None:
         return
+    try:
+        identity_matches = (
+            _path_identity(quarantined.captured_path)
+            == expected_identity
+        )
+    except (FileNotFoundError, OSError, ValueError):
+        identity_matches = False
+    if not identity_matches:
+        _restore_quarantined_tree(quarantined)
+        return
+    _delete_quarantined_tree(quarantined)
 
 
 def stage_core_candidate(
@@ -268,13 +358,14 @@ def stage_core_candidate(
         raise
     assert verified is not None
     return StagedCoreCandidate(
-        release_dir=destination,
+        release_dir=output_dir,
         semantic_core_count=len(snapshot.semantic_cores),
         task_count=len(snapshot.tasks),
         split_core_counts=dict(snapshot.core_counts),
         split_task_counts=dict(snapshot.task_counts),
         hard_suite_core_count=len(bundle.hard_suite.semantic_core_ids),
         hard_suite_task_count=len(bundle.hard_suite.task_ids),
+        _cleanup_path=destination,
         _destination_identity=verified.identity,
         _artifact_hashes=verified.artifact_hashes,
     )
