@@ -7,7 +7,10 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
+from mub.vnext.generation.core_artifacts import (
+    _validate_core_artifact_tree,
+    build_core_artifact_bundle,
+)
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.validation.core_release import validate_core_release
@@ -104,9 +107,9 @@ def _assert_outside_immutable(resolved_output: Path) -> None:
 
 def _bind_staging_path(output_dir: Path) -> _StagingPathBinding:
     requested = Path(os.path.abspath(output_dir))
-    _assert_no_lexical_reparse_points(requested.parent)
+    _assert_no_lexical_reparse_points(requested)
     _assert_outside_immutable(_resolve_path(requested))
-    if requested.exists():
+    if os.path.lexists(requested):
         raise FileExistsError(f"candidate output already exists: {output_dir}")
     _assert_outside_immutable(_resolve_path(requested.parent) / requested.name)
     requested.parent.mkdir(parents=True, exist_ok=True)
@@ -149,10 +152,7 @@ def _recheck_staging_path(
 
 
 def _verify_staged_bundle(temporary: Path, bundle) -> None:
-    if {path.name for path in temporary.iterdir() if path.is_file()} != {
-        artifact.path for artifact in bundle.artifacts
-    }:
-        raise ValueError("staged Core artifact set is incomplete")
+    _validate_core_artifact_tree(temporary)
     for artifact in bundle.artifacts:
         if (temporary / artifact.path).read_bytes() != artifact.content:
             raise ValueError(f"staged Core artifact bytes differ: {artifact.path}")
@@ -170,9 +170,12 @@ def _tree_matches_hashes(
     artifact_hashes: tuple[tuple[str, str], ...],
 ) -> bool:
     expected_names = {name for name, _ in artifact_hashes}
-    actual_entries = tuple(root.iterdir())
+    try:
+        actual_entries = _validate_core_artifact_tree(root)
+    except (FileNotFoundError, OSError, ValueError):
+        return False
     actual_names = {path.name for path in actual_entries}
-    if actual_names != expected_names or any(not path.is_file() for path in actual_entries):
+    if actual_names != expected_names:
         return False
     return all(
         hashlib.sha256((root / name).read_bytes()).hexdigest() == expected_hash
@@ -342,6 +345,10 @@ def stage_core_candidate(
             (temporary / artifact.path).write_bytes(artifact.content)
         _recheck_staging_path(binding)
         verified = _bind_verified_temporary(temporary, bundle)
+        validate_core_release(
+            temporary,
+            expected_full=cores_per_family is None,
+        )
         destination = _recheck_staging_path(binding)
         _recheck_verified_tree(temporary, verified)
         os.replace(temporary, destination)

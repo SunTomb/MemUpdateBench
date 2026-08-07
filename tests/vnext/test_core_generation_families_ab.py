@@ -22,6 +22,8 @@ from mub.vnext.generation.family_b import (
     generate_core_family_b_cores,
     generate_family_b_cores,
 )
+from mub.vnext.generation.family_e import generate_core_family_e_cores
+from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.config import load_pilot_config
 from mub.vnext.generation.render import render_core_with_catalog
 from mub.vnext.io import canonical_json_bytes, sha256_model
@@ -109,6 +111,47 @@ def test_generation_context_freezes_and_hashes_core_config_without_aliasing() ->
         16,
         32,
     ]
+
+
+def test_generation_context_deeply_freezes_core_families_e_f_g() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    context = GenerationContext(
+        config=config,
+        code_revision="task-561-frozen-efg",
+        generator_name="memupdatebench_vnext_core",
+    )
+    core = generate_core_family_e_cores(config, profile="full")[0]
+    before = render_core_v3(
+        core,
+        split=Split.TRAIN,
+        surface_variant=0,
+        context=context,
+    )
+    original_hash = context.config_sha256
+
+    with pytest.raises(TypeError):
+        context.config.families.deletion_forgetting.lifecycle_cells.append(
+            "delete_then_relearn"
+        )
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.families.current_historical_query.minimum_present_versions = 9
+    with pytest.raises(TypeError):
+        context.config.families.long_horizon_memory_synthesis.hop_counts.append(9)
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.families.deletion_forgetting.schedule.cores_per_lifecycle_cell = 1
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.families.current_historical_query.schedule.trajectory_count = 1
+    with pytest.raises(ValidationError, match="frozen"):
+        context.config.families.long_horizon_memory_synthesis.schedule.consistency_core_count = 1
+
+    after = render_core_v3(
+        core,
+        split=Split.TRAIN,
+        surface_variant=0,
+        context=context,
+    )
+    assert context.config_sha256 == original_hash
+    assert after.source.generator == before.source.generator
 
 
 def test_core_family_a_has_exact_depth_and_condition_marginals() -> None:

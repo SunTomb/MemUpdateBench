@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import stat
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Final
 
 from mub.vnext.contracts import ArtifactRef, Split
@@ -29,6 +31,23 @@ _PATHS: Final = (
     "core-hard-v1.json",
     "validation_report.json",
 )
+
+
+def _validate_core_artifact_tree(root: Path) -> tuple[Path, ...]:
+    entries = tuple(root.iterdir())
+    if {entry.name for entry in entries} != set(_PATHS) or len(entries) != len(
+        _PATHS
+    ):
+        raise ValueError("Core candidate must contain exactly seven artifacts")
+    for entry in entries:
+        metadata = entry.stat(follow_symlinks=False)
+        if (
+            entry.is_symlink()
+            or getattr(metadata, "st_file_attributes", 0) & 0x400
+            or not stat.S_ISREG(metadata.st_mode)
+        ):
+            raise ValueError("Core candidate artifacts must be regular files")
+    return tuple(root / path for path in _PATHS)
 
 
 _VALIDATION_CHECKS: Final = (
@@ -107,14 +126,25 @@ def _manifest(
         assignment.split.value for assignment in snapshot.assignments
     )
     revisions = {task.source.generator.code_revision for task in tasks}
-    generators = {task.source.generator.generator_name for task in tasks}
+    generator_versions = {
+        (
+            task.source.generator.generator_name,
+            task.source.generator.compiler_version,
+        )
+        for task in tasks
+    }
     split_versions = {task.metadata.split_key.split_policy_version for task in tasks}
-    if len(revisions) != 1 or len(generators) != 1 or len(split_versions) != 1:
-        raise ValueError("Core snapshot must have one code, generator, and split version")
+    if (
+        len(revisions) != 1
+        or len(generator_versions) != 1
+        or len(split_versions) != 1
+    ):
+        raise ValueError("Core snapshot must have one code, generator/compiler, and split version")
+    generator_name, compiler_version = next(iter(generator_versions))
     return TaskManifestV3(
         data_release_id=config.release_id,
         split_policy_version=next(iter(split_versions)),
-        compiler_versions={next(iter(generators)): "vnext-core-compiler-v1"},
+        compiler_versions={generator_name: compiler_version},
         source_manifest_paths_and_hashes=(core_ref,),
         generation_configs_and_hashes=(config_ref,),
         split_counts={split.value: split_counts[split.value] for split in (Split.TRAIN, Split.DEV, Split.TEST)},

@@ -49,6 +49,42 @@ def partial_snapshot_bundle(core_config_and_cores):
     )
 
 
+def test_bounded_family_f_above_trajectory_count_selects_complete_groups(
+    core_config_and_cores,
+) -> None:
+    config, cores = core_config_and_cores
+    assignments = core_build._select_and_assign(
+        cores,
+        seed=config.seed,
+        splits=config.splits,
+        cores_per_family=70,
+    )
+    family_f = [
+        assignment
+        for assignment in assignments
+        if assignment.task_family is TaskFamily.CURRENT_HISTORICAL_QUERY
+    ]
+    core_by_id = {core.core_id: core for core in cores}
+    trajectories = defaultdict(list)
+    for assignment in family_f:
+        trajectories[core_by_id[assignment.semantic_core_id].trajectory_id].append(
+            assignment
+        )
+
+    assert len(family_f) == 70
+    assert len(trajectories) == 10
+    assert {len(group) for group in trajectories.values()} == {7}
+    assert all(
+        len({assignment.split for assignment in group}) == 1
+        for group in trajectories.values()
+    )
+    assert Counter(assignment.split for assignment in family_f) == {
+        Split.TRAIN: 49,
+        Split.DEV: 7,
+        Split.TEST: 14,
+    }
+
+
 def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -428,6 +464,25 @@ def _replace_core_diagnostics(
         for task in snapshot.tasks
     )
     return snapshot.validated_replace(tasks=tasks)
+
+
+def test_snapshot_validation_rejects_extra_family_e_profile_key(
+    partial_snapshot_bundle,
+) -> None:
+    config, snapshot, _, expected_cores = partial_snapshot_bundle
+    victim = next(
+        task
+        for task in snapshot.tasks
+        if task.task_family == TaskFamily.DELETION_FORGETTING.value
+    )
+    corrupted = _replace_core_diagnostics(
+        snapshot,
+        victim.metadata.split_key.semantic_core_id,
+        profile_changes={"unexpected_profile_key": "self-authored"},
+    )
+
+    with pytest.raises(ValueError, match="resolved profile"):
+        core_build._validate_snapshot(corrupted, config, expected_cores)
 
 
 def test_snapshot_validation_rejects_aggregate_preserving_family_a_corruption(

@@ -59,9 +59,15 @@ from mub.vnext.generation.core_config import (
     CoreFamilyBSchedule,
     CoreFamilyCSchedule,
     CoreFamilyDSchedule,
+    CoreFamilyESchedule,
+    CoreFamilyFSchedule,
+    CoreFamilyGSchedule,
     CoreFamiliesConfig,
     CoreSplitCoreCounts,
+    CoreCurrentHistoricalQueryConfig,
+    CoreDeletionForgettingConfig,
     CoreInterleavedMultiSlotUpdateConfig,
+    CoreLongHorizonMemorySynthesisConfig,
     CoreNoopWriteDisciplineConfig,
     CoreRepeatedSameSlotUpdateConfig,
     CoreSurfaceDeclaration,
@@ -211,6 +217,18 @@ class _FrozenCoreFamilyDSchedule(_FrozenConfigMixin, CoreFamilyDSchedule):
     split_core_counts: _FrozenCoreSplitCoreCounts
 
 
+class _FrozenCoreFamilyESchedule(_FrozenConfigMixin, CoreFamilyESchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
+class _FrozenCoreFamilyFSchedule(_FrozenConfigMixin, CoreFamilyFSchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
+class _FrozenCoreFamilyGSchedule(_FrozenConfigMixin, CoreFamilyGSchedule):
+    split_core_counts: _FrozenCoreSplitCoreCounts
+
+
 class _FrozenCoreRepeatedSameSlotUpdateConfig(
     _FrozenConfigMixin,
     CoreRepeatedSameSlotUpdateConfig,
@@ -239,11 +257,35 @@ class _FrozenCoreNoopWriteDisciplineConfig(
     schedule: _FrozenCoreFamilyDSchedule
 
 
+class _FrozenCoreDeletionForgettingConfig(
+    _FrozenConfigMixin,
+    CoreDeletionForgettingConfig,
+):
+    schedule: _FrozenCoreFamilyESchedule
+
+
+class _FrozenCoreCurrentHistoricalQueryConfig(
+    _FrozenConfigMixin,
+    CoreCurrentHistoricalQueryConfig,
+):
+    schedule: _FrozenCoreFamilyFSchedule
+
+
+class _FrozenCoreLongHorizonMemorySynthesisConfig(
+    _FrozenConfigMixin,
+    CoreLongHorizonMemorySynthesisConfig,
+):
+    schedule: _FrozenCoreFamilyGSchedule
+
+
 class _FrozenCoreFamiliesConfig(_FrozenConfigMixin, CoreFamiliesConfig):
     repeated_same_slot_update: _FrozenCoreRepeatedSameSlotUpdateConfig
     interleaved_multi_slot_update: _FrozenCoreInterleavedMultiSlotUpdateConfig
     entity_attribute_grounding: _FrozenCoreEntityAttributeGroundingConfig
     noop_write_discipline: _FrozenCoreNoopWriteDisciplineConfig
+    deletion_forgetting: _FrozenCoreDeletionForgettingConfig
+    current_historical_query: _FrozenCoreCurrentHistoricalQueryConfig
+    long_horizon_memory_synthesis: _FrozenCoreLongHorizonMemorySynthesisConfig
 
 
 class _FrozenCoreSurfaceDeclaration(_FrozenConfigMixin, CoreSurfaceDeclaration):

@@ -6,7 +6,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from mub.vnext.contracts import Split, TaskFamily
+from mub.vnext.contracts import ArtifactRef, Split, TaskFamily
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.generation.core_artifacts import (
@@ -14,6 +14,7 @@ from mub.vnext.generation.core_artifacts import (
     CoreValidationReport,
     _VALIDATION_CHECKS,
     _manifest,
+    _validate_core_artifact_tree,
 )
 from mub.vnext.generation.core_build import (
     CompiledCoreSnapshot,
@@ -31,20 +32,12 @@ from mub.vnext.generation.core_hard_suite import (
 from mub.vnext.io import canonical_json_bytes, read_models, semantic_task_hash_v3, sha256_model
 from mub.vnext.io.canonical import _canonical_payload_bytes
 from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3
+from mub.vnext.version import COMPILER_VERSION
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _APPROVED_CONFIG_PATH = _PROJECT_ROOT / "configs" / "vnext" / "core.yaml"
 _TRUSTED_GENERATOR_NAME = "memupdatebench_vnext_core"
 _GIT_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_ARTIFACTS = (
-    "tasks.jsonl",
-    "semantic_cores.jsonl",
-    "generation_config.json",
-    "split_balance.json",
-    "task_manifest.json",
-    "core-hard-v1.json",
-    "validation_report.json",
-)
 _SPLITS = (Split.TRAIN, Split.DEV, Split.TEST)
 _FULL_FAMILY_COUNTS = {
     "repeated_same_slot_update": 480,
@@ -171,9 +164,7 @@ def validate_core_release(
     root = Path(release_dir)
     if not root.is_dir():
         raise ValueError("Core candidate directory does not exist")
-    names = {path.name for path in root.iterdir() if path.is_file()}
-    if names != set(_ARTIFACTS):
-        raise ValueError(f"Core candidate must contain exactly {_ARTIFACTS}")
+    _validate_core_artifact_tree(root)
 
     trusted_config = load_core_config(_APPROVED_CONFIG_PATH)
     trusted_config_bytes = canonical_json_bytes(trusted_config)
@@ -204,15 +195,34 @@ def validate_core_release(
     if [core["core_id"] for core in cores] != sorted(core["core_id"] for core in cores):
         raise ValueError("semantic_cores.jsonl must be sorted by core_id")
 
-    task_ref = manifest.task_file_paths_and_hashes
-    config_ref = manifest.generation_configs_and_hashes
-    core_ref = manifest.source_manifest_paths_and_hashes
-    if len(task_ref) != 1 or task_ref[0].path != "tasks.jsonl" or task_ref[0].sha256 != hashlib.sha256(task_bytes).hexdigest() or task_ref[0].record_count != len(tasks):
+    task_ref = ArtifactRef(
+        path="tasks.jsonl",
+        sha256=hashlib.sha256(task_bytes).hexdigest(),
+        media_type="application/x-ndjson",
+        record_count=len(tasks),
+    )
+    config_ref = ArtifactRef(
+        path="generation_config.json",
+        sha256=hashlib.sha256(config_bytes).hexdigest(),
+        media_type="application/json",
+        record_count=1,
+    )
+    core_ref = ArtifactRef(
+        path="semantic_cores.jsonl",
+        sha256=hashlib.sha256(core_bytes).hexdigest(),
+        media_type="application/x-ndjson",
+        record_count=len(cores),
+    )
+    if tuple(manifest.task_file_paths_and_hashes) != (task_ref,):
         raise ValueError("task manifest does not authenticate tasks.jsonl")
-    if len(config_ref) != 1 or config_ref[0].path != "generation_config.json" or config_ref[0].sha256 != hashlib.sha256(config_bytes).hexdigest():
-        raise ValueError("task manifest does not authenticate generation_config.json")
-    if len(core_ref) != 1 or core_ref[0].path != "semantic_cores.jsonl" or core_ref[0].sha256 != hashlib.sha256(core_bytes).hexdigest() or core_ref[0].record_count != len(cores):
-        raise ValueError("task manifest does not authenticate semantic_cores.jsonl")
+    if tuple(manifest.generation_configs_and_hashes) != (config_ref,):
+        raise ValueError(
+            "task manifest does not authenticate generation_config.json"
+        )
+    if tuple(manifest.source_manifest_paths_and_hashes) != (core_ref,):
+        raise ValueError(
+            "task manifest does not authenticate semantic_cores.jsonl"
+        )
     observed_hashes = {task.task_id: sha256_model(task) for task in tasks}
     if dict(manifest.task_record_hashes) != observed_hashes:
         raise ValueError("task record hashes are invalid")
@@ -244,11 +254,24 @@ def validate_core_release(
     if list(cores) != expected_core_payloads:
         raise ValueError("semantic_cores.jsonl does not contain canonical selected cores")
     revisions = {task.source.generator.code_revision for task in tasks}
-    generators = {task.source.generator.generator_name for task in tasks}
+    generator_versions = {
+        (
+            task.source.generator.generator_name,
+            task.source.generator.compiler_version,
+        )
+        for task in tasks
+    }
     if revisions != {trusted_revision} or manifest.code_revision != trusted_revision:
         raise ValueError("candidate does not match the trusted source revision")
-    if generators != {_TRUSTED_GENERATOR_NAME}:
-        raise ValueError("candidate does not match the trusted generator provenance")
+    expected_generator_versions = {
+        (_TRUSTED_GENERATOR_NAME, COMPILER_VERSION)
+    }
+    if generator_versions != expected_generator_versions or dict(
+        manifest.compiler_versions
+    ) != {_TRUSTED_GENERATOR_NAME: COMPILER_VERSION}:
+        raise ValueError(
+            "candidate does not match the trusted generator/compiler provenance"
+        )
     context = GenerationContext(
         config=config,
         code_revision=trusted_revision,
@@ -368,9 +391,9 @@ def validate_core_release(
     expected_manifest = _manifest(
         reconstructed,
         config,
-        task_ref=task_ref[0],
-        core_ref=core_ref[0],
-        config_ref=config_ref[0],
+        task_ref=task_ref,
+        core_ref=core_ref,
+        config_ref=config_ref,
     )
     if manifest != expected_manifest:
         raise ValueError("task_manifest.json does not match candidate provenance")

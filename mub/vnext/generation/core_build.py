@@ -378,35 +378,80 @@ def _select_and_assign(
             ranked.append((ranking, core.core_id, core, strata))
         ranked.sort(key=lambda item: (item[0], item[1]))
         if cores_per_family is not None:
-            selected = []
-            selected_trajectories = set()
+            grouped = defaultdict(list)
             for item in ranked:
-                trajectory_id = item[2].trajectory_id
-                if trajectory_id in selected_trajectories:
-                    continue
-                selected.append(item)
-                selected_trajectories.add(trajectory_id)
-                if len(selected) == cores_per_family:
-                    break
-            if len(selected) != cores_per_family:
-                raise ValueError(
-                    "partial Core selection cannot satisfy leakage-safe trajectory quota"
-                )
-            quotas = _split_quotas(len(selected), splits)
-            offset = 0
-            for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
-                for ranking, _, core, strata in selected[offset : offset + quota]:
-                    assignments.append(
-                        CoreSplitAssignment(
-                            semantic_core_id=core.core_id,
-                            task_family=core.task_family,
-                            difficulty=core.difficulty,
-                            strata=strata,
-                            split=split,
-                            ranking_sha256=ranking,
+                grouped[item[2].trajectory_id].append(item)
+            if cores_per_family <= len(grouped):
+                selected = []
+                selected_trajectories = set()
+                for item in ranked:
+                    trajectory_id = item[2].trajectory_id
+                    if trajectory_id in selected_trajectories:
+                        continue
+                    selected.append(item)
+                    selected_trajectories.add(trajectory_id)
+                    if len(selected) == cores_per_family:
+                        break
+                quotas = _split_quotas(len(selected), splits)
+                offset = 0
+                for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
+                    for ranking, _, core, strata in selected[
+                        offset : offset + quota
+                    ]:
+                        assignments.append(
+                            CoreSplitAssignment(
+                                semantic_core_id=core.core_id,
+                                task_family=core.task_family,
+                                difficulty=core.difficulty,
+                                strata=strata,
+                                split=split,
+                                ranking_sha256=ranking,
+                            )
                         )
-                    )
-                offset += quota
+                    offset += quota
+                continue
+
+            group_sizes = {len(group) for group in grouped.values()}
+            if len(group_sizes) != 1:
+                raise ValueError(
+                    "partial Core selection requires uniform complete trajectory groups"
+                )
+            group_size = next(iter(group_sizes))
+            quotas = _split_quotas(cores_per_family, splits)
+            if any(quota % group_size for quota in quotas):
+                raise ValueError(
+                    "partial Core split quota cannot preserve complete trajectory groups"
+                )
+            ranked_groups = sorted(
+                grouped.values(),
+                key=lambda group: (
+                    min(item[0] for item in group),
+                    group[0][2].trajectory_id,
+                ),
+            )
+            required_groups = cores_per_family // group_size
+            if len(ranked_groups) < required_groups:
+                raise ValueError(
+                    "partial Core selection cannot satisfy complete trajectory quota"
+                )
+            group_offset = 0
+            for split, quota in zip(_SPLIT_ORDER, quotas, strict=True):
+                split_groups = quota // group_size
+                for group in ranked_groups[
+                    group_offset : group_offset + split_groups
+                ]:
+                    for ranking, _, core, strata in group:
+                        assignments.append(
+                            CoreSplitAssignment(
+                                semantic_core_id=core.core_id,
+                                task_family=core.task_family,
+                                difficulty=core.difficulty,
+                                strata=strata,
+                                split=split,
+                                ranking_sha256=ranking,
+                            )
+                        )
+                group_offset += split_groups
             continue
 
         grouped = defaultdict(list)
@@ -470,6 +515,19 @@ def _validate_snapshot(
         raise ValueError("Core snapshot contains duplicate split assignments")
     if not snapshot.assignments:
         raise ValueError("Core snapshot requires a positive cores_per_family quota")
+    semantic_core_ids = tuple(
+        core.core_id for core in snapshot.semantic_cores
+    )
+    assignment_core_ids = tuple(
+        assignment.semantic_core_id for assignment in snapshot.assignments
+    )
+    if (
+        len(semantic_core_ids) != len(set(semantic_core_ids))
+        or semantic_core_ids != assignment_core_ids
+    ):
+        raise ValueError(
+            "Core snapshot semantic cores must be unique and follow assignments exactly"
+        )
     tasks_by_core: dict[str, list[MemUpdateTaskV3]] = defaultdict(list)
     for task in snapshot.tasks:
         core_id = task.metadata.split_key.semantic_core_id
@@ -627,26 +685,28 @@ def _validate_snapshot(
     canonical_by_id = {core.core_id: core for core in canonical_cores}
     if len(canonical_by_id) != len(canonical_cores):
         raise ValueError("Expected Core diagnostics contain duplicate semantic core IDs")
+    if any(
+        canonical_by_id.get(core.core_id) != core
+        for core in snapshot.semantic_cores
+    ):
+        raise ValueError(
+            "Core snapshot semantic core payload is not canonical"
+        )
     for core_id, record in diagnostic_records.items():
         expected = canonical_by_id.get(core_id)
         if expected is None:
             raise ValueError("Core snapshot contains an unknown semantic core ID")
         family_label = chr(ord("A") + _CORE_FAMILIES.index(expected.task_family))
-        expected_profile = _resolve_core_profile(expected, expected.query_type)
-        if expected.task_family in _CORE_FAMILIES[:4]:
-            profile_matches = dict(record.profile) == dict(expected_profile)
-        else:
-            profile_matches = all(
-                record.profile.get(key) == value
-                for key, value in expected.profile.items()
-            ) and all(
-                record.profile.get(key) == value
-                for key, value in {
-                    "task_family": expected.task_family.value,
-                    "difficulty": expected.difficulty.value,
-                    "profile_version": config.profile_version,
-                }.items()
-            )
+        expected_profile = dict(
+            _resolve_core_profile(expected, expected.query_type)
+        )
+        if (
+            expected.task_family is TaskFamily.DELETION_FORGETTING
+            and expected.stratification.get("lifecycle_cell")
+            != "correction_versus_deletion_hard_negative"
+        ):
+            expected_profile["query_type"] = "deletion_compliance"
+        profile_matches = dict(record.profile) == expected_profile
         if record.task_family is not expected.task_family or not profile_matches:
             raise ValueError(
                 "Core snapshot canonical resolved profile does not match "
