@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -48,6 +50,30 @@ _FULL_FAMILY_COUNTS = {
     "current_historical_query": 420,
     "long_horizon_memory_synthesis": 300,
 }
+_TRACKED_CORE_SOURCE_PATHS = (
+    "configs/vnext/core.yaml",
+    "mub/vnext/version.py",
+    "mub/vnext/generation/core.py",
+    "mub/vnext/generation/core_artifacts.py",
+    "mub/vnext/generation/core_build.py",
+    "mub/vnext/generation/core_catalogs.py",
+    "mub/vnext/generation/core_config.py",
+    "mub/vnext/generation/core_hard_suite.py",
+    "mub/vnext/generation/core_orchestrate.py",
+    "mub/vnext/generation/core_render_v3.py",
+    "mub/vnext/generation/family_a.py",
+    "mub/vnext/generation/family_b.py",
+    "mub/vnext/generation/family_c.py",
+    "mub/vnext/generation/family_d.py",
+    "mub/vnext/generation/family_e.py",
+    "mub/vnext/generation/family_f.py",
+    "mub/vnext/generation/family_g.py",
+    "mub/vnext/generation/identity.py",
+    "mub/vnext/generation/render.py",
+    "mub/vnext/generation/splits.py",
+    "mub/vnext/validation/core_release.py",
+    "mub/vnext/validation/replay_v3.py",
+)
 
 
 def _canonical_json(path: Path, model_type):
@@ -156,12 +182,67 @@ def _trusted_code_revision() -> str:
     return revision
 
 
+def _trusted_git_executable() -> Path:
+    candidates = (
+        Path("C:/Program Files/Git/cmd/git.exe"),
+        Path("/usr/bin/git"),
+        Path("/usr/local/bin/git"),
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve(strict=True)
+    raise ValueError("trusted Git executable is unavailable")
+
+
+def _assert_tracked_core_sources_clean() -> None:
+    git_dir, _ = _anchored_git_directories()
+    revision = _trusted_code_revision()
+    environment = os.environ.copy()
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ):
+        environment.pop(name, None)
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    result = subprocess.run(
+        (
+            str(_trusted_git_executable()),
+            f"--git-dir={git_dir}",
+            f"--work-tree={_PROJECT_ROOT}",
+            "--no-pager",
+            "diff",
+            "--no-ext-diff",
+            "--quiet",
+            revision,
+            "--",
+            *_TRACKED_CORE_SOURCE_PATHS,
+        ),
+        cwd=_PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if result.returncode == 1:
+        raise ValueError(
+            "tracked Core source differs from the anchored HEAD revision"
+        )
+    if result.returncode != 0:
+        raise ValueError("tracked Core source cleanliness check failed")
+
+
 def validate_core_release(
     release_dir: str | Path,
     *,
     expected_full: bool = True,
 ) -> CoreValidationReport:
     root = Path(release_dir)
+    _assert_tracked_core_sources_clean()
     if not root.is_dir():
         raise ValueError("Core candidate directory does not exist")
     _validate_core_artifact_tree(root)

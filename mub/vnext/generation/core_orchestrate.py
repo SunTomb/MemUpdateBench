@@ -13,7 +13,10 @@ from mub.vnext.generation.core_artifacts import (
 )
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
-from mub.vnext.validation.core_release import validate_core_release
+from mub.vnext.validation.core_release import (
+    _assert_tracked_core_sources_clean,
+    validate_core_release,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _IMMUTABLE_RELEASE_ROOTS = (
@@ -317,6 +320,7 @@ def stage_core_candidate(
 ) -> StagedCoreCandidate:
     config_path = Path(config_path)
     output_dir = Path(output_dir)
+    _assert_tracked_core_sources_clean()
     config = load_core_config(config_path)
     binding = _bind_staging_path(output_dir)
     snapshot = compile_core_snapshot(

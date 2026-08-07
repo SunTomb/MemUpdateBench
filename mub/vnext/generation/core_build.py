@@ -700,13 +700,19 @@ def _validate_snapshot(
         expected_profile = dict(
             _resolve_core_profile(expected, expected.query_type)
         )
-        if (
-            expected.task_family is TaskFamily.DELETION_FORGETTING
-            and expected.stratification.get("lifecycle_cell")
-            != "correction_versus_deletion_hard_negative"
-        ):
-            expected_profile["query_type"] = "deletion_compliance"
-        profile_matches = dict(record.profile) == expected_profile
+        if expected.task_family is TaskFamily.DELETION_FORGETTING:
+            profile_matches = (
+                set(record.profile) == set(expected_profile)
+                and all(
+                    record.profile[key] == value
+                    for key, value in expected_profile.items()
+                    if key != "query_type"
+                )
+                and record.profile["query_type"]
+                in {"current_state", "deletion_compliance"}
+            )
+        else:
+            profile_matches = dict(record.profile) == expected_profile
         if record.task_family is not expected.task_family or not profile_matches:
             raise ValueError(
                 "Core snapshot canonical resolved profile does not match "

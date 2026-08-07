@@ -24,6 +24,7 @@ from mub.vnext.generation.core_hard_suite import (
 from mub.vnext.io import canonical_json_bytes
 from mub.vnext.generation.core_orchestrate import stage_core_candidate
 from mub.vnext.validation.core_release import (
+    _assert_tracked_core_sources_clean,
     _trusted_code_revision,
     validate_core_release,
 )
@@ -36,6 +37,7 @@ TEST_REVISION = subprocess.check_output(
     cwd=ROOT,
     text=True,
 ).strip()
+DIRTY_GENERATOR_PATH = ROOT / "mub" / "vnext" / "generation" / "family_g.py"
 
 
 @pytest.fixture(scope="module")
@@ -88,6 +90,93 @@ def test_trusted_revision_ignores_git_environment_redirects(
     monkeypatch.setenv("PATH", str(tmp_path))
 
     assert _trusted_code_revision() == TEST_REVISION
+    _assert_tracked_core_sources_clean()
+
+
+def _write_dirty_core_config() -> bytes:
+    original = CORE_CONFIG_PATH.read_bytes()
+    payload = yaml.safe_load(original.decode("utf-8"))
+    payload["seed"] += 1
+    CORE_CONFIG_PATH.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    return original
+
+
+def _write_dirty_generator_source() -> bytes:
+    original = DIRTY_GENERATOR_PATH.read_bytes()
+    DIRTY_GENERATOR_PATH.write_bytes(
+        original + b"\n# deterministic dirty-source probe\n"
+    )
+    return original
+
+
+def test_staging_rejects_valid_dirty_tracked_core_config(tmp_path):
+    output = tmp_path / "dirty-config-candidate"
+    original = _write_dirty_core_config()
+    try:
+        with pytest.raises(ValueError, match="tracked Core source"):
+            stage_core_candidate(
+                config_path=CORE_CONFIG_PATH,
+                output_dir=output,
+                code_revision=TEST_REVISION,
+                cores_per_family=10,
+            )
+    finally:
+        CORE_CONFIG_PATH.write_bytes(original)
+        shutil.rmtree(output, ignore_errors=True)
+
+
+def test_validation_rejects_self_consistent_dirty_tracked_core_config(
+    tmp_path,
+):
+    original = _write_dirty_core_config()
+    candidate = tmp_path / "dirty-config-candidate"
+    candidate.mkdir()
+    try:
+        config = load_core_config(CORE_CONFIG_PATH)
+        snapshot = compile_core_snapshot(
+            config,
+            cores_per_family=10,
+            code_revision=TEST_REVISION,
+        )
+        bundle = build_core_artifact_bundle(snapshot, config)
+        for artifact in bundle.artifacts:
+            (candidate / artifact.path).write_bytes(artifact.content)
+        with pytest.raises(ValueError, match="tracked Core source"):
+            validate_core_release(candidate, expected_full=False)
+    finally:
+        CORE_CONFIG_PATH.write_bytes(original)
+
+
+def test_staging_rejects_dirty_tracked_generator_source(tmp_path):
+    output = tmp_path / "dirty-generator-candidate"
+    original = _write_dirty_generator_source()
+    try:
+        with pytest.raises(ValueError, match="tracked Core source"):
+            stage_core_candidate(
+                config_path=CORE_CONFIG_PATH,
+                output_dir=output,
+                code_revision=TEST_REVISION,
+                cores_per_family=10,
+            )
+    finally:
+        DIRTY_GENERATOR_PATH.write_bytes(original)
+        shutil.rmtree(output, ignore_errors=True)
+
+
+def test_validation_rejects_dirty_tracked_generator_source(
+    bounded_candidate_template,
+    tmp_path,
+):
+    candidate = _copy_candidate_template(bounded_candidate_template, tmp_path)
+    original = _write_dirty_generator_source()
+    try:
+        with pytest.raises(ValueError, match="tracked Core source"):
+            validate_core_release(candidate, expected_full=False)
+    finally:
+        DIRTY_GENERATOR_PATH.write_bytes(original)
 
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():
