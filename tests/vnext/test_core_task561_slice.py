@@ -13,7 +13,10 @@ from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.generation.core_hard_suite import build_core_hard_suite
 from mub.vnext.generation.core_orchestrate import stage_core_candidate
-from mub.vnext.validation.core_release import validate_core_release
+from mub.vnext.validation.core_release import (
+    _trusted_code_revision,
+    validate_core_release,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +49,20 @@ def test_core_clis_run_from_project_root_without_pythonpath():
     assert "expected_code_revision" not in inspect.signature(
         validate_core_release
     ).parameters
+
+
+def test_trusted_revision_ignores_git_environment_redirects(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attacker_git_dir = tmp_path / "attacker.git"
+    attacker_git_dir.mkdir()
+    (attacker_git_dir / "HEAD").write_text("b" * 40 + "\n", encoding="ascii")
+    monkeypatch.setenv("GIT_DIR", str(attacker_git_dir))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert _trusted_code_revision() == TEST_REVISION
 
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():

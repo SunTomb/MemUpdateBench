@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -92,12 +91,73 @@ def _read_semantic_cores(path: Path) -> tuple[dict, ...]:
     return tuple(cores)
 
 
+def _anchored_git_directories() -> tuple[Path, Path]:
+    marker = _PROJECT_ROOT / ".git"
+    if marker.is_dir():
+        git_dir = marker.resolve(strict=True)
+    elif marker.is_file():
+        declaration = marker.read_text(encoding="utf-8").strip()
+        prefix = "gitdir: "
+        if not declaration.startswith(prefix):
+            raise ValueError("anchored repository .git file is malformed")
+        declared = Path(declaration[len(prefix) :])
+        git_dir = (
+            declared if declared.is_absolute() else marker.parent / declared
+        ).resolve(strict=True)
+    else:
+        raise ValueError("anchored repository has no .git metadata")
+    common_marker = git_dir / "commondir"
+    if common_marker.is_file():
+        declared_common = Path(
+            common_marker.read_text(encoding="utf-8").strip()
+        )
+        common_dir = (
+            declared_common
+            if declared_common.is_absolute()
+            else git_dir / declared_common
+        ).resolve(strict=True)
+    else:
+        common_dir = git_dir
+    return git_dir, common_dir
+
+
+def _packed_ref(common_dir: Path, ref_name: str) -> str | None:
+    packed_refs = common_dir / "packed-refs"
+    if not packed_refs.is_file():
+        return None
+    for line in packed_refs.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith(("#", "^")):
+            continue
+        revision, separator, candidate_ref = line.partition(" ")
+        if separator and candidate_ref == ref_name:
+            return revision
+    return None
+
+
 def _trusted_code_revision() -> str:
-    revision = subprocess.check_output(
-        ("git", "rev-parse", "HEAD"),
-        cwd=_PROJECT_ROOT,
-        text=True,
-    ).strip()
+    git_dir, common_dir = _anchored_git_directories()
+    head = (git_dir / "HEAD").read_text(encoding="ascii").strip()
+    if head.startswith("ref: "):
+        ref_name = head[5:]
+        ref_path = Path(ref_name)
+        if (
+            not ref_name.startswith("refs/")
+            or ref_path.is_absolute()
+            or ".." in ref_path.parts
+        ):
+            raise ValueError("anchored repository HEAD reference is malformed")
+        revision = None
+        for base in (git_dir, common_dir):
+            loose_ref = base / ref_path
+            if loose_ref.is_file():
+                revision = loose_ref.read_text(encoding="ascii").strip()
+                break
+        if revision is None:
+            revision = _packed_ref(common_dir, ref_name)
+        if revision is None:
+            raise ValueError("anchored repository HEAD reference is unresolved")
+    else:
+        revision = head
     if type(revision) is not str or not _GIT_REVISION_PATTERN.fullmatch(revision):
         raise ValueError("trusted source revision must be a lowercase 40-character Git commit")
     return revision
