@@ -1,4 +1,5 @@
 from pathlib import Path
+import inspect
 import os
 import subprocess
 import sys
@@ -17,7 +18,11 @@ from mub.vnext.validation.core_release import validate_core_release
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_CONFIG_PATH = ROOT / "configs" / "vnext" / "core.yaml"
-TEST_REVISION = "a" * 40
+TEST_REVISION = subprocess.check_output(
+    ("git", "rev-parse", "HEAD"),
+    cwd=ROOT,
+    text=True,
+).strip()
 
 
 def test_core_clis_run_from_project_root_without_pythonpath():
@@ -32,6 +37,15 @@ def test_core_clis_run_from_project_root_without_pythonpath():
             env=environment,
         )
         assert result.returncode == 0, result.stderr
+        if script == "vnext_validate_core.py":
+            assert "--trusted-config" not in result.stdout
+            assert "--expected-code-revision" not in result.stdout
+    assert "trusted_config_path" not in inspect.signature(
+        validate_core_release
+    ).parameters
+    assert "expected_code_revision" not in inspect.signature(
+        validate_core_release
+    ).parameters
 
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():
@@ -122,8 +136,6 @@ def test_candidate_staging_is_transactional_and_standalone_validated(
     report = validate_core_release(
         output,
         expected_full=False,
-        trusted_config_path=config_path,
-        expected_code_revision=TEST_REVISION,
     )
     assert report.valid
     assert report.semantic_core_count == 70
@@ -133,8 +145,6 @@ def test_candidate_staging_is_transactional_and_standalone_validated(
         validate_core_release(
             output,
             expected_full=False,
-            trusted_config_path=config_path,
-            expected_code_revision=TEST_REVISION,
         )
 
 
@@ -176,8 +186,6 @@ def test_standalone_validation_rejects_tampered_seed_and_release_id(tmp_path):
         validate_core_release(
             output,
             expected_full=False,
-            trusted_config_path=CORE_CONFIG_PATH,
-            expected_code_revision=TEST_REVISION,
         )
 
 
@@ -194,8 +202,6 @@ def test_standalone_validation_rejects_self_asserted_invalid_revision(tmp_path):
         validate_core_release(
             output,
             expected_full=False,
-            trusted_config_path=CORE_CONFIG_PATH,
-            expected_code_revision=TEST_REVISION,
         )
 
 

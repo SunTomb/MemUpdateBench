@@ -92,14 +92,12 @@ def _read_semantic_cores(path: Path) -> tuple[dict, ...]:
     return tuple(cores)
 
 
-def _trusted_code_revision(expected_code_revision: str | None) -> str:
-    revision = expected_code_revision
-    if revision is None:
-        revision = subprocess.check_output(
-            ("git", "rev-parse", "HEAD"),
-            cwd=_PROJECT_ROOT,
-            text=True,
-        ).strip()
+def _trusted_code_revision() -> str:
+    revision = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"),
+        cwd=_PROJECT_ROOT,
+        text=True,
+    ).strip()
     if type(revision) is not str or not _GIT_REVISION_PATTERN.fullmatch(revision):
         raise ValueError("trusted source revision must be a lowercase 40-character Git commit")
     return revision
@@ -109,8 +107,6 @@ def validate_core_release(
     release_dir: str | Path,
     *,
     expected_full: bool = True,
-    trusted_config_path: str | Path | None = None,
-    expected_code_revision: str | None = None,
 ) -> CoreValidationReport:
     root = Path(release_dir)
     if not root.is_dir():
@@ -119,14 +115,9 @@ def validate_core_release(
     if names != set(_ARTIFACTS):
         raise ValueError(f"Core candidate must contain exactly {_ARTIFACTS}")
 
-    trusted_config_source = (
-        _APPROVED_CONFIG_PATH
-        if trusted_config_path is None
-        else Path(trusted_config_path)
-    )
-    trusted_config = load_core_config(trusted_config_source)
+    trusted_config = load_core_config(_APPROVED_CONFIG_PATH)
     trusted_config_bytes = canonical_json_bytes(trusted_config)
-    trusted_revision = _trusted_code_revision(expected_code_revision)
+    trusted_revision = _trusted_code_revision()
 
     candidate_config, config_bytes = _canonical_json(
         root / "generation_config.json", CoreConfig
