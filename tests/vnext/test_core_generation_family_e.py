@@ -179,6 +179,53 @@ def test_family_e_identity_excludes_object_type_but_binds_semantics() -> None:
         changed.query_targets,
     ) != original_id
 
+    nested_payload = core.model_dump(mode="python")
+    nested_payload["events"][0]["metadata"]["nested"] = {
+        "object": {"flag": True, "count": 1},
+        "array": ["alpha", {"value": 2}],
+    }
+    nested = SemanticCore.model_validate(nested_payload)
+    nested_id = _family_e_core_identifier(
+        cell,
+        example,
+        nested.events,
+        nested.query_targets,
+    )
+    reordered_payload = nested.model_dump(mode="python")
+    reordered_payload["events"][0]["metadata"]["nested"]["object"] = {
+        "count": 1,
+        "flag": True,
+    }
+    reordered = SemanticCore.model_validate(reordered_payload)
+    assert _family_e_core_identifier(
+        cell,
+        example,
+        reordered.events,
+        reordered.query_targets,
+    ) == nested_id
+    typed_mutation_payload = nested.model_dump(mode="python")
+    typed_mutation_payload["events"][0]["metadata"]["nested"]["object"][
+        "flag"
+    ] = 1
+    typed_mutation = SemanticCore.model_validate(typed_mutation_payload)
+    assert _family_e_core_identifier(
+        cell,
+        example,
+        typed_mutation.events,
+        typed_mutation.query_targets,
+    ) != nested_id
+    nested_mutation_payload = nested.model_dump(mode="python")
+    nested_mutation_payload["events"][0]["metadata"]["nested"]["array"][1][
+        "value"
+    ] = 3
+    nested_mutation = SemanticCore.model_validate(nested_mutation_payload)
+    assert _family_e_core_identifier(
+        cell,
+        example,
+        nested_mutation.events,
+        nested_mutation.query_targets,
+    ) != nested_id
+
 
 def test_family_e_generator_balances_exactly_three_cores_per_approved_cell():
     generate, validate, _ = _api()

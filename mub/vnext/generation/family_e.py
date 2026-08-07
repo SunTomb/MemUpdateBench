@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
-from mub.vnext.contracts.common import MemoryObjectKey
+from mub.vnext.contracts.common import MemoryObjectKey, thaw_json
 from mub.vnext.contracts.enums import ActionScope, Difficulty, EventRole, Operation, Split, TaskFamily
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
@@ -204,7 +204,7 @@ def _family_e_event_identity_payload(event: CoreEvent) -> dict:
         "object_keys": [_key_payload(key) for key in event.object_keys],
         "value": event.value,
         "role": event.role.value,
-        "metadata": dict(event.metadata),
+        "metadata": thaw_json(event.metadata),
     }
 
 
