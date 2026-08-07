@@ -57,6 +57,10 @@ def _derivation_consumed_input_indices(step):
         if size > 1:
             raise ValueError(f"{operation} requires zero or one operand")
         return tuple(range(size))
+    if operation == "abstain":
+        if size == 0:
+            raise ValueError("abstain requires at least one evidence operand")
+        return tuple(range(size))
     if operation in {"identity", "answer", "left", "right"}:
         if size != 1:
             raise ValueError(f"{operation} requires one operand")

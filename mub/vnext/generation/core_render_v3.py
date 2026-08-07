@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from mub.vnext.contracts.enums import ActionScope, AnswerSchema, Operation, QueryType, Split, TaskFamily
+from mub.vnext.contracts.enums import (
+    ActionScope,
+    AnswerDisposition,
+    AnswerSchema,
+    Operation,
+    QueryType,
+    Split,
+    TaskFamily,
+)
 from mub.vnext.contracts.v3.enums import QueryTypeV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3, VersionHistoryLedger
 from mub.vnext.generation.core import GenerationContext, SemanticCore
@@ -12,7 +20,7 @@ from mub.vnext.generation.render import (
     _render_query_text,
     render_core_with_catalog,
 )
-from mub.vnext.validation.replay_v3 import replay_task_v3
+from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3
 
 
 def _key_payload(key: Any) -> dict[str, Any]:
@@ -200,12 +208,24 @@ def _promote_reference_query_and_evidence(task, query, version_history):
         "synthesis": None,
     }
 
+    canonical = task.gold.canonical_answers.get(query.query_id)
+    if canonical is None:
+        raise ValueError("Core v3 reference-resolution query requires a canonical answer")
+    candidate_keys = {
+        candidate.candidate_id: candidate.object_key
+        for candidate in query.reference_candidates
+    }
+    if canonical.disposition is AnswerDisposition.ANSWERED:
+        evidence_keys = [candidate_keys[canonical.selected_candidate_ids[0]]]
+    else:
+        evidence_keys = list(query.target_object_keys)
+
     history_by_identity = {
         _identity(ledger["object_key"]): ledger for ledger in version_history
     }
     supporting_events = []
     steps = []
-    for index, key in enumerate(query.target_object_keys):
+    for index, key in enumerate(evidence_keys):
         ledger = history_by_identity[_identity(key)]
         event_ids = list(ledger["entries"][-1]["source_event_ids"])
         supporting_events.extend(event_ids)
@@ -219,20 +239,20 @@ def _promote_reference_query_and_evidence(task, query, version_history):
             }
         )
     final_step_id = steps[0]["step_id"]
-    if len(steps) > 1:
-        final_step_id = f"derive_{query.query_id}_reference"
+    if canonical.disposition is AnswerDisposition.ABSTAINED:
+        final_step_id = f"derive_{query.query_id}_abstain"
         steps.append(
             {
                 "step_id": final_step_id,
-                "operation": "collect",
+                "operation": "abstain",
                 "input_step_ids": [step["step_id"] for step in steps],
-                "supporting_object_keys": targets,
+                "supporting_object_keys": [
+                    _key_payload(key) for key in evidence_keys
+                ],
                 "supporting_event_ids": list(dict.fromkeys(supporting_events)),
             }
         )
-    canonical = task.gold.canonical_answers.get(query.query_id)
-    if canonical is None:
-        raise ValueError("Core v3 reference-resolution query requires a canonical answer")
+    evidence_targets = targets
     evidence = {
         "query_id": query.query_id,
         "answer": canonical.value,
@@ -240,7 +260,7 @@ def _promote_reference_query_and_evidence(task, query, version_history):
         "resolution_status": canonical.resolution_status.value,
         "selected_candidate_ids": list(canonical.selected_candidate_ids),
         "abstention_reason": canonical.abstention_reason,
-        "supporting_object_keys": targets,
+        "supporting_object_keys": evidence_targets,
         "supporting_event_ids": list(dict.fromkeys(supporting_events)),
         "derivation_steps": steps,
         "final_derivation_step_id": final_step_id,
@@ -320,18 +340,16 @@ def _promote_family_e_query_and_evidence(task, core: SemanticCore, version_histo
                 "supporting_event_ids": event_ids,
             }
         )
-    final_step_id = steps[0]["step_id"]
-    if multi_object:
-        final_step_id = f"derive_{source_query.query_id}_final"
-        steps.append(
-            {
-                "step_id": final_step_id,
-                "operation": "multi_object",
-                "input_step_ids": [step["step_id"] for step in steps],
-                "supporting_object_keys": targets,
-                "supporting_event_ids": list(dict.fromkeys(supporting_events)),
-            }
-        )
+    final_step_id = f"derive_{source_query.query_id}_final"
+    steps.append(
+        {
+            "step_id": final_step_id,
+            "operation": "list",
+            "input_step_ids": [step["step_id"] for step in steps],
+            "supporting_object_keys": targets,
+            "supporting_event_ids": list(dict.fromkeys(supporting_events)),
+        }
+    )
     evidence = {
         "query_id": source_query.query_id,
         "answer": answer,
@@ -812,6 +830,20 @@ def render_core_v3(
     if replay.issues:
         details = "; ".join(f"{issue.code}: {issue.message}" for issue in replay.issues)
         raise ValueError(f"Core v3 replay validation failed: {details}")
+    query_by_id = {query.query_id: query for query in promoted.queries}
+    for gold_evidence in promoted.gold_evidence:
+        evaluation = evaluate_evidence_v3(
+            gold_evidence,
+            replay,
+            gold_evidence.stale_alternative,
+            query_by_id[gold_evidence.query_id],
+            promoted.events,
+        )
+        if evaluation.issues:
+            details = "; ".join(
+                f"{issue.code}: {issue.message}" for issue in evaluation.issues
+            )
+            raise ValueError(f"Core v3 evidence validation failed: {details}")
     if family_f:
         from mub.vnext.generation.family_f import validate_family_f_task
 

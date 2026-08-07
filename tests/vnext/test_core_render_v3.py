@@ -13,8 +13,14 @@ from mub.vnext.generation.core import GenerationContext
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.generation.family_a import generate_core_family_a_cores
 from mub.vnext.generation.family_c import generate_core_family_c_cores
+from mub.vnext.generation.family_e import generate_core_family_e_cores
 from mub.vnext.io import semantic_task_hash_v3
-from mub.vnext.validation.replay_v3 import QueryResolutionV3, replay_task_v3, resolve_query_v3
+from mub.vnext.validation.replay_v3 import (
+    QueryResolutionV3,
+    evaluate_evidence_v3,
+    replay_task_v3,
+    resolve_query_v3,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,9 +94,17 @@ def test_render_core_v3_promotes_family_c_reference_outcomes_across_surfaces(
         evidence = task.gold_evidence[0]
         replay = replay_task_v3(task)
         resolution = resolve_query_v3(query, replay, task.events)
+        evaluation = evaluate_evidence_v3(
+            evidence,
+            replay,
+            evidence.stale_alternative,
+            query,
+            task.events,
+        )
 
         assert isinstance(query.selector, ReferenceResolutionSelector)
         assert not replay.issues
+        assert not evaluation.issues
         assert not resolution.issues
         assert resolution.disposition is disposition
         assert resolution.resolution_status is status
@@ -103,6 +117,46 @@ def test_render_core_v3_promotes_family_c_reference_outcomes_across_surfaces(
             assert resolution.answer is None
             assert resolution.selected_versions == ()
             assert evidence.answer is None
+
+
+@pytest.mark.parametrize(
+    "lifecycle_cell",
+    (
+        "explicit_object_or_attribute_deletion",
+        "correction_versus_deletion_hard_negative",
+        "logical_ttl_expiry",
+        "delete_then_relearn",
+    ),
+)
+def test_render_core_v3_family_e_evidence_replays_normatively(
+    lifecycle_cell: str,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="task-561-family-e-evidence")
+    core = next(
+        core
+        for core in generate_core_family_e_cores(config, profile="full")
+        if core.stratification["lifecycle_cell"] == lifecycle_cell
+    )
+    task = render_core_v3(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=context,
+    )
+    replay = replay_task_v3(task)
+    evidence = task.gold_evidence[0]
+    evaluation = evaluate_evidence_v3(
+        evidence,
+        replay,
+        evidence.stale_alternative,
+        task.queries[0],
+        task.events,
+    )
+
+    assert not replay.issues
+    assert not evaluation.issues
+    assert evaluation.answer == evidence.answer
 
 
 def test_typed_reference_resolution_rejects_partial_selection_shapes() -> None:

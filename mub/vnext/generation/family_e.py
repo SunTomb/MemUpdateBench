@@ -198,6 +198,32 @@ def _key_payload(key: MemoryObjectKey) -> dict[str, str | None]:
     }
 
 
+def _family_e_event_identity_payload(event: CoreEvent) -> dict:
+    return {
+        "operation": event.operation.value,
+        "object_keys": [_key_payload(key) for key in event.object_keys],
+        "value": event.value,
+        "role": event.role.value,
+        "metadata": dict(event.metadata),
+    }
+
+
+def _family_e_core_identifier(
+    cell: str,
+    example: int,
+    events,
+    query_targets,
+) -> str:
+    payload = {
+        "family": TaskFamily.DELETION_FORGETTING.value,
+        "cell": cell,
+        "example": example,
+        "events": [_family_e_event_identity_payload(event) for event in events],
+        "query_targets": [_key_payload(key) for key in query_targets],
+    }
+    return core_id(TaskFamily.DELETION_FORGETTING.value, payload)
+
+
 def _event(
     operation: Operation,
     keys: list[MemoryObjectKey],
@@ -430,14 +456,12 @@ def _build_cell_core(
                 *(padding_event(90 + index) for index in range(after_count)),
             ]
 
-    payload = {
-        "family": TaskFamily.DELETION_FORGETTING.value,
-        "cell": cell,
-        "example": example,
-        "events": [event.model_dump(mode="json") for event in events],
-        "query_targets": [_key_payload(key) for key in query_targets],
-    }
-    identifier = core_id(TaskFamily.DELETION_FORGETTING.value, payload)
+    identifier = _family_e_core_identifier(
+        cell,
+        example,
+        events,
+        query_targets,
+    )
     stratification: dict[str, str | int | float | bool] = {
         "lifecycle_cell": cell,
         "cell_example": example,

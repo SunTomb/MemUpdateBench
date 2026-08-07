@@ -126,6 +126,60 @@ def _mutate_core(core: SemanticCore, mutate):
     return SemanticCore.model_validate(payload)
 
 
+def test_family_e_identity_excludes_object_type_but_binds_semantics() -> None:
+    from mub.vnext.generation.family_e import (
+        _family_e_core_identifier,
+        generate_core_family_e_cores,
+    )
+    from mub.vnext.generation.identity import trajectory_id
+
+    core = generate_core_family_e_cores(_config(), profile="full")[0]
+    reclassified_payload = core.model_dump(mode="python")
+    for event in reclassified_payload["events"]:
+        for key in event["object_keys"]:
+            key["object_type"] = "profile"
+    for key in reclassified_payload["query_targets"]:
+        key["object_type"] = "profile"
+    reclassified = SemanticCore.model_validate(reclassified_payload)
+    cell = str(core.stratification["lifecycle_cell"])
+    example = int(core.stratification["cell_example"])
+
+    original_id = _family_e_core_identifier(
+        cell,
+        example,
+        core.events,
+        core.query_targets,
+    )
+    reclassified_id = _family_e_core_identifier(
+        cell,
+        example,
+        reclassified.events,
+        reclassified.query_targets,
+    )
+    assert original_id == reclassified_id == core.core_id
+    assert trajectory_id(original_id, f"{cell}:{example}") == trajectory_id(
+        reclassified_id,
+        f"{cell}:{example}",
+    )
+
+    changed_payload = core.model_dump(mode="python")
+    changed_index = next(
+        index
+        for index, event in enumerate(changed_payload["events"])
+        if event["operation"] in {Operation.ADD, Operation.UPDATE}
+    )
+    changed_payload["events"][changed_index]["value"] = (
+        "semantically-different-value"
+    )
+    changed = SemanticCore.model_validate(changed_payload)
+    assert _family_e_core_identifier(
+        cell,
+        example,
+        changed.events,
+        changed.query_targets,
+    ) != original_id
+
+
 def test_family_e_generator_balances_exactly_three_cores_per_approved_cell():
     generate, validate, _ = _api()
     config = _config()

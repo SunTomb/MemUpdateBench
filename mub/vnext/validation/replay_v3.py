@@ -610,6 +610,8 @@ def evaluate_evidence_v3(
             operation = step.operation
             if _derivation_step_reads_support(step):
                 value = _read_step_value(step, replay)
+            elif operation == "abstain":
+                value = None
             elif operation in {"identity", "answer", "left", "right"}:
                 value = operands[0]
             elif operation in {"seed0", "seed1"}:
