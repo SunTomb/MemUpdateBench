@@ -38,8 +38,9 @@ _VALIDATION_CHECKS: Final = (
     "group_leakage_zero",
     "semantic_equivalence",
     "v3_replay",
+    "normative_evidence_evaluation",
     "hard_suite_authentication",
-    "source_config_and_revision",
+    "trusted_source_config_and_revision",
 )
 
 

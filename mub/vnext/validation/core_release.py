@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from mub.vnext.generation.core_build import (
     _select_and_assign,
     _validate_snapshot,
 )
-from mub.vnext.generation.core_config import CoreConfig
+from mub.vnext.generation.core_config import CoreConfig, load_core_config
 from mub.vnext.generation.core import GenerationContext
 from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.core_hard_suite import (
@@ -29,8 +31,12 @@ from mub.vnext.generation.core_hard_suite import (
 )
 from mub.vnext.io import canonical_json_bytes, read_models, semantic_task_hash_v3, sha256_model
 from mub.vnext.io.canonical import _canonical_payload_bytes
-from mub.vnext.validation.replay_v3 import replay_task_v3
+from mub.vnext.validation.replay_v3 import evaluate_evidence_v3, replay_task_v3
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_APPROVED_CONFIG_PATH = _PROJECT_ROOT / "configs" / "vnext" / "core.yaml"
+_TRUSTED_GENERATOR_NAME = "memupdatebench_vnext_core"
+_GIT_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _ARTIFACTS = (
     "tasks.jsonl",
     "semantic_cores.jsonl",
@@ -86,10 +92,25 @@ def _read_semantic_cores(path: Path) -> tuple[dict, ...]:
     return tuple(cores)
 
 
+def _trusted_code_revision(expected_code_revision: str | None) -> str:
+    revision = expected_code_revision
+    if revision is None:
+        revision = subprocess.check_output(
+            ("git", "rev-parse", "HEAD"),
+            cwd=_PROJECT_ROOT,
+            text=True,
+        ).strip()
+    if type(revision) is not str or not _GIT_REVISION_PATTERN.fullmatch(revision):
+        raise ValueError("trusted source revision must be a lowercase 40-character Git commit")
+    return revision
+
+
 def validate_core_release(
     release_dir: str | Path,
     *,
     expected_full: bool = True,
+    trusted_config_path: str | Path | None = None,
+    expected_code_revision: str | None = None,
 ) -> CoreValidationReport:
     root = Path(release_dir)
     if not root.is_dir():
@@ -98,7 +119,23 @@ def validate_core_release(
     if names != set(_ARTIFACTS):
         raise ValueError(f"Core candidate must contain exactly {_ARTIFACTS}")
 
-    config, config_bytes = _canonical_json(root / "generation_config.json", CoreConfig)
+    trusted_config_source = (
+        _APPROVED_CONFIG_PATH
+        if trusted_config_path is None
+        else Path(trusted_config_path)
+    )
+    trusted_config = load_core_config(trusted_config_source)
+    trusted_config_bytes = canonical_json_bytes(trusted_config)
+    trusted_revision = _trusted_code_revision(expected_code_revision)
+
+    candidate_config, config_bytes = _canonical_json(
+        root / "generation_config.json", CoreConfig
+    )
+    if config_bytes != trusted_config_bytes or candidate_config != trusted_config:
+        raise ValueError(
+            "generation_config.json does not match the trusted approved config"
+        )
+    config = trusted_config
     split_balance, _ = _canonical_json(root / "split_balance.json", CoreSplitBalance)
     manifest, manifest_bytes = _canonical_json(root / "task_manifest.json", TaskManifestV3)
     hard_suite, _ = _canonical_json(root / "core-hard-v1.json", CoreHardSuiteManifest)
@@ -157,12 +194,14 @@ def validate_core_release(
         raise ValueError("semantic_cores.jsonl does not contain canonical selected cores")
     revisions = {task.source.generator.code_revision for task in tasks}
     generators = {task.source.generator.generator_name for task in tasks}
-    if len(revisions) != 1 or len(generators) != 1:
-        raise ValueError("candidate tasks must share one generator and code revision")
+    if revisions != {trusted_revision} or manifest.code_revision != trusted_revision:
+        raise ValueError("candidate does not match the trusted source revision")
+    if generators != {_TRUSTED_GENERATOR_NAME}:
+        raise ValueError("candidate does not match the trusted generator provenance")
     context = GenerationContext(
         config=config,
-        code_revision=next(iter(revisions)),
-        generator_name=next(iter(generators)),
+        code_revision=trusted_revision,
+        generator_name=_TRUSTED_GENERATOR_NAME,
     )
     expected_tasks = tuple(sorted(
         (
@@ -184,6 +223,23 @@ def validate_core_release(
         replay = replay_task_v3(task)
         if replay.issues:
             raise ValueError(f"task {task.task_id} fails v3 replay")
+        query_by_id = {query.query_id: query for query in task.queries}
+        for evidence in task.gold_evidence:
+            evaluation = evaluate_evidence_v3(
+                evidence,
+                replay,
+                evidence.stale_alternative,
+                query_by_id[evidence.query_id],
+                task.events,
+            )
+            if evaluation.issues:
+                issue_codes = ", ".join(
+                    issue.code for issue in evaluation.issues
+                )
+                raise ValueError(
+                    f"task {task.task_id} fails normative evidence evaluation: "
+                    f"{issue_codes}"
+                )
         tasks_by_core[task.metadata.split_key.semantic_core_id].append(task)
     if set(tasks_by_core) != core_ids:
         raise ValueError("semantic core and task coverage differs")

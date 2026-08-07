@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 import mub.vnext.generation.core_orchestrate as core_orchestrate
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
@@ -15,6 +16,8 @@ from mub.vnext.validation.core_release import validate_core_release
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CORE_CONFIG_PATH = ROOT / "configs" / "vnext" / "core.yaml"
+TEST_REVISION = "a" * 40
 
 
 def test_core_clis_run_from_project_root_without_pythonpath():
@@ -33,7 +36,7 @@ def test_core_clis_run_from_project_root_without_pythonpath():
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():
     config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
-    snapshot = compile_core_snapshot(config, cores_per_family=10, code_revision="test-revision")
+    snapshot = compile_core_snapshot(config, cores_per_family=10, code_revision=TEST_REVISION)
     bundle = build_core_artifact_bundle(snapshot, config)
 
     assert [artifact.path for artifact in bundle.artifacts] == [
@@ -51,7 +54,7 @@ def test_bounded_core_bundle_is_canonical_and_manifest_bound():
 
 def test_core_bundle_rejects_semantic_core_payload_drift():
     config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
-    snapshot = compile_core_snapshot(config, cores_per_family=10, code_revision="test-revision")
+    snapshot = compile_core_snapshot(config, cores_per_family=10, code_revision=TEST_REVISION)
     victim = snapshot.semantic_cores[0]
     changed_profile = dict(victim.profile)
     changed_profile["context_length"] += 1
@@ -67,7 +70,7 @@ def test_core_bundle_rejects_semantic_core_payload_drift():
 
 def test_hard_suite_is_manifest_only_and_authenticated():
     config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
-    snapshot = compile_core_snapshot(config, cores_per_family=20, code_revision="test-revision")
+    snapshot = compile_core_snapshot(config, cores_per_family=20, code_revision=TEST_REVISION)
     task_manifest_hash = "a" * 64
     suite = build_core_hard_suite(snapshot, source_task_manifest_hash=task_manifest_hash, per_family=2)
 
@@ -110,19 +113,29 @@ def test_candidate_staging_is_transactional_and_standalone_validated(
     result = stage_core_candidate(
         config_path=config_path,
         output_dir=output,
-        code_revision="test-revision",
+        code_revision=TEST_REVISION,
         cores_per_family=10,
     )
 
     assert result.release_dir == output
     assert not any(path.name.startswith("IMMUTABLE") for path in output.iterdir())
-    report = validate_core_release(output, expected_full=False)
+    report = validate_core_release(
+        output,
+        expected_full=False,
+        trusted_config_path=config_path,
+        expected_code_revision=TEST_REVISION,
+    )
     assert report.valid
     assert report.semantic_core_count == 70
     assert report.task_count == 280
     (output / "split_balance.json").write_bytes(b"{}")
     with pytest.raises(ValueError, match="Balance|split_balance"):
-        validate_core_release(output, expected_full=False)
+        validate_core_release(
+            output,
+            expected_full=False,
+            trusted_config_path=config_path,
+            expected_code_revision=TEST_REVISION,
+        )
 
 
 def test_candidate_staging_rejects_immutable_release_descendants(
@@ -138,6 +151,80 @@ def test_candidate_staging_rejects_immutable_release_descendants(
         stage_core_candidate(
             config_path=config_path,
             output_dir=ROOT / "data" / "vnext" / "core" / "v3",
-            code_revision="test-revision",
+            code_revision=TEST_REVISION,
+        )
+
+
+def test_standalone_validation_rejects_tampered_seed_and_release_id(tmp_path):
+    payload = yaml.safe_load(CORE_CONFIG_PATH.read_text(encoding="utf-8"))
+    payload["seed"] = 123456789
+    payload["release_id"] = "attacker-relabelled-core"
+    attacker_config = tmp_path / "attacker-core.yaml"
+    attacker_config.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    output = tmp_path / "attacker-candidate"
+    stage_core_candidate(
+        config_path=attacker_config,
+        output_dir=output,
+        code_revision=TEST_REVISION,
+        cores_per_family=10,
+    )
+
+    with pytest.raises(ValueError, match="trusted approved config"):
+        validate_core_release(
+            output,
+            expected_full=False,
+            trusted_config_path=CORE_CONFIG_PATH,
+            expected_code_revision=TEST_REVISION,
+        )
+
+
+def test_standalone_validation_rejects_self_asserted_invalid_revision(tmp_path):
+    output = tmp_path / "invalid-revision-candidate"
+    stage_core_candidate(
+        config_path=CORE_CONFIG_PATH,
+        output_dir=output,
+        code_revision="not-a-git-commit",
+        cores_per_family=10,
+    )
+
+    with pytest.raises(ValueError, match="trusted source revision"):
+        validate_core_release(
+            output,
+            expected_full=False,
+            trusted_config_path=CORE_CONFIG_PATH,
+            expected_code_revision=TEST_REVISION,
+        )
+
+
+def test_candidate_staging_rechecks_parent_after_compile(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    parent = tmp_path / "safe-parent"
+    output = parent / "candidate"
+    original_resolve = Path.resolve
+    state = {"swapped": False}
+
+    def redirected_resolve(path, *args, **kwargs):
+        if state["swapped"] and path == parent:
+            return tmp_path / "redirected-parent"
+        return original_resolve(path, *args, **kwargs)
+
+    def compile_then_swap(*args, **kwargs):
+        state["swapped"] = True
+        return None
+
+    monkeypatch.setattr(Path, "resolve", redirected_resolve)
+    monkeypatch.setattr(core_orchestrate, "compile_core_snapshot", compile_then_swap)
+
+    with pytest.raises(ValueError, match="staging parent changed"):
+        stage_core_candidate(
+            config_path=CORE_CONFIG_PATH,
+            output_dir=output,
+            code_revision=TEST_REVISION,
+            cores_per_family=10,
         )
 
