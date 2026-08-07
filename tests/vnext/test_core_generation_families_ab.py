@@ -23,6 +23,8 @@ from mub.vnext.generation.family_b import (
     generate_family_b_cores,
 )
 from mub.vnext.generation.family_e import generate_core_family_e_cores
+from mub.vnext.generation.family_f import generate_core_family_f_cores
+from mub.vnext.generation.family_g import generate_core_family_g_cores
 from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.config import load_pilot_config
 from mub.vnext.generation.render import render_core_with_catalog
@@ -152,6 +154,65 @@ def test_generation_context_deeply_freezes_core_families_e_f_g() -> None:
     )
     assert context.config_sha256 == original_hash
     assert after.source.generator == before.source.generator
+
+
+def test_generation_context_rejects_list_base_descriptor_mutation_for_core_efg() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    context = GenerationContext(
+        config=config,
+        code_revision="task-561-frozen-sequences",
+        generator_name="memupdatebench_vnext_core",
+    )
+    original_hash = context.config_sha256
+    original_bytes = canonical_json_bytes(config)
+    families = context.config.families
+    axes = (
+        families.deletion_forgetting.lifecycle_cells,
+        families.deletion_forgetting.difficulties,
+        families.deletion_forgetting.deletion_positions,
+        families.current_historical_query.selector_kinds,
+        families.long_horizon_memory_synthesis.synthesis_kinds,
+        families.long_horizon_memory_synthesis.hop_counts,
+        families.long_horizon_memory_synthesis.consistency_object_counts,
+        families.long_horizon_memory_synthesis.consistency_answer_kinds,
+    )
+    original_axes = tuple(tuple(axis) for axis in axes)
+    cores = (
+        generate_core_family_e_cores(config)[0],
+        generate_core_family_f_cores(config)[0],
+        generate_core_family_g_cores(config)[0],
+    )
+    before_generators = tuple(
+        render_core_v3(
+            core,
+            split=Split.TRAIN,
+            surface_variant=0,
+            context=context,
+        ).source.generator
+        for core in cores
+    )
+
+    for axis, original in zip(axes, original_axes, strict=True):
+        with pytest.raises(TypeError):
+            list.append(axis, original[0])
+        with pytest.raises(TypeError):
+            list.__setitem__(axis, 0, original[0])
+        with pytest.raises(TypeError):
+            list.extend(axis, (original[0],))
+        assert axis == list(original)
+
+    after_generators = tuple(
+        render_core_v3(
+            core,
+            split=Split.TRAIN,
+            surface_variant=0,
+            context=context,
+        ).source.generator
+        for core in cores
+    )
+    assert context.config_sha256 == original_hash
+    assert canonical_json_bytes(context.config) == original_bytes
+    assert after_generators == before_generators
 
 
 def test_core_family_a_has_exact_depth_and_condition_marginals() -> None:

@@ -13,7 +13,10 @@ import yaml
 
 import mub.vnext.generation.core_orchestrate as core_orchestrate
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
-from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
+from mub.vnext.generation.core_artifacts import (
+    _validate_core_artifact_tree,
+    build_core_artifact_bundle,
+)
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.generation.core_hard_suite import (
@@ -38,6 +41,13 @@ TEST_REVISION = subprocess.check_output(
     text=True,
 ).strip()
 DIRTY_GENERATOR_PATH = ROOT / "mub" / "vnext" / "generation" / "family_g.py"
+PREVIOUSLY_OMITTED_CORE_DEPENDENCIES = (
+    ROOT / "mub" / "vnext" / "contracts" / "v3" / "task.py",
+    ROOT / "mub" / "vnext" / "contracts" / "common.py",
+    ROOT / "mub" / "vnext" / "io" / "canonical.py",
+    ROOT / "mub" / "vnext" / "generation" / "config.py",
+    ROOT / "mub" / "vnext" / "contracts" / "v3" / "manifest.py",
+)
 
 
 @pytest.fixture(scope="module")
@@ -177,6 +187,56 @@ def test_validation_rejects_dirty_tracked_generator_source(
             validate_core_release(candidate, expected_full=False)
     finally:
         DIRTY_GENERATOR_PATH.write_bytes(original)
+
+
+def _write_dirty_tracked_dependency(path: Path) -> bytes:
+    original = path.read_bytes()
+    path.write_bytes(original + b"\n# repository-wide dirty-source probe\n")
+    return original
+
+
+@pytest.mark.parametrize(
+    "dependency_path",
+    PREVIOUSLY_OMITTED_CORE_DEPENDENCIES,
+    ids=lambda path: str(path.relative_to(ROOT)).replace("\\", "/"),
+)
+def test_staging_rejects_dirty_tracked_dependency_outside_old_allowlist(
+    dependency_path: Path,
+    tmp_path,
+):
+    output = tmp_path / f"dirty-dependency-{dependency_path.stem}"
+    original = _write_dirty_tracked_dependency(dependency_path)
+    staged = None
+    try:
+        with pytest.raises(ValueError, match="tracked Core source"):
+            staged = stage_core_candidate(
+                config_path=CORE_CONFIG_PATH,
+                output_dir=output,
+                code_revision=TEST_REVISION,
+                cores_per_family=10,
+            )
+    finally:
+        dependency_path.write_bytes(original)
+        if staged is not None:
+            staged.remove_if_unchanged()
+        shutil.rmtree(output, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "dependency_path",
+    PREVIOUSLY_OMITTED_CORE_DEPENDENCIES,
+    ids=lambda path: str(path.relative_to(ROOT)).replace("\\", "/"),
+)
+def test_validation_rejects_dirty_tracked_dependency_outside_old_allowlist(
+    dependency_path: Path,
+    bounded_candidate_template,
+):
+    original = _write_dirty_tracked_dependency(dependency_path)
+    try:
+        with pytest.raises(ValueError, match="tracked Core source"):
+            validate_core_release(bounded_candidate_template, expected_full=False)
+    finally:
+        dependency_path.write_bytes(original)
 
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():
@@ -412,6 +472,23 @@ def test_standalone_validation_rejects_extra_directory_entry(
 
     with pytest.raises(ValueError, match="exactly seven|regular files"):
         validate_core_release(candidate, expected_full=False)
+
+
+def test_core_artifact_tree_rejects_hardlinked_required_file(
+    bounded_candidate_template,
+    tmp_path,
+):
+    candidate = _copy_candidate_template(bounded_candidate_template, tmp_path)
+    _validate_core_artifact_tree(candidate)
+    required = candidate / "tasks.jsonl"
+    alias = tmp_path / "tasks-hardlink.jsonl"
+    try:
+        os.link(required, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlink unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="single-link regular files"):
+        _validate_core_artifact_tree(candidate)
 
 
 def test_standalone_validation_rejects_dangling_symlink_entry(

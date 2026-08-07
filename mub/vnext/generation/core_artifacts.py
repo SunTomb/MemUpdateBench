@@ -45,8 +45,11 @@ def _validate_core_artifact_tree(root: Path) -> tuple[Path, ...]:
             entry.is_symlink()
             or getattr(metadata, "st_file_attributes", 0) & 0x400
             or not stat.S_ISREG(metadata.st_mode)
+            or getattr(metadata, "st_nlink", 1) != 1
         ):
-            raise ValueError("Core candidate artifacts must be regular files")
+            raise ValueError(
+                "Core candidate artifacts must be single-link regular files"
+            )
     return tuple(root / path for path in _PATHS)
 
 

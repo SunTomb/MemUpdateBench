@@ -85,6 +85,24 @@ def test_bounded_family_f_above_trajectory_count_selects_complete_groups(
     }
 
 
+@pytest.mark.parametrize("cores_per_family", (80, 90))
+def test_unsatisfiable_family_f_bounded_limit_is_rejected_before_generation(
+    cores_per_family: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+
+    def fail_if_generation_starts(_config):
+        pytest.fail("bounded-limit preflight must run before Core generation")
+
+    monkeypatch.setattr(core_build, "_generated_cores", fail_if_generation_starts)
+    with pytest.raises(
+        ValueError,
+        match="Family F split quotas must preserve complete trajectory groups",
+    ):
+        compile_core_snapshot(config, cores_per_family=cores_per_family)
+
+
 def test_compile_core_snapshot_sample_is_grouped_leak_free_and_reproducible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

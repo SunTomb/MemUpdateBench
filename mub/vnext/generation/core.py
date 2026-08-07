@@ -85,12 +85,28 @@ class _FrozenMemoryObjectKey(MemoryObjectKey):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-class _FrozenList(list):
+class _FrozenSequence(tuple):
     def _reject_mutation(self, *args: Any, **kwargs: Any) -> NoReturn:
-        raise TypeError("frozen config lists cannot be mutated")
+        raise TypeError("frozen config sequences cannot be mutated")
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list):
+            return list(self) == other
+        return tuple.__eq__(self, other)
+
+    __hash__ = tuple.__hash__
     __delitem__ = __setitem__ = __iadd__ = __imul__ = clear = extend = insert = pop = remove = reverse = sort = _reject_mutation
     append = _reject_mutation
+
+
+def _thaw_config_sequences(value: Any) -> Any:
+    if isinstance(value, _FrozenSequence):
+        return [_thaw_config_sequences(item) for item in value]
+    if type(value) is dict:
+        return {key: _thaw_config_sequences(item) for key, item in value.items()}
+    if type(value) is list:
+        return [_thaw_config_sequences(item) for item in value]
+    return value
 
 
 class _FrozenConfigMixin:
@@ -100,8 +116,16 @@ class _FrozenConfigMixin:
     def _freeze_lists(self):
         for field_name, value in self.__dict__.items():
             if type(value) is list:
-                object.__setattr__(self, field_name, _FrozenList(value))
+                object.__setattr__(self, field_name, _FrozenSequence(value))
         return self
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("warnings", False)
+        return _thaw_config_sequences(super().model_dump(*args, **kwargs))
+
+    def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
+        kwargs.setdefault("warnings", False)
+        return super().model_dump_json(*args, **kwargs)
 
     def model_copy(
         self,

@@ -108,7 +108,18 @@ def _validate_limit(config: CoreConfig, cores_per_family: int | None) -> int | N
         raise ValueError("cores_per_family must be positive")
     if any(cores_per_family > count for count in config.family_core_counts.values()):
         raise ValueError("cores_per_family cannot exceed any configured family count")
-    _split_quotas(cores_per_family, config.splits)
+    quotas = _split_quotas(cores_per_family, config.splits)
+    family_f_schedule = config.families.current_historical_query.schedule
+    if (
+        cores_per_family > family_f_schedule.trajectory_count
+        and any(
+            quota % family_f_schedule.selectors_per_trajectory
+            for quota in quotas
+        )
+    ):
+        raise ValueError(
+            "Family F split quotas must preserve complete trajectory groups"
+        )
     return cores_per_family
 
 
