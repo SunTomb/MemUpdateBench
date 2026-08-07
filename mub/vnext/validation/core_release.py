@@ -184,6 +184,7 @@ def _trusted_code_revision() -> str:
 
 def _trusted_git_executable() -> Path:
     candidates = (
+        Path("C:/Program Files/Git/mingw64/bin/git.exe"),
         Path("C:/Program Files/Git/cmd/git.exe"),
         Path("/usr/bin/git"),
         Path("/usr/local/bin/git"),

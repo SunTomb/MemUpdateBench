@@ -515,19 +515,6 @@ def _validate_snapshot(
         raise ValueError("Core snapshot contains duplicate split assignments")
     if not snapshot.assignments:
         raise ValueError("Core snapshot requires a positive cores_per_family quota")
-    semantic_core_ids = tuple(
-        core.core_id for core in snapshot.semantic_cores
-    )
-    assignment_core_ids = tuple(
-        assignment.semantic_core_id for assignment in snapshot.assignments
-    )
-    if (
-        len(semantic_core_ids) != len(set(semantic_core_ids))
-        or semantic_core_ids != assignment_core_ids
-    ):
-        raise ValueError(
-            "Core snapshot semantic cores must be unique and follow assignments exactly"
-        )
     tasks_by_core: dict[str, list[MemUpdateTaskV3]] = defaultdict(list)
     for task in snapshot.tasks:
         core_id = task.metadata.split_key.semantic_core_id
@@ -656,6 +643,19 @@ def _validate_snapshot(
         raise ValueError(
             "Core snapshot selected semantic core IDs or canonical Core split "
             "assignments are invalid"
+        )
+    semantic_core_ids = tuple(
+        core.core_id for core in snapshot.semantic_cores
+    )
+    assignment_core_ids = tuple(
+        assignment.semantic_core_id for assignment in snapshot.assignments
+    )
+    if (
+        len(semantic_core_ids) != len(set(semantic_core_ids))
+        or semantic_core_ids != assignment_core_ids
+    ):
+        raise ValueError(
+            "Core snapshot semantic cores must be unique and follow assignments exactly"
         )
 
     diagnostic_records = {}
