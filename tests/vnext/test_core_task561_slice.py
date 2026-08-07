@@ -1,6 +1,8 @@
 from pathlib import Path
+import importlib.util
 import inspect
 import os
+import shutil
 import subprocess
 import sys
 
@@ -250,4 +252,146 @@ def test_candidate_staging_rechecks_parent_after_compile(
             code_revision=TEST_REVISION,
             cores_per_family=10,
         )
+
+
+def test_staging_rejects_verified_temporary_tree_substitution(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output = tmp_path / "candidate"
+    real_replace = os.replace
+
+    def substitute_then_replace(source, destination):
+        source = Path(source)
+        verified_aside = source.with_name(source.name + ".verified-aside")
+        real_replace(source, verified_aside)
+        source.mkdir()
+        (source / "attacker.txt").write_text("substituted", encoding="utf-8")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(core_orchestrate.os, "replace", substitute_then_replace)
+    with pytest.raises(ValueError, match="verified temporary"):
+        stage_core_candidate(
+            config_path=CORE_CONFIG_PATH,
+            output_dir=output,
+            code_revision=TEST_REVISION,
+            cores_per_family=10,
+        )
+    assert (output / "attacker.txt").read_text(encoding="utf-8") == "substituted"
+
+
+def test_staging_rechecks_parent_after_final_transfer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    parent = tmp_path / "parent"
+    output = parent / "candidate"
+    real_resolve = core_orchestrate._resolve_path
+    real_replace = os.replace
+    state = {"changed": False}
+
+    def changed_parent(path):
+        if state["changed"] and path == parent:
+            return tmp_path / "redirected-parent"
+        return real_resolve(path)
+
+    def replace_then_change(source, destination):
+        real_replace(source, destination)
+        state["changed"] = True
+
+    monkeypatch.setattr(core_orchestrate, "_resolve_path", changed_parent)
+    monkeypatch.setattr(core_orchestrate.os, "replace", replace_then_change)
+    with pytest.raises(ValueError, match="staging parent changed"):
+        stage_core_candidate(
+            config_path=CORE_CONFIG_PATH,
+            output_dir=output,
+            code_revision=TEST_REVISION,
+            cores_per_family=10,
+        )
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_staging_rejects_lexical_junction_parent(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    junction = tmp_path / "junction"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {result.stderr}")
+    monkeypatch.setattr(
+        core_orchestrate,
+        "compile_core_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("compiled")),
+    )
+    try:
+        with pytest.raises(ValueError, match="symlink or junction"):
+            stage_core_candidate(
+                config_path=CORE_CONFIG_PATH,
+                output_dir=junction / "candidate",
+                code_revision=TEST_REVISION,
+                cores_per_family=10,
+            )
+    finally:
+        if junction.exists():
+            junction.rmdir()
+
+
+def test_staged_candidate_cleanup_preserves_substituted_output(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output = tmp_path / "candidate"
+    result = stage_core_candidate(
+        config_path=CORE_CONFIG_PATH,
+        output_dir=output,
+        code_revision=TEST_REVISION,
+        cores_per_family=10,
+    )
+    verified_aside = tmp_path / "verified-aside"
+    os.replace(output, verified_aside)
+    output.mkdir()
+    marker = output / "unrelated.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "task561_generate_cli",
+        ROOT / "scripts" / "vnext_generate_core.py",
+    )
+    assert spec is not None and spec.loader is not None
+    generate_cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generate_cli)
+
+    def revision_check(expected=None):
+        if expected is None:
+            return TEST_REVISION
+        raise RuntimeError("revision changed")
+
+    monkeypatch.setattr(generate_cli, "_revision", revision_check)
+    monkeypatch.setattr(generate_cli, "stage_core_candidate", lambda **kwargs: result)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vnext_generate_core.py",
+            "--config",
+            str(CORE_CONFIG_PATH),
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="revision changed"):
+            generate_cli.main()
+        assert marker.read_text(encoding="utf-8") == "do not delete"
+    finally:
+        shutil.rmtree(output, ignore_errors=True)
+        shutil.rmtree(verified_aside, ignore_errors=True)
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +32,7 @@ def main() -> int:
     parser.add_argument("--cores-per-family", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     revision = _revision()
-    output_existed = args.output_dir.exists()
+    result = None
     try:
         result = stage_core_candidate(
             config_path=args.config,
@@ -43,8 +42,8 @@ def main() -> int:
         )
         _revision(revision)
     except Exception:
-        if not output_existed and args.output_dir.is_dir():
-            shutil.rmtree(args.output_dir)
+        if result is not None:
+            result.remove_if_unchanged()
         raise
     print(json.dumps({
         "status": "VALID_STAGED_CANDIDATE",

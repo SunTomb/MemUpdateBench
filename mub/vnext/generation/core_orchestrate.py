@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
@@ -27,6 +28,15 @@ class StagedCoreCandidate:
     split_task_counts: dict[str, int]
     hard_suite_core_count: int
     hard_suite_task_count: int
+    _destination_identity: tuple[int, int] = field(repr=False)
+    _artifact_hashes: tuple[tuple[str, str], ...] = field(repr=False)
+
+    def remove_if_unchanged(self) -> bool:
+        return _remove_tree_if_verified(
+            self.release_dir,
+            self._destination_identity,
+            self._artifact_hashes,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +48,26 @@ class _StagingPathBinding:
     parent_identity: tuple[int, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedTemporaryTree:
+    identity: tuple[int, int]
+    artifact_hashes: tuple[tuple[str, str], ...]
+
+
 def _resolve_path(path: Path) -> Path:
     return path.resolve(strict=False)
+
+
+def _assert_no_lexical_reparse_points(path: Path) -> None:
+    candidates = tuple(reversed(path.parents)) + (path,)
+    for candidate in candidates:
+        if not os.path.lexists(candidate):
+            continue
+        stat = candidate.stat(follow_symlinks=False)
+        if candidate.is_symlink() or getattr(stat, "st_file_attributes", 0) & 0x400:
+            raise ValueError(
+                "Core candidate staging path contains a symlink or junction"
+            )
 
 
 def _path_identity(path: Path) -> tuple[int, int]:
@@ -59,11 +87,13 @@ def _assert_outside_immutable(resolved_output: Path) -> None:
 
 def _bind_staging_path(output_dir: Path) -> _StagingPathBinding:
     requested = Path(os.path.abspath(output_dir))
+    _assert_no_lexical_reparse_points(requested.parent)
     _assert_outside_immutable(_resolve_path(requested))
     if requested.exists():
         raise FileExistsError(f"candidate output already exists: {output_dir}")
     _assert_outside_immutable(_resolve_path(requested.parent) / requested.name)
     requested.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_lexical_reparse_points(requested.parent)
     resolved_parent = _resolve_path(requested.parent)
     resolved_output = resolved_parent / requested.name
     _assert_outside_immutable(resolved_output)
@@ -76,7 +106,12 @@ def _bind_staging_path(output_dir: Path) -> _StagingPathBinding:
     )
 
 
-def _recheck_staging_path(binding: _StagingPathBinding) -> Path:
+def _recheck_staging_path(
+    binding: _StagingPathBinding,
+    *,
+    expect_output: bool = False,
+) -> Path:
+    _assert_no_lexical_reparse_points(binding.parent_path)
     current_parent = _resolve_path(binding.parent_path)
     current_output = _resolve_path(binding.requested_output)
     if (
@@ -86,7 +121,10 @@ def _recheck_staging_path(binding: _StagingPathBinding) -> Path:
     ):
         raise ValueError("Core candidate staging parent changed after path binding")
     _assert_outside_immutable(current_output)
-    if binding.requested_output.exists():
+    output_exists = binding.requested_output.exists()
+    if expect_output and not output_exists:
+        raise ValueError("Core candidate output disappeared after final transfer")
+    if not expect_output and output_exists:
         raise FileExistsError(
             f"candidate output appeared during staging: {binding.requested_output}"
         )
@@ -101,6 +139,80 @@ def _verify_staged_bundle(temporary: Path, bundle) -> None:
     for artifact in bundle.artifacts:
         if (temporary / artifact.path).read_bytes() != artifact.content:
             raise ValueError(f"staged Core artifact bytes differ: {artifact.path}")
+
+
+def _artifact_hashes(bundle) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (artifact.path, artifact.ref.sha256)
+        for artifact in bundle.artifacts
+    )
+
+
+def _tree_matches_hashes(
+    root: Path,
+    artifact_hashes: tuple[tuple[str, str], ...],
+) -> bool:
+    expected_names = {name for name, _ in artifact_hashes}
+    actual_entries = tuple(root.iterdir())
+    actual_names = {path.name for path in actual_entries}
+    if actual_names != expected_names or any(not path.is_file() for path in actual_entries):
+        return False
+    return all(
+        hashlib.sha256((root / name).read_bytes()).hexdigest() == expected_hash
+        for name, expected_hash in artifact_hashes
+    )
+
+
+def _bind_verified_temporary(temporary: Path, bundle) -> _VerifiedTemporaryTree:
+    _verify_staged_bundle(temporary, bundle)
+    hashes = _artifact_hashes(bundle)
+    if not _tree_matches_hashes(temporary, hashes):
+        raise ValueError("Core candidate verified temporary content changed")
+    return _VerifiedTemporaryTree(
+        identity=_path_identity(temporary),
+        artifact_hashes=hashes,
+    )
+
+
+def _recheck_verified_tree(
+    root: Path,
+    verified: _VerifiedTemporaryTree,
+) -> None:
+    try:
+        identity_matches = _path_identity(root) == verified.identity
+        content_matches = _tree_matches_hashes(root, verified.artifact_hashes)
+    except (FileNotFoundError, OSError, ValueError):
+        identity_matches = False
+        content_matches = False
+    if not identity_matches or not content_matches:
+        raise ValueError("installed object is not the verified temporary tree")
+
+
+def _remove_tree_if_verified(
+    path: Path,
+    expected_identity: tuple[int, int],
+    artifact_hashes: tuple[tuple[str, str], ...],
+) -> bool:
+    try:
+        if _path_identity(path) != expected_identity:
+            return False
+        if not _tree_matches_hashes(path, artifact_hashes):
+            return False
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    shutil.rmtree(path)
+    return True
+
+
+def _remove_tree_if_identity_matches(
+    path: Path,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        if _path_identity(path) == expected_identity:
+            shutil.rmtree(path)
+    except (FileNotFoundError, OSError, ValueError):
+        return
 
 
 def stage_core_candidate(
@@ -128,6 +240,9 @@ def stage_core_candidate(
             dir=binding.resolved_parent,
         )
     )
+    temporary_identity = _path_identity(temporary)
+    verified = None
+    destination = binding.resolved_output
     try:
         _recheck_staging_path(binding)
         if temporary.parent != binding.resolved_parent:
@@ -136,20 +251,32 @@ def stage_core_candidate(
             _recheck_staging_path(binding)
             (temporary / artifact.path).write_bytes(artifact.content)
         _recheck_staging_path(binding)
-        _verify_staged_bundle(temporary, bundle)
+        verified = _bind_verified_temporary(temporary, bundle)
         destination = _recheck_staging_path(binding)
+        _recheck_verified_tree(temporary, verified)
         os.replace(temporary, destination)
+        _recheck_staging_path(binding, expect_output=True)
+        _recheck_verified_tree(destination, verified)
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if verified is not None:
+            _remove_tree_if_verified(
+                destination,
+                verified.identity,
+                verified.artifact_hashes,
+            )
+        _remove_tree_if_identity_matches(temporary, temporary_identity)
         raise
+    assert verified is not None
     return StagedCoreCandidate(
-        release_dir=output_dir,
+        release_dir=destination,
         semantic_core_count=len(snapshot.semantic_cores),
         task_count=len(snapshot.tasks),
         split_core_counts=dict(snapshot.core_counts),
         split_task_counts=dict(snapshot.task_counts),
         hard_suite_core_count=len(bundle.hard_suite.semantic_core_ids),
         hard_suite_task_count=len(bundle.hard_suite.task_ids),
+        _destination_identity=verified.identity,
+        _artifact_hashes=verified.artifact_hashes,
     )
 
 
