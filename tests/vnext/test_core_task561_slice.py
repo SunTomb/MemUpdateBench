@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import subprocess
+import sys
 
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
@@ -9,6 +12,20 @@ from mub.vnext.validation.core_release import validate_core_release
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_core_clis_run_from_project_root_without_pythonpath():
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    for script in ("vnext_generate_core.py", "vnext_validate_core.py"):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / script), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_bounded_core_bundle_is_canonical_and_manifest_bound():
