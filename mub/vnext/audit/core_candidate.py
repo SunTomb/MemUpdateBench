@@ -34,6 +34,7 @@ _MAX_ARTIFACT_BYTES = {
     "validation_report.json": 67_108_864,
 }
 _VERIFIED_RECEIPT_SNAPSHOTS: dict[str, tuple[str, str, str]] = {}
+_STREAM_CHUNK_BYTES = 1024 * 1024
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -52,11 +53,7 @@ class _CoreCandidateTreeSnapshot:
     directory_identity: tuple[int, int, int, int, int]
     artifacts: tuple[ArtifactRef, ...]
     artifact_identities: tuple[tuple[str, tuple[int, int, int, int, int]], ...]
-    artifact_bytes: tuple[tuple[str, bytes], ...]
     root_digest: str
-
-    def content(self, name: str) -> bytes:
-        return dict(self.artifact_bytes)[name]
 
 
 def core_candidate_root_digest(artifacts: tuple[ArtifactRef, ...]) -> str:
@@ -87,22 +84,30 @@ def _guarded_candidate_tree_snapshot(root: Path) -> _CoreCandidateTreeSnapshot:
     directory_identity = _file_identity(root_metadata)
     artifacts = []
     identities = []
-    contents = []
     for path in paths:
         before = path.stat(follow_symlinks=False)
         limit = _MAX_ARTIFACT_BYTES[path.name]
         if before.st_size > limit:
             raise ValueError(f"{path.name} exceeds the bounded artifact size limit")
         identity = _file_identity(before)
+        digest = hashlib.sha256()
+        total = 0
         with path.open("rb", buffering=0) as handle:
-            content = handle.read(before.st_size + 1)
+            while True:
+                chunk = handle.read(_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > before.st_size:
+                    raise ValueError(f"{path.name} exceeded its bounded snapshot size")
+                digest.update(chunk)
         after = path.stat(follow_symlinks=False)
-        if len(content) != before.st_size or _file_identity(after) != identity:
+        if total != before.st_size or _file_identity(after) != identity:
             raise ValueError(f"{path.name} changed during bounded snapshot read")
         artifacts.append(
             ArtifactRef(
                 path=path.name,
-                sha256=hashlib.sha256(content).hexdigest(),
+                sha256=digest.hexdigest(),
                 media_type=(
                     "application/x-ndjson"
                     if path.suffix == ".jsonl"
@@ -112,7 +117,6 @@ def _guarded_candidate_tree_snapshot(root: Path) -> _CoreCandidateTreeSnapshot:
             )
         )
         identities.append((path.name, identity))
-        contents.append((path.name, content))
     after_paths = _validate_core_artifact_tree(root)
     after_root = root.stat(follow_symlinks=False)
     if (
@@ -130,7 +134,6 @@ def _guarded_candidate_tree_snapshot(root: Path) -> _CoreCandidateTreeSnapshot:
         directory_identity=directory_identity,
         artifacts=artifact_tuple,
         artifact_identities=tuple(identities),
-        artifact_bytes=tuple(contents),
         root_digest=core_candidate_root_digest(artifact_tuple),
     )
 
@@ -146,7 +149,7 @@ def _stable_tracked_revision() -> str:
 
 def _authoritatively_validate_candidate_tree(
     root: Path, *, expected_full: bool
-) -> _CoreCandidateTreeSnapshot:
+) -> tuple[_CoreCandidateTreeSnapshot, str]:
     before = _guarded_candidate_tree_snapshot(root)
     revision_before = _stable_tracked_revision()
     report = validate_core_release(root, expected_full=expected_full)
@@ -156,7 +159,7 @@ def _authoritatively_validate_candidate_tree(
     revision_after = _stable_tracked_revision()
     if before != after or revision_before != revision_after:
         raise ValueError("Core candidate tree or trusted revision changed during validation")
-    return after
+    return after, revision_after
 
 
 class CoreCandidateValidationReceipt(ImmutableContractModel):
@@ -274,18 +277,20 @@ def build_core_candidate_validation_receipt(
     *,
     candidate_dir: Path,
     manifest_bytes: bytes,
-    tasks_bytes: bytes,
     manifest: TaskManifestV3,
     expected_full: bool,
     candidate_snapshot: _CoreCandidateTreeSnapshot | None = None,
+    trusted_tooling_revision: str | None = None,
 ) -> CoreCandidateValidationReceipt:
     snapshot = candidate_snapshot or _guarded_candidate_tree_snapshot(candidate_dir)
+    artifact_hashes = {item.path: item.sha256 for item in snapshot.artifacts}
+    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
     if (
-        snapshot.content("task_manifest.json") != manifest_bytes
-        or snapshot.content("tasks.jsonl") != tasks_bytes
+        artifact_hashes["task_manifest.json"] != manifest_hash
+        or canonical_json_bytes(manifest) != manifest_bytes
     ):
-        raise ValueError("receipt inputs do not match the complete candidate snapshot")
-    tooling_revision = _stable_tracked_revision()
+        raise ValueError("manifest input does not match the candidate snapshot")
+    tooling_revision = trusted_tooling_revision or _stable_tracked_revision()
     if manifest.code_revision != tooling_revision:
         raise ValueError(
             "candidate generation revision differs from trusted audit-tooling revision"
@@ -294,8 +299,8 @@ def build_core_candidate_validation_receipt(
         "receipt_version": CORE_CANDIDATE_RECEIPT_VERSION,
         "candidate_dir": str(snapshot.candidate_dir),
         "expected_full": expected_full,
-        "source_task_manifest_hash": hashlib.sha256(manifest_bytes).hexdigest(),
-        "tasks_artifact_hash": hashlib.sha256(tasks_bytes).hexdigest(),
+        "source_task_manifest_hash": manifest_hash,
+        "tasks_artifact_hash": artifact_hashes["tasks.jsonl"],
         "task_count": sum(manifest.split_counts.values()),
         "code_revision": manifest.code_revision,
         "trusted_audit_tooling_revision": tooling_revision,
@@ -314,14 +319,9 @@ def _snapshot_matches_receipt(
     tooling_revision: str,
 ) -> bool:
     try:
-        manifest_bytes = snapshot.content("task_manifest.json")
-        manifest = TaskManifestV3.model_validate_json(manifest_bytes)
         return bool(
             snapshot.artifacts == receipt.candidate_artifacts
             and snapshot.root_digest == receipt.candidate_root_digest
-            and canonical_json_bytes(manifest) == manifest_bytes
-            and sum(manifest.split_counts.values()) == receipt.task_count
-            and manifest.code_revision == receipt.code_revision
             and tooling_revision == receipt.trusted_audit_tooling_revision
             and receipt.code_revision == receipt.trusted_audit_tooling_revision
             and receipt.receipt_hash == core_candidate_receipt_hash(receipt)
@@ -334,9 +334,10 @@ def _register_validated_core_candidate_receipt(
     receipt: CoreCandidateValidationReceipt,
     *,
     validated_snapshot: _CoreCandidateTreeSnapshot,
+    trusted_tooling_revision: str | None = None,
 ) -> None:
     """Register only core_stage's stable, authoritatively validated snapshot."""
-    tooling_revision = _stable_tracked_revision()
+    tooling_revision = trusted_tooling_revision or _stable_tracked_revision()
     if not _snapshot_matches_receipt(receipt, validated_snapshot, tooling_revision):
         raise ValueError("validated candidate tree does not match its receipt")
     _VERIFIED_RECEIPT_SNAPSHOTS[receipt.receipt_hash] = (
@@ -344,6 +345,29 @@ def _register_validated_core_candidate_receipt(
         receipt.candidate_root_digest,
         tooling_revision,
     )
+
+
+def _recheck_validated_core_candidate(
+    *,
+    receipt: CoreCandidateValidationReceipt,
+    validated_snapshot: _CoreCandidateTreeSnapshot,
+    trusted_tooling_revision: str,
+    trusted_candidate_root: Path,
+) -> bool:
+    """Perform one final streaming root and tracked-revision recheck."""
+    try:
+        root = Path(trusted_candidate_root).resolve(strict=True)
+        current = _guarded_candidate_tree_snapshot(root)
+        current_revision = _stable_tracked_revision()
+        return bool(
+            current == validated_snapshot
+            and current_revision == trusted_tooling_revision
+            and _snapshot_matches_receipt(
+                receipt, current, current_revision
+            )
+        )
+    except Exception:
+        return False
 
 
 def verify_core_candidate_validation_receipt(
@@ -366,10 +390,10 @@ def verify_core_candidate_validation_receipt(
             revision_before,
         )
         if _VERIFIED_RECEIPT_SNAPSHOTS.get(receipt.receipt_hash) != expected_cache:
-            validated = _authoritatively_validate_candidate_tree(
+            validated, validated_revision = _authoritatively_validate_candidate_tree(
                 root, expected_full=receipt.expected_full
             )
-            if validated != before:
+            if validated != before or validated_revision != revision_before:
                 return False
         after = _guarded_candidate_tree_snapshot(root)
         revision_after = _stable_tracked_revision()

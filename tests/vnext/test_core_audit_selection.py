@@ -263,6 +263,70 @@ def _write_bounded_candidate(root, snapshot):
         (root / artifact.path).write_bytes(artifact.content)
 
 
+def test_candidate_snapshot_retains_only_metadata(
+    bounded_core_release,
+    tmp_path,
+) -> None:
+    snapshot, _ = bounded_core_release
+    candidate = tmp_path / "candidate-metadata-only"
+    _write_bounded_candidate(candidate, snapshot)
+
+    tree = core_candidate._guarded_candidate_tree_snapshot(candidate)
+
+    assert not hasattr(tree, "artifact_bytes")
+    assert not hasattr(tree, "content")
+    assert len(tree.artifacts) == 7
+    assert len(tree.artifact_identities) == 7
+
+
+def test_candidate_snapshot_hashes_with_bounded_chunk_reads(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _ = bounded_core_release
+    candidate = tmp_path / "candidate-chunked-hash"
+    _write_bounded_candidate(candidate, snapshot)
+    original_open = Path.open
+    read_sizes: list[int] = []
+    max_chunk = 1024 * 1024
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def read(self, size=-1):
+            assert 0 < size <= max_chunk
+            read_sizes.append(size)
+            return self._handle.read(size)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    def bounded_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if Path(path).parent == candidate and mode == "rb":
+            return BoundedReader(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", bounded_open)
+
+    tree = core_candidate._guarded_candidate_tree_snapshot(candidate)
+
+    assert tree.root_digest
+    assert read_sizes
+    assert max(read_sizes) <= max_chunk
+    assert len(read_sizes) > len(tree.artifacts)
+
+
 @pytest.mark.parametrize(
     ("artifact_name", "operation"),
     (
@@ -294,7 +358,9 @@ def test_cached_receipt_rechecks_all_required_candidate_artifacts(
         lambda: None,
         raising=False,
     )
-    *_, receipt = core_stage._load_candidate(candidate, expected_full=False)
+    receipt = core_stage._load_candidate(
+        candidate, expected_full=False
+    ).receipt
     target = candidate / artifact_name
     if operation == "delete":
         target.unlink()
@@ -327,7 +393,9 @@ def test_candidate_receipt_verifies_byte_identical_tree_at_new_root(
     monkeypatch.setattr(
         core_candidate, "validate_core_release", lambda *args, **kwargs: ValidReport()
     )
-    *_, receipt = core_stage._load_candidate(origin, expected_full=False)
+    receipt = core_stage._load_candidate(
+        origin, expected_full=False
+    ).receipt
     shutil.copytree(origin, relocated)
 
     relocated_payload = receipt.model_dump(mode="python")
@@ -392,7 +460,9 @@ def test_cached_receipt_rechecks_tracked_core_cleanliness(
         cleanliness_check,
         raising=False,
     )
-    *_, receipt = core_stage._load_candidate(candidate, expected_full=False)
+    receipt = core_stage._load_candidate(
+        candidate, expected_full=False
+    ).receipt
     dirty = True
 
     assert verify_core_candidate_validation_receipt(
@@ -404,8 +474,7 @@ def _unregistered_receipt(candidate, snapshot, manifest):
     tree = core_candidate._guarded_candidate_tree_snapshot(candidate)
     return build_core_candidate_validation_receipt(
         candidate_dir=candidate,
-        manifest_bytes=tree.content("task_manifest.json"),
-        tasks_bytes=tree.content("tasks.jsonl"),
+        manifest_bytes=(candidate / "task_manifest.json").read_bytes(),
         manifest=manifest,
         expected_full=False,
         candidate_snapshot=tree,
@@ -498,7 +567,6 @@ def test_receipt_verification_rejects_swap_after_authoritative_validation(
     receipt = build_core_candidate_validation_receipt(
         candidate_dir=candidate,
         manifest_bytes=replacement_manifest_bytes,
-        tasks_bytes=replacement_tasks_bytes,
         manifest=replacement_manifest,
         expected_full=False,
     )
@@ -614,8 +682,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     tree = core_candidate._guarded_candidate_tree_snapshot(trusted_candidate)
     validation_receipt = build_core_candidate_validation_receipt(
         candidate_dir=trusted_candidate,
-        manifest_bytes=tree.content("task_manifest.json"),
-        tasks_bytes=tree.content("tasks.jsonl"),
+        manifest_bytes=(trusted_candidate / "task_manifest.json").read_bytes(),
         manifest=manifest,
         expected_full=False,
         candidate_snapshot=tree,
@@ -623,16 +690,47 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     core_candidate._register_validated_core_candidate_receipt(
         validation_receipt, validated_snapshot=tree
     )
-    trusted_loaded = (
-        snapshot.tasks,
-        manifest,
-        sha256_model(manifest),
-        validation_receipt,
+    trusted_loaded = core_stage._LoadedCoreCandidate(
+        tasks=snapshot.tasks,
+        manifest=manifest,
+        manifest_hash=sha256_model(manifest),
+        receipt=validation_receipt,
+        validated_snapshot=tree,
+        trusted_tooling_revision=(
+            validation_receipt.trusted_audit_tooling_revision
+        ),
     )
     monkeypatch.setattr(
         core_stage,
         "_load_candidate",
         lambda *args, **kwargs: trusted_loaded,
+    )
+
+    def forbid_redundant_public_verification(*args, **kwargs):
+        raise AssertionError("gate transaction repeated public candidate verification")
+
+    monkeypatch.setattr(
+        core_stage,
+        "verify_core_audit_gate_report",
+        forbid_redundant_public_verification,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        core_stage,
+        "verify_core_candidate_validation_receipt",
+        forbid_redundant_public_verification,
+        raising=False,
+    )
+    original_final_recheck = core_stage._recheck_validated_core_candidate
+    final_recheck_count = 0
+
+    def count_final_recheck(**kwargs):
+        nonlocal final_recheck_count
+        final_recheck_count += 1
+        return original_final_recheck(**kwargs)
+
+    monkeypatch.setattr(
+        core_stage, "_recheck_validated_core_candidate", count_final_recheck
     )
 
     report = gate_core_audit_files(
@@ -645,6 +743,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
         output_dir=tmp_path / "gate-output",
     )
     assert report.release_ready_at_verification is False
+    assert final_recheck_count == 1
     assert len(report.report.surface_context_evidence) == 896
     attestation_path = (
         tmp_path
@@ -721,12 +820,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     monkeypatch.setattr(
         core_stage,
         "_load_candidate",
-        lambda *args, **kwargs: (
-            snapshot.tasks,
-            manifest,
-            sha256_model(manifest),
-            validation_receipt,
-        ),
+        lambda *args, **kwargs: trusted_loaded,
     )
 
     def inject_source_change(*args, pre_publish, **kwargs):

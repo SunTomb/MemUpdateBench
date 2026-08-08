@@ -1293,12 +1293,11 @@ def evaluate_core_audit_gate(
     )
 
 
-def verify_core_audit_gate_report(
+def _attest_core_audit_gate_report_from_validated_candidate(
     report: CoreAuditGateReport,
     *,
     trusted_candidate_root: Path | str,
 ) -> VerifiedCoreAuditGateReport | None:
-    """Return an immutable capability for one verified report/root snapshot."""
     if type(report) is not CoreAuditGateReport:
         return None
     receipt = report.candidate_validation_receipt
@@ -1310,10 +1309,6 @@ def verify_core_audit_gate_report(
             return None
         snapshot = CoreAuditGateReport.model_validate(dict(raw))
         trusted_root = Path(trusted_candidate_root).resolve(strict=True)
-        if not verify_core_candidate_validation_receipt(
-            receipt, trusted_candidate_root=trusted_root
-        ):
-            return None
         manifest_task_count = sum(snapshot.source_task_manifest.split_counts.values())
         full_candidate = bool(
             receipt.expected_full
@@ -1354,6 +1349,30 @@ def verify_core_audit_gate_report(
             attestation=attestation,
             trusted_candidate_root=str(trusted_root),
             _token=_VERIFIED_GATE_TOKEN,
+        )
+    except Exception:
+        return None
+
+
+def verify_core_audit_gate_report(
+    report: CoreAuditGateReport,
+    *,
+    trusted_candidate_root: Path | str,
+) -> VerifiedCoreAuditGateReport | None:
+    """Freshly verify a trusted candidate root and return a historical attestation."""
+    if type(report) is not CoreAuditGateReport:
+        return None
+    receipt = report.candidate_validation_receipt
+    if receipt is None:
+        return None
+    try:
+        trusted_root = Path(trusted_candidate_root).resolve(strict=True)
+        if not verify_core_candidate_validation_receipt(
+            receipt, trusted_candidate_root=trusted_root
+        ):
+            return None
+        return _attest_core_audit_gate_report_from_validated_candidate(
+            report, trusted_candidate_root=trusted_root
         )
     except Exception:
         return None

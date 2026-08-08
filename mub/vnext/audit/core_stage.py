@@ -10,19 +10,21 @@ from typing import Any
 
 from mub.vnext.audit.core import CoreAuditSelectionPackage, select_core_audit_sample
 from mub.vnext.audit.core_candidate import (
+    CoreCandidateValidationReceipt,
+    _CoreCandidateTreeSnapshot,
     _authoritatively_validate_candidate_tree,
+    _recheck_validated_core_candidate,
     _register_validated_core_candidate_receipt,
     build_core_candidate_validation_receipt,
-    verify_core_candidate_validation_receipt,
 )
 from mub.vnext.audit.core_review import (
     CoreAuditDecision,
     CoreAuditGateReport,
     VerifiedCoreAuditGateReport,
+    _attest_core_audit_gate_report_from_validated_candidate,
     core_audit_adjudication_templates,
     core_audit_decision_templates,
     evaluate_core_audit_gate,
-    verify_core_audit_gate_report,
 )
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
@@ -39,6 +41,16 @@ ADJUDICATION_TEMPLATE_NAME = "adjudications.template.jsonl"
 GATE_REPORT_NAME = "gate_report.json"
 GATE_VERIFICATION_ATTESTATION_NAME = "gate_verification_attestation.json"
 REQUIRED_ADJUDICATION_TEMPLATE_NAME = "required_adjudications.template.jsonl"
+
+
+@dataclass(frozen=True)
+class _LoadedCoreCandidate:
+    tasks: tuple[MemUpdateTaskV3, ...]
+    manifest: TaskManifestV3
+    manifest_hash: str
+    receipt: CoreCandidateValidationReceipt
+    validated_snapshot: _CoreCandidateTreeSnapshot
+    trusted_tooling_revision: str
 
 
 @dataclass(frozen=True)
@@ -95,12 +107,32 @@ def _canonical_task_rows(raw: bytes, label: str) -> tuple[MemUpdateTaskV3, ...]:
     return tuple(rows)
 
 
-def _load_candidate(candidate_dir: Path, *, expected_full: bool):
-    snapshot = _authoritatively_validate_candidate_tree(
+def _canonical_task_file(path: Path, label: str) -> tuple[MemUpdateTaskV3, ...]:
+    rows = []
+    seen = set()
+    with Path(path).open("rb") as handle:
+        for line_number, raw in enumerate(handle, start=1):
+            line = raw[:-1] if raw.endswith(b"\n") else raw
+            if not line.strip():
+                raise ValueError(f"{label}: line {line_number}: blank row")
+            task = MemUpdateTaskV3.model_validate_json(line)
+            if canonical_json_bytes(task) != line:
+                raise ValueError(f"{label}: line {line_number}: noncanonical task row")
+            if task.task_id in seen:
+                raise ValueError(f"{label}: duplicate task ID {task.task_id}")
+            seen.add(task.task_id)
+            rows.append(task)
+    return tuple(rows)
+
+
+def _load_candidate(
+    candidate_dir: Path, *, expected_full: bool
+) -> _LoadedCoreCandidate:
+    snapshot, tooling_revision = _authoritatively_validate_candidate_tree(
         candidate_dir, expected_full=expected_full
     )
-    manifest_bytes = snapshot.content("task_manifest.json")
-    tasks_bytes = snapshot.content("tasks.jsonl")
+    manifest_path = Path(candidate_dir) / "task_manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
     manifest = TaskManifestV3.model_validate_json(manifest_bytes)
     if canonical_json_bytes(manifest) != manifest_bytes:
         raise ValueError("task manifest is not canonical after validation")
@@ -112,25 +144,36 @@ def _load_candidate(candidate_dir: Path, *, expected_full: bool):
         ),
         None,
     )
-    if task_ref is None or hashlib.sha256(tasks_bytes).hexdigest() != task_ref.sha256:
-        raise ValueError("tasks bytes changed or do not match the authenticated manifest")
-    tasks = _canonical_task_rows(tasks_bytes, "tasks.jsonl")
+    artifact_hashes = {item.path: item.sha256 for item in snapshot.artifacts}
+    if task_ref is None or artifact_hashes["tasks.jsonl"] != task_ref.sha256:
+        raise ValueError("tasks artifact does not match the authenticated manifest")
+    tasks = _canonical_task_file(Path(candidate_dir) / "tasks.jsonl", "tasks.jsonl")
     if len(tasks) != task_ref.record_count:
         raise ValueError("tasks record count does not match the authenticated manifest")
     manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+    if artifact_hashes["task_manifest.json"] != manifest_hash:
+        raise ValueError("task manifest changed after candidate validation")
     receipt = build_core_candidate_validation_receipt(
         candidate_dir=candidate_dir,
         manifest_bytes=manifest_bytes,
-        tasks_bytes=tasks_bytes,
         manifest=manifest,
         expected_full=expected_full,
         candidate_snapshot=snapshot,
+        trusted_tooling_revision=tooling_revision,
     )
     _register_validated_core_candidate_receipt(
         receipt,
         validated_snapshot=snapshot,
+        trusted_tooling_revision=tooling_revision,
     )
-    return tasks, manifest, manifest_hash, receipt
+    return _LoadedCoreCandidate(
+        tasks=tasks,
+        manifest=manifest,
+        manifest_hash=manifest_hash,
+        receipt=receipt,
+        validated_snapshot=snapshot,
+        trusted_tooling_revision=tooling_revision,
+    )
 
 
 def stage_core_audit_package(
@@ -142,9 +185,10 @@ def stage_core_audit_package(
     """Validate a candidate and atomically stage blank, non-release audit files."""
     candidate_dir = Path(candidate_dir)
     output_dir = Path(output_dir)
-    tasks, manifest, manifest_hash, _ = _load_candidate(
-        candidate_dir, expected_full=expected_full
-    )
+    loaded = _load_candidate(candidate_dir, expected_full=expected_full)
+    tasks = loaded.tasks
+    manifest = loaded.manifest
+    manifest_hash = loaded.manifest_hash
     package = select_core_audit_sample(
         tasks,
         manifest,
@@ -250,9 +294,13 @@ def gate_core_audit_files(
     package = load_core_audit_selection_package(selection_package_path)
     if selection_package_path.read_bytes() != selection_bytes:
         raise ValueError("selection package changed while it was being loaded")
-    candidate_tasks, manifest, manifest_hash, validation_receipt = _load_candidate(
+    loaded_candidate = _load_candidate(
         candidate_dir, expected_full=expected_full
     )
+    candidate_tasks = loaded_candidate.tasks
+    manifest = loaded_candidate.manifest
+    manifest_hash = loaded_candidate.manifest_hash
+    validation_receipt = loaded_candidate.receipt
     if manifest_hash != package.source_task_manifest_hash:
         raise ValueError("trusted candidate task manifest hash does not match the selection")
     recomputed = select_core_audit_sample(
@@ -297,7 +345,7 @@ def gate_core_audit_files(
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )
-    verified = verify_core_audit_gate_report(
+    verified = _attest_core_audit_gate_report_from_validated_candidate(
         report, trusted_candidate_root=candidate_dir
     )
     if verified is None:
@@ -324,11 +372,11 @@ def gate_core_audit_files(
         expected_source_bytes[adjudications_path] = adjudication_bytes
 
     def recheck_sources() -> None:
-        if (
-            validation_receipt is not None
-            and not verify_core_candidate_validation_receipt(
-                validation_receipt, trusted_candidate_root=candidate_dir
-            )
+        if not _recheck_validated_core_candidate(
+            receipt=validation_receipt,
+            validated_snapshot=loaded_candidate.validated_snapshot,
+            trusted_tooling_revision=loaded_candidate.trusted_tooling_revision,
+            trusted_candidate_root=candidate_dir,
         ):
             raise ValueError(
                 "validated candidate root changed before report publication"
