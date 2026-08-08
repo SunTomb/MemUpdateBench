@@ -16,6 +16,7 @@ from mub.vnext.audit.core import (
     select_core_audit_sample,
     selector_config_hash,
 )
+import mub.vnext.audit.core as core_audit
 import mub.vnext.audit.core_stage as core_stage
 from mub.vnext.audit.core_stage import (
     core_audit_review_task_ids,
@@ -30,7 +31,7 @@ from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.io import canonical_json_bytes, sha256_model
-from mub.vnext.contracts import Difficulty
+from mub.vnext.contracts import Difficulty, Split, TaskFamily
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -226,12 +227,22 @@ def test_candidate_loader_detects_manifest_or_task_change_during_validation(
 def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     bounded_core_release,
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     snapshot, manifest = bounded_core_release
     package = select_core_audit_sample(
         snapshot.tasks,
         manifest,
         source_task_manifest_hash=sha256_model(manifest),
+    )
+    monkeypatch.setattr(
+        core_stage,
+        "_load_candidate",
+        lambda *args, **kwargs: (
+            snapshot.tasks,
+            manifest,
+            sha256_model(manifest),
+        ),
     )
     by_id = {task.task_id: task for task in snapshot.tasks}
     selected = tuple(by_id[item.task_id] for item in package.selections)
@@ -252,7 +263,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
 
     report = gate_core_audit_files(
         selection_package_path=paths["selection"],
-        source_task_manifest_path=paths["manifest"],
+        candidate_dir=tmp_path / "trusted-candidate",
         selected_tasks_path=paths["selected"],
         surface_context_path=paths["surfaces"],
         decisions_path=paths["decisions"],
@@ -275,7 +286,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     with pytest.raises(ValueError, match="authenticated|hash|differ"):
         gate_core_audit_files(
             selection_package_path=paths["selection"],
-            source_task_manifest_path=paths["manifest"],
+            candidate_dir=tmp_path / "trusted-candidate",
             selected_tasks_path=paths["selected"],
             surface_context_path=paths["surfaces"],
             decisions_path=paths["decisions"],
@@ -287,13 +298,87 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     with pytest.raises(ValueError, match="authenticated|hash|context"):
         gate_core_audit_files(
             selection_package_path=paths["selection"],
-            source_task_manifest_path=paths["manifest"],
+            candidate_dir=tmp_path / "trusted-candidate",
             selected_tasks_path=paths["selected"],
             surface_context_path=paths["surfaces"],
             decisions_path=paths["decisions"],
             adjudications_path=None,
             output_dir=tmp_path / "mutated-context-output",
         )
+
+
+@pytest.mark.parametrize("field", ("family", "difficulty", "split", "conditions"))
+def test_review_context_recomputes_selection_projection_fields(
+    bounded_core_release,
+    field: str,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    package = select_core_audit_sample(
+        snapshot.tasks,
+        manifest,
+        source_task_manifest_hash=sha256_model(manifest),
+    )
+    victim = package.selections[0]
+    updates = {
+        "family": TaskFamily.INTERLEAVED_MULTI_SLOT,
+        "difficulty": (
+            Difficulty.HARD
+            if victim.difficulty is not Difficulty.HARD
+            else Difficulty.EASY
+        ),
+        "split": Split.DEV if victim.split is not Split.DEV else Split.TEST,
+        "conditions": tuple(
+            token for token in victim.covered_conditions if not token.startswith("difficulty=")
+        ),
+    }
+    row_payload = victim.model_dump(mode="python")
+    row_payload["surface_variants"] = victim.surface_variants
+    if field == "conditions":
+        row_payload["covered_conditions"] = updates[field]
+    else:
+        row_payload[field] = updates[field]
+    corrupted_row = type(victim).model_construct(**row_payload)
+    package_payload = object.__getattribute__(package, "__dict__").copy()
+    package_payload["selections"] = (corrupted_row, *package.selections[1:])
+    corrupted = type(package).model_construct(**package_payload)
+    by_id = {task.task_id: task for task in snapshot.tasks}
+    selected = tuple(by_id[item.task_id] for item in package.selections)
+    surfaces = tuple(by_id[task_id] for task_id in core_audit_review_task_ids(package))
+
+    with pytest.raises(ValueError, match="selection fields"):
+        validate_core_audit_review_context(corrupted, selected, surfaces)
+
+
+def test_exact_quota_cover_recovers_when_greedy_consumes_scarce_split() -> None:
+    def candidate(core_id, split, conditions):
+        return core_audit._CoreCandidate(
+            core_id=core_id,
+            family=TaskFamily.REPEATED_SAME_SLOT,
+            difficulty=Difficulty.EASY,
+            split=split,
+            conditions=tuple(conditions),
+            tasks_by_surface={},
+        )
+
+    candidates = (
+        candidate("train-greedy", Split.TRAIN, ("a", "b")),
+        candidate("train-scarce", Split.TRAIN, ("c",)),
+        candidate("dev-a", Split.DEV, ("a",)),
+        candidate("dev-b", Split.DEV, ("b",)),
+    )
+    cover = core_audit._exact_quota_cover(
+        candidates,
+        {"a", "b", "c"},
+        {Split.TRAIN: 1, Split.DEV: 2, Split.TEST: 0},
+        3,
+    )
+
+    assert cover is not None
+    assert {item.core_id for item in cover} == {
+        "train-scarce",
+        "dev-a",
+        "dev-b",
+    }
 
 
 def test_core_selection_package_fails_closed_on_hash_or_schema_tampering(

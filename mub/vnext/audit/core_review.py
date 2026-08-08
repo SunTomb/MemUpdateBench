@@ -14,10 +14,12 @@ from mub.vnext.audit.core import (
     CORE_AUDIT_SCHEMA_VERSION,
     CoreAuditSelection,
     CoreAuditSelectionPackage,
+    _task_conditions,
     core_audit_review_context_hash,
     core_audit_selection_hash,
 )
 from mub.vnext.contracts import TaskFamily
+from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.io import sha256_model
 from mub.vnext.contracts.common import ImmutableContractModel
@@ -60,6 +62,20 @@ def _hash_value(value: str, field_name: str) -> str:
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise ValueError(f"{field_name} must be lowercase sha256")
     return value
+
+
+def _normalized_observation(value: str) -> str:
+    """NFKC/casefold, drop format chars, and canonicalize punctuation/spacing."""
+    characters = []
+    for character in unicodedata.normalize("NFKC", value).casefold():
+        category = unicodedata.category(character)
+        if category == "Cf":
+            continue
+        if character.isspace() or category.startswith("P"):
+            characters.append(" ")
+        else:
+            characters.append(character)
+    return " ".join("".join(characters).split())
 
 
 def applicable_core_audit_checks(family: TaskFamily) -> frozenset[str]:
@@ -146,6 +162,10 @@ class CoreAuditDecision(_StrictFrozenCoreReviewModel):
     def _attested(self) -> CoreAuditDecision:
         if self.independent_review_attestation is not True:
             raise ValueError("human review requires an explicit independence attestation")
+        if not _normalized_observation(self.task_specific_observation):
+            raise ValueError(
+                "task_specific_observation must contain substantive non-punctuation text"
+            )
         return self
 
     @property
@@ -199,6 +219,7 @@ class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
 class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     schema_version: Literal[CORE_AUDIT_SCHEMA_VERSION] = CORE_AUDIT_SCHEMA_VERSION
     selection_package: CoreAuditSelectionPackage
+    source_task_manifest: TaskManifestV3
     source_task_manifest_hash: str
     selection_hash: str
     review_context_hash: str
@@ -332,6 +353,7 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
                 package,
                 snapshot.decision_evidence,
                 snapshot.adjudication_evidence,
+                source_task_manifest=snapshot.source_task_manifest,
                 selected_tasks=selected_tasks,
                 surface_context_tasks=snapshot.surface_context_evidence,
             )
@@ -489,6 +511,19 @@ def validate_core_audit_review_context(
         for task in selected_input
     ):
         raise ValueError("selected task bytes differ from the authenticated surface context")
+    for selection in package.selections:
+        task = selected_by_id[selection.task_id]
+        if (
+            TaskFamily(task.task_family) is not selection.family
+            or task.difficulty is not selection.difficulty
+            or task.metadata.split is not selection.split
+            or task.metadata.split_key.semantic_core_id != selection.semantic_core_id
+            or task.metadata.extra.get("surface_template") != selection.surface_id
+            or _task_conditions(task) != selection.covered_conditions
+        ):
+            raise ValueError(
+                f"selection fields do not match authenticated task projection for {selection.task_id}"
+            )
     return tuple(snapshots)
 
 
@@ -572,6 +607,7 @@ def evaluate_core_audit_gate(
     decisions: Sequence[Any],
     adjudications: Sequence[Any],
     *,
+    source_task_manifest: TaskManifestV3,
     selected_tasks: Sequence[Any],
     surface_context_tasks: Sequence[Any],
 ) -> CoreAuditGateReport:
@@ -580,9 +616,19 @@ def evaluate_core_audit_gate(
         raise TypeError("package must be an exact CoreAuditSelectionPackage")
     if core_audit_selection_hash(package) != package.selection_hash:
         raise ValueError("selection package hash mismatch")
+    if type(source_task_manifest) is not TaskManifestV3:
+        raise TypeError("gate requires an exact strict-v3 source TaskManifestV3")
+    if sha256_model(source_task_manifest) != package.source_task_manifest_hash:
+        raise ValueError("source task manifest hash does not match the selection")
     context_evidence = validate_core_audit_review_context(
         package, selected_tasks, surface_context_tasks
     )
+    if any(
+        source_task_manifest.task_record_hashes.get(task.task_id)
+        != sha256_model(task)
+        for task in context_evidence
+    ):
+        raise ValueError("review context is not authenticated by the source task manifest")
     context_hash = core_audit_review_context_hash(package)
     decision_input = _snapshot_sequence(decisions, "decisions")
     adjudication_input = _snapshot_sequence(adjudications, "adjudications")
@@ -658,8 +704,9 @@ def evaluate_core_audit_gate(
     copied_observations: set[str] = set()
     observation_groups: dict[tuple[str, str], list[CoreAuditDecision]] = defaultdict(list)
     for item in (*valid_decisions, *valid_adjudications):
-        normalized = " ".join(item.task_specific_observation.casefold().split())
-        observation_groups[(item.reviewer_id, normalized)].append(item)
+        observation_groups[
+            (item.audit_id, _normalized_observation(item.task_specific_observation))
+        ].append(item)
     for rows in observation_groups.values():
         if len(rows) > 1:
             copied_observations.update(item.audit_id for item in rows)
@@ -697,11 +744,12 @@ def evaluate_core_audit_gate(
                 adjudicator = adjudication_rows[0]
                 if adjudicator.reviewer_id in {item.reviewer_id for item in rows}:
                     non_independent.add(selected.audit_id)
-                elif _human_pass(adjudicator, selected.family):
-                    adjudicated.add(selected.audit_id)
-                    terminal_pass.add(selected.audit_id)
                 else:
-                    non_pass_terminal.add(selected.audit_id)
+                    adjudicated.add(selected.audit_id)
+                    if _human_pass(adjudicator, selected.family):
+                        terminal_pass.add(selected.audit_id)
+                    else:
+                        non_pass_terminal.add(selected.audit_id)
             elif len(adjudication_rows) > 1:
                 duplicates.add(f"{selected.audit_id}:adjudicator")
         elif adjudication_rows:
@@ -710,9 +758,29 @@ def evaluate_core_audit_gate(
             _human_pass(item, selected.family) for item in rows
         ):
             terminal_pass.add(selected.audit_id)
-        elif complete:
+        elif complete and clean_rows:
             non_pass_terminal.add(selected.audit_id)
 
+    record_issue_audits = {
+        item.audit_id
+        for item in (*valid_decisions, *valid_adjudications)
+        if item.review_record_id in duplicate_records
+    }
+    duplicate_role_audits = {
+        label.split(":", 1)[0] for label in duplicates
+    }
+    dirty_audits = (
+        record_issue_audits
+        | copied_observations
+        | non_independent
+        | invalid_applicability
+        | duplicate_role_audits
+        | binding
+        | {value for value in malformed if value in selected_by_id}
+    )
+    terminal_pass.difference_update(dirty_audits)
+    non_pass_terminal.difference_update(dirty_audits)
+    adjudicated.difference_update(dirty_audits)
     unresolved = required_adjudication - adjudicated
     agreement_count, raw_agreement, kappa = _agreement(package, by_role)
     issue_sets = {
@@ -746,6 +814,7 @@ def evaluate_core_audit_gate(
     )
     return CoreAuditGateReport(
         selection_package=package,
+        source_task_manifest=source_task_manifest,
         source_task_manifest_hash=package.source_task_manifest_hash,
         selection_hash=package.selection_hash,
         review_context_hash=context_hash,

@@ -201,22 +201,31 @@ def _read_review_rows(path: Path) -> tuple[Any, ...]:
 def gate_core_audit_files(
     *,
     selection_package_path: Path,
-    source_task_manifest_path: Path,
+    candidate_dir: Path,
     selected_tasks_path: Path,
     surface_context_path: Path,
     decisions_path: Path,
     adjudications_path: Path | None,
     output_dir: Path,
     overwrite: bool = False,
+    expected_full: bool = True,
 ) -> CoreAuditGateReport:
     """Evaluate human files and atomically write a gate report plus required blanks."""
     package = load_core_audit_selection_package(Path(selection_package_path))
-    manifest_bytes = Path(source_task_manifest_path).read_bytes()
-    manifest = TaskManifestV3.model_validate_json(manifest_bytes)
-    if canonical_json_bytes(manifest) != manifest_bytes:
-        raise ValueError("source task manifest must use canonical JSON bytes")
-    if hashlib.sha256(manifest_bytes).hexdigest() != package.source_task_manifest_hash:
-        raise ValueError("source task manifest hash does not match the selection")
+    candidate_tasks, manifest, manifest_hash = _load_candidate(
+        Path(candidate_dir), expected_full=expected_full
+    )
+    if manifest_hash != package.source_task_manifest_hash:
+        raise ValueError("trusted candidate task manifest hash does not match the selection")
+    recomputed = select_core_audit_sample(
+        candidate_tasks,
+        manifest,
+        source_task_manifest_hash=manifest_hash,
+    )
+    if recomputed != package:
+        raise ValueError(
+            "staged selection does not equal deterministic selection from the trusted candidate"
+        )
     selected_bytes = Path(selected_tasks_path).read_bytes()
     context_bytes = Path(surface_context_path).read_bytes()
     selected_tasks = _canonical_task_rows(selected_bytes, "selected_tasks.jsonl")
@@ -239,6 +248,7 @@ def gate_core_audit_files(
         package,
         decisions,
         adjudications,
+        source_task_manifest=manifest,
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )
@@ -248,7 +258,8 @@ def gate_core_audit_files(
     output_dir = Path(output_dir)
     sources = [
         Path(selection_package_path),
-        Path(source_task_manifest_path),
+        Path(candidate_dir) / "task_manifest.json",
+        Path(candidate_dir) / "tasks.jsonl",
         Path(selected_tasks_path),
         Path(surface_context_path),
         Path(decisions_path),

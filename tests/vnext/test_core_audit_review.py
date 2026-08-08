@@ -30,6 +30,7 @@ from mub.vnext.io import canonical_json_bytes, sha256_model
 
 ROOT = Path(__file__).resolve().parents[2]
 _TASKS_BY_SELECTION_HASH = {}
+_MANIFEST_BY_SELECTION_HASH = {}
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +49,7 @@ def selection_package():
     _TASKS_BY_SELECTION_HASH[package.selection_hash] = {
         task.task_id: task for task in snapshot.tasks
     }
+    _MANIFEST_BY_SELECTION_HASH[package.selection_hash] = manifest
     return package
 
 
@@ -68,6 +70,7 @@ def _gate(package, decisions, adjudications):
         package,
         decisions,
         adjudications,
+        source_task_manifest=_MANIFEST_BY_SELECTION_HASH[package.selection_hash],
         selected_tasks=selected,
         surface_context_tasks=surfaces,
     )
@@ -200,6 +203,25 @@ def test_reviewer_ids_must_use_one_canonical_offline_identity(selection_package)
         _decision(selection_package, selected, "primary", reviewer="Alice")
 
 
+def test_gate_api_requires_the_exact_authenticated_source_manifest(
+    selection_package,
+) -> None:
+    selected, surfaces = _context(selection_package)
+    manifest = _MANIFEST_BY_SELECTION_HASH[selection_package.selection_hash]
+    fabricated = manifest.model_copy(
+        update={"data_release_id": "fabricated-core-release"}
+    )
+    with pytest.raises(ValueError, match="source task manifest hash"):
+        evaluate_core_audit_gate(
+            selection_package,
+            _all_passing_decisions(selection_package),
+            (),
+            source_task_manifest=fabricated,
+            selected_tasks=selected,
+            surface_context_tasks=surfaces,
+        )
+
+
 def test_disagreement_and_nonpass_require_terminal_adjudication(
     selection_package,
 ) -> None:
@@ -266,6 +288,8 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
     assert remediation.required_action == "regenerate_reselect"
     assert remediation.generator_stratum.startswith(selected_a.family.value)
     assert remediation.template_stratum == selected_a.surface_id
+    assert selected_a.audit_id in remediation_report.adjudicated_audit_ids
+    assert selected_a.audit_id not in remediation_report.unresolved_adjudication_ids
 
     adjudications = [
         _decision(
@@ -284,6 +308,72 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
         selected_a.audit_id,
         selected_e.audit_id,
     }
+
+
+def test_copy_fingerprint_crosses_reviewer_roles_and_unicode_evasions(
+    selection_package,
+) -> None:
+    decisions = _all_passing_decisions(selection_package)
+    selected = next(
+        item
+        for item in selection_package.selections
+        if item.family is TaskFamily.DELETION_FORGETTING
+    )
+    indices = {
+        item.reviewer_role: index
+        for index, item in enumerate(decisions)
+        if item.audit_id == selected.audit_id
+    }
+    decisions[indices["primary"]] = decisions[indices["primary"]].model_copy(
+        update={
+            "task_specific_observation": (
+                f"Checked exact task {selected.task_id} — independently."
+            )
+        }
+    )
+    decisions[indices["secondary"]] = decisions[indices["secondary"]].model_copy(
+        update={
+            "task_specific_observation": (
+                f"Checked exact task {selected.task_id}​ - independently!"
+            )
+        }
+    )
+
+    report = _gate(selection_package, decisions, ())
+
+    assert selected.audit_id in report.copied_observation_audit_ids
+    assert selected.audit_id not in report.terminal_pass_audit_ids
+    assert len(report.terminal_pass_audit_ids) == 223
+
+
+def test_copied_reviewer_adjudicator_observation_is_human_input_not_remediation(
+    selection_package,
+) -> None:
+    decisions = _all_passing_decisions(selection_package)
+    selected = next(
+        item
+        for item in selection_package.selections
+        if item.family is TaskFamily.REPEATED_SAME_SLOT
+    )
+    primary_index = next(
+        index for index, item in enumerate(decisions) if item.audit_id == selected.audit_id
+    )
+    decisions[primary_index] = decisions[primary_index].model_copy(
+        update={"verdict": "block", "checks": _checks(selected.family, failed="surface_natural")}
+    )
+    adjudicator = _decision(
+        selection_package,
+        selected,
+        "adjudicator",
+        reviewer="reviewer-adjudicator",
+        task_specific_observation=decisions[primary_index].task_specific_observation,
+    )
+
+    report = _gate(selection_package, decisions, (adjudicator,))
+
+    assert selected.audit_id in report.copied_observation_audit_ids
+    assert selected.audit_id in report.unresolved_adjudication_ids
+    assert not report.remediations
 
 
 @pytest.mark.parametrize(
@@ -329,13 +419,20 @@ def test_gate_fails_closed_on_review_evidence_corruption(
         other = 0 if primary_index != 0 else 1
         decisions[primary_index] = decisions[primary_index].model_copy(update={"review_record_id": decisions[other].review_record_id})
     else:
-        other = 0 if primary_index != 0 else 1
-        decisions[primary_index] = decisions[primary_index].model_copy(update={"task_specific_observation": decisions[other].task_specific_observation})
+        decisions[primary_index] = decisions[primary_index].model_copy(
+            update={
+                "task_specific_observation": decisions[
+                    secondary_index
+                ].task_specific_observation
+            }
+        )
 
     report = _gate(selection_package, decisions, ())
 
     assert report.release_ready is False
     assert report.issues
+    if corruption != "unknown_id":
+        assert selected_e.audit_id not in report.terminal_pass_audit_ids
 
 
 def test_family_aware_applicability_rejects_fake_not_applicable_values(
@@ -361,3 +458,5 @@ def test_family_aware_applicability_rejects_fake_not_applicable_values(
 
     assert report.release_ready is False
     assert selected.audit_id in report.invalid_applicability_audit_ids
+    assert selected.audit_id not in report.terminal_pass_audit_ids
+    assert not report.remediations

@@ -557,6 +557,96 @@ def _core_candidates(tasks: tuple[MemUpdateTaskV3, ...]) -> tuple[_CoreCandidate
     return tuple(candidates)
 
 
+def _exact_quota_cover(
+    candidates: Sequence[_CoreCandidate],
+    required: set[str],
+    quotas: Mapping[Split, int],
+    target_count: int,
+) -> tuple[_CoreCandidate, ...] | None:
+    """Deterministic exact cover with split capacities, followed by quota-safe fill."""
+    ordered = tuple(sorted(candidates, key=lambda item: item.core_id))
+    condition_sets = {
+        item.core_id: frozenset(item.conditions) for item in ordered
+    }
+    by_condition = {
+        condition: tuple(
+            item for item in ordered if condition in condition_sets[item.core_id]
+        )
+        for condition in sorted(required)
+    }
+    if any(not options for options in by_condition.values()):
+        return None
+    failed: set[tuple[frozenset[str], tuple[tuple[str, int], ...]]] = set()
+
+    def search(
+        uncovered: frozenset[str], remaining: Counter[Split]
+    ) -> tuple[_CoreCandidate, ...] | None:
+        if not uncovered:
+            return ()
+        state = (
+            uncovered,
+            tuple(
+                (split.value, remaining[split])
+                for split in sorted(quotas, key=lambda item: item.value)
+            ),
+        )
+        if state in failed:
+            return None
+        pivot = min(
+            uncovered,
+            key=lambda token: (
+                sum(
+                    remaining[item.split] > 0 for item in by_condition[token]
+                ),
+                token,
+            ),
+        )
+        options = sorted(
+            (
+                item
+                for item in by_condition[pivot]
+                if remaining[item.split] > 0
+            ),
+            key=lambda item: (
+                -len(condition_sets[item.core_id] & uncovered),
+                item.core_id,
+            ),
+        )
+        for item in options:
+            next_remaining = remaining.copy()
+            next_remaining[item.split] -= 1
+            tail = search(
+                uncovered - condition_sets[item.core_id], next_remaining
+            )
+            if tail is not None:
+                return (item, *tail)
+        failed.add(state)
+        return None
+
+    cover = search(frozenset(required), Counter(quotas))
+    if cover is None or len(cover) > target_count:
+        return None
+    used = {item.core_id for item in cover}
+    remaining = Counter(quotas)
+    for item in cover:
+        remaining[item.split] -= 1
+    filled = list(cover)
+    for split in sorted(quotas, key=lambda item: item.value):
+        options = [
+            item
+            for item in ordered
+            if item.split is split and item.core_id not in used
+        ]
+        if len(options) < remaining[split]:
+            return None
+        for item in options[: remaining[split]]:
+            filled.append(item)
+            used.add(item.core_id)
+    if len(filled) != target_count:
+        return None
+    return tuple(filled)
+
+
 def _select_family_cores(
     family: TaskFamily, candidates: Sequence[_CoreCandidate]
 ) -> tuple[tuple[_CoreCandidate, str], ...]:
@@ -578,9 +668,24 @@ def _select_family_cores(
         ]
         if not eligible:
             raise ValueError(f"family {family.value} cannot satisfy the split/core quota")
+        def scarcity(item: _CoreCandidate) -> int:
+            covered = set(item.conditions) & uncovered
+            if not covered:
+                return len(eligible) + 1
+            return min(
+                sum(
+                    candidate.split in remaining
+                    and remaining[candidate.split] > 0
+                    and token in candidate.conditions
+                    for candidate in eligible
+                )
+                for token in covered
+            )
+
         best = min(
             eligible,
             key=lambda item: (
+                scarcity(item),
                 -len(set(item.conditions) & uncovered),
                 sum(condition_counts[token] for token in item.conditions),
                 item.core_id,
@@ -595,9 +700,27 @@ def _select_family_cores(
     if any(remaining.values()):
         raise ValueError(f"family {family.value} did not satisfy exact split quotas")
     if uncovered:
-        raise ValueError(
-            f"family {family.value} cannot cover required authenticated conditions: {sorted(uncovered)}"
+        exact = _exact_quota_cover(
+            candidates, required, _CORE_SPLIT_QUOTA, 32
         )
+        if exact is None:
+            availability = {
+                token: sum(token in item.conditions for item in candidates)
+                for token in sorted(uncovered)
+            }
+            raise ValueError(
+                f"family {family.value} has an unsatisfiable 32-item 22/3/7 "
+                f"condition cover; uncovered availability={availability}"
+            )
+        selected = [
+            (
+                item,
+                "quota_set_cover"
+                if set(item.conditions) & required
+                else "quota_spread_fill",
+            )
+            for item in exact
+        ]
     return tuple(selected)
 
 
