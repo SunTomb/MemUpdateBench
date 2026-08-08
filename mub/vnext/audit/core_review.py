@@ -284,6 +284,37 @@ def core_audit_decision_templates(
     return tuple(sorted(templates, key=lambda item: (item.audit_id, item.reviewer_role)))
 
 
+def core_audit_adjudication_templates(
+    package: CoreAuditSelectionPackage,
+    audit_ids: Sequence[str] | Any,
+) -> tuple[CoreAuditDecisionTemplate, ...]:
+    """Build blank adjudicator rows only for caller-declared required audit IDs."""
+    if type(package) is not CoreAuditSelectionPackage:
+        raise TypeError("package must be an exact CoreAuditSelectionPackage")
+    requested = tuple(audit_ids)
+    if len(requested) > len(package.selections):
+        raise ValueError("adjudication template request exceeds the selection")
+    if any(type(audit_id) is not str or not audit_id.strip() for audit_id in requested):
+        raise ValueError("adjudication audit IDs must be nonblank strings")
+    if len(requested) != len(set(requested)):
+        raise ValueError("adjudication audit IDs must be unique")
+    selected_by_id = {item.audit_id: item for item in package.selections}
+    unknown = set(requested) - selected_by_id.keys()
+    if unknown:
+        raise ValueError(f"unknown adjudication audit IDs: {sorted(unknown)}")
+    return tuple(
+        CoreAuditDecisionTemplate(
+            audit_id=selected_by_id[audit_id].audit_id,
+            task_id=selected_by_id[audit_id].task_id,
+            task_hash=selected_by_id[audit_id].task_hash,
+            source_task_manifest_hash=package.source_task_manifest_hash,
+            selection_hash=package.selection_hash,
+            reviewer_role="adjudicator",
+        )
+        for audit_id in sorted(requested)
+    )
+
+
 def _snapshot_sequence(value: Sequence[Any], name: str) -> tuple[Any, ...]:
     if type(value) not in (list, tuple):
         raise TypeError(f"{name} must be an exact list or tuple")
@@ -560,6 +591,7 @@ __all__ = [
     "ReviewVerdict",
     "ReviewerRole",
     "applicable_core_audit_checks",
+    "core_audit_adjudication_templates",
     "core_audit_decision_templates",
     "evaluate_core_audit_gate",
 ]

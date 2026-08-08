@@ -13,6 +13,7 @@ from mub.vnext.audit.core_review import (
     CoreAuditDecision,
     CoreAuditDecisionTemplate,
     applicable_core_audit_checks,
+    core_audit_adjudication_templates,
     core_audit_decision_templates,
     evaluate_core_audit_gate,
 )
@@ -106,6 +107,14 @@ def test_templates_are_blank_role_complete_and_never_release_ready(
         "primary": 224,
         "secondary": 96,
     }
+    adjudication_templates = core_audit_adjudication_templates(
+        selection_package,
+        (item.audit_id for item in selection_package.selections),
+    )
+    assert len(adjudication_templates) == 224
+    assert {item.reviewer_role for item in adjudication_templates} == {"adjudicator"}
+    with pytest.raises(ValueError, match="unknown"):
+        core_audit_adjudication_templates(selection_package, ("unknown-audit",))
     with pytest.raises(ValidationError):
         CoreAuditDecision.model_validate(templates[0].model_dump(mode="python"))
     report = evaluate_core_audit_gate(selection_package, templates, ())
