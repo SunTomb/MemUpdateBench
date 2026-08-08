@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import hashlib
 import subprocess
 
 import pytest
 from pydantic import ValidationError
 
+import mub.vnext.audit.core as core_audit
+import mub.vnext.audit.core_review as core_review
+import mub.vnext.audit.core_stage as core_stage
 from mub.vnext.audit.core import (
     core_audit_review_context_hash,
     select_core_audit_sample,
@@ -31,6 +35,57 @@ from mub.vnext.io import canonical_json_bytes, sha256_model
 ROOT = Path(__file__).resolve().parents[2]
 _TASKS_BY_SELECTION_HASH = {}
 _MANIFEST_BY_SELECTION_HASH = {}
+_BOUNDED_PACKAGE = None
+_BOUNDED_MANIFEST = None
+
+
+def _promote_to_full_manifest_and_package(manifest, package):
+    manifest_payload = manifest.model_dump(mode="python")
+    hashes = dict(manifest.task_record_hashes)
+    missing = 12_000 - len(hashes)
+    hashes.update(
+        {
+            f"full-padding-task-{index:05d}": hashlib.sha256(
+                f"full-padding-hash-{index}".encode("ascii")
+            ).hexdigest()
+            for index in range(missing)
+        }
+    )
+    manifest_payload["task_record_hashes"] = hashes
+    manifest_payload["split_counts"] = {
+        "train": 8_400,
+        "dev": 1_200,
+        "test": 2_400,
+    }
+    task_refs = list(manifest.task_file_paths_and_hashes)
+    task_refs[0] = task_refs[0].model_copy(update={"record_count": 12_000})
+    manifest_payload["task_file_paths_and_hashes"] = tuple(task_refs)
+    full_manifest = type(manifest).model_validate(manifest_payload)
+    manifest_hash = sha256_model(full_manifest)
+    config_hash = package.selector_config_hash
+    rows = []
+    for row in package.selections:
+        pending = row.model_copy(update={"audit_id": "pending"})
+        rows.append(
+            pending.model_copy(
+                update={
+                    "audit_id": core_audit._audit_id(
+                        pending,
+                        source_task_manifest_hash=manifest_hash,
+                        selector_config_hash=config_hash,
+                    )
+                }
+            )
+        )
+    payload = object.__getattribute__(package, "__dict__").copy()
+    payload.update(
+        {
+            "source_task_manifest_hash": manifest_hash,
+            "selections": tuple(rows),
+        }
+    )
+    payload["selection_hash"] = core_audit.core_audit_selection_hash(payload)
+    return full_manifest, type(package).model_validate(payload)
 
 
 @pytest.fixture(scope="module")
@@ -41,15 +96,22 @@ def selection_package():
     config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
     snapshot = compile_core_snapshot(config, cores_per_family=40, code_revision=revision)
     manifest = build_core_artifact_bundle(snapshot, config).task_manifest
-    package = select_core_audit_sample(
+    bounded_package = select_core_audit_sample(
         snapshot.tasks,
         manifest,
         source_task_manifest_hash=sha256_model(manifest),
     )
-    _TASKS_BY_SELECTION_HASH[package.selection_hash] = {
-        task.task_id: task for task in snapshot.tasks
-    }
-    _MANIFEST_BY_SELECTION_HASH[package.selection_hash] = manifest
+    full_manifest, package = _promote_to_full_manifest_and_package(
+        manifest, bounded_package
+    )
+    global _BOUNDED_PACKAGE, _BOUNDED_MANIFEST
+    _BOUNDED_PACKAGE = bounded_package
+    _BOUNDED_MANIFEST = manifest
+    task_map = {task.task_id: task for task in snapshot.tasks}
+    _TASKS_BY_SELECTION_HASH[package.selection_hash] = task_map
+    _TASKS_BY_SELECTION_HASH[bounded_package.selection_hash] = task_map
+    _MANIFEST_BY_SELECTION_HASH[package.selection_hash] = full_manifest
+    _MANIFEST_BY_SELECTION_HASH[bounded_package.selection_hash] = manifest
     return package
 
 
@@ -157,6 +219,20 @@ def test_templates_are_blank_role_complete_and_never_release_ready(
     assert len(report.missing_review_roles) == 320
 
 
+def test_fully_passing_bounded_candidate_is_structurally_test_only(
+    selection_package,
+) -> None:
+    del selection_package
+    bounded = _BOUNDED_PACKAGE
+    assert bounded is not None
+    report = _gate(bounded, _all_passing_decisions(bounded), ())
+
+    assert len(report.terminal_pass_audit_ids) == 224
+    assert report.candidate_scope == "bounded_test"
+    assert report.full_candidate is False
+    assert report.release_ready is False
+
+
 def test_all_independent_terminal_passes_open_gate_and_report_agreement(
     selection_package,
 ) -> None:
@@ -165,11 +241,37 @@ def test_all_independent_terminal_passes_open_gate_and_report_agreement(
     report = _gate(selection_package, decisions, ())
 
     assert report.release_ready is True
+    assert report.candidate_scope == "full"
+    assert report.full_candidate is True
     assert len(report.terminal_pass_audit_ids) == 224
     assert report.required_adjudication_ids == ()
     assert report.raw_agreement == 1.0
     assert report.cohens_kappa is None
     assert report.agreement_item_count > 96
+
+
+def test_rejected_extra_evidence_remains_bound_after_issue_summary_tampering(
+    selection_package,
+) -> None:
+    decisions = _all_passing_decisions(selection_package)
+    rejected = decisions[0].model_copy(
+        update={
+            "audit_id": "foreign-extra-audit",
+            "review_record_id": "foreign-extra-record",
+        }
+    )
+    report = _gate(selection_package, (*decisions, rejected), ())
+    restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+
+    assert not restored.release_ready
+    assert any(not observation.accepted for observation in restored.input_observations)
+    tampered = restored.validated_replace(
+        unknown_audit_ids=(),
+        issues=(),
+    )
+    assert tampered.unknown_audit_ids == ()
+    assert tampered.issues == ()
+    assert tampered.release_ready is False
 
 
 def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness(
@@ -182,17 +284,17 @@ def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness
     restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
     assert restored.release_ready is True
     assert all(type(item) is CoreAuditDecision for item in restored.decision_evidence)
-    fabricated = report.model_copy(
-        update={
-            "decision_evidence": (),
-            "adjudication_evidence": (),
-            "terminal_pass_audit_ids": tuple(
-                item.audit_id for item in selection_package.selections
-            ),
-            "issues": (),
-        }
-    )
-    assert fabricated.release_ready is False
+    with pytest.raises(ValidationError, match="accepted input observations"):
+        report.model_copy(
+            update={
+                "decision_evidence": (),
+                "adjudication_evidence": (),
+                "terminal_pass_audit_ids": tuple(
+                    item.audit_id for item in selection_package.selections
+                ),
+                "issues": (),
+            }
+        )
 
 
 def test_reviewer_ids_must_use_one_canonical_offline_identity(selection_package) -> None:
@@ -201,6 +303,13 @@ def test_reviewer_ids_must_use_one_canonical_offline_identity(selection_package)
         _decision(selection_package, selected, "primary", reviewer="alice ")
     with pytest.raises(ValidationError, match="canonical"):
         _decision(selection_package, selected, "primary", reviewer="Alice")
+    with pytest.raises(ValidationError, match="letters or digits"):
+        _decision(
+            selection_package,
+            selected,
+            "primary",
+            task_specific_observation="✅🔥",
+        )
 
 
 def test_gate_api_requires_the_exact_authenticated_source_manifest(
@@ -290,6 +399,13 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
     assert remediation.template_stratum == selected_a.surface_id
     assert selected_a.audit_id in remediation_report.adjudicated_audit_ids
     assert selected_a.audit_id not in remediation_report.unresolved_adjudication_ids
+    remediation_templates = core_stage._adjudication_templates_for_report(
+        selection_package, remediation_report
+    )
+    assert selected_a.audit_id not in {
+        item.audit_id for item in remediation_templates
+    }
+    assert selected_e.audit_id in {item.audit_id for item in remediation_templates}
 
     adjudications = [
         _decision(
@@ -308,6 +424,72 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
         selected_a.audit_id,
         selected_e.audit_id,
     }
+    assert resolved.unresolved_adjudication_ids == ()
+    assert core_stage._adjudication_templates_for_report(
+        selection_package, resolved
+    ) == ()
+
+
+@pytest.mark.parametrize("ignorable", ("͏", "️", "\U000e0100"))
+def test_observation_fingerprint_removes_default_ignorables_not_all_combining_marks(
+    ignorable: str,
+) -> None:
+    assert core_review._normalized_observation("verified") == (
+        core_review._normalized_observation(f"ver{ignorable}ified")
+    )
+    assert core_review._normalized_observation("cafe") != (
+        core_review._normalized_observation("café")
+    )
+
+
+@pytest.mark.parametrize("different_reviewers", (False, True))
+def test_copy_fingerprint_detects_cross_audit_reuse_regardless_of_reviewer(
+    selection_package,
+    different_reviewers: bool,
+) -> None:
+    decisions = _all_passing_decisions(selection_package)
+    selected = tuple(
+        item
+        for item in selection_package.selections
+        if item.family is TaskFamily.REPEATED_SAME_SLOT
+    )[:2]
+    indices = [
+        next(
+            index
+            for index, decision in enumerate(decisions)
+            if decision.audit_id == item.audit_id
+        )
+        for item in selected
+    ]
+    observations = (
+        "Verified stale-update trajectory 17 against every gold event. ✅",
+        "Verified stale update trajectory 17 against every gold event! 🔥",
+    )
+    for position, (index, observation) in enumerate(zip(indices, observations)):
+        updates = {"task_specific_observation": observation}
+        if different_reviewers:
+            updates["reviewer_id"] = f"cross-audit-reviewer-{position}"
+        decisions[index] = decisions[index].model_copy(update=updates)
+
+    report = _gate(selection_package, decisions, ())
+
+    assert set(report.copied_observation_audit_ids) >= {
+        item.audit_id for item in selected
+    }
+    assert not ({item.audit_id for item in selected} & set(report.terminal_pass_audit_ids))
+    assert not report.release_ready
+
+
+def test_distinct_substantive_observations_pass_despite_empty_optional_notes(
+    selection_package,
+) -> None:
+    decisions = _all_passing_decisions(selection_package)
+
+    report = _gate(selection_package, decisions, ())
+
+    assert all(decision.notes == "" for decision in decisions)
+    assert report.copied_observation_audit_ids == ()
+    assert report.release_ready
 
 
 def test_copy_fingerprint_crosses_reviewer_roles_and_unicode_evasions(
@@ -433,6 +615,16 @@ def test_gate_fails_closed_on_review_evidence_corruption(
     assert report.issues
     if corruption != "unknown_id":
         assert selected_e.audit_id not in report.terminal_pass_audit_ids
+        assert report.agreement_item_count < 672
+
+
+def test_decision_model_does_not_expose_family_blind_terminal_pass(
+    selection_package,
+) -> None:
+    selected = selection_package.selections[0]
+    decision = _decision(selection_package, selected, "primary")
+    assert not hasattr(decision, "terminal_pass")
+    assert not hasattr(decision.checks, "all_applicable_pass")
 
 
 def test_family_aware_applicability_rejects_fake_not_applicable_values(

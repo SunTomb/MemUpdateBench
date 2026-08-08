@@ -501,9 +501,16 @@ def _snapshot_authenticated_release(
         raise TypeError("Core audit requires an exact strict-v3 TaskManifestV3")
     if source_task_manifest_hash != sha256_model(manifest):
         raise ValueError("source task manifest hash does not match the authenticated manifest")
-    copied = tuple(tasks)
-    if len(copied) > _MAX_TASKS:
+    copied_list = []
+    iterator = iter(tasks)
+    for _ in range(_MAX_TASKS + 1):
+        try:
+            copied_list.append(next(iterator))
+        except StopIteration:
+            break
+    if len(copied_list) > _MAX_TASKS:
         raise ValueError("Core candidate exceeds the 12,000-task audit bound")
+    copied = tuple(copied_list)
     if any(type(task) is not MemUpdateTaskV3 for task in copied):
         raise TypeError("Core audit requires exact strict-v3 MemUpdateTaskV3 records")
     ids = tuple(task.task_id for task in copied)
@@ -712,15 +719,17 @@ def _select_family_cores(
                 f"family {family.value} has an unsatisfiable 32-item 22/3/7 "
                 f"condition cover; uncovered availability={availability}"
             )
-        selected = [
-            (
-                item,
-                "quota_set_cover"
-                if set(item.conditions) & required
-                else "quota_spread_fill",
+        selected = []
+        exact_uncovered = set(required)
+        for item in exact:
+            contributes = bool(set(item.conditions) & exact_uncovered)
+            selected.append(
+                (
+                    item,
+                    "quota_set_cover" if contributes else "quota_spread_fill",
+                )
             )
-            for item in exact
-        ]
+            exact_uncovered.difference_update(item.conditions)
     return tuple(selected)
 
 

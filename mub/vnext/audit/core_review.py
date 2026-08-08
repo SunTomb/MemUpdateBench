@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from typing import Any, Literal
+import hashlib
+import json
 import unicodedata
 
 from pydantic import ConfigDict, computed_field, field_validator, model_validator
@@ -21,7 +23,7 @@ from mub.vnext.audit.core import (
 from mub.vnext.contracts import TaskFamily
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
-from mub.vnext.io import sha256_model
+from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.contracts.common import ImmutableContractModel
 
 
@@ -52,6 +54,7 @@ _SELECTOR_REVIEW_FAMILIES = frozenset(
     }
 )
 _MAX_REVIEW_RECORDS = 1024
+_FULL_CORE_TASK_COUNT = 12_000
 
 
 class _StrictFrozenCoreReviewModel(ImmutableContractModel):
@@ -64,14 +67,35 @@ def _hash_value(value: str, field_name: str) -> str:
     return value
 
 
+def _is_default_ignorable(character: str) -> bool:
+    """Explicit Unicode Default_Ignorable_Code_Point policy used for audit text."""
+    codepoint = ord(character)
+    return (
+        unicodedata.category(character) == "Cf"
+        or codepoint in {0x00AD, 0x034F, 0x061C, 0xFEFF}
+        or 0x115F <= codepoint <= 0x1160
+        or 0x17B4 <= codepoint <= 0x17B5
+        or 0x180B <= codepoint <= 0x180F
+        or 0x200B <= codepoint <= 0x200F
+        or 0x202A <= codepoint <= 0x202E
+        or 0x2060 <= codepoint <= 0x206F
+        or codepoint in {0x3164, 0xFFA0}
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0x1BCA0 <= codepoint <= 0x1BCA3
+        or 0x1D173 <= codepoint <= 0x1D17A
+        or 0xE0000 <= codepoint <= 0xE007F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
+
+
 def _normalized_observation(value: str) -> str:
-    """NFKC/casefold, drop format chars, and canonicalize punctuation/spacing."""
+    """NFKC/casefold, drop default ignorables, and normalize punctuation/space."""
     characters = []
     for character in unicodedata.normalize("NFKC", value).casefold():
         category = unicodedata.category(character)
-        if category == "Cf":
+        if _is_default_ignorable(character):
             continue
-        if character.isspace() or category.startswith("P"):
+        if character.isspace() or category.startswith(("P", "S")):
             characters.append(" ")
         else:
             characters.append(character)
@@ -95,10 +119,6 @@ class CoreAuditChecks(_StrictFrozenCoreReviewModel):
     selector_history_evidence_correct: ReviewOutcome
     four_surface_semantic_equivalence: ReviewOutcome
     surface_natural: ReviewOutcome
-
-    @property
-    def all_applicable_pass(self) -> bool:
-        return all(value != "fail" for value in self.values())
 
     def values(self) -> tuple[ReviewOutcome, ...]:
         return tuple(getattr(self, field) for field in _CHECK_FIELDS)
@@ -162,15 +182,16 @@ class CoreAuditDecision(_StrictFrozenCoreReviewModel):
     def _attested(self) -> CoreAuditDecision:
         if self.independent_review_attestation is not True:
             raise ValueError("human review requires an explicit independence attestation")
-        if not _normalized_observation(self.task_specific_observation):
+        normalized_observation = _normalized_observation(
+            self.task_specific_observation
+        )
+        if not normalized_observation or not any(
+            character.isalnum() for character in normalized_observation
+        ):
             raise ValueError(
-                "task_specific_observation must contain substantive non-punctuation text"
+                "task_specific_observation must contain substantive letters or digits"
             )
         return self
-
-    @property
-    def terminal_pass(self) -> bool:
-        return self.verdict == "pass" and self.checks.all_applicable_pass
 
 
 class CoreAuditDecisionTemplate(_StrictFrozenCoreReviewModel):
@@ -206,6 +227,30 @@ class CoreAuditDecisionTemplate(_StrictFrozenCoreReviewModel):
         return False
 
 
+class CoreAuditInputObservation(_StrictFrozenCoreReviewModel):
+    source: Literal["decision", "adjudication"]
+    index: int
+    record_digest: str
+    audit_id: str | None = None
+    accepted: bool
+    rejection_reason: str | None = None
+
+    @field_validator("record_digest")
+    @classmethod
+    def _digest(cls, value: str) -> str:
+        return _hash_value(value, "record_digest")
+
+    @model_validator(mode="after")
+    def _rejection_coherence(self) -> CoreAuditInputObservation:
+        if self.accepted and self.rejection_reason is not None:
+            raise ValueError("accepted input observations cannot have rejection_reason")
+        if not self.accepted and (
+            self.rejection_reason is None or not self.rejection_reason.strip()
+        ):
+            raise ValueError("rejected input observations require rejection_reason")
+        return self
+
+
 class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
     audit_id: str
     generator_stratum: str
@@ -218,12 +263,15 @@ class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
 
 class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     schema_version: Literal[CORE_AUDIT_SCHEMA_VERSION] = CORE_AUDIT_SCHEMA_VERSION
+    candidate_scope: Literal["full", "bounded_test"]
+    full_candidate: bool
     selection_package: CoreAuditSelectionPackage
     source_task_manifest: TaskManifestV3
     source_task_manifest_hash: str
     selection_hash: str
     review_context_hash: str
     surface_context_evidence: tuple[MemUpdateTaskV3, ...]
+    input_observations: tuple[CoreAuditInputObservation, ...]
     decision_evidence: tuple[CoreAuditDecision, ...] = ()
     adjudication_evidence: tuple[CoreAuditDecision, ...] = ()
     missing_review_roles: tuple[str, ...] = ()
@@ -252,6 +300,29 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     @classmethod
     def _hash(cls, value: str, info) -> str:
         return _hash_value(value, info.field_name)
+
+    @field_validator("input_observations", mode="before")
+    @classmethod
+    def _input_observations(cls, value: Any) -> tuple[CoreAuditInputObservation, ...]:
+        if type(value) not in (list, tuple) or len(value) > 2048:
+            raise ValueError("input_observations must be a bounded list or tuple")
+        observations = tuple(
+            item
+            if type(item) is CoreAuditInputObservation
+            else CoreAuditInputObservation.model_validate(item)
+            for item in value
+        )
+        expected = tuple(
+            (source, index)
+            for source in ("decision", "adjudication")
+            for index in range(
+                sum(item.source == source for item in observations)
+            )
+        )
+        observed = tuple((item.source, item.index) for item in observations)
+        if observed != expected:
+            raise ValueError("input_observations must be contiguous in source/index order")
+        return observations
 
     @field_validator("decision_evidence", "adjudication_evidence", mode="before")
     @classmethod
@@ -327,6 +398,44 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
             raise ValueError("gate issue fields must be unique")
         return result
 
+    @model_validator(mode="after")
+    def _candidate_scope_matches_manifest(self) -> CoreAuditGateReport:
+        manifest_count = sum(self.source_task_manifest.split_counts.values())
+        expected_full = manifest_count == _FULL_CORE_TASK_COUNT
+        if self.full_candidate is not expected_full:
+            raise ValueError("full_candidate must match authenticated manifest task count")
+        expected_scope = "full" if expected_full else "bounded_test"
+        if self.candidate_scope != expected_scope:
+            raise ValueError("candidate_scope must match authenticated manifest scope")
+        evidence_by_source = {
+            "decision": self.decision_evidence,
+            "adjudication": self.adjudication_evidence,
+        }
+        for source, evidence in evidence_by_source.items():
+            accepted = tuple(
+                observation
+                for observation in self.input_observations
+                if observation.source == source and observation.accepted
+            )
+            if len(accepted) != len(evidence):
+                raise ValueError("accepted input observations must bind all retained evidence")
+            unmatched = list(evidence)
+            for observation in accepted:
+                match = next(
+                    (
+                        item
+                        for item in unmatched
+                        if item.audit_id == observation.audit_id
+                        and _input_digest(item, source, observation.index)
+                        == observation.record_digest
+                    ),
+                    None,
+                )
+                if match is None:
+                    raise ValueError("input observation digest does not bind retained evidence")
+                unmatched.remove(match)
+        return self
+
     def validated_replace(self, **changes) -> CoreAuditGateReport:
         raw = object.__getattribute__(self, "__dict__")
         if type(raw) is not dict or set(raw) != set(type(self).model_fields):
@@ -341,6 +450,13 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
         try:
             raw = object.__getattribute__(self, "__dict__")
             snapshot = type(self).model_validate(dict(raw))
+            if not snapshot.full_candidate or snapshot.candidate_scope != "full":
+                return False
+            if any(
+                not observation.accepted
+                for observation in snapshot.input_observations
+            ):
+                return False
             package = snapshot.selection_package
             selected_ids = {item.audit_id for item in package.selections}
             selected_tasks_by_id = {
@@ -362,6 +478,7 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
             compared_fields = set(type(self).model_fields) - {
                 "selection_package",
                 "surface_context_evidence",
+                "input_observations",
                 "decision_evidence",
                 "adjudication_evidence",
             }
@@ -379,6 +496,47 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
             )
         except Exception:
             return False
+
+
+def _observed_audit_id(value: Any) -> str | None:
+    if type(value) is dict:
+        candidate = value.get("audit_id")
+    else:
+        try:
+            raw = object.__getattribute__(value, "__dict__")
+        except Exception:
+            raw = None
+        candidate = raw.get("audit_id") if type(raw) is dict else None
+    return candidate if type(candidate) is str and candidate.strip() else None
+
+
+def _input_digest(value: Any, source: str, index: int) -> str:
+    try:
+        if hasattr(value, "model_dump"):
+            payload = canonical_json_bytes(value)
+        elif type(value) is dict:
+            payload = json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        else:
+            raise TypeError
+    except Exception:
+        payload = (
+            f"unserializable:{type(value).__module__}.{type(value).__qualname__}:"
+            f"{_observed_audit_id(value) or ''}"
+        ).encode("utf-8")
+    envelope = (
+        source.encode("ascii")
+        + b":"
+        + str(index).encode("ascii")
+        + b":"
+        + hashlib.sha256(payload).hexdigest().encode("ascii")
+    )
+    return hashlib.sha256(envelope).hexdigest()
 
 
 def _decision_key(item: CoreAuditDecision) -> tuple[str, str, str, str]:
@@ -439,6 +597,7 @@ def core_audit_adjudication_templates(
     unknown = set(requested) - selected_by_id.keys()
     if unknown:
         raise ValueError(f"unknown adjudication audit IDs: {sorted(unknown)}")
+    context_hash = core_audit_review_context_hash(package)
     return tuple(
         CoreAuditDecisionTemplate(
             audit_id=selected_by_id[audit_id].audit_id,
@@ -446,7 +605,7 @@ def core_audit_adjudication_templates(
             task_hash=selected_by_id[audit_id].task_hash,
             source_task_manifest_hash=package.source_task_manifest_hash,
             selection_hash=package.selection_hash,
-            review_context_hash=core_audit_review_context_hash(package),
+            review_context_hash=context_hash,
             reviewer_role="adjudicator",
         )
         for audit_id in sorted(requested)
@@ -531,13 +690,14 @@ def _is_bound(
     decision: CoreAuditDecision,
     selected: CoreAuditSelection,
     package: CoreAuditSelectionPackage,
+    review_context_hash: str,
 ) -> bool:
     return (
         decision.task_id == selected.task_id
         and decision.task_hash == selected.task_hash
         and decision.source_task_manifest_hash == package.source_task_manifest_hash
         and decision.selection_hash == package.selection_hash
-        and decision.review_context_hash == core_audit_review_context_hash(package)
+        and decision.review_context_hash == review_context_hash
     )
 
 
@@ -573,11 +733,15 @@ def _review_signature(decision: CoreAuditDecision, family: TaskFamily) -> tuple[
 def _agreement(
     package: CoreAuditSelectionPackage,
     by_role: dict[tuple[str, str], list[CoreAuditDecision]],
+    excluded_audit_ids: set[str],
 ) -> tuple[int, float | None, float | None]:
     first: list[str] = []
     second: list[str] = []
     for selected in package.selections:
-        if selected.family not in _DUAL_REVIEW_FAMILIES:
+        if (
+            selected.family not in _DUAL_REVIEW_FAMILIES
+            or selected.audit_id in excluded_audit_ids
+        ):
             continue
         primary = by_role.get((selected.audit_id, "primary"), [])
         secondary = by_role.get((selected.audit_id, "secondary"), [])
@@ -620,6 +784,9 @@ def evaluate_core_audit_gate(
         raise TypeError("gate requires an exact strict-v3 source TaskManifestV3")
     if sha256_model(source_task_manifest) != package.source_task_manifest_hash:
         raise ValueError("source task manifest hash does not match the selection")
+    manifest_task_count = sum(source_task_manifest.split_counts.values())
+    full_candidate = manifest_task_count == _FULL_CORE_TASK_COUNT
+    candidate_scope = "full" if full_candidate else "bounded_test"
     context_evidence = validate_core_audit_review_context(
         package, selected_tasks, surface_context_tasks
     )
@@ -639,34 +806,61 @@ def evaluate_core_audit_gate(
     invalid_applicability: set[str] = set()
     valid_decisions: list[CoreAuditDecision] = []
     valid_adjudications: list[CoreAuditDecision] = []
+    input_observations: list[CoreAuditInputObservation] = []
+
+    def observe(
+        item: Any,
+        source: str,
+        index: int,
+        *,
+        accepted: bool,
+        rejection_reason: str | None = None,
+    ) -> None:
+        input_observations.append(
+            CoreAuditInputObservation(
+                source=source,
+                index=index,
+                record_digest=_input_digest(item, source, index),
+                audit_id=_observed_audit_id(item),
+                accepted=accepted,
+                rejection_reason=rejection_reason,
+            )
+        )
 
     def collect(
         values: tuple[Any, ...], expected_adjudication: bool
     ) -> list[CoreAuditDecision]:
         result = []
+        source = "adjudication" if expected_adjudication else "decision"
         for index, item in enumerate(values):
             if type(item) is not CoreAuditDecision:
-                malformed.add(f"<index:{index}:{'adjudication' if expected_adjudication else 'decision'}>")
+                malformed.add(f"<index:{index}:{source}>")
+                observe(item, source, index, accepted=False, rejection_reason="malformed_record_type")
                 continue
             try:
                 raw = object.__getattribute__(item, "__dict__")
                 snapshot = CoreAuditDecision.model_validate(dict(raw))
             except Exception:
                 malformed.add(getattr(item, "audit_id", f"<index:{index}>") or f"<index:{index}>")
+                observe(item, source, index, accepted=False, rejection_reason="malformed_record")
                 continue
             selected = selected_by_id.get(snapshot.audit_id)
             if selected is None:
                 unknown.add(snapshot.audit_id)
+                observe(item, source, index, accepted=False, rejection_reason="unknown_audit_id")
                 continue
-            if not _is_bound(snapshot, selected, package):
+            if not _is_bound(snapshot, selected, package, context_hash):
                 binding.add(snapshot.audit_id)
+                observe(item, source, index, accepted=False, rejection_reason="binding_mismatch")
                 continue
             if (snapshot.reviewer_role == "adjudicator") != expected_adjudication:
                 malformed.add(snapshot.audit_id)
+                observe(item, source, index, accepted=False, rejection_reason="wrong_reviewer_role")
                 continue
             if not _valid_applicability(snapshot, selected.family):
                 invalid_applicability.add(snapshot.audit_id)
             result.append(snapshot)
+            observe(item, source, index, accepted=True)
         return result
 
     valid_decisions = collect(decision_input, False)
@@ -702,14 +896,16 @@ def evaluate_core_audit_gate(
         record_id for record_id, count in record_counts.items() if count > 1
     }
     copied_observations: set[str] = set()
-    observation_groups: dict[tuple[str, str], list[CoreAuditDecision]] = defaultdict(list)
+    per_audit_groups: dict[tuple[str, str], list[CoreAuditDecision]] = defaultdict(list)
+    global_groups: dict[str, list[CoreAuditDecision]] = defaultdict(list)
     for item in (*valid_decisions, *valid_adjudications):
-        observation_groups[
-            (item.audit_id, _normalized_observation(item.task_specific_observation))
-        ].append(item)
-    for rows in observation_groups.values():
-        if len(rows) > 1:
-            copied_observations.update(item.audit_id for item in rows)
+        fingerprint = _normalized_observation(item.task_specific_observation)
+        per_audit_groups[(item.audit_id, fingerprint)].append(item)
+        global_groups[fingerprint].append(item)
+    for groups in (per_audit_groups, global_groups):
+        for rows in groups.values():
+            if len(rows) > 1:
+                copied_observations.update(item.audit_id for item in rows)
 
     non_independent: set[str] = set()
     required_adjudication: set[str] = set()
@@ -782,7 +978,9 @@ def evaluate_core_audit_gate(
     non_pass_terminal.difference_update(dirty_audits)
     adjudicated.difference_update(dirty_audits)
     unresolved = required_adjudication - adjudicated
-    agreement_count, raw_agreement, kappa = _agreement(package, by_role)
+    agreement_count, raw_agreement, kappa = _agreement(
+        package, by_role, dirty_audits
+    )
     issue_sets = {
         "missing_review_roles": missing,
         "duplicate_review_roles": duplicates,
@@ -813,12 +1011,15 @@ def evaluate_core_audit_gate(
         for audit_id in sorted(non_pass_terminal)
     )
     return CoreAuditGateReport(
+        candidate_scope=candidate_scope,
+        full_candidate=full_candidate,
         selection_package=package,
         source_task_manifest=source_task_manifest,
         source_task_manifest_hash=package.source_task_manifest_hash,
         selection_hash=package.selection_hash,
         review_context_hash=context_hash,
         surface_context_evidence=context_evidence,
+        input_observations=tuple(input_observations),
         decision_evidence=tuple(valid_decisions),
         adjudication_evidence=tuple(valid_adjudications),
         missing_review_roles=tuple(missing),
@@ -848,6 +1049,7 @@ __all__ = [
     "CoreAuditDecision",
     "CoreAuditDecisionTemplate",
     "CoreAuditGateReport",
+    "CoreAuditInputObservation",
     "CoreAuditRemediation",
     "ReviewOutcome",
     "ReviewVerdict",

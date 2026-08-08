@@ -172,8 +172,12 @@ def stage_core_audit_package(
     )
 
 
-def _read_review_rows(path: Path) -> tuple[Any, ...]:
+def _read_review_rows(
+    path: Path, *, required: bool = True
+) -> tuple[Any, ...]:
     if not path.exists():
+        if required:
+            raise FileNotFoundError(f"required human review file does not exist: {path}")
         return ()
     rows = []
     with path.open("rb") as handle:
@@ -198,6 +202,16 @@ def _read_review_rows(path: Path) -> tuple[Any, ...]:
     return tuple(rows)
 
 
+def _adjudication_templates_for_report(
+    package: CoreAuditSelectionPackage,
+    report: CoreAuditGateReport,
+):
+    """Return blanks only for adjudications that remain unresolved."""
+    return core_audit_adjudication_templates(
+        package, report.unresolved_adjudication_ids
+    )
+
+
 def gate_core_audit_files(
     *,
     selection_package_path: Path,
@@ -211,9 +225,20 @@ def gate_core_audit_files(
     expected_full: bool = True,
 ) -> CoreAuditGateReport:
     """Evaluate human files and atomically write a gate report plus required blanks."""
-    package = load_core_audit_selection_package(Path(selection_package_path))
+    selection_package_path = Path(selection_package_path)
+    candidate_dir = Path(candidate_dir)
+    selected_tasks_path = Path(selected_tasks_path)
+    surface_context_path = Path(surface_context_path)
+    decisions_path = Path(decisions_path)
+    adjudications_path = (
+        None if adjudications_path is None else Path(adjudications_path)
+    )
+    selection_bytes = selection_package_path.read_bytes()
+    package = load_core_audit_selection_package(selection_package_path)
+    if selection_package_path.read_bytes() != selection_bytes:
+        raise ValueError("selection package changed while it was being loaded")
     candidate_tasks, manifest, manifest_hash = _load_candidate(
-        Path(candidate_dir), expected_full=expected_full
+        candidate_dir, expected_full=expected_full
     )
     if manifest_hash != package.source_task_manifest_hash:
         raise ValueError("trusted candidate task manifest hash does not match the selection")
@@ -226,8 +251,8 @@ def gate_core_audit_files(
         raise ValueError(
             "staged selection does not equal deterministic selection from the trusted candidate"
         )
-    selected_bytes = Path(selected_tasks_path).read_bytes()
-    context_bytes = Path(surface_context_path).read_bytes()
+    selected_bytes = selected_tasks_path.read_bytes()
+    context_bytes = surface_context_path.read_bytes()
     selected_tasks = _canonical_task_rows(selected_bytes, "selected_tasks.jsonl")
     surface_tasks = _canonical_task_rows(
         context_bytes, "selected_core_surfaces.jsonl"
@@ -238,12 +263,18 @@ def gate_core_audit_files(
             raise ValueError(
                 f"reviewed task {task.task_id} is not authenticated by the source manifest"
             )
-    decisions = _read_review_rows(Path(decisions_path))
-    adjudications = (
-        ()
-        if adjudications_path is None
-        else _read_review_rows(Path(adjudications_path))
-    )
+    decision_bytes = decisions_path.read_bytes()
+    decisions = _read_review_rows(decisions_path)
+    if decisions_path.read_bytes() != decision_bytes:
+        raise ValueError("decisions file changed while it was being loaded")
+    if adjudications_path is None:
+        adjudication_bytes = None
+        adjudications = ()
+    else:
+        adjudication_bytes = adjudications_path.read_bytes()
+        adjudications = _read_review_rows(adjudications_path)
+        if adjudications_path.read_bytes() != adjudication_bytes:
+            raise ValueError("adjudications file changed while it was being loaded")
     report = evaluate_core_audit_gate(
         package,
         decisions,
@@ -252,20 +283,36 @@ def gate_core_audit_files(
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )
-    required_templates = core_audit_adjudication_templates(
-        package, report.required_adjudication_ids
-    )
+    required_templates = _adjudication_templates_for_report(package, report)
     output_dir = Path(output_dir)
     sources = [
-        Path(selection_package_path),
-        Path(candidate_dir) / "task_manifest.json",
-        Path(candidate_dir) / "tasks.jsonl",
-        Path(selected_tasks_path),
-        Path(surface_context_path),
-        Path(decisions_path),
+        selection_package_path,
+        candidate_dir / "task_manifest.json",
+        candidate_dir / "tasks.jsonl",
+        selected_tasks_path,
+        surface_context_path,
+        decisions_path,
     ]
-    if adjudications_path is not None and Path(adjudications_path).exists():
-        sources.append(Path(adjudications_path))
+    expected_source_bytes = {
+        selection_package_path: selection_bytes,
+        candidate_dir / "task_manifest.json": canonical_json_bytes(manifest),
+        candidate_dir / "tasks.jsonl": _jsonl_bytes(candidate_tasks),
+        selected_tasks_path: selected_bytes,
+        surface_context_path: context_bytes,
+        decisions_path: decision_bytes,
+    }
+    if adjudications_path is not None:
+        sources.append(adjudications_path)
+        assert adjudication_bytes is not None
+        expected_source_bytes[adjudications_path] = adjudication_bytes
+
+    def recheck_sources() -> None:
+        if any(
+            path.read_bytes() != expected
+            for path, expected in expected_source_bytes.items()
+        ):
+            raise ValueError("audit source bytes changed before report publication")
+
     publish_files_atomically(
         {
             output_dir / GATE_REPORT_NAME: canonical_json_bytes(report),
@@ -274,6 +321,7 @@ def gate_core_audit_files(
         },
         overwrite=overwrite,
         source_paths=tuple(sources),
+        pre_publish=recheck_sources,
     )
     return report
 

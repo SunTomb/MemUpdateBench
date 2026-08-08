@@ -27,13 +27,31 @@ def test_core_audit_clis_run_from_project_root_without_pythonpath() -> None:
             env=environment,
         )
         assert result.returncode == 0, result.stderr
-    assert "--candidate-dir" in subprocess.run(
+    prepare_help = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "vnext_prepare_core_audit.py"), "--help"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         env=environment,
     ).stdout
+    assert "--candidate-dir" in prepare_help
+    gate_help = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "vnext_gate_core_audit.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=environment,
+    ).stdout
+    assert "--allow-bounded" not in gate_help
+
+
+def test_missing_required_decisions_fail_but_optional_adjudications_may_be_absent(
+    tmp_path,
+) -> None:
+    missing = tmp_path / "missing.jsonl"
+    with pytest.raises(FileNotFoundError):
+        core_stage._read_review_rows(missing, required=True)
+    assert core_stage._read_review_rows(missing, required=False) == ()
 
 
 def test_review_jsonl_loader_rejects_noncanonical_and_duplicate_key_rows(

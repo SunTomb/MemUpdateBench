@@ -141,6 +141,27 @@ def test_core_selection_is_order_independent_and_manifest_bound(
         )
 
 
+def test_core_selection_bounds_generator_consumption_before_materializing_release(
+    bounded_core_release,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    consumed = 0
+
+    def oversized():
+        nonlocal consumed
+        for _ in range(core_audit._MAX_TASKS + 10):
+            consumed += 1
+            yield snapshot.tasks[0]
+
+    with pytest.raises(ValueError, match="12,000-task"):
+        select_core_audit_sample(
+            oversized(),
+            manifest,
+            source_task_manifest_hash=sha256_model(manifest),
+        )
+    assert consumed == core_audit._MAX_TASKS + 1
+
+
 def test_core_selection_rejects_task_hash_corruption_and_duplicate_task(
     bounded_core_release,
 ) -> None:
@@ -260,6 +281,12 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     paths["selected"].write_bytes(_jsonl(selected))
     paths["surfaces"].write_bytes(_jsonl(surfaces))
     paths["decisions"].write_bytes(_jsonl(core_audit_decision_templates(package)))
+    trusted_candidate = tmp_path / "trusted-candidate"
+    trusted_candidate.mkdir()
+    (trusted_candidate / "task_manifest.json").write_bytes(
+        canonical_json_bytes(manifest)
+    )
+    (trusted_candidate / "tasks.jsonl").write_bytes(_jsonl(snapshot.tasks))
 
     report = gate_core_audit_files(
         selection_package_path=paths["selection"],

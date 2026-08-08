@@ -23,7 +23,6 @@ def main() -> int:
     parser.add_argument("--adjudications", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--allow-bounded", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     report = gate_core_audit_files(
         selection_package_path=args.selection_package,
@@ -34,11 +33,13 @@ def main() -> int:
         adjudications_path=args.adjudications,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
-        expected_full=not args.allow_bounded,
     )
+    release_ready = report.release_ready
     status = (
-        "RELEASE_READY"
-        if report.release_ready
+        "TEST_ONLY_HUMAN_INPUT_REQUIRED"
+        if not report.full_candidate
+        else "RELEASE_READY"
+        if release_ready
         else "REMEDIATION_REQUIRED"
         if report.remediations
         else "HUMAN_INPUT_REQUIRED"
@@ -47,7 +48,7 @@ def main() -> int:
         json.dumps(
             {
                 "status": status,
-                "release_ready": report.release_ready,
+                "release_ready": release_ready,
                 "terminal_pass_count": len(report.terminal_pass_audit_ids),
                 "required_adjudication_count": len(report.required_adjudication_ids),
                 "unresolved_adjudication_count": len(report.unresolved_adjudication_ids),
@@ -59,7 +60,7 @@ def main() -> int:
             sort_keys=True,
         )
     )
-    return 0 if report.release_ready else 2
+    return 0 if release_ready else 2
 
 
 if __name__ == "__main__":
