@@ -17,9 +17,11 @@ from mub.vnext.audit.core import (
     selector_config_hash,
 )
 import mub.vnext.audit.core as core_audit
+import mub.vnext.audit.core_candidate as core_candidate
 import mub.vnext.audit.core_stage as core_stage
 from mub.vnext.audit.core_candidate import (
     CoreCandidateValidationReceipt,
+    build_core_candidate_validation_receipt,
     core_candidate_receipt_hash,
     verify_core_candidate_validation_receipt,
 )
@@ -209,10 +211,61 @@ def test_candidate_receipt_cannot_authenticate_without_current_root_validation(
         "tasks_artifact_hash": "b" * 64,
         "task_count": 12_000,
         "code_revision": "1a2d2f8c80b64f08221056b35cf64cc3390d62a8",
+        "trusted_audit_tooling_revision": subprocess.check_output(
+            ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
+        ).strip(),
     }
     receipt = CoreCandidateValidationReceipt(
         **payload,
         receipt_hash=core_candidate_receipt_hash(payload),
+    )
+
+    assert verify_core_candidate_validation_receipt(receipt) is False
+
+
+def test_receipt_verification_rejects_swap_after_authoritative_validation(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    candidate = tmp_path / "candidate-swap"
+    candidate.mkdir()
+    current_manifest_bytes = canonical_json_bytes(manifest)
+    current_tasks_bytes = _jsonl(snapshot.tasks)
+    historical_manifest = manifest.model_copy(
+        update={
+            "code_revision": "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
+        }
+    )
+    historical_manifest_bytes = canonical_json_bytes(historical_manifest)
+    historical_tasks_bytes = _jsonl(tuple(reversed(snapshot.tasks)))
+    (candidate / "task_manifest.json").write_bytes(current_manifest_bytes)
+    (candidate / "tasks.jsonl").write_bytes(current_tasks_bytes)
+    receipt = build_core_candidate_validation_receipt(
+        candidate_dir=candidate,
+        manifest_bytes=historical_manifest_bytes,
+        tasks_bytes=historical_tasks_bytes,
+        manifest=historical_manifest,
+        expected_full=False,
+    )
+    assert receipt.code_revision == (
+        "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
+    )
+    assert receipt.trusted_audit_tooling_revision != receipt.code_revision
+
+    class ValidReport:
+        valid = True
+
+    def validate_then_swap(*args, **kwargs):
+        (candidate / "task_manifest.json").write_bytes(
+            historical_manifest_bytes
+        )
+        (candidate / "tasks.jsonl").write_bytes(historical_tasks_bytes)
+        return ValidReport()
+
+    monkeypatch.setattr(
+        core_candidate, "validate_core_release", validate_then_swap
     )
 
     assert verify_core_candidate_validation_receipt(receipt) is False

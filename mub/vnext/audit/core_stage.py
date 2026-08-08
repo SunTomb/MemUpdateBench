@@ -10,6 +10,7 @@ from typing import Any
 
 from mub.vnext.audit.core import CoreAuditSelectionPackage, select_core_audit_sample
 from mub.vnext.audit.core_candidate import (
+    _register_validated_core_candidate_receipt,
     build_core_candidate_validation_receipt,
 )
 from mub.vnext.audit.core_review import (
@@ -126,6 +127,11 @@ def _load_candidate(candidate_dir: Path, *, expected_full: bool):
         tasks_bytes=tasks_bytes,
         manifest=manifest,
         expected_full=expected_full,
+    )
+    _register_validated_core_candidate_receipt(
+        receipt,
+        manifest_bytes=manifest_bytes,
+        tasks_bytes=tasks_bytes,
     )
     return tasks, manifest, manifest_hash, receipt
 

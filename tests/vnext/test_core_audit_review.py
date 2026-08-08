@@ -53,6 +53,9 @@ def _test_receipt(manifest, *, expected_full: bool):
         "tasks_artifact_hash": "a" * 64,
         "task_count": sum(manifest.split_counts.values()),
         "code_revision": manifest.code_revision,
+        "trusted_audit_tooling_revision": subprocess.check_output(
+            ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
+        ).strip(),
     }
     return CoreCandidateValidationReceipt(
         **payload,

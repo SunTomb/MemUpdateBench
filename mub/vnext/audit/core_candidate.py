@@ -11,10 +11,14 @@ from pydantic import ConfigDict, field_validator, model_validator
 from mub.vnext.contracts.common import ImmutableContractModel
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.io import canonical_json_bytes
-from mub.vnext.validation.core_release import validate_core_release
+from mub.vnext.validation.core_release import (
+    _trusted_code_revision,
+    validate_core_release,
+)
 
 
 CORE_CANDIDATE_RECEIPT_VERSION = "core-candidate-validation-v1"
+_VERIFIED_RECEIPT_SNAPSHOTS: dict[str, tuple[str, str, str]] = {}
 
 
 class CoreCandidateValidationReceipt(ImmutableContractModel):
@@ -29,9 +33,12 @@ class CoreCandidateValidationReceipt(ImmutableContractModel):
     tasks_artifact_hash: str
     task_count: int
     code_revision: str
+    trusted_audit_tooling_revision: str
     receipt_hash: str
 
-    @field_validator("candidate_dir", "code_revision")
+    @field_validator(
+        "candidate_dir", "code_revision", "trusted_audit_tooling_revision"
+    )
     @classmethod
     def _nonblank(cls, value: str, info) -> str:
         if not value.strip():
@@ -86,6 +93,7 @@ def build_core_candidate_validation_receipt(
         "tasks_artifact_hash": hashlib.sha256(tasks_bytes).hexdigest(),
         "task_count": sum(manifest.split_counts.values()),
         "code_revision": manifest.code_revision,
+        "trusted_audit_tooling_revision": _trusted_code_revision(),
     }
     return CoreCandidateValidationReceipt(
         **payload,
@@ -93,19 +101,13 @@ def build_core_candidate_validation_receipt(
     )
 
 
-def verify_core_candidate_validation_receipt(
+def _stable_snapshot_matches_receipt(
     receipt: CoreCandidateValidationReceipt,
+    manifest_bytes: bytes,
+    tasks_bytes: bytes,
+    tooling_revision: str,
 ) -> bool:
-    """Revalidate the candidate against the current root and exact receipt bytes."""
-    if type(receipt) is not CoreCandidateValidationReceipt:
-        return False
     try:
-        root = Path(receipt.candidate_dir)
-        report = validate_core_release(root, expected_full=receipt.expected_full)
-        if not report.valid:
-            return False
-        manifest_bytes = (root / "task_manifest.json").read_bytes()
-        tasks_bytes = (root / "tasks.jsonl").read_bytes()
         manifest = TaskManifestV3.model_validate_json(manifest_bytes)
         return bool(
             canonical_json_bytes(manifest) == manifest_bytes
@@ -115,8 +117,72 @@ def verify_core_candidate_validation_receipt(
             == receipt.tasks_artifact_hash
             and sum(manifest.split_counts.values()) == receipt.task_count
             and manifest.code_revision == receipt.code_revision
+            and tooling_revision == receipt.trusted_audit_tooling_revision
             and receipt.receipt_hash == core_candidate_receipt_hash(receipt)
         )
+    except Exception:
+        return False
+
+
+def _register_validated_core_candidate_receipt(
+    receipt: CoreCandidateValidationReceipt,
+    *,
+    manifest_bytes: bytes,
+    tasks_bytes: bytes,
+) -> None:
+    """Register a snapshot immediately after core_stage's authoritative validation."""
+    tooling_revision = _trusted_code_revision()
+    if not _stable_snapshot_matches_receipt(
+        receipt, manifest_bytes, tasks_bytes, tooling_revision
+    ):
+        raise ValueError("validated candidate snapshot does not match its receipt")
+    _VERIFIED_RECEIPT_SNAPSHOTS[receipt.receipt_hash] = (
+        receipt.source_task_manifest_hash,
+        receipt.tasks_artifact_hash,
+        tooling_revision,
+    )
+
+
+def verify_core_candidate_validation_receipt(
+    receipt: CoreCandidateValidationReceipt,
+) -> bool:
+    """Validate one stable pre/post snapshot against the current repository root."""
+    if type(receipt) is not CoreCandidateValidationReceipt:
+        return False
+    try:
+        root = Path(receipt.candidate_dir)
+        manifest_path = root / "task_manifest.json"
+        tasks_path = root / "tasks.jsonl"
+        manifest_bytes = manifest_path.read_bytes()
+        tasks_bytes = tasks_path.read_bytes()
+        tooling_revision = _trusted_code_revision()
+        if not _stable_snapshot_matches_receipt(
+            receipt, manifest_bytes, tasks_bytes, tooling_revision
+        ):
+            return False
+        cached = _VERIFIED_RECEIPT_SNAPSHOTS.get(receipt.receipt_hash)
+        expected_cache = (
+            receipt.source_task_manifest_hash,
+            receipt.tasks_artifact_hash,
+            tooling_revision,
+        )
+        if cached == expected_cache:
+            return bool(
+                manifest_path.read_bytes() == manifest_bytes
+                and tasks_path.read_bytes() == tasks_bytes
+                and _trusted_code_revision() == tooling_revision
+            )
+        report = validate_core_release(root, expected_full=receipt.expected_full)
+        if not report.valid:
+            return False
+        if (
+            manifest_path.read_bytes() != manifest_bytes
+            or tasks_path.read_bytes() != tasks_bytes
+            or _trusted_code_revision() != tooling_revision
+        ):
+            return False
+        _VERIFIED_RECEIPT_SNAPSHOTS[receipt.receipt_hash] = expected_cache
+        return True
     except Exception:
         return False
 
