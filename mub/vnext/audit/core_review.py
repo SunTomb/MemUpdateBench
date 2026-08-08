@@ -60,6 +60,7 @@ _SELECTOR_REVIEW_FAMILIES = frozenset(
 )
 _MAX_REVIEW_RECORDS = 1024
 _FULL_CORE_TASK_COUNT = 12_000
+CORE_AUDIT_VERIFICATION_ATTESTATION_VERSION = "core-audit-verification-v1"
 _VERIFIED_GATE_TOKEN = object()
 
 
@@ -508,10 +509,13 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
                 for field in compared_fields
             ):
                 return False
+            blocking_issues = set(recomputed.issues) - {
+                "candidate_verification_required:explicit_current_root_verification"
+            }
             return bool(
                 set(recomputed.terminal_pass_audit_ids) == selected_ids
                 and len(selected_ids) == 224
-                and not recomputed.issues
+                and not blocking_issues
                 and not recomputed.unresolved_adjudication_ids
                 and not recomputed.non_pass_terminal_audit_ids
             )
@@ -519,49 +523,170 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
             return False
 
 
-class VerifiedCoreAuditGateReport:
-    """Immutable result of verifying one exact structural report and root snapshot."""
+class _CoreAuditEvidenceBinding(_StrictFrozenCoreReviewModel):
+    selection_hash: str
+    review_context_hash: str
+    input_observation_hashes: tuple[str, ...]
+    decision_evidence_hashes: tuple[str, ...]
+    adjudication_evidence_hashes: tuple[str, ...]
 
-    __slots__ = (
-        "_report",
-        "_report_hash",
-        "_receipt_hash",
-        "_trusted_candidate_root",
-        "_candidate_root_digest",
-        "_candidate_scope",
-        "_full_candidate",
-        "_release_ready",
+
+class CoreAuditVerificationAttestation(_StrictFrozenCoreReviewModel):
+    attestation_version: Literal[
+        CORE_AUDIT_VERIFICATION_ATTESTATION_VERSION
+    ] = CORE_AUDIT_VERIFICATION_ATTESTATION_VERSION
+    structural_report_hash: str
+    candidate_receipt_hash: str
+    candidate_root_digest: str
+    candidate_generation_revision: str
+    trusted_audit_tooling_revision: str
+    source_task_manifest_hash: str
+    selection_hash: str
+    review_context_hash: str
+    audit_evidence_hash: str
+    candidate_scope_at_verification: Literal["full", "bounded_test"]
+    full_candidate_at_verification: bool
+    release_ready_at_verification: bool
+    attestation_hash: str
+
+    @field_validator(
+        "structural_report_hash",
+        "candidate_receipt_hash",
+        "candidate_root_digest",
+        "source_task_manifest_hash",
+        "selection_hash",
+        "review_context_hash",
+        "audit_evidence_hash",
+        "attestation_hash",
     )
+    @classmethod
+    def _attestation_hash_field(cls, value: str, info) -> str:
+        return _hash_value(value, info.field_name)
+
+    @field_validator(
+        "candidate_generation_revision", "trusted_audit_tooling_revision"
+    )
+    @classmethod
+    def _revision(cls, value: str, info) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _bindings(self) -> CoreAuditVerificationAttestation:
+        if self.candidate_generation_revision != self.trusted_audit_tooling_revision:
+            raise ValueError("candidate and audit-tooling revisions must agree")
+        if self.full_candidate_at_verification != (
+            self.candidate_scope_at_verification == "full"
+        ):
+            raise ValueError("verified candidate scope/full flag mismatch")
+        if self.release_ready_at_verification and not self.full_candidate_at_verification:
+            raise ValueError("bounded verification cannot attest release readiness")
+        if self.attestation_hash != core_audit_verification_attestation_hash(self):
+            raise ValueError("Core audit verification attestation hash mismatch")
+        return self
+
+
+def core_audit_evidence_hash(report: CoreAuditGateReport) -> str:
+    if type(report) is not CoreAuditGateReport:
+        raise TypeError("audit evidence hashing requires CoreAuditGateReport")
+    binding = _CoreAuditEvidenceBinding(
+        selection_hash=report.selection_hash,
+        review_context_hash=report.review_context_hash,
+        input_observation_hashes=tuple(
+            sha256_model(item) for item in report.input_observations
+        ),
+        decision_evidence_hashes=tuple(
+            sha256_model(item) for item in report.decision_evidence
+        ),
+        adjudication_evidence_hashes=tuple(
+            sha256_model(item) for item in report.adjudication_evidence
+        ),
+    )
+    return sha256_model(binding)
+
+
+def core_audit_verification_attestation_hash(value: Any) -> str:
+    if isinstance(value, CoreAuditVerificationAttestation):
+        payload = value.model_dump(mode="json", exclude={"attestation_hash"})
+    else:
+        payload = dict(value)
+        payload.pop("attestation_hash", None)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def verify_core_audit_verification_attestation(
+    attestation: CoreAuditVerificationAttestation,
+    *,
+    report: CoreAuditGateReport,
+) -> bool:
+    """Verify a persisted historical attestation against its exact report evidence."""
+    if (
+        type(attestation) is not CoreAuditVerificationAttestation
+        or type(report) is not CoreAuditGateReport
+    ):
+        return False
+    receipt = report.candidate_validation_receipt
+    if receipt is None:
+        return False
+    try:
+        manifest_task_count = sum(report.source_task_manifest.split_counts.values())
+        full_candidate = bool(
+            receipt.expected_full
+            and receipt.task_count == _FULL_CORE_TASK_COUNT
+            and manifest_task_count == _FULL_CORE_TASK_COUNT
+        )
+        candidate_scope = "full" if full_candidate else "bounded_test"
+        release_ready = bool(full_candidate and report._structural_terminal_ready())
+        return bool(
+            attestation.attestation_hash
+            == core_audit_verification_attestation_hash(attestation)
+            and attestation.structural_report_hash == sha256_model(report)
+            and attestation.candidate_receipt_hash == receipt.receipt_hash
+            and attestation.candidate_root_digest == receipt.candidate_root_digest
+            and attestation.candidate_generation_revision == receipt.code_revision
+            and attestation.trusted_audit_tooling_revision
+            == receipt.trusted_audit_tooling_revision
+            and attestation.source_task_manifest_hash
+            == report.source_task_manifest_hash
+            and attestation.selection_hash == report.selection_hash
+            and attestation.review_context_hash == report.review_context_hash
+            and attestation.audit_evidence_hash == core_audit_evidence_hash(report)
+            and attestation.candidate_scope_at_verification == candidate_scope
+            and attestation.full_candidate_at_verification == full_candidate
+            and attestation.release_ready_at_verification == release_ready
+        )
+    except Exception:
+        return False
+
+
+class VerifiedCoreAuditGateReport:
+    """Historical result of verifying one exact report and candidate-root snapshot."""
+
+    __slots__ = ("_report", "_attestation", "_trusted_candidate_root")
 
     def __init__(
         self,
         *,
         report: CoreAuditGateReport,
-        report_hash: str,
-        receipt_hash: str,
+        attestation: CoreAuditVerificationAttestation,
         trusted_candidate_root: str,
-        candidate_root_digest: str,
-        candidate_scope: Literal["full", "bounded_test"],
-        full_candidate: bool,
-        release_ready: bool,
         _token: object,
     ) -> None:
         if _token is not _VERIFIED_GATE_TOKEN:
             raise TypeError(
                 "VerifiedCoreAuditGateReport can only be created by explicit verification"
             )
-        values = {
-            "_report": report,
-            "_report_hash": report_hash,
-            "_receipt_hash": receipt_hash,
-            "_trusted_candidate_root": trusted_candidate_root,
-            "_candidate_root_digest": candidate_root_digest,
-            "_candidate_scope": candidate_scope,
-            "_full_candidate": full_candidate,
-            "_release_ready": release_ready,
-        }
-        for name, value in values.items():
-            object.__setattr__(self, name, value)
+        object.__setattr__(self, "_report", report)
+        object.__setattr__(self, "_attestation", attestation)
+        object.__setattr__(self, "_trusted_candidate_root", trusted_candidate_root)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("VerifiedCoreAuditGateReport is immutable")
@@ -571,34 +696,37 @@ class VerifiedCoreAuditGateReport:
         return self._report
 
     @property
-    def report_hash(self) -> str:
-        return self._report_hash
-
-    @property
-    def receipt_hash(self) -> str:
-        return self._receipt_hash
+    def attestation(self) -> CoreAuditVerificationAttestation:
+        return self._attestation
 
     @property
     def trusted_candidate_root(self) -> str:
         return self._trusted_candidate_root
 
     @property
-    def candidate_root_digest(self) -> str:
-        return self._candidate_root_digest
+    def candidate_scope_at_verification(self) -> Literal["full", "bounded_test"]:
+        return self._attestation.candidate_scope_at_verification
 
     @property
-    def candidate_scope(self) -> Literal["full", "bounded_test"]:
-        return self._candidate_scope
+    def full_candidate_at_verification(self) -> bool:
+        return self._attestation.full_candidate_at_verification
 
     @property
-    def full_candidate(self) -> bool:
-        return self._full_candidate
-
-    @property
-    def release_ready(self) -> bool:
-        return self._release_ready
+    def release_ready_at_verification(self) -> bool:
+        return self._attestation.release_ready_at_verification
 
     def __getattr__(self, name: str) -> Any:
+        if name in {
+            "release_ready",
+            "candidate_scope",
+            "full_candidate",
+            "model_dump",
+            "model_dump_json",
+            "model_copy",
+        }:
+            raise AttributeError(
+                f"{name} is unavailable on historical verification results"
+            )
         return getattr(self._report, name)
 
 
@@ -1113,15 +1241,12 @@ def evaluate_core_audit_gate(
         for name, values in issue_sets.items()
         for value in sorted(values)
     )
-    if candidate_validation_receipt is None:
-        issues = tuple(
-            sorted(
-                (
-                    *issues,
-                    "candidate_unattested:no_current_root_validation_receipt",
-                )
-            )
-        )
+    verification_issue = (
+        "candidate_verification_required:missing_validation_receipt"
+        if candidate_validation_receipt is None
+        else "candidate_verification_required:explicit_current_root_verification"
+    )
+    issues = tuple(sorted((*issues, verification_issue)))
     remediations = tuple(
         CoreAuditRemediation(
             audit_id=audit_id,
@@ -1185,8 +1310,6 @@ def verify_core_audit_gate_report(
             return None
         snapshot = CoreAuditGateReport.model_validate(dict(raw))
         trusted_root = Path(trusted_candidate_root).resolve(strict=True)
-        if str(trusted_root) != receipt.candidate_dir:
-            return None
         if not verify_core_candidate_validation_receipt(
             receipt, trusted_candidate_root=trusted_root
         ):
@@ -1200,17 +1323,36 @@ def verify_core_audit_gate_report(
         candidate_scope: Literal["full", "bounded_test"] = (
             "full" if full_candidate else "bounded_test"
         )
+        release_ready_at_verification = bool(
+            full_candidate and snapshot._structural_terminal_ready()
+        )
+        attestation_payload = {
+            "attestation_version": CORE_AUDIT_VERIFICATION_ATTESTATION_VERSION,
+            "structural_report_hash": sha256_model(snapshot),
+            "candidate_receipt_hash": receipt.receipt_hash,
+            "candidate_root_digest": receipt.candidate_root_digest,
+            "candidate_generation_revision": receipt.code_revision,
+            "trusted_audit_tooling_revision": (
+                receipt.trusted_audit_tooling_revision
+            ),
+            "source_task_manifest_hash": snapshot.source_task_manifest_hash,
+            "selection_hash": snapshot.selection_hash,
+            "review_context_hash": snapshot.review_context_hash,
+            "audit_evidence_hash": core_audit_evidence_hash(snapshot),
+            "candidate_scope_at_verification": candidate_scope,
+            "full_candidate_at_verification": full_candidate,
+            "release_ready_at_verification": release_ready_at_verification,
+        }
+        attestation = CoreAuditVerificationAttestation(
+            **attestation_payload,
+            attestation_hash=core_audit_verification_attestation_hash(
+                attestation_payload
+            ),
+        )
         return VerifiedCoreAuditGateReport(
             report=snapshot,
-            report_hash=sha256_model(snapshot),
-            receipt_hash=receipt.receipt_hash,
+            attestation=attestation,
             trusted_candidate_root=str(trusted_root),
-            candidate_root_digest=receipt.candidate_root_digest,
-            candidate_scope=candidate_scope,
-            full_candidate=full_candidate,
-            release_ready=bool(
-                full_candidate and snapshot._structural_terminal_ready()
-            ),
             _token=_VERIFIED_GATE_TOKEN,
         )
     except Exception:
@@ -1218,12 +1360,14 @@ def verify_core_audit_gate_report(
 
 
 __all__ = [
+    "CORE_AUDIT_VERIFICATION_ATTESTATION_VERSION",
     "CoreAuditChecks",
     "CoreAuditDecision",
     "CoreAuditDecisionTemplate",
     "CoreAuditGateReport",
     "CoreAuditInputObservation",
     "CoreAuditRemediation",
+    "CoreAuditVerificationAttestation",
     "VerifiedCoreAuditGateReport",
     "ReviewOutcome",
     "ReviewVerdict",
@@ -1231,7 +1375,10 @@ __all__ = [
     "applicable_core_audit_checks",
     "core_audit_adjudication_templates",
     "core_audit_decision_templates",
+    "core_audit_evidence_hash",
+    "core_audit_verification_attestation_hash",
     "evaluate_core_audit_gate",
     "validate_core_audit_review_context",
     "verify_core_audit_gate_report",
+    "verify_core_audit_verification_attestation",
 ]

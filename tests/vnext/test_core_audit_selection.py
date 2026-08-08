@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import hashlib
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -34,6 +35,7 @@ from mub.vnext.audit.core_stage import (
     load_core_audit_selection_package,
 )
 from mub.vnext.audit.core_review import (
+    CoreAuditVerificationAttestation,
     core_audit_decision_templates,
     validate_core_audit_review_context,
     verify_core_audit_gate_report,
@@ -304,6 +306,46 @@ def test_cached_receipt_rechecks_all_required_candidate_artifacts(
     assert verify_core_candidate_validation_receipt(
         receipt, trusted_candidate_root=Path(receipt.candidate_dir)
     ) is False
+
+
+def test_candidate_receipt_verifies_byte_identical_tree_at_new_root(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _ = bounded_core_release
+    origin = tmp_path / "candidate-origin"
+    relocated = tmp_path / "candidate-relocated"
+    _write_bounded_candidate(origin, snapshot)
+
+    class ValidReport:
+        valid = True
+
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    monkeypatch.setattr(
+        core_candidate, "validate_core_release", lambda *args, **kwargs: ValidReport()
+    )
+    *_, receipt = core_stage._load_candidate(origin, expected_full=False)
+    shutil.copytree(origin, relocated)
+
+    relocated_payload = receipt.model_dump(mode="python")
+    relocated_payload["candidate_dir"] = str(relocated.resolve())
+    relocated_payload.pop("receipt_hash")
+    relocated_payload["receipt_hash"] = core_candidate_receipt_hash(
+        relocated_payload
+    )
+    relocated_receipt = CoreCandidateValidationReceipt.model_validate(
+        relocated_payload
+    )
+
+    assert relocated_receipt.receipt_hash == receipt.receipt_hash
+    assert relocated_receipt == receipt
+    assert hash(relocated_receipt) == hash(receipt)
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=relocated
+    ) is True
 
 
 def test_candidate_boundary_rejects_hardlinked_artifact_before_read(
@@ -602,9 +644,38 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
         adjudications_path=None,
         output_dir=tmp_path / "gate-output",
     )
-    assert report.release_ready is False
-    assert len(report.surface_context_evidence) == 896
+    assert report.release_ready_at_verification is False
+    assert len(report.report.surface_context_evidence) == 896
+    attestation_path = (
+        tmp_path
+        / "gate-output"
+        / core_stage.GATE_VERIFICATION_ATTESTATION_NAME
+    )
+    assert attestation_path.read_bytes() == canonical_json_bytes(report.attestation)
+    assert CoreAuditVerificationAttestation.model_validate_json(
+        attestation_path.read_bytes()
+    ) == report.attestation
+    assert report.attestation.structural_report_hash == sha256_model(report.report)
     structural_report = report.report
+    relocated_candidate = tmp_path / "trusted-candidate-relocated"
+
+    class ValidRelocatedReport:
+        valid = True
+
+    monkeypatch.setattr(
+        core_candidate,
+        "validate_core_release",
+        lambda *args, **kwargs: ValidRelocatedReport(),
+    )
+    shutil.copytree(trusted_candidate, relocated_candidate)
+    relocated_verification = verify_core_audit_gate_report(
+        structural_report, trusted_candidate_root=relocated_candidate
+    )
+    assert relocated_verification is not None
+    assert (
+        relocated_verification.attestation.candidate_root_digest
+        == report.attestation.candidate_root_digest
+    )
     ancillary = trusted_candidate / "generation_config.json"
     ancillary_bytes = ancillary.read_bytes()
     ancillary.write_bytes(ancillary_bytes + b" ")

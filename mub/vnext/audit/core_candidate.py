@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
@@ -165,7 +165,8 @@ class CoreCandidateValidationReceipt(ImmutableContractModel):
     receipt_version: Literal[CORE_CANDIDATE_RECEIPT_VERSION] = (
         CORE_CANDIDATE_RECEIPT_VERSION
     )
-    candidate_dir: str
+    # Operator provenance only; excluded from canonical serialization and receipt identity.
+    candidate_dir: str | None = Field(default=None, exclude=True)
     expected_full: bool
     source_task_manifest_hash: str
     tasks_artifact_hash: str
@@ -176,13 +177,18 @@ class CoreCandidateValidationReceipt(ImmutableContractModel):
     candidate_root_digest: str
     receipt_hash: str
 
-    @field_validator(
-        "candidate_dir", "code_revision", "trusted_audit_tooling_revision"
-    )
+    @field_validator("code_revision", "trusted_audit_tooling_revision")
     @classmethod
     def _nonblank(cls, value: str, info) -> str:
         if not value.strip():
             raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("candidate_dir")
+    @classmethod
+    def _operator_path(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("candidate_dir must not be blank when provided")
         return value
 
     @field_validator(
@@ -229,13 +235,24 @@ class CoreCandidateValidationReceipt(ImmutableContractModel):
             raise ValueError("candidate validation receipt hash mismatch")
         return self
 
+    def __eq__(self, other) -> bool:
+        if type(other) is not CoreCandidateValidationReceipt:
+            return NotImplemented
+        return self.model_dump(mode="python") == other.model_dump(mode="python")
+
+    def __hash__(self) -> int:
+        return hash((CoreCandidateValidationReceipt, self.receipt_hash))
+
 
 def core_candidate_receipt_hash(receipt) -> str:
     if isinstance(receipt, CoreCandidateValidationReceipt):
-        payload = receipt.model_dump(mode="json", exclude={"receipt_hash"})
+        payload = receipt.model_dump(
+            mode="json", exclude={"receipt_hash", "candidate_dir"}
+        )
     else:
         payload = dict(receipt)
         payload.pop("receipt_hash", None)
+        payload.pop("candidate_dir", None)
         if "candidate_artifacts" in payload:
             payload["candidate_artifacts"] = [
                 item.model_dump(mode="json")
@@ -300,8 +317,7 @@ def _snapshot_matches_receipt(
         manifest_bytes = snapshot.content("task_manifest.json")
         manifest = TaskManifestV3.model_validate_json(manifest_bytes)
         return bool(
-            str(snapshot.candidate_dir) == receipt.candidate_dir
-            and snapshot.artifacts == receipt.candidate_artifacts
+            snapshot.artifacts == receipt.candidate_artifacts
             and snapshot.root_digest == receipt.candidate_root_digest
             and canonical_json_bytes(manifest) == manifest_bytes
             and sum(manifest.split_counts.values()) == receipt.task_count
@@ -324,7 +340,7 @@ def _register_validated_core_candidate_receipt(
     if not _snapshot_matches_receipt(receipt, validated_snapshot, tooling_revision):
         raise ValueError("validated candidate tree does not match its receipt")
     _VERIFIED_RECEIPT_SNAPSHOTS[receipt.receipt_hash] = (
-        receipt.candidate_dir,
+        str(validated_snapshot.candidate_dir),
         receipt.candidate_root_digest,
         tooling_revision,
     )
@@ -340,14 +356,12 @@ def verify_core_candidate_validation_receipt(
         return False
     try:
         root = Path(trusted_candidate_root).resolve(strict=True)
-        if str(root) != receipt.candidate_dir:
-            return False
         before = _guarded_candidate_tree_snapshot(root)
         revision_before = _stable_tracked_revision()
         if not _snapshot_matches_receipt(receipt, before, revision_before):
             return False
         expected_cache = (
-            receipt.candidate_dir,
+            str(root),
             receipt.candidate_root_digest,
             revision_before,
         )

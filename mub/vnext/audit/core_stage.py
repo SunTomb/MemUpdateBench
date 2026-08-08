@@ -37,6 +37,7 @@ SELECTED_CORE_SURFACES_NAME = "selected_core_surfaces.jsonl"
 DECISION_TEMPLATE_NAME = "decisions.template.jsonl"
 ADJUDICATION_TEMPLATE_NAME = "adjudications.template.jsonl"
 GATE_REPORT_NAME = "gate_report.json"
+GATE_VERIFICATION_ATTESTATION_NAME = "gate_verification_attestation.json"
 REQUIRED_ADJUDICATION_TEMPLATE_NAME = "required_adjudications.template.jsonl"
 
 
@@ -341,6 +342,9 @@ def gate_core_audit_files(
     publish_files_atomically(
         {
             output_dir / GATE_REPORT_NAME: canonical_json_bytes(report),
+            output_dir / GATE_VERIFICATION_ATTESTATION_NAME: canonical_json_bytes(
+                verified.attestation
+            ),
             output_dir
             / REQUIRED_ADJUDICATION_TEMPLATE_NAME: _jsonl_bytes(required_templates),
         },
@@ -355,6 +359,7 @@ __all__ = [
     "ADJUDICATION_TEMPLATE_NAME",
     "DECISION_TEMPLATE_NAME",
     "GATE_REPORT_NAME",
+    "GATE_VERIFICATION_ATTESTATION_NAME",
     "REQUIRED_ADJUDICATION_TEMPLATE_NAME",
     "SELECTED_CORE_SURFACES_NAME",
     "SELECTED_TASKS_NAME",

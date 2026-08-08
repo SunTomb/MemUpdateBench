@@ -143,7 +143,10 @@ def accept_test_candidate_receipts(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         core_review,
         "verify_core_candidate_validation_receipt",
-        lambda receipt, **kwargs: receipt in _RECEIPT_BY_SELECTION_HASH.values(),
+        lambda receipt, **kwargs: any(
+            receipt.receipt_hash == item.receipt_hash
+            for item in _RECEIPT_BY_SELECTION_HASH.values()
+        ),
     )
 
 
@@ -289,7 +292,7 @@ def test_templates_are_blank_role_complete_and_never_release_ready(
     with pytest.raises(ValidationError):
         CoreAuditDecision.model_validate(templates[0].model_dump(mode="python"))
     report = _gate(selection_package, templates, ())
-    assert report.release_ready is False
+    assert report.release_ready_at_verification is False
     assert len(report.missing_review_roles) == 320
 
 
@@ -302,9 +305,9 @@ def test_fully_passing_bounded_candidate_is_structurally_test_only(
     report = _gate(bounded, _all_passing_decisions(bounded), ())
 
     assert len(report.terminal_pass_audit_ids) == 224
-    assert report.candidate_scope == "bounded_test"
-    assert report.full_candidate is False
-    assert report.release_ready is False
+    assert report.candidate_scope_at_verification == "bounded_test"
+    assert report.full_candidate_at_verification is False
+    assert report.release_ready_at_verification is False
 
 
 def test_all_independent_terminal_passes_open_gate_and_report_agreement(
@@ -314,9 +317,9 @@ def test_all_independent_terminal_passes_open_gate_and_report_agreement(
 
     report = _gate(selection_package, decisions, ())
 
-    assert report.release_ready is True
-    assert report.candidate_scope == "full"
-    assert report.full_candidate is True
+    assert report.release_ready_at_verification is True
+    assert report.candidate_scope_at_verification == "full"
+    assert report.full_candidate_at_verification is True
     assert len(report.terminal_pass_audit_ids) == 224
     assert report.required_adjudication_ids == ()
     assert report.raw_agreement == 1.0
@@ -395,6 +398,10 @@ def test_unverified_report_with_receipt_remains_unattested(
     assert report.candidate_scope == "unattested"
     assert report.full_candidate is False
     assert report.release_ready is False
+    assert (
+        "candidate_verification_required:explicit_current_root_verification"
+        in report.issues
+    )
     restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
     assert restored.candidate_scope == "unattested"
     assert restored.release_ready is False
@@ -410,7 +417,9 @@ def test_failed_reverification_does_not_leave_readiness_on_structural_report(
     report = verified.report
     receipt = report.candidate_validation_receipt
     assert receipt is not None
-    assert verified.release_ready is True
+    assert verified.release_ready_at_verification is True
+    assert verified.attestation.release_ready_at_verification is True
+    assert not hasattr(verified, "release_ready")
     assert report.release_ready is False
 
     monkeypatch.setattr(
@@ -440,15 +449,37 @@ def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness
     receipt = restored.candidate_validation_receipt
     assert receipt is not None
     verified = core_review.verify_core_audit_gate_report(
-        restored, trusted_candidate_root=Path(receipt.candidate_dir)
+        restored, trusted_candidate_root=ROOT
     )
     assert verified is not None
-    assert verified.release_ready is True
-    assert verified.candidate_scope == "full"
+    assert verified.release_ready_at_verification is True
+    assert verified.candidate_scope_at_verification == "full"
+    assert verified.attestation.structural_report_hash == sha256_model(restored)
+    assert verified.attestation.candidate_receipt_hash == receipt.receipt_hash
+    assert verified.attestation.candidate_root_digest == receipt.candidate_root_digest
+    assert verified.attestation.audit_evidence_hash
+    assert core_review.verify_core_audit_verification_attestation(
+        verified.attestation, report=restored
+    )
+    forged_payload = verified.attestation.model_dump(mode="python")
+    forged_payload["release_ready_at_verification"] = False
+    forged_payload.pop("attestation_hash")
+    forged_payload["attestation_hash"] = (
+        core_review.core_audit_verification_attestation_hash(forged_payload)
+    )
+    forged_attestation = core_review.CoreAuditVerificationAttestation.model_validate(
+        forged_payload
+    )
+    assert not core_review.verify_core_audit_verification_attestation(
+        forged_attestation, report=restored
+    )
+    assert not hasattr(verified, "release_ready")
+    with pytest.raises((AttributeError, TypeError)):
+        canonical_json_bytes(verified)
     assert restored.release_ready is False
     assert all(type(item) is CoreAuditDecision for item in restored.decision_evidence)
     with pytest.raises(ValidationError, match="accepted input observations"):
-        report.model_copy(
+        report.report.model_copy(
             update={
                 "decision_evidence": (),
                 "adjudication_evidence": (),
@@ -499,7 +530,10 @@ def test_count_only_full_public_api_without_current_root_receipt_is_nonready(
     assert report.candidate_scope == "unattested"
     assert report.full_candidate is False
     assert report.release_ready is False
-    assert "candidate_unattested:no_current_root_validation_receipt" in report.issues
+    assert (
+        "candidate_verification_required:missing_validation_receipt"
+        in report.issues
+    )
 
 
 def test_gate_api_requires_the_exact_authenticated_source_manifest(
@@ -564,7 +598,7 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
     )
 
     unresolved = _gate(selection_package, decisions, ())
-    assert unresolved.release_ready is False
+    assert unresolved.release_ready_at_verification is False
     assert unresolved.required_adjudication_ids == tuple(
         sorted((selected_a.audit_id, selected_e.audit_id))
     )
@@ -609,7 +643,7 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
     resolved = _gate(
         selection_package, decisions, adjudications
     )
-    assert resolved.release_ready is True
+    assert resolved.release_ready_at_verification is True
     assert set(resolved.adjudicated_audit_ids) == {
         selected_a.audit_id,
         selected_e.audit_id,
@@ -667,7 +701,7 @@ def test_copy_fingerprint_detects_cross_audit_reuse_regardless_of_reviewer(
         item.audit_id for item in selected
     }
     assert not ({item.audit_id for item in selected} & set(report.terminal_pass_audit_ids))
-    assert not report.release_ready
+    assert not report.release_ready_at_verification
 
 
 def test_distinct_substantive_observations_pass_despite_empty_optional_notes(
@@ -679,7 +713,7 @@ def test_distinct_substantive_observations_pass_despite_empty_optional_notes(
 
     assert all(decision.notes == "" for decision in decisions)
     assert report.copied_observation_audit_ids == ()
-    assert report.release_ready
+    assert report.release_ready_at_verification
 
 
 def test_copy_fingerprint_crosses_reviewer_roles_and_unicode_evasions(
@@ -801,7 +835,7 @@ def test_gate_fails_closed_on_review_evidence_corruption(
 
     report = _gate(selection_package, decisions, ())
 
-    assert report.release_ready is False
+    assert report.release_ready_at_verification is False
     assert report.issues
     if corruption != "unknown_id":
         assert selected_e.audit_id not in report.terminal_pass_audit_ids
@@ -838,7 +872,7 @@ def test_family_aware_applicability_rejects_fake_not_applicable_values(
 
     report = _gate(selection_package, decisions, ())
 
-    assert report.release_ready is False
+    assert report.release_ready_at_verification is False
     assert selected.audit_id in report.invalid_applicability_audit_ids
     assert selected.audit_id not in report.terminal_pass_audit_ids
     assert not report.remediations
