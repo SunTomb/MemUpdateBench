@@ -36,6 +36,7 @@ from mub.vnext.audit.core_stage import (
 from mub.vnext.audit.core_review import (
     core_audit_decision_templates,
     validate_core_audit_review_context,
+    verify_core_audit_gate_report,
 )
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
@@ -547,16 +548,6 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
         manifest,
         source_task_manifest_hash=sha256_model(manifest),
     )
-    monkeypatch.setattr(
-        core_stage,
-        "_load_candidate",
-        lambda *args, **kwargs: (
-            snapshot.tasks,
-            manifest,
-            sha256_model(manifest),
-            None,
-        ),
-    )
     by_id = {task.task_id: task for task in snapshot.tasks}
     selected = tuple(by_id[item.task_id] for item in package.selections)
     surfaces = tuple(by_id[task_id] for task_id in core_audit_review_task_ids(package))
@@ -575,6 +566,32 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     paths["decisions"].write_bytes(_jsonl(core_audit_decision_templates(package)))
     trusted_candidate = tmp_path / "trusted-candidate"
     _write_bounded_candidate(trusted_candidate, snapshot)
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    tree = core_candidate._guarded_candidate_tree_snapshot(trusted_candidate)
+    validation_receipt = build_core_candidate_validation_receipt(
+        candidate_dir=trusted_candidate,
+        manifest_bytes=tree.content("task_manifest.json"),
+        tasks_bytes=tree.content("tasks.jsonl"),
+        manifest=manifest,
+        expected_full=False,
+        candidate_snapshot=tree,
+    )
+    core_candidate._register_validated_core_candidate_receipt(
+        validation_receipt, validated_snapshot=tree
+    )
+    trusted_loaded = (
+        snapshot.tasks,
+        manifest,
+        sha256_model(manifest),
+        validation_receipt,
+    )
+    monkeypatch.setattr(
+        core_stage,
+        "_load_candidate",
+        lambda *args, **kwargs: trusted_loaded,
+    )
 
     report = gate_core_audit_files(
         selection_package_path=paths["selection"],
@@ -587,6 +604,15 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     )
     assert report.release_ready is False
     assert len(report.surface_context_evidence) == 896
+    structural_report = report.report
+    ancillary = trusted_candidate / "generation_config.json"
+    ancillary_bytes = ancillary.read_bytes()
+    ancillary.write_bytes(ancillary_bytes + b" ")
+    assert verify_core_audit_gate_report(
+        structural_report, trusted_candidate_root=trusted_candidate
+    ) is None
+    assert structural_report.release_ready is False
+    ancillary.write_bytes(ancillary_bytes)
 
     mutated = selected[0].model_copy(
         update={
@@ -621,21 +647,6 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
             output_dir=tmp_path / "mutated-context-output",
         )
     paths["surfaces"].write_bytes(_jsonl(surfaces))
-    monkeypatch.setattr(
-        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
-    )
-    tree = core_candidate._guarded_candidate_tree_snapshot(trusted_candidate)
-    validation_receipt = build_core_candidate_validation_receipt(
-        candidate_dir=trusted_candidate,
-        manifest_bytes=tree.content("task_manifest.json"),
-        tasks_bytes=tree.content("tasks.jsonl"),
-        manifest=manifest,
-        expected_full=False,
-        candidate_snapshot=tree,
-    )
-    core_candidate._register_validated_core_candidate_receipt(
-        validation_receipt, validated_snapshot=tree
-    )
     monkeypatch.setattr(
         core_stage,
         "_load_candidate",

@@ -204,9 +204,11 @@ def _gate(package, decisions, adjudications):
         surface_context_tasks=surfaces,
     )
     if receipt is not None:
-        assert core_review.verify_core_audit_gate_report(
+        verified = core_review.verify_core_audit_gate_report(
             report, trusted_candidate_root=Path(receipt.candidate_dir)
         )
+        assert verified is not None
+        return verified
     return report
 
 
@@ -333,7 +335,9 @@ def test_rejected_extra_evidence_remains_bound_after_issue_summary_tampering(
         }
     )
     report = _gate(selection_package, (*decisions, rejected), ())
-    restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+    restored = CoreAuditGateReport.model_validate_json(
+        canonical_json_bytes(report.report)
+    )
 
     assert not restored.release_ready
     assert any(not observation.accepted for observation in restored.input_observations)
@@ -365,6 +369,63 @@ def test_receipt_model_validate_json_never_dereferences_candidate_path(
     assert parsed.candidate_dir == payload["candidate_dir"]
 
 
+def test_unverified_report_with_receipt_remains_unattested(
+    selection_package,
+) -> None:
+    selected, surfaces = _context(selection_package)
+    original = _RECEIPT_BY_SELECTION_HASH[selection_package.selection_hash]
+    receipt_payload = original.model_dump(mode="python")
+    receipt_payload["candidate_dir"] = str(ROOT / "forged-self-consistent-root")
+    receipt_payload.pop("receipt_hash")
+    receipt_payload["receipt_hash"] = core_candidate_receipt_hash(receipt_payload)
+    receipt = CoreCandidateValidationReceipt.model_validate(receipt_payload)
+    report = evaluate_core_audit_gate(
+        selection_package,
+        _all_passing_decisions(selection_package),
+        (),
+        source_task_manifest=_MANIFEST_BY_SELECTION_HASH[
+            selection_package.selection_hash
+        ],
+        candidate_validation_receipt=receipt,
+        selected_tasks=selected,
+        surface_context_tasks=surfaces,
+    )
+
+    assert report.candidate_validation_receipt == receipt
+    assert report.candidate_scope == "unattested"
+    assert report.full_candidate is False
+    assert report.release_ready is False
+    restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+    assert restored.candidate_scope == "unattested"
+    assert restored.release_ready is False
+
+
+def test_failed_reverification_does_not_leave_readiness_on_structural_report(
+    selection_package,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verified = _gate(
+        selection_package, _all_passing_decisions(selection_package), ()
+    )
+    report = verified.report
+    receipt = report.candidate_validation_receipt
+    assert receipt is not None
+    assert verified.release_ready is True
+    assert report.release_ready is False
+
+    monkeypatch.setattr(
+        core_review,
+        "verify_core_candidate_validation_receipt",
+        lambda receipt, **kwargs: False,
+    )
+    failed = core_review.verify_core_audit_gate_report(
+        report, trusted_candidate_root=Path(receipt.candidate_dir)
+    )
+
+    assert failed is None
+    assert report.release_ready is False
+
+
 def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness(
     selection_package,
 ) -> None:
@@ -372,14 +433,19 @@ def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness
         selection_package, _all_passing_decisions(selection_package), ()
     )
 
-    restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+    restored = CoreAuditGateReport.model_validate_json(
+        canonical_json_bytes(report.report)
+    )
     assert restored.release_ready is False
     receipt = restored.candidate_validation_receipt
     assert receipt is not None
-    assert core_review.verify_core_audit_gate_report(
+    verified = core_review.verify_core_audit_gate_report(
         restored, trusted_candidate_root=Path(receipt.candidate_dir)
     )
-    assert restored.release_ready is True
+    assert verified is not None
+    assert verified.release_ready is True
+    assert verified.candidate_scope == "full"
+    assert restored.release_ready is False
     assert all(type(item) is CoreAuditDecision for item in restored.decision_evidence)
     with pytest.raises(ValidationError, match="accepted input observations"):
         report.model_copy(

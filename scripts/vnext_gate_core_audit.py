@@ -24,7 +24,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    report = gate_core_audit_files(
+    verified = gate_core_audit_files(
         selection_package_path=args.selection_package,
         candidate_dir=args.candidate_dir,
         selected_tasks_path=args.selected_tasks,
@@ -34,10 +34,11 @@ def main() -> int:
         output_dir=args.output_dir,
         overwrite=args.overwrite,
     )
-    release_ready = report.release_ready
+    report = verified.report
+    release_ready = verified.release_ready
     status = (
         "TEST_ONLY_HUMAN_INPUT_REQUIRED"
-        if not report.full_candidate
+        if not verified.full_candidate
         else "RELEASE_READY"
         if release_ready
         else "REMEDIATION_REQUIRED"

@@ -18,6 +18,7 @@ from mub.vnext.audit.core_candidate import (
 from mub.vnext.audit.core_review import (
     CoreAuditDecision,
     CoreAuditGateReport,
+    VerifiedCoreAuditGateReport,
     core_audit_adjudication_templates,
     core_audit_decision_templates,
     evaluate_core_audit_gate,
@@ -234,8 +235,8 @@ def gate_core_audit_files(
     output_dir: Path,
     overwrite: bool = False,
     expected_full: bool = True,
-) -> CoreAuditGateReport:
-    """Evaluate human files and atomically write a gate report plus required blanks."""
+) -> VerifiedCoreAuditGateReport:
+    """Evaluate human files, verify the root, and publish the structural report."""
     selection_package_path = Path(selection_package_path)
     candidate_dir = Path(candidate_dir)
     selected_tasks_path = Path(selected_tasks_path)
@@ -295,9 +296,10 @@ def gate_core_audit_files(
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )
-    if validation_receipt is not None and not verify_core_audit_gate_report(
+    verified = verify_core_audit_gate_report(
         report, trusted_candidate_root=candidate_dir
-    ):
+    )
+    if verified is None:
         raise ValueError("candidate root failed explicit audit-gate verification")
     required_templates = _adjudication_templates_for_report(package, report)
     output_dir = Path(output_dir)
@@ -346,7 +348,7 @@ def gate_core_audit_files(
         source_paths=tuple(sources),
         pre_publish=recheck_sources,
     )
-    return report
+    return verified
 
 
 __all__ = [

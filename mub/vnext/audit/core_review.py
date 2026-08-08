@@ -10,7 +10,7 @@ import json
 import unicodedata
 from pathlib import Path
 
-from pydantic import ConfigDict, PrivateAttr, computed_field, field_validator, model_validator
+from pydantic import ConfigDict, computed_field, field_validator, model_validator
 
 from mub.vnext.audit.core_candidate import (
     CoreCandidateValidationReceipt,
@@ -60,6 +60,7 @@ _SELECTOR_REVIEW_FAMILIES = frozenset(
 )
 _MAX_REVIEW_RECORDS = 1024
 _FULL_CORE_TASK_COUNT = 12_000
+_VERIFIED_GATE_TOKEN = object()
 
 
 class _StrictFrozenCoreReviewModel(ImmutableContractModel):
@@ -267,8 +268,6 @@ class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
 
 
 class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
-    _candidate_boundary_verified: bool = PrivateAttr(default=False)
-
     schema_version: Literal[CORE_AUDIT_SCHEMA_VERSION] = CORE_AUDIT_SCHEMA_VERSION
     candidate_scope: Literal["full", "bounded_test", "unattested"]
     full_candidate: bool
@@ -407,28 +406,22 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
         return result
 
     @model_validator(mode="after")
-    def _candidate_scope_matches_receipt(self) -> CoreAuditGateReport:
-        manifest_count = sum(self.source_task_manifest.split_counts.values())
-        receipt = self.candidate_validation_receipt
-        if receipt is None:
-            if self.full_candidate or self.candidate_scope != "unattested":
-                raise ValueError(
-                    "unattested evaluation cannot claim full candidate readiness"
-                )
-            return self._validate_input_observation_bindings()
-        if (
-            receipt.source_task_manifest_hash != self.source_task_manifest_hash
-            or receipt.task_count != manifest_count
-        ):
+    def _candidate_scope_is_unattested(self) -> CoreAuditGateReport:
+        if self.full_candidate or self.candidate_scope != "unattested":
             raise ValueError(
-                "candidate validation receipt metadata does not match the report"
+                "structural gate reports cannot claim authoritative candidate scope"
             )
-        expected_full = receipt.expected_full and manifest_count == _FULL_CORE_TASK_COUNT
-        if self.full_candidate is not expected_full:
-            raise ValueError("full_candidate must match authoritative validation receipt")
-        expected_scope = "full" if expected_full else "bounded_test"
-        if self.candidate_scope != expected_scope:
-            raise ValueError("candidate_scope must match authoritative validation receipt")
+        receipt = self.candidate_validation_receipt
+        if receipt is not None:
+            manifest_count = sum(self.source_task_manifest.split_counts.values())
+            if (
+                receipt.source_task_manifest_hash
+                != self.source_task_manifest_hash
+                or receipt.task_count != manifest_count
+            ):
+                raise ValueError(
+                    "candidate validation receipt metadata does not match the report"
+                )
         return self._validate_input_observation_bindings()
 
     def _validate_input_observation_bindings(self) -> CoreAuditGateReport:
@@ -472,13 +465,13 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     @computed_field(return_type=bool)
     @property
     def release_ready(self) -> bool:
+        """Structural reports are never authoritative without explicit verification."""
+        return False
+
+    def _structural_terminal_ready(self) -> bool:
         try:
-            if not self._candidate_boundary_verified:
-                return False
             raw = object.__getattribute__(self, "__dict__")
             snapshot = type(self).model_validate(dict(raw))
-            if not snapshot.full_candidate or snapshot.candidate_scope != "full":
-                return False
             if any(
                 not observation.accepted
                 for observation in snapshot.input_observations
@@ -524,6 +517,89 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
             )
         except Exception:
             return False
+
+
+class VerifiedCoreAuditGateReport:
+    """Immutable result of verifying one exact structural report and root snapshot."""
+
+    __slots__ = (
+        "_report",
+        "_report_hash",
+        "_receipt_hash",
+        "_trusted_candidate_root",
+        "_candidate_root_digest",
+        "_candidate_scope",
+        "_full_candidate",
+        "_release_ready",
+    )
+
+    def __init__(
+        self,
+        *,
+        report: CoreAuditGateReport,
+        report_hash: str,
+        receipt_hash: str,
+        trusted_candidate_root: str,
+        candidate_root_digest: str,
+        candidate_scope: Literal["full", "bounded_test"],
+        full_candidate: bool,
+        release_ready: bool,
+        _token: object,
+    ) -> None:
+        if _token is not _VERIFIED_GATE_TOKEN:
+            raise TypeError(
+                "VerifiedCoreAuditGateReport can only be created by explicit verification"
+            )
+        values = {
+            "_report": report,
+            "_report_hash": report_hash,
+            "_receipt_hash": receipt_hash,
+            "_trusted_candidate_root": trusted_candidate_root,
+            "_candidate_root_digest": candidate_root_digest,
+            "_candidate_scope": candidate_scope,
+            "_full_candidate": full_candidate,
+            "_release_ready": release_ready,
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("VerifiedCoreAuditGateReport is immutable")
+
+    @property
+    def report(self) -> CoreAuditGateReport:
+        return self._report
+
+    @property
+    def report_hash(self) -> str:
+        return self._report_hash
+
+    @property
+    def receipt_hash(self) -> str:
+        return self._receipt_hash
+
+    @property
+    def trusted_candidate_root(self) -> str:
+        return self._trusted_candidate_root
+
+    @property
+    def candidate_root_digest(self) -> str:
+        return self._candidate_root_digest
+
+    @property
+    def candidate_scope(self) -> Literal["full", "bounded_test"]:
+        return self._candidate_scope
+
+    @property
+    def full_candidate(self) -> bool:
+        return self._full_candidate
+
+    @property
+    def release_ready(self) -> bool:
+        return self._release_ready
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._report, name)
 
 
 def _observed_audit_id(value: Any) -> str | None:
@@ -814,10 +890,9 @@ def evaluate_core_audit_gate(
     if sha256_model(source_task_manifest) != package.source_task_manifest_hash:
         raise ValueError("source task manifest hash does not match the selection")
     manifest_task_count = sum(source_task_manifest.split_counts.values())
-    if candidate_validation_receipt is None:
-        full_candidate = False
-        candidate_scope = "unattested"
-    else:
+    full_candidate = False
+    candidate_scope = "unattested"
+    if candidate_validation_receipt is not None:
         if (
             candidate_validation_receipt.source_task_manifest_hash
             != package.source_task_manifest_hash
@@ -826,11 +901,6 @@ def evaluate_core_audit_gate(
             raise ValueError(
                 "candidate validation receipt metadata does not match the evaluation"
             )
-        full_candidate = bool(
-            candidate_validation_receipt.expected_full
-            and manifest_task_count == _FULL_CORE_TASK_COUNT
-        )
-        candidate_scope = "full" if full_candidate else "bounded_test"
     context_evidence = validate_core_audit_review_context(
         package, selected_tasks, surface_context_tasks
     )
@@ -1101,27 +1171,50 @@ def evaluate_core_audit_gate(
 def verify_core_audit_gate_report(
     report: CoreAuditGateReport,
     *,
-    trusted_candidate_root,
-) -> bool:
-    """Explicitly verify readiness against a caller-trusted candidate root."""
+    trusted_candidate_root: Path | str,
+) -> VerifiedCoreAuditGateReport | None:
+    """Return an immutable capability for one verified report/root snapshot."""
     if type(report) is not CoreAuditGateReport:
-        return False
+        return None
     receipt = report.candidate_validation_receipt
     if receipt is None:
-        return False
+        return None
     try:
+        raw = object.__getattribute__(report, "__dict__")
+        if type(raw) is not dict or set(raw) != set(CoreAuditGateReport.model_fields):
+            return None
+        snapshot = CoreAuditGateReport.model_validate(dict(raw))
         trusted_root = Path(trusted_candidate_root).resolve(strict=True)
         if str(trusted_root) != receipt.candidate_dir:
-            return False
+            return None
         if not verify_core_candidate_validation_receipt(
             receipt, trusted_candidate_root=trusted_root
         ):
-            return False
-        private = object.__getattribute__(report, "__pydantic_private__")
-        private["_candidate_boundary_verified"] = True
-        return True
+            return None
+        manifest_task_count = sum(snapshot.source_task_manifest.split_counts.values())
+        full_candidate = bool(
+            receipt.expected_full
+            and receipt.task_count == _FULL_CORE_TASK_COUNT
+            and manifest_task_count == _FULL_CORE_TASK_COUNT
+        )
+        candidate_scope: Literal["full", "bounded_test"] = (
+            "full" if full_candidate else "bounded_test"
+        )
+        return VerifiedCoreAuditGateReport(
+            report=snapshot,
+            report_hash=sha256_model(snapshot),
+            receipt_hash=receipt.receipt_hash,
+            trusted_candidate_root=str(trusted_root),
+            candidate_root_digest=receipt.candidate_root_digest,
+            candidate_scope=candidate_scope,
+            full_candidate=full_candidate,
+            release_ready=bool(
+                full_candidate and snapshot._structural_terminal_ready()
+            ),
+            _token=_VERIFIED_GATE_TOKEN,
+        )
     except Exception:
-        return False
+        return None
 
 
 __all__ = [
@@ -1131,6 +1224,7 @@ __all__ = [
     "CoreAuditGateReport",
     "CoreAuditInputObservation",
     "CoreAuditRemediation",
+    "VerifiedCoreAuditGateReport",
     "ReviewOutcome",
     "ReviewVerdict",
     "ReviewerRole",
