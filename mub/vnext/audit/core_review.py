@@ -11,6 +11,10 @@ import unicodedata
 
 from pydantic import ConfigDict, computed_field, field_validator, model_validator
 
+from mub.vnext.audit.core_candidate import (
+    CoreCandidateValidationReceipt,
+    verify_core_candidate_validation_receipt,
+)
 from mub.vnext.audit.core import (
     CORE_AUDIT_FAMILIES,
     CORE_AUDIT_SCHEMA_VERSION,
@@ -263,8 +267,9 @@ class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
 
 class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     schema_version: Literal[CORE_AUDIT_SCHEMA_VERSION] = CORE_AUDIT_SCHEMA_VERSION
-    candidate_scope: Literal["full", "bounded_test"]
+    candidate_scope: Literal["full", "bounded_test", "unattested"]
     full_candidate: bool
+    candidate_validation_receipt: CoreCandidateValidationReceipt | None = None
     selection_package: CoreAuditSelectionPackage
     source_task_manifest: TaskManifestV3
     source_task_manifest_hash: str
@@ -399,14 +404,32 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
         return result
 
     @model_validator(mode="after")
-    def _candidate_scope_matches_manifest(self) -> CoreAuditGateReport:
+    def _candidate_scope_matches_receipt(self) -> CoreAuditGateReport:
         manifest_count = sum(self.source_task_manifest.split_counts.values())
-        expected_full = manifest_count == _FULL_CORE_TASK_COUNT
+        receipt = self.candidate_validation_receipt
+        if receipt is None:
+            if self.full_candidate or self.candidate_scope != "unattested":
+                raise ValueError(
+                    "unattested evaluation cannot claim full candidate readiness"
+                )
+            return self._validate_input_observation_bindings()
+        if (
+            receipt.source_task_manifest_hash != self.source_task_manifest_hash
+            or receipt.task_count != manifest_count
+            or not verify_core_candidate_validation_receipt(receipt)
+        ):
+            raise ValueError(
+                "candidate validation receipt does not authenticate the current-root candidate"
+            )
+        expected_full = receipt.expected_full and manifest_count == _FULL_CORE_TASK_COUNT
         if self.full_candidate is not expected_full:
-            raise ValueError("full_candidate must match authenticated manifest task count")
+            raise ValueError("full_candidate must match authoritative validation receipt")
         expected_scope = "full" if expected_full else "bounded_test"
         if self.candidate_scope != expected_scope:
-            raise ValueError("candidate_scope must match authenticated manifest scope")
+            raise ValueError("candidate_scope must match authoritative validation receipt")
+        return self._validate_input_observation_bindings()
+
+    def _validate_input_observation_bindings(self) -> CoreAuditGateReport:
         evidence_by_source = {
             "decision": self.decision_evidence,
             "adjudication": self.adjudication_evidence,
@@ -470,6 +493,7 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
                 snapshot.decision_evidence,
                 snapshot.adjudication_evidence,
                 source_task_manifest=snapshot.source_task_manifest,
+                candidate_validation_receipt=snapshot.candidate_validation_receipt,
                 selected_tasks=selected_tasks,
                 surface_context_tasks=snapshot.surface_context_evidence,
             )
@@ -772,6 +796,7 @@ def evaluate_core_audit_gate(
     adjudications: Sequence[Any],
     *,
     source_task_manifest: TaskManifestV3,
+    candidate_validation_receipt: CoreCandidateValidationReceipt | None = None,
     selected_tasks: Sequence[Any],
     surface_context_tasks: Sequence[Any],
 ) -> CoreAuditGateReport:
@@ -785,8 +810,26 @@ def evaluate_core_audit_gate(
     if sha256_model(source_task_manifest) != package.source_task_manifest_hash:
         raise ValueError("source task manifest hash does not match the selection")
     manifest_task_count = sum(source_task_manifest.split_counts.values())
-    full_candidate = manifest_task_count == _FULL_CORE_TASK_COUNT
-    candidate_scope = "full" if full_candidate else "bounded_test"
+    if candidate_validation_receipt is None:
+        full_candidate = False
+        candidate_scope = "unattested"
+    else:
+        if (
+            candidate_validation_receipt.source_task_manifest_hash
+            != package.source_task_manifest_hash
+            or candidate_validation_receipt.task_count != manifest_task_count
+            or not verify_core_candidate_validation_receipt(
+                candidate_validation_receipt
+            )
+        ):
+            raise ValueError(
+                "candidate validation receipt does not authenticate the current-root candidate"
+            )
+        full_candidate = bool(
+            candidate_validation_receipt.expected_full
+            and manifest_task_count == _FULL_CORE_TASK_COUNT
+        )
+        candidate_scope = "full" if full_candidate else "bounded_test"
     context_evidence = validate_core_audit_review_context(
         package, selected_tasks, surface_context_tasks
     )
@@ -1013,6 +1056,7 @@ def evaluate_core_audit_gate(
     return CoreAuditGateReport(
         candidate_scope=candidate_scope,
         full_candidate=full_candidate,
+        candidate_validation_receipt=candidate_validation_receipt,
         selection_package=package,
         source_task_manifest=source_task_manifest,
         source_task_manifest_hash=package.source_task_manifest_hash,

@@ -18,6 +18,11 @@ from mub.vnext.audit.core import (
 )
 import mub.vnext.audit.core as core_audit
 import mub.vnext.audit.core_stage as core_stage
+from mub.vnext.audit.core_candidate import (
+    CoreCandidateValidationReceipt,
+    core_candidate_receipt_hash,
+    verify_core_candidate_validation_receipt,
+)
 from mub.vnext.audit.core_stage import (
     core_audit_review_task_ids,
     gate_core_audit_files,
@@ -191,6 +196,28 @@ def _jsonl(models) -> bytes:
     return b"".join(canonical_json_bytes(model) + b"\n" for model in models)
 
 
+def test_candidate_receipt_cannot_authenticate_without_current_root_validation(
+    tmp_path,
+) -> None:
+    candidate = tmp_path / "old-candidate"
+    candidate.mkdir()
+    payload = {
+        "receipt_version": "core-candidate-validation-v1",
+        "candidate_dir": str(candidate.resolve()),
+        "expected_full": True,
+        "source_task_manifest_hash": "a" * 64,
+        "tasks_artifact_hash": "b" * 64,
+        "task_count": 12_000,
+        "code_revision": "1a2d2f8c80b64f08221056b35cf64cc3390d62a8",
+    }
+    receipt = CoreCandidateValidationReceipt(
+        **payload,
+        receipt_hash=core_candidate_receipt_hash(payload),
+    )
+
+    assert verify_core_candidate_validation_receipt(receipt) is False
+
+
 def test_selection_and_gate_loaders_require_canonical_authenticated_bytes(
     bounded_core_release,
     tmp_path,
@@ -263,6 +290,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
             snapshot.tasks,
             manifest,
             sha256_model(manifest),
+            None,
         ),
     )
     by_id = {task.task_id: task for task in snapshot.tasks}
@@ -331,6 +359,26 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
             decisions_path=paths["decisions"],
             adjudications_path=None,
             output_dir=tmp_path / "mutated-context-output",
+        )
+    paths["surfaces"].write_bytes(_jsonl(surfaces))
+    original_decisions = paths["decisions"].read_bytes()
+
+    def inject_source_change(*args, pre_publish, **kwargs):
+        paths["decisions"].write_bytes(original_decisions + b"\n")
+        pre_publish()
+
+    monkeypatch.setattr(
+        core_stage, "publish_files_atomically", inject_source_change
+    )
+    with pytest.raises(ValueError, match="source bytes changed"):
+        gate_core_audit_files(
+            selection_package_path=paths["selection"],
+            candidate_dir=trusted_candidate,
+            selected_tasks_path=paths["selected"],
+            surface_context_path=paths["surfaces"],
+            decisions_path=paths["decisions"],
+            adjudications_path=None,
+            output_dir=tmp_path / "source-race-output",
         )
 
 
@@ -406,6 +454,14 @@ def test_exact_quota_cover_recovers_when_greedy_consumes_scarce_split() -> None:
         "dev-a",
         "dev-b",
     }
+    filler = candidate("dev-filler", Split.DEV, ())
+    labelled = core_audit._selection_reasons((*cover, filler), {"a", "b", "c"})
+    assert [reason for _, reason in labelled[:-1]] == [
+        "quota_set_cover",
+        "quota_set_cover",
+        "quota_set_cover",
+    ]
+    assert labelled[-1] == (filler, "quota_spread_fill")
 
 
 def test_core_selection_package_fails_closed_on_hash_or_schema_tampering(

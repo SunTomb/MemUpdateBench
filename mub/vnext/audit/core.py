@@ -654,6 +654,23 @@ def _exact_quota_cover(
     return tuple(filled)
 
 
+def _selection_reasons(
+    candidates: Sequence[_CoreCandidate], required: set[str]
+) -> tuple[tuple[_CoreCandidate, str], ...]:
+    uncovered = set(required)
+    labelled = []
+    for item in candidates:
+        contributes = bool(set(item.conditions) & uncovered)
+        labelled.append(
+            (
+                item,
+                "quota_set_cover" if contributes else "quota_spread_fill",
+            )
+        )
+        uncovered.difference_update(item.conditions)
+    return tuple(labelled)
+
+
 def _select_family_cores(
     family: TaskFamily, candidates: Sequence[_CoreCandidate]
 ) -> tuple[tuple[_CoreCandidate, str], ...]:
@@ -719,17 +736,7 @@ def _select_family_cores(
                 f"family {family.value} has an unsatisfiable 32-item 22/3/7 "
                 f"condition cover; uncovered availability={availability}"
             )
-        selected = []
-        exact_uncovered = set(required)
-        for item in exact:
-            contributes = bool(set(item.conditions) & exact_uncovered)
-            selected.append(
-                (
-                    item,
-                    "quota_set_cover" if contributes else "quota_spread_fill",
-                )
-            )
-            exact_uncovered.difference_update(item.conditions)
+        selected = list(_selection_reasons(exact, required))
     return tuple(selected)
 
 

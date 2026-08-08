@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from mub.vnext.audit.core import CoreAuditSelectionPackage, select_core_audit_sample
+from mub.vnext.audit.core_candidate import (
+    build_core_candidate_validation_receipt,
+)
 from mub.vnext.audit.core_review import (
     CoreAuditDecision,
     CoreAuditGateReport,
@@ -117,7 +120,14 @@ def _load_candidate(candidate_dir: Path, *, expected_full: bool):
     if len(tasks) != task_ref.record_count:
         raise ValueError("tasks record count does not match the authenticated manifest")
     manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
-    return tasks, manifest, manifest_hash
+    receipt = build_core_candidate_validation_receipt(
+        candidate_dir=candidate_dir,
+        manifest_bytes=manifest_bytes,
+        tasks_bytes=tasks_bytes,
+        manifest=manifest,
+        expected_full=expected_full,
+    )
+    return tasks, manifest, manifest_hash, receipt
 
 
 def stage_core_audit_package(
@@ -129,7 +139,7 @@ def stage_core_audit_package(
     """Validate a candidate and atomically stage blank, non-release audit files."""
     candidate_dir = Path(candidate_dir)
     output_dir = Path(output_dir)
-    tasks, manifest, manifest_hash = _load_candidate(
+    tasks, manifest, manifest_hash, _ = _load_candidate(
         candidate_dir, expected_full=expected_full
     )
     package = select_core_audit_sample(
@@ -237,7 +247,7 @@ def gate_core_audit_files(
     package = load_core_audit_selection_package(selection_package_path)
     if selection_package_path.read_bytes() != selection_bytes:
         raise ValueError("selection package changed while it was being loaded")
-    candidate_tasks, manifest, manifest_hash = _load_candidate(
+    candidate_tasks, manifest, manifest_hash, validation_receipt = _load_candidate(
         candidate_dir, expected_full=expected_full
     )
     if manifest_hash != package.source_task_manifest_hash:
@@ -280,6 +290,7 @@ def gate_core_audit_files(
         decisions,
         adjudications,
         source_task_manifest=manifest,
+        candidate_validation_receipt=validation_receipt,
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )

@@ -11,6 +11,10 @@ from pydantic import ValidationError
 import mub.vnext.audit.core as core_audit
 import mub.vnext.audit.core_review as core_review
 import mub.vnext.audit.core_stage as core_stage
+from mub.vnext.audit.core_candidate import (
+    CoreCandidateValidationReceipt,
+    core_candidate_receipt_hash,
+)
 from mub.vnext.audit.core import (
     core_audit_review_context_hash,
     select_core_audit_sample,
@@ -35,8 +39,25 @@ from mub.vnext.io import canonical_json_bytes, sha256_model
 ROOT = Path(__file__).resolve().parents[2]
 _TASKS_BY_SELECTION_HASH = {}
 _MANIFEST_BY_SELECTION_HASH = {}
+_RECEIPT_BY_SELECTION_HASH = {}
 _BOUNDED_PACKAGE = None
 _BOUNDED_MANIFEST = None
+
+
+def _test_receipt(manifest, *, expected_full: bool):
+    payload = {
+        "receipt_version": "core-candidate-validation-v1",
+        "candidate_dir": str(ROOT),
+        "expected_full": expected_full,
+        "source_task_manifest_hash": sha256_model(manifest),
+        "tasks_artifact_hash": "a" * 64,
+        "task_count": sum(manifest.split_counts.values()),
+        "code_revision": manifest.code_revision,
+    }
+    return CoreCandidateValidationReceipt(
+        **payload,
+        receipt_hash=core_candidate_receipt_hash(payload),
+    )
 
 
 def _promote_to_full_manifest_and_package(manifest, package):
@@ -57,6 +78,9 @@ def _promote_to_full_manifest_and_package(manifest, package):
         "dev": 1_200,
         "test": 2_400,
     }
+    manifest_payload["code_revision"] = (
+        "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
+    )
     task_refs = list(manifest.task_file_paths_and_hashes)
     task_refs[0] = task_refs[0].model_copy(update={"record_count": 12_000})
     manifest_payload["task_file_paths_and_hashes"] = tuple(task_refs)
@@ -88,6 +112,15 @@ def _promote_to_full_manifest_and_package(manifest, package):
     return full_manifest, type(package).model_validate(payload)
 
 
+@pytest.fixture(autouse=True)
+def accept_test_candidate_receipts(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        core_review,
+        "verify_core_candidate_validation_receipt",
+        lambda receipt: receipt in _RECEIPT_BY_SELECTION_HASH.values(),
+    )
+
+
 @pytest.fixture(scope="module")
 def selection_package():
     revision = subprocess.check_output(
@@ -112,6 +145,12 @@ def selection_package():
     _TASKS_BY_SELECTION_HASH[bounded_package.selection_hash] = task_map
     _MANIFEST_BY_SELECTION_HASH[package.selection_hash] = full_manifest
     _MANIFEST_BY_SELECTION_HASH[bounded_package.selection_hash] = manifest
+    _RECEIPT_BY_SELECTION_HASH[package.selection_hash] = _test_receipt(
+        full_manifest, expected_full=True
+    )
+    _RECEIPT_BY_SELECTION_HASH[bounded_package.selection_hash] = _test_receipt(
+        manifest, expected_full=False
+    )
     return package
 
 
@@ -133,6 +172,9 @@ def _gate(package, decisions, adjudications):
         decisions,
         adjudications,
         source_task_manifest=_MANIFEST_BY_SELECTION_HASH[package.selection_hash],
+        candidate_validation_receipt=_RECEIPT_BY_SELECTION_HASH.get(
+            package.selection_hash
+        ),
         selected_tasks=selected,
         surface_context_tasks=surfaces,
     )
@@ -310,6 +352,32 @@ def test_reviewer_ids_must_use_one_canonical_offline_identity(selection_package)
             "primary",
             task_specific_observation="✅🔥",
         )
+
+
+def test_count_only_full_public_api_without_current_root_receipt_is_nonready(
+    selection_package,
+) -> None:
+    selected, surfaces = _context(selection_package)
+    report = evaluate_core_audit_gate(
+        selection_package,
+        _all_passing_decisions(selection_package),
+        (),
+        source_task_manifest=_MANIFEST_BY_SELECTION_HASH[
+            selection_package.selection_hash
+        ],
+        selected_tasks=selected,
+        surface_context_tasks=surfaces,
+    )
+
+    assert sum(report.source_task_manifest.split_counts.values()) == 12_000
+    assert report.source_task_manifest.code_revision == (
+        "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
+    )
+    assert len(report.terminal_pass_audit_ids) == 224
+    assert report.candidate_validation_receipt is None
+    assert report.candidate_scope == "unattested"
+    assert report.full_candidate is False
+    assert report.release_ready is False
 
 
 def test_gate_api_requires_the_exact_authenticated_source_manifest(

@@ -1,3 +1,7 @@
+from mub.vnext.audit.core_candidate import (
+    CoreCandidateValidationReceipt,
+    verify_core_candidate_validation_receipt,
+)
 from mub.vnext.audit.core import (
     CORE_AUDIT_FAMILIES,
     CORE_AUDIT_REQUIRED_CONDITIONS,
@@ -69,6 +73,7 @@ __all__ = [
     "CoreAuditSelectionPackage",
     "CoreAuditSelectorConfig",
     "CoreAuditSurfaceVariant",
+    "CoreCandidateValidationReceipt",
     "FAMILY_CONDITION_POLICY",
     "SELECTION_ALGORITHM",
     "SELECTION_VERSION",
@@ -86,4 +91,5 @@ __all__ = [
     "validate_audit_decisions",
     "validate_audit_gate",
     "validate_core_audit_review_context",
+    "verify_core_candidate_validation_receipt",
 ]
