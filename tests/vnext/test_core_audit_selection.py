@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from pathlib import Path
+import hashlib
+import os
 import subprocess
 
 import pytest
@@ -23,6 +25,7 @@ from mub.vnext.audit.core_candidate import (
     CoreCandidateValidationReceipt,
     build_core_candidate_validation_receipt,
     core_candidate_receipt_hash,
+    core_candidate_root_digest,
     verify_core_candidate_validation_receipt,
 )
 from mub.vnext.audit.core_stage import (
@@ -39,6 +42,7 @@ from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.contracts import Difficulty, Split, TaskFamily
+from mub.vnext.contracts.common import ArtifactRef
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -198,11 +202,34 @@ def _jsonl(models) -> bytes:
     return b"".join(canonical_json_bytes(model) + b"\n" for model in models)
 
 
+def _dummy_artifact_refs(manifest_hash: str, tasks_hash: str):
+    hashes = {
+        path: hashlib.sha256(path.encode("ascii")).hexdigest()
+        for path in core_candidate._PATHS
+    }
+    hashes["task_manifest.json"] = manifest_hash
+    hashes["tasks.jsonl"] = tasks_hash
+    return tuple(
+        ArtifactRef(
+            path=path,
+            sha256=hashes[path],
+            media_type=(
+                "application/x-ndjson" if path.endswith(".jsonl") else "application/json"
+            ),
+        )
+        for path in core_candidate._PATHS
+    )
+
+
 def test_candidate_receipt_cannot_authenticate_without_current_root_validation(
     tmp_path,
 ) -> None:
     candidate = tmp_path / "old-candidate"
     candidate.mkdir()
+    revision = subprocess.check_output(
+        ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
+    ).strip()
+    artifacts = _dummy_artifact_refs("a" * 64, "b" * 64)
     payload = {
         "receipt_version": "core-candidate-validation-v1",
         "candidate_dir": str(candidate.resolve()),
@@ -210,17 +237,199 @@ def test_candidate_receipt_cannot_authenticate_without_current_root_validation(
         "source_task_manifest_hash": "a" * 64,
         "tasks_artifact_hash": "b" * 64,
         "task_count": 12_000,
-        "code_revision": "1a2d2f8c80b64f08221056b35cf64cc3390d62a8",
-        "trusted_audit_tooling_revision": subprocess.check_output(
-            ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
-        ).strip(),
+        "code_revision": revision,
+        "trusted_audit_tooling_revision": revision,
+        "candidate_artifacts": artifacts,
+        "candidate_root_digest": core_candidate_root_digest(artifacts),
     }
     receipt = CoreCandidateValidationReceipt(
         **payload,
         receipt_hash=core_candidate_receipt_hash(payload),
     )
 
-    assert verify_core_candidate_validation_receipt(receipt) is False
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is False
+
+
+def _write_bounded_candidate(root, snapshot):
+    config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
+    bundle = build_core_artifact_bundle(snapshot, config)
+    root.mkdir()
+    for artifact in bundle.artifacts:
+        (root / artifact.path).write_bytes(artifact.content)
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "operation"),
+    (
+        ("generation_config.json", "mutate"),
+        ("core-hard-v1.json", "delete"),
+        ("unexpected.json", "extra"),
+    ),
+)
+def test_cached_receipt_rechecks_all_required_candidate_artifacts(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
+    operation: str,
+) -> None:
+    snapshot, _ = bounded_core_release
+    candidate = tmp_path / f"candidate-{artifact_name}"
+    _write_bounded_candidate(candidate, snapshot)
+
+    class ValidReport:
+        valid = True
+
+    monkeypatch.setattr(
+        core_candidate, "validate_core_release", lambda *args, **kwargs: ValidReport()
+    )
+    monkeypatch.setattr(
+        core_candidate,
+        "_assert_tracked_core_sources_clean",
+        lambda: None,
+        raising=False,
+    )
+    *_, receipt = core_stage._load_candidate(candidate, expected_full=False)
+    target = candidate / artifact_name
+    if operation == "delete":
+        target.unlink()
+    elif operation == "extra":
+        target.write_bytes(b"{}")
+    else:
+        target.write_bytes(target.read_bytes() + b" ")
+
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is False
+
+
+def test_candidate_boundary_rejects_hardlinked_artifact_before_read(
+    bounded_core_release,
+    tmp_path,
+) -> None:
+    snapshot, _ = bounded_core_release
+    candidate = tmp_path / "candidate-hardlink"
+    _write_bounded_candidate(candidate, snapshot)
+    alias = tmp_path / "tasks-hardlink.jsonl"
+    try:
+        os.link(candidate / "tasks.jsonl", alias)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="single-link regular files"):
+        core_candidate._guarded_candidate_tree_snapshot(candidate)
+
+
+def test_cached_receipt_rechecks_tracked_core_cleanliness(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _ = bounded_core_release
+    candidate = tmp_path / "candidate-dirty-tooling"
+    _write_bounded_candidate(candidate, snapshot)
+
+    class ValidReport:
+        valid = True
+
+    dirty = False
+
+    def cleanliness_check():
+        if dirty:
+            raise ValueError("tracked Core source is dirty")
+
+    monkeypatch.setattr(
+        core_candidate, "validate_core_release", lambda *args, **kwargs: ValidReport()
+    )
+    monkeypatch.setattr(
+        core_candidate,
+        "_assert_tracked_core_sources_clean",
+        cleanliness_check,
+        raising=False,
+    )
+    *_, receipt = core_stage._load_candidate(candidate, expected_full=False)
+    dirty = True
+
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is False
+
+
+def _unregistered_receipt(candidate, snapshot, manifest):
+    tree = core_candidate._guarded_candidate_tree_snapshot(candidate)
+    return build_core_candidate_validation_receipt(
+        candidate_dir=candidate,
+        manifest_bytes=tree.content("task_manifest.json"),
+        tasks_bytes=tree.content("tasks.jsonl"),
+        manifest=manifest,
+        expected_full=False,
+        candidate_snapshot=tree,
+    )
+
+
+def test_receipt_build_does_not_bypass_authoritative_validation(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    candidate = tmp_path / "candidate-registration-bypass"
+    _write_bounded_candidate(candidate, snapshot)
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    receipt = _unregistered_receipt(candidate, snapshot, manifest)
+    core_candidate._VERIFIED_RECEIPT_SNAPSHOTS.pop(receipt.receipt_hash, None)
+    calls = 0
+
+    class ValidReport:
+        valid = True
+
+    def count_validation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return ValidReport()
+
+    monkeypatch.setattr(core_candidate, "validate_core_release", count_validation)
+
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is True
+    assert calls == 1
+
+
+def test_receipt_rejects_trusted_head_change_during_validation(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    candidate = tmp_path / "candidate-head-race"
+    _write_bounded_candidate(candidate, snapshot)
+    state = {"revision": manifest.code_revision}
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    monkeypatch.setattr(
+        core_candidate, "_trusted_code_revision", lambda: state["revision"]
+    )
+    receipt = _unregistered_receipt(candidate, snapshot, manifest)
+    core_candidate._VERIFIED_RECEIPT_SNAPSHOTS.pop(receipt.receipt_hash, None)
+
+    class ValidReport:
+        valid = True
+
+    def change_head(*args, **kwargs):
+        state["revision"] = "f" * 40
+        return ValidReport()
+
+    monkeypatch.setattr(core_candidate, "validate_core_release", change_head)
+
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is False
 
 
 def test_receipt_verification_rejects_swap_after_authoritative_validation(
@@ -230,45 +439,46 @@ def test_receipt_verification_rejects_swap_after_authoritative_validation(
 ) -> None:
     snapshot, manifest = bounded_core_release
     candidate = tmp_path / "candidate-swap"
-    candidate.mkdir()
-    current_manifest_bytes = canonical_json_bytes(manifest)
-    current_tasks_bytes = _jsonl(snapshot.tasks)
-    historical_manifest = manifest.model_copy(
-        update={
-            "code_revision": "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
-        }
+    _write_bounded_candidate(candidate, snapshot)
+    current_manifest_bytes = (candidate / "task_manifest.json").read_bytes()
+    current_tasks_bytes = (candidate / "tasks.jsonl").read_bytes()
+    replacement_manifest = manifest.model_copy(
+        update={"data_release_id": "replacement-after-validation"}
     )
-    historical_manifest_bytes = canonical_json_bytes(historical_manifest)
-    historical_tasks_bytes = _jsonl(tuple(reversed(snapshot.tasks)))
-    (candidate / "task_manifest.json").write_bytes(current_manifest_bytes)
-    (candidate / "tasks.jsonl").write_bytes(current_tasks_bytes)
+    replacement_manifest_bytes = canonical_json_bytes(replacement_manifest)
+    replacement_tasks_bytes = _jsonl(tuple(reversed(snapshot.tasks)))
+    (candidate / "task_manifest.json").write_bytes(replacement_manifest_bytes)
+    (candidate / "tasks.jsonl").write_bytes(replacement_tasks_bytes)
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
     receipt = build_core_candidate_validation_receipt(
         candidate_dir=candidate,
-        manifest_bytes=historical_manifest_bytes,
-        tasks_bytes=historical_tasks_bytes,
-        manifest=historical_manifest,
+        manifest_bytes=replacement_manifest_bytes,
+        tasks_bytes=replacement_tasks_bytes,
+        manifest=replacement_manifest,
         expected_full=False,
     )
-    assert receipt.code_revision == (
-        "1a2d2f8c80b64f08221056b35cf64cc3390d62a8"
-    )
-    assert receipt.trusted_audit_tooling_revision != receipt.code_revision
-
+    assert receipt.code_revision == receipt.trusted_audit_tooling_revision
+    (candidate / "task_manifest.json").write_bytes(current_manifest_bytes)
+    (candidate / "tasks.jsonl").write_bytes(current_tasks_bytes)
     class ValidReport:
         valid = True
 
     def validate_then_swap(*args, **kwargs):
         (candidate / "task_manifest.json").write_bytes(
-            historical_manifest_bytes
+            replacement_manifest_bytes
         )
-        (candidate / "tasks.jsonl").write_bytes(historical_tasks_bytes)
+        (candidate / "tasks.jsonl").write_bytes(replacement_tasks_bytes)
         return ValidReport()
 
     monkeypatch.setattr(
         core_candidate, "validate_core_release", validate_then_swap
     )
 
-    assert verify_core_candidate_validation_receipt(receipt) is False
+    assert verify_core_candidate_validation_receipt(
+        receipt, trusted_candidate_root=Path(receipt.candidate_dir)
+    ) is False
 
 
 def test_selection_and_gate_loaders_require_canonical_authenticated_bytes(
@@ -306,10 +516,8 @@ def test_candidate_loader_detects_manifest_or_task_change_during_validation(
 ) -> None:
     snapshot, manifest = bounded_core_release
     candidate = tmp_path / "candidate"
-    candidate.mkdir()
-    (candidate / "task_manifest.json").write_bytes(canonical_json_bytes(manifest))
+    _write_bounded_candidate(candidate, snapshot)
     tasks_path = candidate / "tasks.jsonl"
-    tasks_path.write_bytes(_jsonl(snapshot.tasks))
 
     class Report:
         valid = True
@@ -319,9 +527,12 @@ def test_candidate_loader_detects_manifest_or_task_change_during_validation(
         return Report()
 
     monkeypatch.setattr(
-        core_stage, "validate_core_release", mutate_after_initial_read
+        core_candidate, "validate_core_release", mutate_after_initial_read
     )
-    with pytest.raises(ValueError, match="changed during validation"):
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    with pytest.raises(ValueError, match="tree or trusted revision changed"):
         core_stage._load_candidate(candidate, expected_full=False)
 
 
@@ -363,11 +574,7 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
     paths["surfaces"].write_bytes(_jsonl(surfaces))
     paths["decisions"].write_bytes(_jsonl(core_audit_decision_templates(package)))
     trusted_candidate = tmp_path / "trusted-candidate"
-    trusted_candidate.mkdir()
-    (trusted_candidate / "task_manifest.json").write_bytes(
-        canonical_json_bytes(manifest)
-    )
-    (trusted_candidate / "tasks.jsonl").write_bytes(_jsonl(snapshot.tasks))
+    _write_bounded_candidate(trusted_candidate, snapshot)
 
     report = gate_core_audit_files(
         selection_package_path=paths["selection"],
@@ -414,16 +621,41 @@ def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
             output_dir=tmp_path / "mutated-context-output",
         )
     paths["surfaces"].write_bytes(_jsonl(surfaces))
-    original_decisions = paths["decisions"].read_bytes()
+    monkeypatch.setattr(
+        core_candidate, "_assert_tracked_core_sources_clean", lambda: None
+    )
+    tree = core_candidate._guarded_candidate_tree_snapshot(trusted_candidate)
+    validation_receipt = build_core_candidate_validation_receipt(
+        candidate_dir=trusted_candidate,
+        manifest_bytes=tree.content("task_manifest.json"),
+        tasks_bytes=tree.content("tasks.jsonl"),
+        manifest=manifest,
+        expected_full=False,
+        candidate_snapshot=tree,
+    )
+    core_candidate._register_validated_core_candidate_receipt(
+        validation_receipt, validated_snapshot=tree
+    )
+    monkeypatch.setattr(
+        core_stage,
+        "_load_candidate",
+        lambda *args, **kwargs: (
+            snapshot.tasks,
+            manifest,
+            sha256_model(manifest),
+            validation_receipt,
+        ),
+    )
 
     def inject_source_change(*args, pre_publish, **kwargs):
-        paths["decisions"].write_bytes(original_decisions + b"\n")
+        ancillary = trusted_candidate / "generation_config.json"
+        ancillary.write_bytes(ancillary.read_bytes() + b" ")
         pre_publish()
 
     monkeypatch.setattr(
         core_stage, "publish_files_atomically", inject_source_change
     )
-    with pytest.raises(ValueError, match="source bytes changed"):
+    with pytest.raises(ValueError, match="validated candidate root changed"):
         gate_core_audit_files(
             selection_package_path=paths["selection"],
             candidate_dir=trusted_candidate,

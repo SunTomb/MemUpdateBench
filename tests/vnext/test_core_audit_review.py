@@ -3,17 +3,20 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 import hashlib
+import json
 import subprocess
 
 import pytest
 from pydantic import ValidationError
 
 import mub.vnext.audit.core as core_audit
+import mub.vnext.audit.core_candidate as core_candidate
 import mub.vnext.audit.core_review as core_review
 import mub.vnext.audit.core_stage as core_stage
 from mub.vnext.audit.core_candidate import (
     CoreCandidateValidationReceipt,
     core_candidate_receipt_hash,
+    core_candidate_root_digest,
 )
 from mub.vnext.audit.core import (
     core_audit_review_context_hash,
@@ -30,6 +33,7 @@ from mub.vnext.audit.core_review import (
     evaluate_core_audit_gate,
 )
 from mub.vnext.contracts import TaskFamily
+from mub.vnext.contracts.common import ArtifactRef
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
@@ -45,17 +49,36 @@ _BOUNDED_MANIFEST = None
 
 
 def _test_receipt(manifest, *, expected_full: bool):
+    manifest_hash = sha256_model(manifest)
+    artifact_hashes = {
+        path: hashlib.sha256(path.encode("ascii")).hexdigest()
+        for path in core_candidate._PATHS
+    }
+    artifact_hashes["task_manifest.json"] = manifest_hash
+    artifact_hashes["tasks.jsonl"] = "a" * 64
+    artifacts = tuple(
+        ArtifactRef(
+            path=path,
+            sha256=artifact_hashes[path],
+            media_type=(
+                "application/x-ndjson"
+                if path.endswith(".jsonl")
+                else "application/json"
+            ),
+        )
+        for path in core_candidate._PATHS
+    )
     payload = {
         "receipt_version": "core-candidate-validation-v1",
         "candidate_dir": str(ROOT),
         "expected_full": expected_full,
-        "source_task_manifest_hash": sha256_model(manifest),
+        "source_task_manifest_hash": manifest_hash,
         "tasks_artifact_hash": "a" * 64,
         "task_count": sum(manifest.split_counts.values()),
         "code_revision": manifest.code_revision,
-        "trusted_audit_tooling_revision": subprocess.check_output(
-            ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
-        ).strip(),
+        "trusted_audit_tooling_revision": manifest.code_revision,
+        "candidate_artifacts": artifacts,
+        "candidate_root_digest": core_candidate_root_digest(artifacts),
     }
     return CoreCandidateValidationReceipt(
         **payload,
@@ -120,7 +143,7 @@ def accept_test_candidate_receipts(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         core_review,
         "verify_core_candidate_validation_receipt",
-        lambda receipt: receipt in _RECEIPT_BY_SELECTION_HASH.values(),
+        lambda receipt, **kwargs: receipt in _RECEIPT_BY_SELECTION_HASH.values(),
     )
 
 
@@ -170,17 +193,21 @@ def _context(package):
 
 def _gate(package, decisions, adjudications):
     selected, surfaces = _context(package)
-    return evaluate_core_audit_gate(
+    receipt = _RECEIPT_BY_SELECTION_HASH.get(package.selection_hash)
+    report = evaluate_core_audit_gate(
         package,
         decisions,
         adjudications,
         source_task_manifest=_MANIFEST_BY_SELECTION_HASH[package.selection_hash],
-        candidate_validation_receipt=_RECEIPT_BY_SELECTION_HASH.get(
-            package.selection_hash
-        ),
+        candidate_validation_receipt=receipt,
         selected_tasks=selected,
         surface_context_tasks=surfaces,
     )
+    if receipt is not None:
+        assert core_review.verify_core_audit_gate_report(
+            report, trusted_candidate_root=Path(receipt.candidate_dir)
+        )
+    return report
 
 
 def _checks(family: TaskFamily, *, failed: str | None = None) -> CoreAuditChecks:
@@ -319,6 +346,25 @@ def test_rejected_extra_evidence_remains_bound_after_issue_summary_tampering(
     assert tampered.release_ready is False
 
 
+def test_receipt_model_validate_json_never_dereferences_candidate_path(
+    selection_package,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = _RECEIPT_BY_SELECTION_HASH[selection_package.selection_hash]
+    payload = receipt.model_dump(mode="json")
+    payload["candidate_dir"] = r"\\untrusted.invalid\share\candidate"
+    payload["receipt_hash"] = core_candidate_receipt_hash(payload)
+    serialized = json.dumps(payload, sort_keys=True).encode("utf-8")
+
+    def forbidden_resolve(*args, **kwargs):
+        raise AssertionError("model parsing dereferenced candidate path")
+
+    monkeypatch.setattr(Path, "resolve", forbidden_resolve)
+    parsed = CoreCandidateValidationReceipt.model_validate_json(serialized)
+
+    assert parsed.candidate_dir == payload["candidate_dir"]
+
+
 def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness(
     selection_package,
 ) -> None:
@@ -327,6 +373,12 @@ def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness
     )
 
     restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+    assert restored.release_ready is False
+    receipt = restored.candidate_validation_receipt
+    assert receipt is not None
+    assert core_review.verify_core_audit_gate_report(
+        restored, trusted_candidate_root=Path(receipt.candidate_dir)
+    )
     assert restored.release_ready is True
     assert all(type(item) is CoreAuditDecision for item in restored.decision_evidence)
     with pytest.raises(ValidationError, match="accepted input observations"):
@@ -381,6 +433,7 @@ def test_count_only_full_public_api_without_current_root_receipt_is_nonready(
     assert report.candidate_scope == "unattested"
     assert report.full_candidate is False
     assert report.release_ready is False
+    assert "candidate_unattested:no_current_root_validation_receipt" in report.issues
 
 
 def test_gate_api_requires_the_exact_authenticated_source_manifest(

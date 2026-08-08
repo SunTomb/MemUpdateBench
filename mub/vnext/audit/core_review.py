@@ -8,8 +8,9 @@ from typing import Any, Literal
 import hashlib
 import json
 import unicodedata
+from pathlib import Path
 
-from pydantic import ConfigDict, computed_field, field_validator, model_validator
+from pydantic import ConfigDict, PrivateAttr, computed_field, field_validator, model_validator
 
 from mub.vnext.audit.core_candidate import (
     CoreCandidateValidationReceipt,
@@ -266,6 +267,8 @@ class CoreAuditRemediation(_StrictFrozenCoreReviewModel):
 
 
 class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
+    _candidate_boundary_verified: bool = PrivateAttr(default=False)
+
     schema_version: Literal[CORE_AUDIT_SCHEMA_VERSION] = CORE_AUDIT_SCHEMA_VERSION
     candidate_scope: Literal["full", "bounded_test", "unattested"]
     full_candidate: bool
@@ -416,10 +419,9 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
         if (
             receipt.source_task_manifest_hash != self.source_task_manifest_hash
             or receipt.task_count != manifest_count
-            or not verify_core_candidate_validation_receipt(receipt)
         ):
             raise ValueError(
-                "candidate validation receipt does not authenticate the current-root candidate"
+                "candidate validation receipt metadata does not match the report"
             )
         expected_full = receipt.expected_full and manifest_count == _FULL_CORE_TASK_COUNT
         if self.full_candidate is not expected_full:
@@ -471,6 +473,8 @@ class CoreAuditGateReport(_StrictFrozenCoreReviewModel):
     @property
     def release_ready(self) -> bool:
         try:
+            if not self._candidate_boundary_verified:
+                return False
             raw = object.__getattribute__(self, "__dict__")
             snapshot = type(self).model_validate(dict(raw))
             if not snapshot.full_candidate or snapshot.candidate_scope != "full":
@@ -818,12 +822,9 @@ def evaluate_core_audit_gate(
             candidate_validation_receipt.source_task_manifest_hash
             != package.source_task_manifest_hash
             or candidate_validation_receipt.task_count != manifest_task_count
-            or not verify_core_candidate_validation_receipt(
-                candidate_validation_receipt
-            )
         ):
             raise ValueError(
-                "candidate validation receipt does not authenticate the current-root candidate"
+                "candidate validation receipt metadata does not match the evaluation"
             )
         full_candidate = bool(
             candidate_validation_receipt.expected_full
@@ -1042,6 +1043,15 @@ def evaluate_core_audit_gate(
         for name, values in issue_sets.items()
         for value in sorted(values)
     )
+    if candidate_validation_receipt is None:
+        issues = tuple(
+            sorted(
+                (
+                    *issues,
+                    "candidate_unattested:no_current_root_validation_receipt",
+                )
+            )
+        )
     remediations = tuple(
         CoreAuditRemediation(
             audit_id=audit_id,
@@ -1088,6 +1098,32 @@ def evaluate_core_audit_gate(
     )
 
 
+def verify_core_audit_gate_report(
+    report: CoreAuditGateReport,
+    *,
+    trusted_candidate_root,
+) -> bool:
+    """Explicitly verify readiness against a caller-trusted candidate root."""
+    if type(report) is not CoreAuditGateReport:
+        return False
+    receipt = report.candidate_validation_receipt
+    if receipt is None:
+        return False
+    try:
+        trusted_root = Path(trusted_candidate_root).resolve(strict=True)
+        if str(trusted_root) != receipt.candidate_dir:
+            return False
+        if not verify_core_candidate_validation_receipt(
+            receipt, trusted_candidate_root=trusted_root
+        ):
+            return False
+        private = object.__getattribute__(report, "__pydantic_private__")
+        private["_candidate_boundary_verified"] = True
+        return True
+    except Exception:
+        return False
+
+
 __all__ = [
     "CoreAuditChecks",
     "CoreAuditDecision",
@@ -1103,4 +1139,5 @@ __all__ = [
     "core_audit_decision_templates",
     "evaluate_core_audit_gate",
     "validate_core_audit_review_context",
+    "verify_core_audit_gate_report",
 ]

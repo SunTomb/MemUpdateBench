@@ -10,8 +10,10 @@ from typing import Any
 
 from mub.vnext.audit.core import CoreAuditSelectionPackage, select_core_audit_sample
 from mub.vnext.audit.core_candidate import (
+    _authoritatively_validate_candidate_tree,
     _register_validated_core_candidate_receipt,
     build_core_candidate_validation_receipt,
+    verify_core_candidate_validation_receipt,
 )
 from mub.vnext.audit.core_review import (
     CoreAuditDecision,
@@ -19,13 +21,13 @@ from mub.vnext.audit.core_review import (
     core_audit_adjudication_templates,
     core_audit_decision_templates,
     evaluate_core_audit_gate,
+    verify_core_audit_gate_report,
 )
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.io.atomic import publish_files_atomically
 from mub.vnext.io.canonical import _canonical_payload_bytes
-from mub.vnext.validation.core_release import validate_core_release
 
 
 SELECTION_PACKAGE_NAME = "audit_selection.json"
@@ -92,21 +94,14 @@ def _canonical_task_rows(raw: bytes, label: str) -> tuple[MemUpdateTaskV3, ...]:
 
 
 def _load_candidate(candidate_dir: Path, *, expected_full: bool):
-    manifest_path = candidate_dir / "task_manifest.json"
-    tasks_path = candidate_dir / "tasks.jsonl"
-    manifest_bytes = manifest_path.read_bytes()
-    tasks_bytes = tasks_path.read_bytes()
-    report = validate_core_release(candidate_dir, expected_full=expected_full)
-    if not report.valid:
-        raise ValueError("Core candidate validation did not return a valid report")
-    if (
-        manifest_path.read_bytes() != manifest_bytes
-        or tasks_path.read_bytes() != tasks_bytes
-    ):
-        raise ValueError("Core candidate manifest/tasks changed during validation")
+    snapshot = _authoritatively_validate_candidate_tree(
+        candidate_dir, expected_full=expected_full
+    )
+    manifest_bytes = snapshot.content("task_manifest.json")
+    tasks_bytes = snapshot.content("tasks.jsonl")
     manifest = TaskManifestV3.model_validate_json(manifest_bytes)
     if canonical_json_bytes(manifest) != manifest_bytes:
-        raise ValueError("task manifest changed or is not canonical after validation")
+        raise ValueError("task manifest is not canonical after validation")
     task_ref = next(
         (
             ref
@@ -127,11 +122,11 @@ def _load_candidate(candidate_dir: Path, *, expected_full: bool):
         tasks_bytes=tasks_bytes,
         manifest=manifest,
         expected_full=expected_full,
+        candidate_snapshot=snapshot,
     )
     _register_validated_core_candidate_receipt(
         receipt,
-        manifest_bytes=manifest_bytes,
-        tasks_bytes=tasks_bytes,
+        validated_snapshot=snapshot,
     )
     return tasks, manifest, manifest_hash, receipt
 
@@ -300,6 +295,10 @@ def gate_core_audit_files(
         selected_tasks=selected_tasks,
         surface_context_tasks=surface_tasks,
     )
+    if validation_receipt is not None and not verify_core_audit_gate_report(
+        report, trusted_candidate_root=candidate_dir
+    ):
+        raise ValueError("candidate root failed explicit audit-gate verification")
     required_templates = _adjudication_templates_for_report(package, report)
     output_dir = Path(output_dir)
     sources = [
@@ -312,8 +311,6 @@ def gate_core_audit_files(
     ]
     expected_source_bytes = {
         selection_package_path: selection_bytes,
-        candidate_dir / "task_manifest.json": canonical_json_bytes(manifest),
-        candidate_dir / "tasks.jsonl": _jsonl_bytes(candidate_tasks),
         selected_tasks_path: selected_bytes,
         surface_context_path: context_bytes,
         decisions_path: decision_bytes,
@@ -324,6 +321,15 @@ def gate_core_audit_files(
         expected_source_bytes[adjudications_path] = adjudication_bytes
 
     def recheck_sources() -> None:
+        if (
+            validation_receipt is not None
+            and not verify_core_candidate_validation_receipt(
+                validation_receipt, trusted_candidate_root=candidate_dir
+            )
+        ):
+            raise ValueError(
+                "validated candidate root changed before report publication"
+            )
         if any(
             path.read_bytes() != expected
             for path, expected in expected_source_bytes.items()

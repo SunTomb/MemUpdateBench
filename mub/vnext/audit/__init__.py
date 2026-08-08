@@ -27,6 +27,7 @@ from mub.vnext.audit.core_review import (
     core_audit_decision_templates,
     evaluate_core_audit_gate,
     validate_core_audit_review_context,
+    verify_core_audit_gate_report,
 )
 from mub.vnext.audit.sample import (
     AuditDecision,
@@ -91,5 +92,6 @@ __all__ = [
     "validate_audit_decisions",
     "validate_audit_gate",
     "validate_core_audit_review_context",
+    "verify_core_audit_gate_report",
     "verify_core_candidate_validation_receipt",
 ]
