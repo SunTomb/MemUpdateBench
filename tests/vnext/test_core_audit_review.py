@@ -7,11 +7,15 @@ import subprocess
 import pytest
 from pydantic import ValidationError
 
-from mub.vnext.audit.core import select_core_audit_sample
+from mub.vnext.audit.core import (
+    core_audit_review_context_hash,
+    select_core_audit_sample,
+)
 from mub.vnext.audit.core_review import (
     CoreAuditChecks,
     CoreAuditDecision,
     CoreAuditDecisionTemplate,
+    CoreAuditGateReport,
     applicable_core_audit_checks,
     core_audit_adjudication_templates,
     core_audit_decision_templates,
@@ -21,10 +25,11 @@ from mub.vnext.contracts import TaskFamily
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
-from mub.vnext.io import sha256_model
+from mub.vnext.io import canonical_json_bytes, sha256_model
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_TASKS_BY_SELECTION_HASH = {}
 
 
 @pytest.fixture(scope="module")
@@ -35,10 +40,36 @@ def selection_package():
     config = load_core_config(ROOT / "configs" / "vnext" / "core.yaml")
     snapshot = compile_core_snapshot(config, cores_per_family=40, code_revision=revision)
     manifest = build_core_artifact_bundle(snapshot, config).task_manifest
-    return select_core_audit_sample(
+    package = select_core_audit_sample(
         snapshot.tasks,
         manifest,
         source_task_manifest_hash=sha256_model(manifest),
+    )
+    _TASKS_BY_SELECTION_HASH[package.selection_hash] = {
+        task.task_id: task for task in snapshot.tasks
+    }
+    return package
+
+
+def _context(package):
+    by_id = _TASKS_BY_SELECTION_HASH[package.selection_hash]
+    selected = tuple(by_id[item.task_id] for item in package.selections)
+    surfaces = tuple(
+        by_id[variant.task_id]
+        for item in package.selections
+        for variant in item.surface_variants
+    )
+    return selected, surfaces
+
+
+def _gate(package, decisions, adjudications):
+    selected, surfaces = _context(package)
+    return evaluate_core_audit_gate(
+        package,
+        decisions,
+        adjudications,
+        selected_tasks=selected,
+        surface_context_tasks=surfaces,
     )
 
 
@@ -62,6 +93,7 @@ def _decision(package, selected, role: str, *, reviewer: str | None = None, **up
         "task_hash": selected.task_hash,
         "source_task_manifest_hash": package.source_task_manifest_hash,
         "selection_hash": package.selection_hash,
+        "review_context_hash": core_audit_review_context_hash(package),
         "reviewer_id": reviewer or f"reviewer-{role}",
         "reviewer_role": role,
         "review_record_id": f"record-{selected.audit_id}-{role}",
@@ -117,7 +149,7 @@ def test_templates_are_blank_role_complete_and_never_release_ready(
         core_audit_adjudication_templates(selection_package, ("unknown-audit",))
     with pytest.raises(ValidationError):
         CoreAuditDecision.model_validate(templates[0].model_dump(mode="python"))
-    report = evaluate_core_audit_gate(selection_package, templates, ())
+    report = _gate(selection_package, templates, ())
     assert report.release_ready is False
     assert len(report.missing_review_roles) == 320
 
@@ -127,7 +159,7 @@ def test_all_independent_terminal_passes_open_gate_and_report_agreement(
 ) -> None:
     decisions = _all_passing_decisions(selection_package)
 
-    report = evaluate_core_audit_gate(selection_package, decisions, ())
+    report = _gate(selection_package, decisions, ())
 
     assert report.release_ready is True
     assert len(report.terminal_pass_audit_ids) == 224
@@ -135,6 +167,37 @@ def test_all_independent_terminal_passes_open_gate_and_report_agreement(
     assert report.raw_agreement == 1.0
     assert report.cohens_kappa is None
     assert report.agreement_item_count > 96
+
+
+def test_gate_report_round_trips_typed_evidence_and_rejects_fabricated_readiness(
+    selection_package,
+) -> None:
+    report = _gate(
+        selection_package, _all_passing_decisions(selection_package), ()
+    )
+
+    restored = CoreAuditGateReport.model_validate_json(canonical_json_bytes(report))
+    assert restored.release_ready is True
+    assert all(type(item) is CoreAuditDecision for item in restored.decision_evidence)
+    fabricated = report.model_copy(
+        update={
+            "decision_evidence": (),
+            "adjudication_evidence": (),
+            "terminal_pass_audit_ids": tuple(
+                item.audit_id for item in selection_package.selections
+            ),
+            "issues": (),
+        }
+    )
+    assert fabricated.release_ready is False
+
+
+def test_reviewer_ids_must_use_one_canonical_offline_identity(selection_package) -> None:
+    selected = selection_package.selections[0]
+    with pytest.raises(ValidationError, match="canonical"):
+        _decision(selection_package, selected, "primary", reviewer="alice ")
+    with pytest.raises(ValidationError, match="canonical"):
+        _decision(selection_package, selected, "primary", reviewer="Alice")
 
 
 def test_disagreement_and_nonpass_require_terminal_adjudication(
@@ -179,11 +242,31 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
         ]
     )
 
-    unresolved = evaluate_core_audit_gate(selection_package, decisions, ())
+    unresolved = _gate(selection_package, decisions, ())
     assert unresolved.release_ready is False
     assert unresolved.required_adjudication_ids == tuple(
         sorted((selected_a.audit_id, selected_e.audit_id))
     )
+    failed_adjudication = _decision(
+        selection_package,
+        selected_a,
+        "adjudicator",
+        reviewer="reviewer-adjudicator",
+        verdict="block",
+        checks=_checks(selected_a.family, failed="surface_natural"),
+    )
+    remediation_report = _gate(
+        selection_package, decisions, (failed_adjudication,)
+    )
+    remediation = next(
+        item
+        for item in remediation_report.remediations
+        if item.audit_id == selected_a.audit_id
+    )
+    assert remediation.required_action == "regenerate_reselect"
+    assert remediation.generator_stratum.startswith(selected_a.family.value)
+    assert remediation.template_stratum == selected_a.surface_id
+
     adjudications = [
         _decision(
             selection_package,
@@ -193,7 +276,7 @@ def test_disagreement_and_nonpass_require_terminal_adjudication(
         )
         for selected in (selected_a, selected_e)
     ]
-    resolved = evaluate_core_audit_gate(
+    resolved = _gate(
         selection_package, decisions, adjudications
     )
     assert resolved.release_ready is True
@@ -249,7 +332,7 @@ def test_gate_fails_closed_on_review_evidence_corruption(
         other = 0 if primary_index != 0 else 1
         decisions[primary_index] = decisions[primary_index].model_copy(update={"task_specific_observation": decisions[other].task_specific_observation})
 
-    report = evaluate_core_audit_gate(selection_package, decisions, ())
+    report = _gate(selection_package, decisions, ())
 
     assert report.release_ready is False
     assert report.issues
@@ -274,7 +357,7 @@ def test_family_aware_applicability_rejects_fake_not_applicable_values(
     )
     decisions[index] = decisions[index].model_copy(update={"checks": fake})
 
-    report = evaluate_core_audit_gate(selection_package, decisions, ())
+    report = _gate(selection_package, decisions, ())
 
     assert report.release_ready is False
     assert selected.audit_id in report.invalid_applicability_audit_ids

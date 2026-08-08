@@ -32,6 +32,7 @@ def main() -> int:
                 "selection_hash": staged.package.selection_hash,
                 "source_task_manifest_hash": staged.package.source_task_manifest_hash,
                 "selected_task_count": staged.selected_task_count,
+                "review_surface_task_count": staged.review_surface_task_count,
                 "decision_template_count": staged.decision_template_count,
                 "adjudication_template_count": staged.adjudication_template_count,
                 "release_ready": False,

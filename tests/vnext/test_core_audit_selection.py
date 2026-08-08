@@ -16,10 +16,20 @@ from mub.vnext.audit.core import (
     select_core_audit_sample,
     selector_config_hash,
 )
+import mub.vnext.audit.core_stage as core_stage
+from mub.vnext.audit.core_stage import (
+    core_audit_review_task_ids,
+    gate_core_audit_files,
+    load_core_audit_selection_package,
+)
+from mub.vnext.audit.core_review import (
+    core_audit_decision_templates,
+    validate_core_audit_review_context,
+)
 from mub.vnext.generation.core_artifacts import build_core_artifact_bundle
 from mub.vnext.generation.core_build import compile_core_snapshot
 from mub.vnext.generation.core_config import load_core_config
-from mub.vnext.io import sha256_model
+from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.contracts import Difficulty
 
 
@@ -60,6 +70,26 @@ def test_core_selection_has_exact_quota_coverage_and_unique_cores(
     assert len({item.task_id for item in package.selections}) == 224
     assert len({item.audit_id for item in package.selections}) == 224
     assert len({item.semantic_core_id for item in package.selections}) == 224
+    for item in package.selections:
+        assert len(item.surface_variants) == 4
+        assert {variant.surface_id for variant in item.surface_variants} == set(
+            CORE_AUDIT_SURFACES
+        )
+        selected_variant = next(
+            variant for variant in item.surface_variants if variant.surface_id == item.surface_id
+        )
+        assert (selected_variant.task_id, selected_variant.task_hash) == (
+            item.task_id,
+            item.task_hash,
+        )
+    review_task_ids = core_audit_review_task_ids(package)
+    assert len(review_task_ids) == 896
+    assert len(set(review_task_ids)) == 896
+    assert set(review_task_ids) == {
+        variant.task_id
+        for item in package.selections
+        for variant in item.surface_variants
+    }
 
     by_family = defaultdict(list)
     for item in package.selections:
@@ -132,6 +162,137 @@ def test_core_selection_rejects_task_hash_corruption_and_duplicate_task(
             (*snapshot.tasks, snapshot.tasks[0]),
             manifest,
             source_task_manifest_hash=manifest_hash,
+        )
+
+
+def _jsonl(models) -> bytes:
+    return b"".join(canonical_json_bytes(model) + b"\n" for model in models)
+
+
+def test_selection_and_gate_loaders_require_canonical_authenticated_bytes(
+    bounded_core_release,
+    tmp_path,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    package = select_core_audit_sample(
+        snapshot.tasks,
+        manifest,
+        source_task_manifest_hash=sha256_model(manifest),
+    )
+    selection_path = tmp_path / "audit_selection.json"
+    selection_path.write_bytes(canonical_json_bytes(package))
+    assert load_core_audit_selection_package(selection_path) == package
+    canonical = selection_path.read_bytes()
+    selection_path.write_bytes(b" " + canonical)
+    with pytest.raises(ValueError, match="canonical"):
+        load_core_audit_selection_package(selection_path)
+    selection_path.write_bytes(
+        canonical.replace(
+            b'"schema_version":',
+            b'"schema_version":"memupdatebench.core.audit.v3","schema_version":',
+            1,
+        )
+    )
+    with pytest.raises(ValueError, match="canonical"):
+        load_core_audit_selection_package(selection_path)
+
+
+def test_candidate_loader_detects_manifest_or_task_change_during_validation(
+    bounded_core_release,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "task_manifest.json").write_bytes(canonical_json_bytes(manifest))
+    tasks_path = candidate / "tasks.jsonl"
+    tasks_path.write_bytes(_jsonl(snapshot.tasks))
+
+    class Report:
+        valid = True
+
+    def mutate_after_initial_read(*args, **kwargs):
+        tasks_path.write_bytes(tasks_path.read_bytes() + b"\n")
+        return Report()
+
+    monkeypatch.setattr(
+        core_stage, "validate_core_release", mutate_after_initial_read
+    )
+    with pytest.raises(ValueError, match="changed during validation"):
+        core_stage._load_candidate(candidate, expected_full=False)
+
+
+def test_gate_authenticates_manifest_selected_rows_and_four_surface_context(
+    bounded_core_release,
+    tmp_path,
+) -> None:
+    snapshot, manifest = bounded_core_release
+    package = select_core_audit_sample(
+        snapshot.tasks,
+        manifest,
+        source_task_manifest_hash=sha256_model(manifest),
+    )
+    by_id = {task.task_id: task for task in snapshot.tasks}
+    selected = tuple(by_id[item.task_id] for item in package.selections)
+    surfaces = tuple(by_id[task_id] for task_id in core_audit_review_task_ids(package))
+    assert len(validate_core_audit_review_context(package, selected, surfaces)) == 896
+    paths = {
+        "selection": tmp_path / "selection.json",
+        "manifest": tmp_path / "task_manifest.json",
+        "selected": tmp_path / "selected.jsonl",
+        "surfaces": tmp_path / "surfaces.jsonl",
+        "decisions": tmp_path / "decisions.jsonl",
+    }
+    paths["selection"].write_bytes(canonical_json_bytes(package))
+    paths["manifest"].write_bytes(canonical_json_bytes(manifest))
+    paths["selected"].write_bytes(_jsonl(selected))
+    paths["surfaces"].write_bytes(_jsonl(surfaces))
+    paths["decisions"].write_bytes(_jsonl(core_audit_decision_templates(package)))
+
+    report = gate_core_audit_files(
+        selection_package_path=paths["selection"],
+        source_task_manifest_path=paths["manifest"],
+        selected_tasks_path=paths["selected"],
+        surface_context_path=paths["surfaces"],
+        decisions_path=paths["decisions"],
+        adjudications_path=None,
+        output_dir=tmp_path / "gate-output",
+    )
+    assert report.release_ready is False
+    assert len(report.surface_context_evidence) == 896
+
+    mutated = selected[0].model_copy(
+        update={
+            "difficulty": (
+                Difficulty.HARD
+                if selected[0].difficulty is not Difficulty.HARD
+                else Difficulty.EASY
+            )
+        }
+    )
+    paths["selected"].write_bytes(_jsonl((mutated, *selected[1:])))
+    with pytest.raises(ValueError, match="authenticated|hash|differ"):
+        gate_core_audit_files(
+            selection_package_path=paths["selection"],
+            source_task_manifest_path=paths["manifest"],
+            selected_tasks_path=paths["selected"],
+            surface_context_path=paths["surfaces"],
+            decisions_path=paths["decisions"],
+            adjudications_path=None,
+            output_dir=tmp_path / "mutated-output",
+        )
+    paths["selected"].write_bytes(_jsonl(selected))
+    paths["surfaces"].write_bytes(_jsonl((mutated, *surfaces[1:])))
+    with pytest.raises(ValueError, match="authenticated|hash|context"):
+        gate_core_audit_files(
+            selection_package_path=paths["selection"],
+            source_task_manifest_path=paths["manifest"],
+            selected_tasks_path=paths["selected"],
+            surface_context_path=paths["surfaces"],
+            decisions_path=paths["decisions"],
+            adjudications_path=None,
+            output_dir=tmp_path / "mutated-context-output",
         )
 
 

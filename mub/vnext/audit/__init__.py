@@ -7,6 +7,8 @@ from mub.vnext.audit.core import (
     CoreAuditSelection,
     CoreAuditSelectionPackage,
     CoreAuditSelectorConfig,
+    CoreAuditSurfaceVariant,
+    core_audit_review_context_hash,
     select_core_audit_sample,
 )
 from mub.vnext.audit.core_review import (
@@ -14,10 +16,12 @@ from mub.vnext.audit.core_review import (
     CoreAuditDecision,
     CoreAuditDecisionTemplate,
     CoreAuditGateReport,
+    CoreAuditRemediation,
     applicable_core_audit_checks,
     core_audit_adjudication_templates,
     core_audit_decision_templates,
     evaluate_core_audit_gate,
+    validate_core_audit_review_context,
 )
 from mub.vnext.audit.sample import (
     AuditDecision,
@@ -58,9 +62,11 @@ __all__ = [
     "CoreAuditDecisionTemplate",
     "CoreAuditFamilySelectionReport",
     "CoreAuditGateReport",
+    "CoreAuditRemediation",
     "CoreAuditSelection",
     "CoreAuditSelectionPackage",
     "CoreAuditSelectorConfig",
+    "CoreAuditSurfaceVariant",
     "FAMILY_CONDITION_POLICY",
     "SELECTION_ALGORITHM",
     "SELECTION_VERSION",
@@ -70,10 +76,12 @@ __all__ = [
     "audit_selection_id",
     "core_audit_adjudication_templates",
     "core_audit_decision_templates",
+    "core_audit_review_context_hash",
     "evaluate_audit_gate",
     "evaluate_core_audit_gate",
     "select_core_audit_sample",
     "select_pilot_audit_sample",
     "validate_audit_decisions",
     "validate_audit_gate",
+    "validate_core_audit_review_context",
 ]

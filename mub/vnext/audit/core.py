@@ -181,6 +181,26 @@ def selector_config_hash(config: CoreAuditSelectorConfig) -> str:
     return sha256_model(config)
 
 
+class CoreAuditSurfaceVariant(_StrictFrozenCoreAuditModel):
+    surface_id: str
+    task_id: str
+    task_hash: str
+
+    @field_validator("surface_id", "task_id")
+    @classmethod
+    def _nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("surface variant identifiers must not be blank")
+        return value
+
+    @field_validator("task_hash")
+    @classmethod
+    def _hash(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("surface variant task_hash must be lowercase sha256")
+        return value
+
+
 class CoreAuditSelection(_StrictFrozenCoreAuditModel):
     audit_id: str
     task_id: str
@@ -190,6 +210,7 @@ class CoreAuditSelection(_StrictFrozenCoreAuditModel):
     difficulty: Difficulty
     split: Split
     surface_id: str
+    surface_variants: tuple[CoreAuditSurfaceVariant, ...]
     covered_conditions: tuple[str, ...]
     selection_reason: Literal["quota_set_cover", "quota_spread_fill"]
 
@@ -222,6 +243,19 @@ class CoreAuditSelection(_StrictFrozenCoreAuditModel):
             raise ValueError("task_hash must be lowercase sha256")
         return value
 
+    @field_validator("surface_variants", mode="before")
+    @classmethod
+    def _surface_variants(cls, value: Any) -> tuple[CoreAuditSurfaceVariant, ...]:
+        if type(value) not in (list, tuple):
+            raise ValueError("surface_variants must be a list or tuple")
+        variants = tuple(
+            item
+            if type(item) is CoreAuditSurfaceVariant
+            else CoreAuditSurfaceVariant.model_validate(item)
+            for item in value
+        )
+        return tuple(sorted(variants, key=lambda item: CORE_AUDIT_SURFACES.index(item.surface_id)))
+
     @field_validator("covered_conditions", mode="before")
     @classmethod
     def _conditions(cls, value: Any) -> tuple[str, ...]:
@@ -233,6 +267,25 @@ class CoreAuditSelection(_StrictFrozenCoreAuditModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("covered_conditions must be unique")
         return normalized
+
+    @model_validator(mode="after")
+    def _surface_matrix(self) -> CoreAuditSelection:
+        if len(self.surface_variants) != 4:
+            raise ValueError("selection must bind all four semantic-core surfaces")
+        if tuple(item.surface_id for item in self.surface_variants) != CORE_AUDIT_SURFACES:
+            raise ValueError("selection surface variants must use the canonical surface order")
+        if len({item.task_id for item in self.surface_variants}) != 4:
+            raise ValueError("selection surface variant task IDs must be unique")
+        selected = next(
+            (item for item in self.surface_variants if item.surface_id == self.surface_id),
+            None,
+        )
+        if selected is None or (selected.task_id, selected.task_hash) != (
+            self.task_id,
+            self.task_hash,
+        ):
+            raise ValueError("selected task must match its bound surface variant")
+        return self
 
 
 class CoreAuditFamilySelectionReport(_StrictFrozenCoreAuditModel):
@@ -583,6 +636,27 @@ def core_audit_selection_hash(package: CoreAuditSelectionPackage | Mapping[str, 
     return _hash_bytes(payload)
 
 
+def core_audit_review_context_hash(package: CoreAuditSelectionPackage) -> str:
+    """Bind the ordered four-surface task IDs and authenticated record hashes."""
+    if type(package) is not CoreAuditSelectionPackage:
+        raise TypeError("package must be an exact CoreAuditSelectionPackage")
+    return _hash_bytes(
+        {
+            "schema_version": CORE_AUDIT_SCHEMA_VERSION,
+            "source_task_manifest_hash": package.source_task_manifest_hash,
+            "selection_hash": package.selection_hash,
+            "surface_variants": [
+                {
+                    "audit_id": selection.audit_id,
+                    "semantic_core_id": selection.semantic_core_id,
+                    "variants": [variant.model_dump(mode="json") for variant in selection.surface_variants],
+                }
+                for selection in package.selections
+            ],
+        }
+    )
+
+
 def select_core_audit_sample(
     tasks: Iterable[Any],
     manifest: TaskManifestV3,
@@ -623,6 +697,16 @@ def select_core_audit_sample(
                 difficulty=task.difficulty,
                 split=task.metadata.split,
                 surface_id=surface,
+                surface_variants=tuple(
+                    CoreAuditSurfaceVariant(
+                        surface_id=surface_id,
+                        task_id=candidate.tasks_by_surface[surface_id].task_id,
+                        task_hash=manifest.task_record_hashes[
+                            candidate.tasks_by_surface[surface_id].task_id
+                        ],
+                    )
+                    for surface_id in CORE_AUDIT_SURFACES
+                ),
                 covered_conditions=_task_conditions(task),
                 selection_reason=reason,
             )
@@ -677,6 +761,8 @@ __all__ = [
     "CoreAuditSelection",
     "CoreAuditSelectionPackage",
     "CoreAuditSelectorConfig",
+    "CoreAuditSurfaceVariant",
+    "core_audit_review_context_hash",
     "core_audit_selection_hash",
     "select_core_audit_sample",
     "selector_config_hash",

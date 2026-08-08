@@ -16,6 +16,9 @@ def main() -> int:
         description="Evaluate strict-v3 Core human review and adjudication evidence"
     )
     parser.add_argument("--selection-package", required=True, type=Path)
+    parser.add_argument("--source-task-manifest", required=True, type=Path)
+    parser.add_argument("--selected-tasks", required=True, type=Path)
+    parser.add_argument("--surface-context", required=True, type=Path)
     parser.add_argument("--decisions", required=True, type=Path)
     parser.add_argument("--adjudications", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -23,6 +26,9 @@ def main() -> int:
     args = parser.parse_args()
     report = gate_core_audit_files(
         selection_package_path=args.selection_package,
+        source_task_manifest_path=args.source_task_manifest,
+        selected_tasks_path=args.selected_tasks,
+        surface_context_path=args.surface_context,
         decisions_path=args.decisions,
         adjudications_path=args.adjudications,
         output_dir=args.output_dir,
