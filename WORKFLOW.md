@@ -1180,3 +1180,117 @@ release manifest hash           f953283a10dd45d3f9d1de066570a9c09b9d132ed458f8de
 ### Conclusion and next step
 
 The Core **task release** is `FINAL_APPROVED`: its task bytes, strict-v3 schemas, hard-suite view, human evidence, candidate provenance, and publication root are authenticated. This is not overall Core `FINAL_APPROVED` and contains no built-in manager result, external-system result, prompted answer-model result, confidence interval, claim ledger, SFT, RLVR, API evidence, Family H, hidden test, or leaderboard evidence. Task 9 may now consume this immutable task release to extend built-ins, support resolution, and corrupted controls without regenerating or rebinding the task boundary.
+
+## vNext Core built-ins and corrupted controls
+
+### Motivation and fixed boundary
+
+Core Task 9 extends the deterministic engineering checkpoint from Families A–D to the immutable strict-v3 A–G task contract. The goal is truthful capability coverage and diagnostic controls, not a benchmark result: every requested task must produce one ordered terminal row; unsupported work must remain explicit; runtime decisions must use visible task surfaces rather than gold action, history, or evidence fields; and state, lifecycle/history, retrieval/evidence, and answer layers must remain distinguishable.
+
+This work consumes but does not modify, regenerate, rebind, or add files beneath `data/vnext/core/v3`. It adds no external adapter, prompted answer model, statistics, claim ledger, API call, SFT, RLVR, or overall Core release decision.
+
+### Implemented runtime and support boundary
+
+The strict-v3 runtime now includes one central support resolver and built-in adapters for:
+
+```text
+reference
+raw_append
+exact_crud
+heuristic_crud
+```
+
+The resolver derives foundational runtime, operation, query-selector, and metric-export support from `MemUpdateTaskV3` requirements plus `AdapterCapabilitiesV3`. It checks isolated reset and event ingest, native-answer capability when requested, ADD/UPDATE/NOOP/DELETE, TTL and scoped deletion, historical selector semantics including selectors nested in Family G synthesis queries, multi-object answering, and truthful export capabilities. Unknown answer modes fail configuration validation. Requested retrieval policy is bound to adapter-declared or trace-observed effective policy; mismatched, blank, or unbound policies fail closed as `NOT_SUPPORTED` before answering.
+
+`execute_tasks_v3` materializes the request sequence once and preserves exactly one `TaskRunRecordV3` per requested task in request order, including adapter-factory, support, reset, ingest, answer, and close outcomes. Snapshot hashing uses canonical JSON-compatible data. Snapshot capture respects export capabilities: full snapshots require entry and raw-state exports, entries-only adapters produce truthful entry snapshots, and adapters without entry export skip snapshots rather than fabricating an empty store or failing otherwise supported execution.
+
+All non-reference built-ins parse the four frozen visible surfaces and do not use `task.actions`, `gold_action_ids`, `version_history`, or `gold_evidence` for runtime decisions. Canonical identity remains exactly `(namespace, entity, attribute, subkey)`; `object_type` remains excluded.
+
+### Built-in semantics
+
+- Reference supports Core A–G semantics and typed unique/ambiguous/no-match reference-resolution scoring. Gold access remains isolated to this explicit oracle adapter.
+- Raw append retains ADD/UPDATE versions and separate DELETE/TTL instruction or logical tombstone evidence. Physical state is not deleted: requested DELETE maps to effective NOOP with `NO_EFFECT` and reason `append_only_no_physical_delete`. Retained forgotten and stale values remain observable for diagnostics, and version/history exports use logical time and valid source anchors.
+- Exact CRUD implements visible exact-key current state, logical-time TTL, scoped multi-target deletion, protected collateral, and current multi-object Family G answers.
+- Verified MiniLM Heuristic CRUD requires the reviewed model/backend/revision and a finite nonzero encoder probe. On the frozen exact-key Core surfaces it may behave identically to Exact CRUD; this gate establishes readiness and provenance, not a semantic-resolution advantage.
+- Exact and Heuristic CRUD do not claim a historical version ledger. Historical selectors and dependent fields are therefore typed unsupported, while direct current-state Family F accuracy remains measurable.
+- Evidence citations are empty when adapters do not export real evidence linkage; no gold citations are fabricated.
+
+The metric registry now gates capability requirements by exact metric path where layer-wide defaults would be false. In particular, current-state accuracy does not require historical-query support, genuine historical fields still do, and Raw-append forgotten exposure/leakage diagnostics depend on observable retrieval/value/native-answer artifacts rather than physical-delete capability.
+
+### Corrupted controls
+
+Eight strict-v3 controls transform real completed reference rows and reuse the existing strict-v3 scorer and failure taxonomy:
+
+```text
+wrong_delete_scope          -> wrong_delete_scope
+missed_ttl                  -> ttl_violation
+collateral_deletion         -> collateral_corruption, collateral_mutation
+retained_forgotten_value    -> deletion_failure, stale_retained
+wrong_historical_version    -> version_confusion
+wrong_history_order         -> version_confusion
+stale_g_propagation         -> stale_propagation
+fabricated_evidence         -> evidence_linkage_error
+```
+
+Every control has a stable ID and target layer, is `smoke_only=true`, and is `leaderboard_eligible=false`. The fabricated-evidence control changes citations without changing the parsed answer or raw output.
+
+### Files changed
+
+```text
+mub/vnext/adapters/core_v3.py
+mub/vnext/adapters/corrupted_v3.py
+mub/vnext/runtime/engine_v3.py
+mub/vnext/runtime/support_v3.py
+mub/vnext/scoring/registry_v3.py
+mub/vnext/scoring/scorer_v3.py
+tests/vnext/test_core_corrupted_controls_v3.py
+tests/vnext/test_core_generation_family_f.py
+tests/vnext/test_core_runtime_v3.py
+tests/vnext/test_v3_replay_scoring.py
+WORKFLOW.md
+```
+
+The implementation commit is:
+
+```text
+9118d491fb3f13a2b4278f131fd2520f9c4fe809
+feat: extend Core built-ins and controls
+```
+
+### Verification and review evidence
+
+Focused parent-worktree gates after the final fixes reported:
+
+```text
+Core runtime/control/strict-v3 scoring and Pilot-v2 compatibility: 408 passed
+Family C/E/F/G plus strict-v3 focused gate:                    484 passed
+Additional Pilot/v2 adapter/runtime compatibility gate:         78 passed
+py_compile:                                                    passed
+git diff --check:                                              passed
+```
+
+The complete `tests/vnext` inventory was run in bounded shards because the Windows suite exceeds the command window. Aggregating every test file after the final code commit produced:
+
+```text
+3368 passed
+13 skipped
+6 warnings
+0 failures
+```
+
+The 13 skips are Windows symlink/junction privilege cases. The six warnings are the existing Pydantic serializer warnings in generation-common tests. Before the implementation commit, 16 Core staging/release tests intentionally stopped at `tracked Core source differs from the anchored HEAD revision`; this demonstrated their clean-tree guard rather than a product regression. After commit `9118d491...`, that exact shard passed `110 passed, 3 skipped`, closing the clean-tree gate.
+
+Implementation used observed RED/GREEN cycles for iterator/factory completeness, raw DELETE coherence, visible-surface fail-closed parsing, MiniLM revision verification, reset/close preservation, canonical snapshots, TTL history anchors, all eight controls, typed Family C resolution scoring, nested historical selectors, exact metric capability gates, foundational runtime capabilities, optional snapshots, answer-mode validation, and declared/observed retrieval-policy binding.
+
+The required ordered reviews completed as follows:
+
+1. Specification review returned `NOT_APPROVED` for null Family C reference-resolution scoring, missed nested G historical selectors, incorrect current-state historical gating, and Raw forgotten diagnostics gated on physical delete. All four were fixed and the same specification reviewer returned `APPROVED`.
+2. Only after specification approval, code-quality review found missing foundational capability gates, unconditional optional exports, and unbound retrieval policy. These were fixed with regressions. A final direct code-quality re-review returned `APPROVED`.
+
+Several reviewer streams terminated with API `unexpected EOF`; none was accepted as a completed review. Each was resumed or replaced until a definitive report was returned.
+
+### Conclusion and next step
+
+Core Task 9 is complete as a deterministic built-in/runtime/scorer-control engineering gate. It establishes truthful A–G support resolution, explicit unsupported coverage, exact terminal-row completeness, logical lifecycle semantics, diagnostic Raw retention, current-state CRUD behavior, and scorer sensitivity controls.
+
+This is not an authenticated 12,000-task result matrix and does not make overall Core `FINAL_APPROVED`. It provides no external-validity or prompted-answer evidence. The next authorized work is Task 10: capability-first qualification of one genuine external adapter, beginning with the fixed Mem0 OSS feasibility gates and using the explicitly labeled LangGraph Store fallback only if those gates fail.
