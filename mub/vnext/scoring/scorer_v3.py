@@ -7,7 +7,13 @@ from typing import Any
 from pydantic import field_validator, model_validator
 
 from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel, MetricFieldSupport
-from mub.vnext.contracts.enums import CompletionStatus, Operation, SupportReason
+from mub.vnext.contracts.enums import (
+    AnswerDisposition,
+    CompletionStatus,
+    Operation,
+    ReferenceResolutionStatus,
+    SupportReason,
+)
 from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
 from mub.vnext.contracts.v3.common import StrictIdentifier, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.enums import ExecutionStatusV3, LedgerEntryStatus, QueryTypeV3
@@ -593,7 +599,49 @@ def _metric_value(
                     and not _same(prediction.parsed_answer, evidence[query.query_id].answer)
                 ))
             return (_mean(observations), None) if observations else (None, "no applicable current retrieval rows")
-        if leaf == "reference_resolution_accuracy": return None, "no v3 unresolved-reference query kind"
+        if leaf == "reference_resolution_accuracy":
+            reference_queries = [
+                query
+                for query in task.queries
+                if query.query_type is QueryTypeV3.UNRESOLVED_REFERENCE
+            ]
+            if not reference_queries:
+                return None, "no unresolved-reference query rows"
+            missing_query_ids = tuple(
+                query.query_id
+                for query in reference_queries
+                if query.query_id not in predictions
+            )
+            if missing_query_ids:
+                return None, (
+                    "answer predictions are missing for unresolved-reference query IDs: "
+                    + ", ".join(missing_query_ids)
+                )
+            observations = []
+            for query in reference_queries:
+                prediction = predictions[query.query_id]
+                gold = evidence[query.query_id]
+                if gold.resolution_status is ReferenceResolutionStatus.UNIQUE:
+                    correct = (
+                        gold.disposition is AnswerDisposition.ANSWERED
+                        and prediction.format_valid
+                        and prediction.disposition is AnswerDisposition.ANSWERED
+                        and _same(prediction.parsed_answer, gold.answer)
+                    )
+                else:
+                    correct = (
+                        gold.resolution_status
+                        in {
+                            ReferenceResolutionStatus.AMBIGUOUS,
+                            ReferenceResolutionStatus.NO_MATCH,
+                        }
+                        and gold.disposition is AnswerDisposition.ABSTAINED
+                        and prediction.format_valid
+                        and prediction.disposition is AnswerDisposition.ABSTAINED
+                        and prediction.parsed_answer is None
+                    )
+                observations.append(float(correct))
+            return _mean(observations), None
     if layer == "system_scores":
         if leaf == "error_rate": return float(run.completion_status in {CompletionStatus.FAILED, CompletionStatus.PARTIAL} or bool(run.exceptions)), None
         if leaf == "ingest_latency_ms": return (_mean([item.latency_ms for item in actions if item.latency_ms is not None]), None) if any(item.latency_ms is not None for item in actions) else (None, "ingest latency missing")

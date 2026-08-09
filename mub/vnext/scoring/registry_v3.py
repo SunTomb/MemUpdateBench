@@ -109,14 +109,30 @@ _CAPS_BY_LAYER = {
     "historical_scores": ("supports_historical_query",),
     "synthesis_scores": ("supports_multi_object_query",),
 }
+_CAPS_BY_PATH = {
+    "deletion_scores.forgotten_exposure_rate": (
+        "exports_retrieval_ids",
+        "exports_object_keys",
+        "exports_values",
+    ),
+    "deletion_scores.forgotten_value_leakage_rate": (
+        "supports_native_answer",
+    ),
+    "historical_scores.current_state_accuracy": (),
+    "historical_scores.historical_support_recall": (
+        "supports_historical_query",
+        "exports_version_history",
+        "exports_retrieval_ids",
+    ),
+}
 _CAPS_BY_LEAF = {
     "deletion_accuracy": ("supports_delete", "exports_action_trace"),
     "delete_scope_accuracy": ("supports_delete", "supports_scoped_delete", "exports_action_trace"),
     "collateral_damage_rate": ("supports_delete", "supports_isolated_reset", "exports_entries", "exports_object_keys", "exports_values"),
     "ttl_compliance_rate": ("supports_ttl", "exports_action_trace", "exports_entries", "exports_object_keys", "exports_values"),
     "relearn_accuracy": ("supports_delete", "exports_entries", "exports_object_keys", "exports_values"),
-    "forgotten_exposure_rate": ("supports_delete", "exports_retrieval_ids", "exports_object_keys", "exports_values"),
-    "forgotten_value_leakage_rate": ("supports_delete", "supports_native_answer"),
+    "forgotten_exposure_rate": ("exports_retrieval_ids", "exports_object_keys", "exports_values"),
+    "forgotten_value_leakage_rate": ("supports_native_answer",),
     "historical_support_recall": ("exports_version_history", "exports_retrieval_ids"),
     "reasoning_support_accuracy": ("exports_evidence_linkage", "exports_retrieval_ids"),
     "evidence_precision": ("exports_evidence_linkage",),
@@ -132,7 +148,12 @@ def _descriptor(path: str) -> MetricDescriptorV3:
     if layer == "retrieval_scores":
         families = (ALL_FAMILIES,)
     query_kinds = _QUERY_BY_LEAF.get(leaf, (ALL_QUERY_KINDS,))
-    caps = tuple(legacy.required_adapter_capabilities) if legacy is not None else _CAPS_BY_LEAF.get(leaf, _CAPS_BY_LAYER.get(layer, ()))
+    if path in _CAPS_BY_PATH:
+        caps = _CAPS_BY_PATH[path]
+    elif legacy is not None:
+        caps = tuple(legacy.required_adapter_capabilities)
+    else:
+        caps = _CAPS_BY_LEAF.get(leaf, _CAPS_BY_LAYER.get(layer, ()))
     count = leaf in _COUNT_LEAVES
     return MetricDescriptorV3(
         field_path=path,

@@ -367,8 +367,8 @@ def test_e_metric_registry_has_exact_leaf_capabilities_and_support_precedence():
         "deletion_scores.collateral_damage_rate": {"supports_delete", "supports_isolated_reset", "exports_entries", "exports_object_keys", "exports_values"},
         "deletion_scores.ttl_compliance_rate": {"supports_ttl", "exports_action_trace", "exports_entries", "exports_object_keys", "exports_values"},
         "deletion_scores.relearn_accuracy": {"supports_delete", "exports_entries", "exports_object_keys", "exports_values"},
-        "deletion_scores.forgotten_exposure_rate": {"supports_delete", "exports_retrieval_ids", "exports_object_keys", "exports_values"},
-        "deletion_scores.forgotten_value_leakage_rate": {"supports_delete", "supports_native_answer"},
+        "deletion_scores.forgotten_exposure_rate": {"exports_retrieval_ids", "exports_object_keys", "exports_values"},
+        "deletion_scores.forgotten_value_leakage_rate": {"supports_native_answer"},
     }
     for path, required in expected.items():
         assert set(CORE_METRIC_REGISTRY_V3[path].required_capabilities) == required
@@ -5204,3 +5204,275 @@ def test_system_performance_metrics_remain_terminally_gated(
         layer, leaf = path.split(".")
         assert getattr(getattr(score, layer), leaf) is None
         assert score.supported_metric_fields[path].reason.value == expected_reason
+
+
+@pytest.mark.parametrize("resolution_status", ("unique", "ambiguous", "no_match"))
+def test_v3_reference_resolution_accuracy_scores_typed_outcomes(
+    resolution_status,
+):
+    from pathlib import Path
+
+    from mub.vnext.adapters.core_v3 import ReferenceAdapterV3
+    from mub.vnext.contracts import AnswerDisposition, ReferenceResolutionStatus, Split
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.generation import render_core_v3
+    from mub.vnext.generation.core import GenerationContext
+    from mub.vnext.generation.core_config import load_core_config
+    from mub.vnext.generation.family_c import generate_core_family_c_cores
+    from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    root = Path(__file__).resolve().parents[2]
+    config = load_core_config(root / "configs" / "vnext" / "core.yaml")
+    status = ReferenceResolutionStatus(resolution_status)
+    core = next(
+        item
+        for item in generate_core_family_c_cores(config)
+        if item.canonical_answer.resolution_status is status
+    )
+    task = render_core_v3(
+        core,
+        split=Split.TEST,
+        surface_variant=0,
+        context=GenerationContext(
+            config=config,
+            code_revision="reference-resolution-scoring-red",
+        ),
+    )
+    adapter = ReferenceAdapterV3(task)
+    run = execute_task_v3(
+        task,
+        adapter,
+        RuntimeConfigV3(
+            run_id=f"reference-resolution-{resolution_status}",
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            object_value_extractor_config_hash=H,
+            redaction_policy_version="1",
+        ),
+    )
+    scorer_config = ScorerConfigV3(
+        requested_metric_fields=("answer_scores.reference_resolution_accuracy",),
+    )
+
+    correct = score_task_v3(
+        task,
+        run,
+        authenticated_context(
+            task,
+            run,
+            adapter.adapter_info(),
+            adapter.capabilities(),
+            scorer_config,
+        ),
+    )
+    assert correct.answer_scores.reference_resolution_accuracy == 1.0
+
+    baseline = run.answer_predictions[0]
+    invalid_prediction = AnswerPredictionV3.model_validate({
+        **baseline.model_dump(mode="python"),
+        "format_valid": False,
+    })
+    invalid_run = TaskRunRecordV3.model_validate({
+        **run.model_dump(mode="python"),
+        "answer_predictions": [invalid_prediction],
+    })
+    invalid = score_task_v3(
+        task,
+        invalid_run,
+        authenticated_context(
+            task,
+            invalid_run,
+            adapter.adapter_info(),
+            adapter.capabilities(),
+            scorer_config,
+        ),
+    )
+    assert invalid.answer_scores.reference_resolution_accuracy == 0.0
+
+    wrong_disposition = (
+        AnswerDisposition.ABSTAINED
+        if status is ReferenceResolutionStatus.UNIQUE
+        else AnswerDisposition.ANSWERED
+    )
+    wrong_prediction = AnswerPredictionV3.model_validate({
+        **baseline.model_dump(mode="python"),
+        "raw_output": (
+            "ABSTAIN"
+            if wrong_disposition is AnswerDisposition.ABSTAINED
+            else '"fabricated-answer"'
+        ),
+        "disposition": wrong_disposition,
+        "parsed_answer": (
+            None
+            if wrong_disposition is AnswerDisposition.ABSTAINED
+            else "fabricated-answer"
+        ),
+        "format_valid": True,
+    })
+    wrong_run = TaskRunRecordV3.model_validate({
+        **run.model_dump(mode="python"),
+        "answer_predictions": [wrong_prediction],
+    })
+    wrong = score_task_v3(
+        task,
+        wrong_run,
+        authenticated_context(
+            task,
+            wrong_run,
+            adapter.adapter_info(),
+            adapter.capabilities(),
+            scorer_config,
+        ),
+    )
+    assert wrong.answer_scores.reference_resolution_accuracy == 0.0
+
+
+def test_current_state_history_accuracy_does_not_require_historical_capability():
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    current_path = "historical_scores.current_state_accuracy"
+    assert CORE_METRIC_REGISTRY_V3[current_path].required_capabilities == ()
+    for path in (
+        "historical_scores.previous_state_accuracy",
+        "historical_scores.point_in_time_accuracy",
+        "historical_scores.transition_accuracy",
+        "historical_scores.ordered_history_accuracy",
+        "historical_scores.version_confusion_rate",
+        "historical_scores.historical_distance_accuracy",
+        "historical_scores.historical_support_recall",
+    ):
+        assert "supports_historical_query" in (
+            CORE_METRIC_REGISTRY_V3[path].required_capabilities
+        )
+
+    task = MemUpdateTaskV3.model_validate(
+        current_structured_payload("v2", "string")
+    )
+    prediction = AnswerPredictionV3(
+        query_id="q",
+        raw_output="v2",
+        parsed_answer="v2",
+        format_valid=True,
+    )
+    run = TaskRunRecordV3(
+        task_id=task.task_id,
+        adapter_id="current-only-adapter",
+        run_id="current-history-capability",
+        answer_predictions=(prediction,),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            redaction_policy_version="1",
+        ),
+        completion_status="completed",
+    )
+    info = AdapterInfoV3(
+        adapter_id=run.adapter_id,
+        adapter_version="1",
+        system_name="current_only",
+        system_version="1",
+        configuration_hash=H,
+    )
+    score = score_task_v3(
+        task,
+        run,
+        authenticated_context(
+            task,
+            run,
+            info,
+            AdapterCapabilitiesV3(supports_native_answer=True),
+            ScorerConfigV3(requested_metric_fields=(current_path,)),
+        ),
+    )
+
+    assert score.historical_scores.current_state_accuracy == 1.0
+
+
+def test_raw_append_forgotten_diagnostics_do_not_require_physical_delete():
+    from pathlib import Path
+
+    from mub.vnext.adapters.core_v3 import RawAppendAdapterV3
+    from mub.vnext.contracts.v3.runtime import RetrievalTraceV3
+    from mub.vnext.generation.core_config import load_core_config
+    from mub.vnext.generation.family_e import compile_family_e_micro_pilot
+    from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
+    from mub.vnext.scoring.scorer_v3 import score_task_v3
+
+    exposure_path = "deletion_scores.forgotten_exposure_rate"
+    leakage_path = "deletion_scores.forgotten_value_leakage_rate"
+    assert set(
+        CORE_METRIC_REGISTRY_V3[exposure_path].required_capabilities
+    ) == {"exports_retrieval_ids", "exports_object_keys", "exports_values"}
+    assert CORE_METRIC_REGISTRY_V3[leakage_path].required_capabilities == (
+        "supports_native_answer",
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    core_config = load_core_config(root / "configs" / "vnext" / "core.yaml")
+    task = next(
+        task
+        for task in compile_family_e_micro_pilot(
+            core_config,
+            code_revision="raw-forgotten-diagnostics-red",
+        ).tasks
+        if task.metadata.extra["surface_variant"] == 0
+        and task.metadata.extra["stratification"]["lifecycle_cell"]
+        == "explicit_object_or_attribute_deletion"
+        and task.metadata.extra["stratification"]["deletion_scope"] == "object"
+    )
+    adapter = RawAppendAdapterV3(task)
+    run = execute_task_v3(
+        task,
+        adapter,
+        RuntimeConfigV3(
+            run_id="raw-forgotten-diagnostics",
+            action_parser_version="1",
+            answer_parser_version="1",
+            memory_entry_extractor_version="1",
+            object_value_extractor_config_hash=H,
+            redaction_policy_version="1",
+        ),
+    )
+    assert adapter.capabilities().supports_delete is False
+    raw_trace = run.retrieval_traces[0]
+    retained_rows = tuple(
+        (entry, score, rank)
+        for entry, score, rank in zip(
+            raw_trace.retrieved_entries,
+            raw_trace.scores,
+            raw_trace.ranks,
+        )
+        if entry.value_candidate is not None
+    )
+    diagnostic_trace = RetrievalTraceV3.model_validate({
+        **raw_trace.model_dump(mode="python"),
+        "retrieved_entries": [row[0] for row in retained_rows],
+        "scores": [row[1] for row in retained_rows],
+        "ranks": list(range(1, len(retained_rows) + 1)),
+    })
+    diagnostic_run = TaskRunRecordV3.model_validate({
+        **run.model_dump(mode="python"),
+        "parsed_actions": [],
+        "retrieval_traces": [diagnostic_trace],
+    })
+
+    score = score_task_v3(
+        task,
+        diagnostic_run,
+        authenticated_context(
+            task,
+            diagnostic_run,
+            adapter.adapter_info(),
+            adapter.capabilities(),
+            ScorerConfigV3(
+                requested_metric_fields=(exposure_path, leakage_path),
+            ),
+        ),
+    )
+
+    assert score.deletion_scores.forgotten_exposure_rate == 1.0
+    assert score.deletion_scores.forgotten_value_leakage_rate == 0.0

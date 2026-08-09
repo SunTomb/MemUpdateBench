@@ -986,7 +986,7 @@ def test_family_f_corrupted_controls_detect_current_confusion_wrong_order_and_mi
     assert missing_score.historical_scores.historical_support_recall == 0.0
 
 
-def test_family_f_withheld_historical_capabilities_are_typed_nulls_never_fabricated_zeroes():
+def test_family_f_withheld_historical_capabilities_keep_direct_current_measurable():
     from mub.vnext.scoring.scorer_v3 import score_task_v3
 
     _, _, _, compile_micro = _api()
@@ -1003,6 +1003,12 @@ def test_family_f_withheld_historical_capabilities_are_typed_nulls_never_fabrica
         )
         expected = EXPECTED_PRINCIPAL_BY_QUERY[query_type] & HISTORICAL_PRINCIPAL_PATHS
         for path in HISTORICAL_PRINCIPAL_PATHS:
+            if (
+                path == "historical_scores.current_state_accuracy"
+                and path in expected
+            ):
+                assert _metric_value(score, path) == 1.0
+                continue
             assert _metric_value(score, path) is None
             reason = score.supported_metric_fields[path].reason
             assert reason is (SupportReason.NOT_SUPPORTED if path in expected else SupportReason.NOT_APPLICABLE)
