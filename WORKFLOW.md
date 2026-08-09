@@ -1118,3 +1118,65 @@ This is not external-validity or prompted-answer evidence. Exact and heuristic C
 An independent final-gate review initially returned `NOT_APPROVED` because the retained audit was not human-attributed, release-level evidence was not fully bound, documentation contained stale pre-regeneration hashes, the complete trace matrix was absent, and the final full suite had not been rerun. The evidence-bound rerun, corrected hashes, nested artifact indices, retained 48-cell trace review, human-attributed 96-case audit, and green complete post-correction suite resolved every blocker. A final independent review returned `CONDITIONAL` with exactly one condition—the fresh complete suite must finish with zero failures—and explicitly found no other release blocker. The `2697 passed, 10 skipped` result satisfied that condition.
 
 The Families A–D Pilot is therefore `FINAL_APPROVED` as a bounded benchmark-engineering release. This approval authenticates the released tasks and the built-in deterministic engineering evidence; it does not convert `slot_direct` diagnostics into external-system, prompted-answer, API, SFT, RLVR, or broad benchmark evidence. Any later Core expansion, external systems, prompted answer models, APIs, Families E–H, SFT, or RLVR require a separate approved design/implementation cycle and new result roots. The pre-human-rebind server metadata backup remains retained for rollback until a later explicit cleanup decision.
+
+## vNext Core immutable task release
+
+### Motivation
+
+Core Task 8 closes the pre-runtime data boundary for the exact 3,000-core/12,000-task A–G release. The release required a full 224-task human audit, independent dual review for E–G, adjudication of every non-pass item, generator/template remediation rather than decision rebinding, full regeneration, and a fresh audit over the regenerated candidate before immutable publication.
+
+### Human audit and remediation
+
+The first complete audit contained 320 decisions: 224 primary rows and 96 independent E–G secondary rows. The authenticated gate required 104 adjudications. A third independent reviewer confirmed 90 remediation items: 32 Family D controlled-adversarial NOOP sentence splices, 26 Family E surface-naturalness failures from the same template root cause, and 32 Family G lowercase post-period query instructions. The other 14 adjudications passed.
+
+The generator remediation was committed at:
+
+```text
+ba8444bd6db5d4a15eeb0062096d715c77016c86
+fix: remediate Core surface audit findings
+```
+
+The Core controlled NOOP template now renders the reviewed statement as a complete sentence before the lifecycle caveat. Family G explicit and controlled query templates now use grammatical comma-linked instructions rather than inserting lowercase text after a period. Two focused tests were observed RED (`2 failed`) before the fix and GREEN afterward (`2 passed in 14.28s`). The five relevant Core modules then passed `96` tests in `941.66s`; `py_compile` and `git diff --check` passed.
+
+The remediated full candidate passed standalone validation with exactly 3,000 semantic cores, 12,000 tasks, 8,400/1,200/2,400 train/dev/test tasks, and a 140-core/560-task `core-hard-v1`. An exhaustive surface scan checked all 900 Family D/E controlled surfaces and all 600 Family G explicit/controlled queries, finding zero instances of either confirmed defect.
+
+Because the generation revision changed, every task hash and audit ID was freshly bound even though deterministic reselection chose the same 224 semantic cores. No prior decision was rewritten or mechanically rebound. The regenerated audit collected a new 320 decisions with non-overlapping observation fingerprints. All 224 primary decisions and all 96 independent E–G secondary decisions passed.
+
+### Final gate and publication
+
+The authoritative final gate returned:
+
+```text
+status: RELEASE_READY
+full_candidate_at_verification: true
+release_ready_at_verification: true
+terminal_pass_count: 224
+required_adjudication_count: 0
+unresolved_adjudication_count: 0
+remediation_count: 0
+raw_agreement: 1.0
+```
+
+`Cohen's kappa` is null in the all-pass E–G re-audit because both reviewer marginals are constant; raw agreement is 1.0 and adjudicated terminal pass, rather than kappa alone, is the release criterion.
+
+The authenticated task release was published by staging the complete tree beside the destination, verifying the final gate attestation and current candidate receipt, copying and hashing every artifact, and atomically renaming the staged directory to:
+
+```text
+data/vnext/core/v3
+```
+
+The immutable tree contains the exact seven candidate artifacts under `candidate/`, final audit selection/context/decisions/gate evidence under `audit/`, five strict-v3 schemas under `schemas/`, and the root `task_release_manifest.json`. The root manifest binds 18 artifacts and records:
+
+```text
+candidate generation revision  ba8444bd6db5d4a15eeb0062096d715c77016c86
+candidate root digest           71a6beb3ac8a28dabc753c969e96a47a59f92031d217bebf0fa63d6061012af1
+source task manifest hash       38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3
+selection hash                  d2d5260c164ec72c826d6c692c13518269db05fc1f5dbae0ff057f78dad796da
+gate attestation hash           45461659ab3f65a0a559897e50340a470f27cdecf55b999a1431988567cf00c2
+release root digest             458d169a4732139f45361d90ea528f5ed0133f126a32bc5a16de23da6f8a2aba
+release manifest hash           f953283a10dd45d3f9d1de066570a9c09b9d132ed458f8dea3c948641b89e99d
+```
+
+### Conclusion and next step
+
+The Core **task release** is `FINAL_APPROVED`: its task bytes, strict-v3 schemas, hard-suite view, human evidence, candidate provenance, and publication root are authenticated. This is not overall Core `FINAL_APPROVED` and contains no built-in manager result, external-system result, prompted answer-model result, confidence interval, claim ledger, SFT, RLVR, API evidence, Family H, hidden test, or leaderboard evidence. Task 9 may now consume this immutable task release to extend built-ins, support resolution, and corrupted controls without regenerating or rebinding the task boundary.
