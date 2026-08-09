@@ -53,7 +53,7 @@ CORE_SURFACE_TEMPLATE_SETS = (
         "Without altering any other record, commit $value as the stored value for $targets.",
         "Supersede any earlier value for $targets; the current value is $value.",
         "Disregard any lingering value for $targets; it must no longer be stored.",
-        "Although this may resemble an update, $statement It does not authorize a memory write.",
+        "$statement Although this may resemble an update, it does not authorize a memory write.",
         "Ignore superseded values and return the current value attached to $targets.",
         "After accounting for all writes and removals, are all of $targets absent?",
         "After accounting for all writes and removals, how many of $targets are absent?",

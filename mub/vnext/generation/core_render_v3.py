@@ -443,10 +443,10 @@ def _promote_family_f_query_and_evidence(task, core: SemanticCore, version_histo
 
 
 _FAMILY_G_QUERY_TEMPLATES = (
-    "Use the listed objects in order. $instruction",
+    "Using the listed objects in order, $instruction",
     "For the ordered object sequence, $instruction",
     "Follow the typed derivation over the objects in their displayed order: $instruction",
-    "Resolve the ordered current-state derivation. $instruction",
+    "To resolve the ordered current-state derivation, $instruction",
 )
 
 

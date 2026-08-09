@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,9 @@ from mub.vnext.generation.core import GenerationContext
 from mub.vnext.generation.core_config import load_core_config
 from mub.vnext.generation.family_a import generate_core_family_a_cores
 from mub.vnext.generation.family_c import generate_core_family_c_cores
+from mub.vnext.generation.family_d import generate_core_family_d_cores
 from mub.vnext.generation.family_e import generate_core_family_e_cores
+from mub.vnext.generation.family_g import generate_core_family_g_cores
 from mub.vnext.io import semantic_task_hash_v3
 from mub.vnext.validation.replay_v3 import (
     QueryResolutionV3,
@@ -227,3 +230,53 @@ def test_family_c_v3_replay_rejects_forged_answer_and_contract_rejects_typed_for
     ]
     with pytest.raises(ValidationError, match="unknown candidates"):
         MemUpdateTaskV3.model_validate(wrong_graph)
+
+
+def test_controlled_noop_surfaces_do_not_splice_capitalized_statements_after_commas() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="task-562-human-remediation")
+    cores = (
+        generate_core_family_d_cores(config)[0],
+        generate_core_family_e_cores(config, profile="full")[0],
+    )
+
+    for core in cores:
+        task = render_core_v3(
+            core,
+            split=Split.TRAIN,
+            surface_variant=3,
+            context=context,
+        )
+        noop_texts = tuple(
+            event.raw_text
+            for event, action in zip(task.events, task.actions)
+            if action.operation.value == "NOOP"
+        )
+        assert noop_texts
+        assert all(
+            re.search(
+                r"\. Although this may resemble an update, it does not authorize a memory write\.",
+                text,
+            )
+            for text in noop_texts
+        )
+        assert all(
+            re.search(r"Although this may resemble an update,\s+[A-Z]", text)
+            is None
+            for text in noop_texts
+        )
+
+
+def test_family_g_period_delimited_query_sentences_start_with_capitals() -> None:
+    config = load_core_config(CORE_CONFIG_PATH)
+    context = GenerationContext(config=config, code_revision="task-562-human-remediation")
+    core = generate_core_family_g_cores(config)[0]
+
+    for surface_variant in (0, 3):
+        task = render_core_v3(
+            core,
+            split=Split.TRAIN,
+            surface_variant=surface_variant,
+            context=context,
+        )
+        assert re.search(r"\.\s+[a-z]", task.queries[0].text) is None
