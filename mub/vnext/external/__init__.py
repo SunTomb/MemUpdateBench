@@ -1,3 +1,18 @@
+from mub.vnext.external.canaries_v3 import (
+    CANARY_FAMILY_QUOTAS,
+    CANARY_SELECTION_POLICY_SHA256,
+    CANARY_SELECTION_VERSION,
+    AuthenticatedCoreReleaseV1,
+    CanaryBundleV1,
+    CanaryManifestV1,
+    CanarySetBundleV1,
+    CanarySetManifestV1,
+    authenticate_core_release,
+    build_canary_set,
+    publish_canary_set,
+    validate_canary_bundle,
+    validate_canary_set,
+)
 from mub.vnext.external.admission import (
     authorize_fallback,
     evaluate_candidate_admission,
@@ -24,6 +39,19 @@ from mub.vnext.external.registry import (
 )
 
 __all__ = [
+    "CANARY_FAMILY_QUOTAS",
+    "CANARY_SELECTION_POLICY_SHA256",
+    "CANARY_SELECTION_VERSION",
+    "AuthenticatedCoreReleaseV1",
+    "CanaryBundleV1",
+    "CanaryManifestV1",
+    "CanarySetBundleV1",
+    "CanarySetManifestV1",
+    "authenticate_core_release",
+    "build_canary_set",
+    "publish_canary_set",
+    "validate_canary_bundle",
+    "validate_canary_set",
     "ADMISSION_GATE_NAMES",
     "CANDIDATE_LABELS",
     "DENIED_EXTERNAL_EVIDENCE_LABELS",
