@@ -1294,3 +1294,91 @@ Several reviewer streams terminated with API `unexpected EOF`; none was accepted
 Core Task 9 is complete as a deterministic built-in/runtime/scorer-control engineering gate. It establishes truthful A–G support resolution, explicit unsupported coverage, exact terminal-row completeness, logical lifecycle semantics, diagnostic Raw retention, current-state CRUD behavior, and scorer sensitivity controls.
 
 This is not an authenticated 12,000-task result matrix and does not make overall Core `FINAL_APPROVED`. It provides no external-validity or prompted-answer evidence. The next authorized work is Task 10: capability-first qualification of one genuine external adapter, beginning with the fixed Mem0 OSS feasibility gates and using the explicitly labeled LangGraph Store fallback only if those gates fail.
+
+## vNext Core external-admission boundary
+
+### Motivation and fixed scope
+
+Core Task 10 Phase 1 establishes the provider-neutral trust boundary that must exist before any genuine external system is installed, invoked, or interpreted. It fixes the candidate vocabulary, evidence gates, fallback state machine, report identity, and portable provenance rules independently of Mem0, LangGraph, Qdrant, Transformers, or SentenceTransformers. The base package imports none of those optional providers.
+
+The only primary candidate is `mem0_oss`. The only conditional candidate is `langgraph_store_extract_then_store`, and it may participate only after a current-manifest/current-evaluation Mem0 report records a candidate-specific eligible `FAIL`. Shared resource `BLOCKED` or `NOT_RUN` outcomes do not count as Mem0 failure and do not authorize fallback. Memory-R1, `baselines/memory_r1_agent.py`, project-local approximations, and the historical `scripts/eval_mem0_baseline.py` path are explicitly inadmissible as external-system evidence.
+
+This phase does not run either provider, create a scientific result, compare accuracy, start the answer-model harness, or change the immutable Core task release.
+
+### Contracts, gates, and selection semantics
+
+The independent immutable admission contract fixes fourteen ordered gates:
+
+```text
+source_authentication
+official_provenance_license
+offline_model_prerequisite
+candidate_environment
+visible_only_fairness
+namespace_reset
+capability_truthfulness
+raw_normalized_export
+field_provenance
+terminal_completeness
+retrieval_policy
+presentation_level
+security_redaction
+repetition_rule
+```
+
+Each gate is exactly one of `PASS`, `FAIL`, `BLOCKED`, or `NOT_RUN`, with status-coherent evidence and reasons. Reports bind the authenticated source task-manifest hash and reference, shared evaluation-configuration hash and reference, candidate-specific adapter configuration, probe, canary, package/model provenance, exact adapter identity, capabilities, state-transition linkage, fixed gate vector, aggregate outcome, and canonical reason.
+
+Admission requires all gates to pass, a recomputed presentation level of 2 or 3, and real event-ingest/add/update support. Extractor-dependent candidates must bind a coherent extractor ID/version rather than silently inheriting benchmark gold. Public evaluation, fallback, and exact-one selection APIs revalidate exact stored fields and nested contract types so `model_construct`, subclass overrides, raw enum/string substitution, malformed strict values, and forged nested references fail closed.
+
+Fallback eligibility and invariant gates are disjoint and exhaustive. Invariant provenance, license, offline-model, security, and repetition gates must pass; eligible gates must be terminal `PASS`/`FAIL`; at least one eligible Mem0 gate must fail; and any `BLOCKED` or `NOT_RUN` prevents fallback. Selection emits typed report references in canonical Mem0-then-LangGraph order and returns either exactly one admitted candidate or a canonical release-stopped decision. A `langgraph_fallback_not_authorized` reason is invalid unless a LangGraph report actually participated.
+
+### Portable provenance boundary
+
+Artifact references must use NFC-normalized relative forward-slash paths. The validator rejects absolute, drive, UNC, backslash, traversal, empty, trailing-dot/space, colon, Win32 device, DOS 8.3 alias, control/surrogate, default-ignorable, and unsafe punctuation forms. Prior-proxy matching uses NFKC/casefolded component tokens, iterative extension stripping, and contiguous multi-component windows, including a denied path embedded as an ancestor directory. This closes direct, prefixed, suffixed, compound-extension, Unicode-format, and ancestor-path evidence aliases without treating broad substrings such as `memory_r10` as the denied `memory_r1` token.
+
+### Files and implementation checkpoint
+
+```text
+mub/vnext/external/__init__.py
+mub/vnext/external/admission.py
+mub/vnext/external/contracts.py
+mub/vnext/external/registry.py
+tests/vnext/test_external_admission_contracts.py
+tests/vnext/test_external_task10_boundaries.py
+```
+
+The implementation and review-remediation commits are:
+
+```text
+c74d20d2b8aa63a5ad35182199f9ba49b5df2a9f
+feat: establish Core external admission boundary
+
+694526a25b10513933a9fc1c9a11d4754c125f79
+fix: enforce Mem0-first external admission
+```
+
+### Verification and review evidence
+
+Observed TDD cycles covered fixed gate/order semantics, configuration and artifact identity binding, Level 2/3 admission, extractor coherence, conditional fallback, duplicate/report-order rejection, typed decisions, exact nested revalidation, provider-neutral imports, immutable schema snapshots, portable Windows/Unicode paths, and prior-proxy aliases. The final two RED cases reproduced a denied script path used as an ancestor directory and a release-stop rationale without LangGraph participation (`2 failed, 32 deselected`); both passed after the minimal production fixes (`2 passed, 32 deselected`).
+
+Post-commit parent-worktree verification reported:
+
+```text
+external admission contracts and boundaries:  38 passed
+external/Core runtime compatibility matrix:   361 passed
+py_compile:                                    passed
+git diff --check:                              passed
+immutable Core/legacy/schema diffs:            empty
+```
+
+The complete `tests/vnext` inventory was started after the commit but intentionally stopped after its Windows runtime made it unsuitable as a single command-window gate. Task 9 had already completed the prior bounded full inventory at `3368 passed, 13 skipped, 0 failures`; this Phase 1 checkpoint therefore uses the 361-test affected compatibility matrix, with the complete suite reserved for the final Task 10 batch gate after the remaining provider-neutral and provider-specific layers are integrated.
+
+Specification review and security/provenance review both returned `APPROVED`. The first completed code-quality review, performed by `gpt-5.6-sol`, returned `NOT_APPROVED` for the ancestor-directory denial bypass and the inconsistent release-stop rationale described above. Both findings were independently reproduced, fixed test-first, and closed by the post-commit regression matrix.
+
+A fresh review of the exact implementation commit then found two additional public-boundary inconsistencies: direct `evaluate_candidate_admission()` could return true for LangGraph without Mem0 fallback context, and a directly constructed decision could admit Mem0 while also carrying a LangGraph report. Each finding was reproduced by an isolated failing regression, fixed without changing the valid fallback selector path, and committed in `694526a2...`. The final matrix increased to 361 passing tests.
+
+Two minimal delegated re-review attempts returned `APPROVED`, but their recorded response models were Opus and Fable rather than the selected budget routes, so those verdicts were not adopted. The parent `gpt-5.6-sol` session independently re-read the exact remediation diff, confirmed both failing scenarios against the pre-fix parent, ran the two-case GREEN regression and the complete 361-test affected matrix, and found no remaining actionable issue in the remediation scope.
+
+### Conclusion and next step
+
+Task 10 Phase 1 establishes an admission boundary, not external-validity evidence. No candidate is admitted yet, and overall Core remains in progress. The next bounded step is to derive two authenticated, deterministic, mutually independent 64-task dev canaries from the immutable Core release without writing beneath `data/vnext/core/v3`; provider probes and Mem0 implementation remain gated on that and the remaining visibility, security, persistence, and model-provenance work.
