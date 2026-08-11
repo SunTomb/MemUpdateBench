@@ -232,6 +232,32 @@ class JsonlSubprocessBridge:
                 f"exit_code={exit_code}"
             )
 
+    def _ensure_worker_closed_cleanly(self) -> None:
+        try:
+            queued = self._responses.get(timeout=0.01)
+        except queue.Empty:
+            queued = None
+        if queued is not None:
+            self._terminate()
+            self._closed = True
+            raise BridgeProtocolError(
+                "worker returned an unsolicited extra response"
+            )
+        try:
+            exit_code = self._process.wait(timeout=self._timeout_seconds)
+        except subprocess.TimeoutExpired:
+            self._terminate()
+            self._closed = True
+            raise BridgeProcessError(
+                "worker did not exit after close response; exit_code=None"
+            ) from None
+        self._closed = True
+        if exit_code != 0:
+            raise BridgeProcessError(
+                "worker failed after close response; "
+                f"exit_code={exit_code}"
+            )
+
     def request(self, request: WorkerRequestV1) -> WorkerResponseV1:
         request = _revalidate_request(request)
         with self._lock:
@@ -259,6 +285,12 @@ class JsonlSubprocessBridge:
                 ) from exc
             if line is None:
                 exit_code = self._process.poll()
+                if exit_code is None:
+                    try:
+                        exit_code = self._process.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        exit_code = None
+                self._terminate()
                 self._closed = True
                 raise BridgeProcessError(
                     "worker exited before returning a response; "
@@ -276,7 +308,10 @@ class JsonlSubprocessBridge:
                 raise BridgeProtocolError(
                     "worker response request ID does not match"
                 )
-            self._ensure_worker_remains_available()
+            if request.operation is WorkerOperation.CLOSE:
+                self._ensure_worker_closed_cleanly()
+            else:
+                self._ensure_worker_remains_available()
             return response
 
     def _parse_response(self, line: bytes) -> WorkerResponseV1:

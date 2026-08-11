@@ -356,6 +356,37 @@ def test_jsonl_bridge_rejects_untrusted_worker_responses(
     assert exc_info.value.__cause__ is None
 
 
+def test_jsonl_bridge_reports_exit_code_before_response(tmp_path):
+    from mub.vnext.external.bridge import (
+        BridgeProcessError,
+        JsonlSubprocessBridge,
+        WorkerOperation,
+        WorkerRequestV1,
+    )
+
+    worker = tmp_path / "exit_before_response_worker.py"
+    worker.write_text(
+        "import os, sys\n"
+        "sys.stdin.buffer.readline()\n"
+        "os.close(sys.stdout.fileno())\n"
+        "os._exit(7)\n",
+        encoding="utf-8",
+    )
+    request = WorkerRequestV1(
+        request_id="exit-before-response",
+        operation=WorkerOperation.HEALTH,
+        payload={},
+    )
+    with JsonlSubprocessBridge(
+        command=(sys.executable, str(worker)),
+        cwd=tmp_path,
+        environment=_worker_environment(),
+        timeout_seconds=5.0,
+    ) as bridge:
+        with pytest.raises(BridgeProcessError, match="exit_code=7"):
+            bridge.request(request)
+
+
 def test_jsonl_bridge_rejects_response_followed_by_worker_failure(tmp_path):
     from mub.vnext.external.bridge import (
         BridgeProcessError,
@@ -410,6 +441,112 @@ def test_jsonl_bridge_rejects_response_followed_by_worker_failure(tmp_path):
         with pytest.raises(BridgeProcessError) as exc_info:
             bridge.request(request)
     assert "sk-secret" not in str(exc_info.value)
+
+
+def test_jsonl_bridge_accepts_worker_exit_after_close_response(tmp_path):
+    from mub.vnext.external.bridge import (
+        JsonlSubprocessBridge,
+        WorkerOperation,
+        WorkerRequestV1,
+    )
+
+    worker = tmp_path / "exit_after_close_worker.py"
+    worker.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+
+            request = json.loads(sys.stdin.buffer.readline())
+            response = {
+                "schema_version": "memupdatebench.external.worker_response.v1",
+                "request_id": request["request_id"],
+                "status": "ok",
+                "payload": {"closed": True},
+                "error_code": None,
+            }
+            raw = json.dumps(
+                response,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\\n"
+            sys.stdout.buffer.write(raw)
+            sys.stdout.buffer.flush()
+            os.close(sys.stdout.fileno())
+            os._exit(0)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    request = WorkerRequestV1(
+        request_id="close-1",
+        operation=WorkerOperation.CLOSE,
+        payload={},
+    )
+    with JsonlSubprocessBridge(
+        command=(sys.executable, str(worker)),
+        cwd=tmp_path,
+        environment=_worker_environment(),
+        timeout_seconds=5.0,
+    ) as bridge:
+        response = bridge.request(request)
+    assert response.request_id == "close-1"
+    assert response.payload["closed"] is True
+
+
+def test_jsonl_bridge_rejects_nonzero_exit_after_close_response(tmp_path):
+    from mub.vnext.external.bridge import (
+        BridgeProcessError,
+        JsonlSubprocessBridge,
+        WorkerOperation,
+        WorkerRequestV1,
+    )
+
+    worker = tmp_path / "fail_after_close_worker.py"
+    worker.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+
+            request = json.loads(sys.stdin.buffer.readline())
+            response = {
+                "schema_version": "memupdatebench.external.worker_response.v1",
+                "request_id": request["request_id"],
+                "status": "ok",
+                "payload": {"closed": True},
+                "error_code": None,
+            }
+            raw = json.dumps(
+                response,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\\n"
+            sys.stdout.buffer.write(raw)
+            sys.stdout.buffer.flush()
+            os.close(sys.stdout.fileno())
+            os._exit(7)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    request = WorkerRequestV1(
+        request_id="close-failed",
+        operation=WorkerOperation.CLOSE,
+        payload={},
+    )
+    with JsonlSubprocessBridge(
+        command=(sys.executable, str(worker)),
+        cwd=tmp_path,
+        environment=_worker_environment(),
+        timeout_seconds=5.0,
+    ) as bridge:
+        with pytest.raises(BridgeProcessError, match="exit_code=7"):
+            bridge.request(request)
 
 
 def test_jsonl_bridge_timeout_terminates_worker_without_raw_stderr(tmp_path):

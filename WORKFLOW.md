@@ -1686,3 +1686,57 @@ The routed review used a mixed Fable/Haiku/Sol execution and could not be verifi
 ### Conclusion and next step
 
 Task 9 is complete. This is model-prerequisite evidence only: no Mem0 package, Qdrant environment, external adapter run, capability report, or admission decision exists yet. Read-only preflight found neither `mem0` nor `qdrant-client` in the local environment or the approved cluster environment. The next bounded step is the isolated genuine Mem0 OSS package/lock and worker preflight; dependency installation must remain isolated and explicitly authorized, and a resource/setup `BLOCKED` state must not be relabeled as a Mem0 candidate `FAIL` or used to unlock LangGraph fallback.
+
+## vNext Core Mem0 OSS configuration and host/worker preflight
+
+### Motivation and fixed provider identity
+
+Task 10 now has a dependency-free, fake-backend-tested host/worker path for the first fixed candidate, `mem0_oss`. The package contract pins the genuine official release rather than a project-local approximation:
+
+```text
+package:        mem0ai
+version/tag:    2.0.17 / v2.0.17
+release commit: 12c47f524935692e27ad48d829f35fa1e4417181
+wheel SHA-256:  1521209f0ab4c77b7e5777aa1b0b5f0104efa06ca5b9eddb804cdd091c17726a
+wheel size:     343876 bytes
+license:        Apache-2.0
+```
+
+The public configuration binds the authenticated model-provenance artifact, run-derived non-default Qdrant collection, `user_id` namespace isolation, `delete_all_user_id` reset, normal native top-k retrieval with no reranking, inference enabled, the local Qwen provider, frozen 384-dimensional MiniLM embedder, embedded Qdrant, disabled telemetry, and fixed extractor/redaction versions. Local Qwen/MiniLM/Qdrant/history paths remain in a separately validated private worker configuration and cannot enter the public configuration hash.
+
+### Host, worker, and trust boundaries
+
+The implementation adds:
+
+```text
+mub/vnext/external/providers/mem0_protocol.py
+mub/vnext/external/providers/mem0_adapter.py
+mub/vnext/external/workers/mem0_worker.py
+mub/vnext/external/workers/__init__.py
+```
+
+The host adapter authenticates an exact typed worker health identity before use. It sends only allowlisted visible event/query payloads; requested actions are parsed only on the host, while effective mutations and affected native entry IDs come from worker-observed state. The frozen evaluation extractor only recognizes exact visible canonical Add/Update memory text against declared object identities. It does not fill object/value candidates from gold fields. Native retrieval IDs, order, finite scores, source linkage, timestamps, and the fixed `normal_topk` policy are retained. `slot_direct` reads only normalized observable entries and uses visible sequence metadata, then native timestamps/order as bounded fallbacks; no Task 11 answer model is invoked.
+
+Capabilities remain conservative: Mem0 declares isolated reset, event ingest, ADD, normalized entry export, native retrieval IDs/scores, and host action trace, but does not claim native UPDATE/DELETE/TTL/history/multi-object answer, raw-state export, native object/value fields, or evidence linkage. The resulting presentation level is 3 when the probed state-transition linkage is available and 2 otherwise.
+
+The worker imports no optional Mem0/Qdrant/Torch/Transformers dependency at module import time. Its formal canonical JSONL loop validates exact requests, emits typed canonical responses, limits request size, closes cleanly with verified process exit status, and sanitizes backend failures. The CLI accepts only an absolute, real, canonical private worker-configuration file. Telemetry is disabled before the Mem0 SDK import. The official backend uses namespace-filtered `delete_all`, `add`, `get_all`, and native `search` calls; only currently exportable affected IDs and a small metadata allowlist cross into normalized responses.
+
+Security regressions verify that benchmark gold/action/evidence metadata never crosses the worker boundary, untrusted worker error strings and native metadata are not echoed publicly, source event IDs are restricted to host-observed visible events, optional SDKs are not loaded by host imports, and CLOSE is idempotent and process-clean. The 20-trial reset protocol passes against the in-process fake worker, and an end-to-end fake worker round trip passes through the real `JsonlSubprocessBridge` framing and shutdown path.
+
+### Validation and boundary
+
+```text
+complete external-infrastructure gate:        159 passed, 2 skipped
+post-review Mem0 focused gate:                  37 passed
+post-review bridge security/protocol gate:      25 passed
+Core runtime compatibility gate:               323 passed
+py_compile:                                     passed
+git diff --cached --check:                      passed
+immutable Core/legacy/strict-v3 schema diffs:  empty
+```
+
+The two complete-gate skips are the existing Windows symbolic-link construction cases (`WinError 1314`); static reparse checks remain active. The complete external snapshot passed before the final bounded source-linkage, metadata-redaction, and worker-exit diagnostics were added; every suite touched by those final changes was rerun independently and passed as shown above.
+
+The previously attempted exact routed Decision review could not be verified as the required model/effort profile, so its aggregate verdict was not reused and no further mismatched delegated verdict was requested. The parent `gpt-5.6-sol` session completed the specification, security, and code-quality inspection directly, with RED regressions for request-ID and health drift, untrusted error/metadata/source leakage, non-exportable and multi-entry effects, telemetry ordering, normalized-state ordering, and clean/nonzero worker termination.
+
+This is a code-path preflight only. No `mem0ai` or Qdrant package has been installed, no wheel or transitive lock has been downloaded, no local Qwen/MiniLM/Qdrant integration has run, and no authenticated candidate report exists. Therefore this work is neither Mem0 `PASS` nor candidate `FAIL`; it does not authorize LangGraph fallback and does not change overall Core status. The next step is the separately authorized isolated dependency/real-backend preflight, followed by 20/20 real reset trials and only then Canary A/B admission execution.
