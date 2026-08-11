@@ -864,6 +864,24 @@ def test_candidate_admission_recomputes_level_and_requires_every_gate_pass() -> 
     )
 
 
+def test_public_candidate_admission_cannot_bypass_mem0_first_fallback() -> None:
+    langgraph = _report(ExternalCandidateId.LANGGRAPH_STORE_EXTRACT_THEN_STORE)
+    assert not evaluate_candidate_admission(langgraph)
+
+    failed_mem0 = _report(
+        gate_overrides={"presentation_level": GateStatus.FAIL}
+    )
+    decision = select_single_admitted_candidate(
+        (failed_mem0, langgraph),
+        current_manifest_hash=H_MANIFEST,
+        current_evaluation_configuration_hash=H_EVALUATION_CONFIG,
+    )
+    assert (
+        decision.admitted_candidate_id
+        is ExternalCandidateId.LANGGRAPH_STORE_EXTRACT_THEN_STORE
+    )
+
+
 def test_candidate_admission_requires_ingest_add_update_and_coherent_extractor() -> None:
     base = _capabilities(2)
     for field in ("supports_event_ingest", "supports_add", "supports_update"):
@@ -1195,6 +1213,15 @@ def test_admission_decision_uses_typed_canonical_report_bindings() -> None:
     assert decision.admitted_candidate_id is langgraph_ref.candidate_id
     assert decision.admitted_report_hash == langgraph_ref.report_hash
     assert decision.report_hashes == (mem0_ref.report_hash, langgraph_ref.report_hash)
+
+    with pytest.raises(ValidationError, match="admitted Mem0"):
+        AdmissionDecisionV1(
+            status="admitted",
+            **decision_context,
+            reports=(mem0_ref, langgraph_ref),
+            admitted_report=mem0_ref,
+            reasons=("admitted_mem0_primary",),
+        )
 
     with pytest.raises(ValidationError, match="canonical candidate order"):
         AdmissionDecisionV1(

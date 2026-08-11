@@ -114,7 +114,10 @@ def _evaluate_validated_candidate(report: ExternalAdmissionReportV1) -> bool:
 
 
 def evaluate_candidate_admission(report: ExternalAdmissionReportV1) -> bool:
-    return _evaluate_validated_candidate(_revalidate_report(report))
+    report = _revalidate_report(report)
+    if report.candidate_id is not ExternalCandidateId.MEM0_OSS:
+        return False
+    return _evaluate_validated_candidate(report)
 
 
 def _authorize_validated_fallback(

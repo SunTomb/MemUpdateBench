@@ -288,6 +288,14 @@ class AdmissionDecisionV1(ImmutableContractModel):
                 raise ValueError(
                     "admitted LangGraph decisions require both Mem0 and LangGraph reports"
                 )
+            if (
+                validated_admitted_report.candidate_id
+                is ExternalCandidateId.MEM0_OSS
+                and candidate_ids != (ExternalCandidateId.MEM0_OSS,)
+            ):
+                raise ValueError(
+                    "admitted Mem0 decisions cannot include a LangGraph report"
+                )
             expected_reasons = (
                 ("admitted_mem0_primary",)
                 if validated_admitted_report.candidate_id
