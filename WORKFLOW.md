@@ -1595,3 +1595,94 @@ The routed review again recorded only Fable/Haiku usage and was not adopted as a
 ### Conclusion and next step
 
 Task 10 Phase 4 is complete as persistence infrastructure only. No external run or admission result exists yet. Before Mem0 preflight, Task 9 must freeze the already verified offline Qwen/MiniLM snapshots into a formal model-provenance artifact bound to the current task manifest and evaluation configuration; then Task 10 Phase 6 may build the isolated genuine Mem0 OSS worker.
+
+## vNext Core external offline-model provenance freeze
+
+### Motivation and authenticated context
+
+Core Task 10 model discovery is now frozen as typed, content-addressed provenance rather than an informal cache observation. The preparation CLI authenticates the complete immutable Core task release through the existing release authenticator, requires the exact task-manifest hash, strict-parses the canonical Canary A/B set manifest, checks its fixed hash and release binding, and verifies three single-link private evidence files before publication. Caller-supplied hashes are not trust roots.
+
+The canonical evaluation configuration binds:
+
+```text
+source task manifest: 38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3
+canary set manifest:  3c822b014af2b1026056f81b9284bbb6a4ed52d9072ac5524c7aa2fb6c8f95a8
+canaries:             canary_a, canary_b
+reset trials:         20
+determinism namespaces: 3
+repetitions:          deterministic=1, nondeterministic/inconclusive=3
+retrieval policy:     normal_topk
+answer mode:          slot_direct
+```
+
+Its canonical SHA-256 is:
+
+```text
+543881d8a6a1d16e5e4c5e5a3db655c4dda557d618736b00aee6e828d3003c7e
+```
+
+### Frozen snapshots and probe evidence
+
+The role-specific trust boundary requires the complete exact lock for both snapshots, including ID, official URI, revision, license, architecture, tree-manifest algorithm/hash, file count, total size, and local-files-only status:
+
+```text
+Qwen/Qwen2.5-7B-Instruct
+a09a35458c702b33eeacc393d103063234e8bc28
+d2d9ab0fbeed7ab74ff3dc433209aec9b01952ccc4d88eec16c0d9aaf1fef9c8
+Apache-2.0; 14 files; 15,242,807,270 bytes
+
+sentence-transformers/all-MiniLM-L6-v2
+c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+d17624986b02a007e8de99a086d7541ae0119b3f5840890ff196e687b846925b
+Apache-2.0; 11 files; 91,578,367 bytes
+```
+
+The normalized facts bind the exact deterministic Qwen prompt/decoding contract and response hash, the exact two MiniLM inputs, CPU device, `(2, 384)` shape, finite/nonzero/repeatable checks, and measured package versions. Private raw evidence is retained outside the redistributable root and represented publicly only by hash, size, media type, storage class, and private license status:
+
+```text
+snapshot tree evidence: c2e3084b0239a62031c02573b4b0b65f0c538feb44474ad5a757f0f82321032e / 3574 bytes
+offline model probe:    024a24eea20c0188d0a7666a093b2adf59992c7556129965b057d5bffba24655 / 1886 bytes
+package-version probe:  51e44dc22ac808f7df563aed8b5771989334443fec2d277095255a244d1f777c / 1617 bytes
+```
+
+The final public artifact is under the ignored normalized result root `results/vnext/core_task10_model_provenance_v3`; its canonical model-provenance SHA-256 is:
+
+```text
+8cf12307c7d421ae46623f0428e626e7b99a9cbf5e31444a83729b929acdec8e
+```
+
+No local/NAS path or private payload is serialized into that artifact.
+
+### Publication and validation
+
+Publication exact-revalidates every nested contract, rejects secrets and any model/evidence/context drift, pins and repeatedly rechecks the output-parent identity and immutable-Core containment, validates the staged two-file tree byte-for-byte, uses atomic no-replace rename, fsyncs files/directories, and rolls back an owned installation after post-rename fsync failure. Contradictory evaluation/source/canary contexts are rejected.
+
+```text
+mub/vnext/external/model_provenance.py
+mub/vnext/external/__init__.py
+scripts/vnext_prepare_external_model_provenance.py
+tests/vnext/test_external_model_provenance.py
+```
+
+```text
+6f47dc5cbd885e3cd767825e3e3eb6e600a57952
+feat: freeze Core external model provenance
+```
+
+Final validation:
+
+```text
+model-provenance focused tests:       14 passed
+external infrastructure compatibility: 109 passed, 1 skipped
+py_compile:                            passed
+git diff --check:                      passed
+immutable Core/legacy/schema diffs:    empty
+```
+
+The skip is the existing Windows symbolic-link construction case (`WinError 1314`); static reparse checks remain active.
+
+The routed review used a mixed Fable/Haiku/Sol execution and could not be verified as the exact requested Decision profile, so its aggregate verdict was not adopted. The parent `gpt-5.6-sol` session independently reproduced the concrete issues: caller-controlled manifest hashes, unfrozen model tuples, contradictory evaluation context, unpinned publication parent, and provenance that did not require retained raw probe evidence. Each received a RED regression and a bounded fix. The final CLI additionally authenticates the immutable release, strict canonical canary manifest, and all three retained evidence files.
+
+### Conclusion and next step
+
+Task 9 is complete. This is model-prerequisite evidence only: no Mem0 package, Qdrant environment, external adapter run, capability report, or admission decision exists yet. Read-only preflight found neither `mem0` nor `qdrant-client` in the local environment or the approved cluster environment. The next bounded step is the isolated genuine Mem0 OSS package/lock and worker preflight; dependency installation must remain isolated and explicitly authorized, and a resource/setup `BLOCKED` state must not be relabeled as a Mem0 candidate `FAIL` or used to unlock LangGraph fallback.
