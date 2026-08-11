@@ -1382,3 +1382,87 @@ Two minimal delegated re-review attempts returned `APPROVED`, but their recorded
 ### Conclusion and next step
 
 Task 10 Phase 1 establishes an admission boundary, not external-validity evidence. No candidate is admitted yet, and overall Core remains in progress. The next bounded step is to derive two authenticated, deterministic, mutually independent 64-task dev canaries from the immutable Core release without writing beneath `data/vnext/core/v3`; provider probes and Mem0 implementation remain gated on that and the remaining visibility, security, persistence, and model-provenance work.
+
+## vNext Core external capability canaries
+
+### Motivation and release boundary
+
+Core Task 10 Phase 2 derives two authenticated 64-task dev canaries for capability, reset, visibility, and genuine-provider qualification. These are deterministic views over the immutable Core task release, not new semantic cores or a replacement task release. No file beneath `data/vnext/core/v3` was regenerated, rebound, overwritten, or added. The derived view provides no external-system, manager-quality, prompted-answer, statistics, or overall Core `FINAL_APPROVED` evidence.
+
+The implementation is provider-neutral. Importing `mub.vnext.external` does not import Mem0, LangGraph, Qdrant, Transformers, or SentenceTransformers.
+
+### Authenticated source and selection policy
+
+The derivation authenticates the exact approved release tree, including canonical manifest bytes, self-hash, exact file and directory sets, regular single-link files, every declared artifact size/hash, the release-root digest, strict `TaskManifestV3`, all 12,000 canonical task rows, task order, record hashes, and split counts. Only the 1,200 dev rows are retained after global validation.
+
+```text
+source release manifest hash  f953283a10dd45d3f9d1de066570a9c09b9d132ed458f8dea3c948641b89e99d
+source task manifest hash     38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3
+source tasks artifact hash    5c4fd518542b0665d7313d68f1a339de38502c376aa93fbda228196587cdd2c6
+selection policy hash         23238afe7c34d9acd01da8c3ea6b81ba556aa8aaf27c48f811899d122d762737
+selection version             core_task10_phase2_canary_selection_v1:23238afe7c34d9acd01da8c3ea6b81ba556aa8aaf27c48f811899d122d762737
+```
+
+Canary A and Canary B each contain exactly 64 dev tasks with fixed A/B/C/D/E/F/G quotas `8/8/8/8/12/12/8`. Selection is coverage-first, then domain-separated SHA-256 fill; no rank uses answer values. Each canary covers ADD, UPDATE, NOOP, Family E object/attribute/entity/namespace/TTL deletion, Family F current and historical selectors, multi-object queries, and Family G query/synthesis behavior.
+
+The canaries are disjoint across task ID, semantic core, trajectory, version group, source group, source document, and paraphrase group. The fixed Core dev release has only six Family F trajectory/version groups, so those groups are deterministically partitioned three-and-three before task-level selection; reuse within one canary is allowed only where required by that authenticated capacity boundary.
+
+### Derived artifacts
+
+The canonical derived view is under the ignored result root:
+
+```text
+results/vnext/core_task10_canaries_v1/
+  canary_a/tasks.jsonl
+  canary_a/canary_manifest.json
+  canary_b/tasks.jsonl
+  canary_b/canary_manifest.json
+  canary_set_manifest.json
+```
+
+```text
+canary set manifest SHA-256  3c822b014af2b1026056f81b9284bbb6a4ed52d9072ac5524c7aa2fb6c8f95a8
+Canary A manifest SHA-256    95a1242d7c4f49019feaa540fee9763fd0157fc98249ba1c5bb125e612a71086
+Canary A tasks SHA-256       d62cfda6d0790658ac39057e70658e0319fb8f7a2d395ec9f8cb46a6299aad39
+Canary B manifest SHA-256    6e538beea5b25e5e41d5e23e6d2fefca444e784c85d3030799548cf65c5b9de5
+Canary B tasks SHA-256       13c97507bef40127e54d1aaa110f1f05b208bbf5c48ff1b10d27ac654a9f0308
+```
+
+A fresh authenticated rebuild matched all five existing artifact files byte-for-byte. Each selected manifest row binds the source record hash, and each derived JSONL line is the exact original canonical source line.
+
+### Publication and trust boundaries
+
+Public build, validation, and publication entry points reauthenticate the supplied release root and rebuild the expected canonical selection; caller-constructed snapshots and alternate authenticated-but-noncanonical selections cannot substitute records. Nested mappings are read-only, policy sources have no mutable dictionary backing reference, and manifest byte fields require exact immutable `bytes`.
+
+Publication requires a new caller-owned destination outside immutable Core. It rejects existing and dangling destinations, static symlink/reparse components, changed parent identity, unanchored staging, hard-linked staged files, extra or missing staged entries, and any staged byte mismatch. Files and directories are fsynced; installation uses platform-native no-replace rename on Windows, Linux, and macOS and fails closed elsewhere. Staging identity and the complete staged tree are revalidated immediately before installation, and failed publication cleans its staging directory.
+
+### Implementation commits
+
+```text
+a342273bf9e6ebba91e07a984ccae8abecb53271
+feat: derive authenticated Core external canaries
+
+dbb058d7f474dcbcfad911b85403f6e5e6d748e4
+fix: harden Core canary publication
+```
+
+### Validation and review evidence
+
+Observed RED regressions reproduced mutable policy backing, mutable `bytearray` manifest payload acceptance, and staged-tree tampering after fsync. All three failed before remediation and passed afterward. The final bounded Windows gate reported:
+
+```text
+canary tests across bounded shards:          17 passed, 1 skipped
+external/Core runtime compatibility matrix: 361 passed
+py_compile:                                  passed
+git diff --check:                            passed
+immutable Core/legacy/schema diffs:          empty
+canonical artifact rebuild:                  byte-identical
+```
+
+The one skip is the Windows symlink/reparse construction case because the current account lacks symbolic-link privilege (`WinError 1314`); static reparse rejection remains implemented and is exercised where the OS permits link creation.
+
+A direct `gpt-5.6-sol`/medium review first approved the four target files, then corrected its verdict after delayed review notifications exposed four reproducible issues: mutable policy backing, staged-directory identity drift, missing pre-install staged-tree verification, and mutable manifest bytes. The parent `gpt-5.6-sol` session independently reproduced all four mechanisms, fixed them test-first, re-read the complete remediation diff, and ran the final gates above. A routed continuation produced only a failed Fable response with no verdict and was not adopted. No actionable issue remains in the scoped remediation after parent review.
+
+### Conclusion and next step
+
+Task 10 Phase 2 is complete. The two canaries are authenticated deterministic diagnostic views only; no genuine external candidate is admitted yet. The next bounded step is Task 10 Phase 3: provider-neutral visible-only DTOs, subprocess bridge, 20-run namespace/reset probes, capability truthfulness, deterministic classification, private/raw versus redistributable/normalized artifact separation, and generalized secret/reparse/root-containment controls.
