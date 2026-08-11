@@ -1466,3 +1466,77 @@ A direct `gpt-5.6-sol`/medium review first approved the four target files, then 
 ### Conclusion and next step
 
 Task 10 Phase 2 is complete. The two canaries are authenticated deterministic diagnostic views only; no genuine external candidate is admitted yet. The next bounded step is Task 10 Phase 3: provider-neutral visible-only DTOs, subprocess bridge, 20-run namespace/reset probes, capability truthfulness, deterministic classification, private/raw versus redistributable/normalized artifact separation, and generalized secret/reparse/root-containment controls.
+
+## vNext Core external capability and security gates
+
+### Motivation and scope
+
+Core Task 10 Phase 3 establishes the provider-neutral execution boundary required before a real Mem0 or conditional LangGraph worker can receive benchmark-visible text. It does not install a provider, run the canaries, admit a candidate, start prompted answering, or change strict-v3 schemas. The base external facade remains importable without Mem0, LangGraph, Qdrant, Transformers, or SentenceTransformers.
+
+### Visible-only worker inputs
+
+`ProviderEventInputV1` contains only event ID, sequence index, visible logical time, raw visible text, and the run-derived namespace. `ProviderQueryInputV1` contains only query ID, visible query text, native top-k, and runtime namespace. Conversion revalidates exact `MemoryEventV3`/`MemoryQueryV3` instances and returns rebuilt trusted models rather than forwarding benchmark task objects.
+
+A recursive fairness guard rejects action, gold, target-object, selector, answer, current/ordered/version history, stale alternative, evidence, expected-effect, derivation, and stratification keys across nested mappings and lists, including NFKC/case/separator variants. Worker requests therefore cannot carry gold actions, gold object IDs, benchmark selectors, history ledgers, gold evidence/answers, or derivation plans.
+
+### Subprocess bridge
+
+The persistent JSONL bridge uses exact immutable request/response contracts, canonical UTF-8 JSON lines, explicit request IDs, a fixed operation vocabulary, no shell, an absolute executable, a real non-reparse working directory, and an explicit environment allowlist. Credentials in command arguments are rejected; approved credentials may be supplied only through explicitly allowed environment names and are never rendered in errors.
+
+Responses are bounded before full-line allocation, canonical-JSON checked, request-ID bound, and fail closed on malformed data, unexpected extra output, EOF, timeout, broken pipes, nonzero/terminal process state, or mismatched IDs. Stderr is drained but never copied into normalized errors. Provider parsing failures suppress raw exception causes, and close/timeout paths terminate the worker, close pipes, and join reader threads.
+
+### Reset, determinism, and capability truthfulness
+
+The namespace probe runs exactly 20 independent target/control trials. Each trial resets both fresh namespaces, writes unique sentinels, verifies bidirectional isolation, resets only the target, verifies that the target is empty while the control remains unchanged, and then cleans only namespaces under the current run prefix. Every trial receives a terminal typed row even when the backend raises or returns an invalid type; raw provider exceptions are reduced to fixed error codes. Admission requires 20/20.
+
+Determinism classification uses exactly three fresh normalized snapshots of state hash, retrieval ID order, and action-trace hash. Equal snapshots are `deterministic`; any semantic/order difference is `nondeterministic`; missing snapshots are `inconclusive`. The fixed canary repetition rule is one run for deterministic candidates and three runs for nondeterministic or inconclusive candidates.
+
+Capability verification exact-revalidates adapter info and declared/observed `AdapterCapabilitiesV3`, reports overclaims and conservative underclaims separately, checks frozen extractor ID/version coherence, and recomputes presentation level from observed exports and state-transition linkage. A candidate passes this gate only with no overclaims and observed Level 2 or 3 behavior.
+
+### Artifact, license, and redaction boundary
+
+Private raw references contain hash, size, media type, storage class, and license status, but deliberately contain no public path or copied raw payload. Redistributable normalized references require a portable artifact path, at least one unique private-raw hash, and a fixed redaction version.
+
+Redistributable payload validation requires an exact explicit `REDISTRIBUTABLE` license status and rejects private, license-uncertain, missing, or string-substituted statuses. Recursive scanning detects private-key markers, bearer/API/cloud/GitHub credentials, sensitive mapping fields, and compound assignments such as `client_secret`, `access_token`, `refresh_token`, `auth_token`, and `id_token`; findings contain only rule/location, never the secret value. Error redaction uses the same rules.
+
+Private and normalized roots must be real, non-overlapping, non-reparse directories. A root is rejected both when it is inside immutable Core and when it contains immutable Core, preventing a broad parent root from addressing the task release through a relative path. Returned root identities are pinned for downstream persistence.
+
+### Files and implementation checkpoint
+
+```text
+mub/vnext/external/__init__.py
+mub/vnext/external/artifacts.py
+mub/vnext/external/bridge.py
+mub/vnext/external/probe_v3.py
+mub/vnext/external/security.py
+mub/vnext/external/visibility.py
+tests/vnext/test_external_artifact_security.py
+tests/vnext/test_external_capability_probe_v3.py
+tests/vnext/test_external_visibility_bridge_v3.py
+```
+
+```text
+a4d07e3585cc0535e01e53fb0207d060cd3d2678
+feat: add external capability security gates
+```
+
+### Validation and review evidence
+
+Observed RED regressions covered missing modules/facade exports, privileged nested payloads, constructed/subclassed contract attacks, command credentials, malformed/mismatched/terminal worker responses, timeout stderr leakage, short and compound credential redaction, license fail-closed behavior, empty private-raw provenance, overlapping/overbroad roots, invalid reset backend types, forged determinism snapshots, capability overclaims, and extractor mismatch.
+
+```text
+provider-neutral capability/security tests: 39 passed, 1 skipped
+external admission contracts/boundaries:     38 passed
+external/Core runtime compatibility matrix: 361 passed
+py_compile:                                  passed
+git diff --check:                            passed
+immutable Core/legacy/schema diffs:          empty
+```
+
+The one skip is the Windows reparse-construction test because this account lacks symbolic-link privilege (`WinError 1314`). Static component checks and fail-closed reparse logic remain active.
+
+The routed review returned only Fable/Haiku model usage and was not accepted as an authoritative routed verdict. Its five concrete claims were nevertheless treated as untrusted suggestions and independently reproduced in the parent `gpt-5.6-sol` session: missing license enforcement, compound credential assignment leakage, generic history leakage, successful response followed by terminal worker exit, and empty private-raw provenance. All five received RED regressions, minimal fixes, focused GREEN checks, and the complete final gates above. Parent review found no remaining scoped P0/P1/P2 issue.
+
+### Conclusion and next step
+
+Task 10 Phase 3 is complete as provider-neutral infrastructure. It still provides no genuine external-system evidence and admits no candidate. The next bounded step is Task 10 Phase 4: minimal strict-v3 append/flush/resume/finalize persistence that binds authenticated canaries, adapter/probe configuration, normalized terminal rows, and hash-only private raw references without changing the v3 schemas.
