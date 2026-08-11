@@ -73,6 +73,8 @@ def test_canary_policy_is_immutable_and_version_bound():
         in canary_module.CANARY_SELECTION_VERSION
     )
     assert "validate_canary_manifest" not in canary_module.__all__
+    assert not hasattr(canary_module, "_FAMILY_LETTERS")
+    assert not hasattr(canary_module, "_CANARY_FAMILY_QUOTAS")
 
 
 def test_canaries_are_dev_only_quota_bound_and_independent(canary_set):
@@ -228,6 +230,39 @@ def test_authenticated_release_mappings_are_read_only(authenticated_release):
     with pytest.raises(TypeError):
         authenticated_release.task_by_id["forged"] = next(
             iter(authenticated_release.task_by_id.values())
+        )
+
+
+def test_canary_bundle_bytes_require_exact_immutable_types(
+    authenticated_release,
+    canary_set,
+):
+    from dataclasses import replace
+
+    from mub.vnext.external.canaries_v3 import (
+        _validate_canary_bundle_authenticated,
+        _validate_canary_set_authenticated,
+    )
+
+    canary = canary_set.canaries[0]
+    mutable_manifest_bytes = replace(
+        canary,
+        manifest_bytes=bytearray(canary.manifest_bytes),
+    )
+    with pytest.raises(ValueError, match="manifest bytes"):
+        _validate_canary_bundle_authenticated(
+            mutable_manifest_bytes,
+            authenticated_release,
+        )
+
+    mutable_set_manifest_bytes = replace(
+        canary_set,
+        set_manifest_bytes=bytearray(canary_set.set_manifest_bytes),
+    )
+    with pytest.raises(ValueError, match="set manifest bytes"):
+        _validate_canary_set_authenticated(
+            mutable_set_manifest_bytes,
+            authenticated_release,
         )
 
 
@@ -527,6 +562,47 @@ def test_publication_cleans_staging_after_write_failure(
         )
     assert not output.exists()
     assert not tuple(tmp_path.glob(".failed-publication.staging-*"))
+
+
+def test_publication_rejects_staged_tree_tampering_before_install(
+    tmp_path,
+    monkeypatch,
+    authenticated_release,
+    canary_set,
+):
+    import mub.vnext.external.canaries_v3 as canary_module
+
+    original_fsync_directory = canary_module._fsync_directory
+    tampered = False
+
+    def tamper_after_stage_fsync(path: Path) -> None:
+        nonlocal tampered
+        original_fsync_directory(path)
+        if (
+            not tampered
+            and path.name.startswith(".tampered-publication.staging-")
+        ):
+            (path / "unmanifested.txt").write_text(
+                "tampered",
+                encoding="utf-8",
+            )
+            tampered = True
+
+    monkeypatch.setattr(
+        canary_module,
+        "_fsync_directory",
+        tamper_after_stage_fsync,
+    )
+    output = tmp_path / "tampered-publication"
+    with pytest.raises(ValueError, match="staged canary tree"):
+        canary_module.publish_canary_set(
+            canary_set,
+            output,
+            release=authenticated_release,
+        )
+    assert tampered
+    assert not output.exists()
+    assert not tuple(tmp_path.glob(".tampered-publication.staging-*"))
 
 
 def test_tampering_and_public_trust_boundary_attacks_are_rejected(

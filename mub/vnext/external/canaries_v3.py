@@ -35,29 +35,33 @@ CANARY_SCHEMA_VERSION = "memupdatebench.external.canary.v1"
 CORE_TASK_RELEASE_MANIFEST_HASH = (
     "f953283a10dd45d3f9d1de066570a9c09b9d132ed458f8dea3c948641b89e99d"
 )
-_FAMILY_LETTERS = {
-    "repeated_same_slot_update": "A",
-    "interleaved_multi_slot_update": "B",
-    "entity_attribute_grounding": "C",
-    "noop_write_discipline": "D",
-    "deletion_forgetting": "E",
-    "current_historical_query": "F",
-    "long_horizon_memory_synthesis": "G",
-}
-_CANARY_FAMILY_QUOTAS = {
-    "A": 8,
-    "B": 8,
-    "C": 8,
-    "D": 8,
-    "E": 12,
-    "F": 12,
-    "G": 8,
-}
+_FAMILY_LETTER_ITEMS = (
+    ("repeated_same_slot_update", "A"),
+    ("interleaved_multi_slot_update", "B"),
+    ("entity_attribute_grounding", "C"),
+    ("noop_write_discipline", "D"),
+    ("deletion_forgetting", "E"),
+    ("current_historical_query", "F"),
+    ("long_horizon_memory_synthesis", "G"),
+)
+_CANARY_FAMILY_QUOTA_ITEMS = (
+    ("A", 8),
+    ("B", 8),
+    ("C", 8),
+    ("D", 8),
+    ("E", 12),
+    ("F", 12),
+    ("G", 8),
+)
+FAMILY_LETTERS = MappingProxyType(dict(_FAMILY_LETTER_ITEMS))
+CANARY_FAMILY_QUOTAS = MappingProxyType(
+    dict(_CANARY_FAMILY_QUOTA_ITEMS)
+)
 CANARY_SELECTION_POLICY_SHA256 = hashlib.sha256(
     json.dumps(
         {
-            "family_letters": _FAMILY_LETTERS,
-            "family_quotas": _CANARY_FAMILY_QUOTAS,
+            "family_letters": dict(_FAMILY_LETTER_ITEMS),
+            "family_quotas": dict(_CANARY_FAMILY_QUOTA_ITEMS),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -67,8 +71,6 @@ CANARY_SELECTION_VERSION = (
     "core_task10_phase2_canary_selection_v1:"
     f"{CANARY_SELECTION_POLICY_SHA256}"
 )
-FAMILY_LETTERS = MappingProxyType(_FAMILY_LETTERS)
-CANARY_FAMILY_QUOTAS = MappingProxyType(_CANARY_FAMILY_QUOTAS)
 _IMMUTABLE_CORE_ROOT = (
     Path(__file__).resolve().parents[3] / "data" / "vnext" / "core" / "v3"
 )
@@ -1002,6 +1004,8 @@ def _validate_canary_bundle_authenticated(
         raise ValueError(
             "canary bundle validation requires exact trusted types"
         )
+    if type(bundle.manifest_bytes) is not bytes:
+        raise ValueError("canary manifest bytes must be exact immutable bytes")
     manifest = _validate_canary_manifest_shape(bundle.manifest)
     if (
         type(bundle.tasks) is not tuple
@@ -1059,6 +1063,10 @@ def _validate_canary_set_authenticated(
         raise ValueError("canary set must contain exactly two exact bundles")
     if any(type(canary) is not CanaryBundleV1 for canary in bundle.canaries):
         raise ValueError("canary set contains an untrusted bundle")
+    if type(bundle.set_manifest_bytes) is not bytes:
+        raise ValueError(
+            "canary set manifest bytes must be exact immutable bytes"
+        )
     if type(bundle.set_manifest) is not CanarySetManifestV1:
         raise ValueError(
             "canary set manifest must be an exact "
@@ -1223,6 +1231,72 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _expected_staged_artifacts(
+    bundle: CanarySetBundleV1,
+) -> dict[str, bytes]:
+    artifacts = {
+        "canary_set_manifest.json": bundle.set_manifest_bytes,
+    }
+    for canary in bundle.canaries:
+        directory = canary.manifest.canary_id
+        artifacts[f"{directory}/tasks.jsonl"] = b"".join(
+            canary.records
+        )
+        artifacts[f"{directory}/canary_manifest.json"] = (
+            canary.manifest_bytes
+        )
+    return artifacts
+
+
+def _validate_staged_tree(
+    stage: Path,
+    expected_identity: tuple[int, int],
+    bundle: CanarySetBundleV1,
+) -> None:
+    if (
+        not stage.is_dir()
+        or _is_reparse_point(stage)
+        or _directory_identity(stage) != expected_identity
+    ):
+        raise ValueError("staged canary tree identity changed")
+    expected_artifacts = _expected_staged_artifacts(bundle)
+    expected_directories = {
+        canary.manifest.canary_id for canary in bundle.canaries
+    }
+    observed_artifacts: dict[str, Path] = {}
+    observed_directories: set[str] = set()
+    for path in stage.rglob("*"):
+        if _is_reparse_point(path):
+            raise ValueError("staged canary tree contains a reparse point")
+        relative_path = path.relative_to(stage).as_posix()
+        if path.is_file():
+            if path.lstat().st_nlink != 1:
+                raise ValueError(
+                    "staged canary tree contains a multi-link file"
+                )
+            observed_artifacts[relative_path] = path
+        elif path.is_dir():
+            observed_directories.add(relative_path)
+        else:
+            raise ValueError("staged canary tree contains a non-file entry")
+    if (
+        set(observed_artifacts) != set(expected_artifacts)
+        or observed_directories != expected_directories
+    ):
+        raise ValueError("staged canary tree shape is invalid")
+    for relative_path, expected_bytes in expected_artifacts.items():
+        path = observed_artifacts[relative_path]
+        if path.read_bytes() != expected_bytes:
+            raise ValueError(
+                f"staged canary tree bytes are invalid: {relative_path}"
+            )
+    if (
+        _is_reparse_point(stage)
+        or _directory_identity(stage) != expected_identity
+    ):
+        raise ValueError("staged canary tree identity changed")
+
+
 def _rename_no_replace(source: Path, destination: Path) -> None:
     if os.name == "nt":
         os.rename(source, destination)
@@ -1345,7 +1419,10 @@ def publish_canary_set(
             _is_reparse_point(stage)
             or stage.resolve(strict=True).parent != parent.resolve(strict=True)
         ):
-            raise ValueError("canary staging directory is not anchored to its parent")
+            raise ValueError(
+                "canary staging directory is not anchored to its parent"
+            )
+        stage_identity = _directory_identity(stage)
         for canary in bundle.canaries:
             _require_stable_parent(
                 parent,
@@ -1369,6 +1446,11 @@ def publish_canary_set(
             bundle.set_manifest_bytes,
         )
         _fsync_directory(stage)
+        _validate_staged_tree(
+            stage,
+            stage_identity,
+            bundle,
+        )
         _require_stable_parent(
             parent,
             parent_identity,
@@ -1379,6 +1461,11 @@ def publish_canary_set(
             raise FileExistsError(
                 f"canary output root already exists: {output}"
             )
+        _validate_staged_tree(
+            stage,
+            stage_identity,
+            bundle,
+        )
         _rename_no_replace(stage, output)
         _fsync_directory(parent)
     except BaseException:
