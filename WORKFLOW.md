@@ -1540,3 +1540,58 @@ The routed review returned only Fable/Haiku model usage and was not accepted as 
 ### Conclusion and next step
 
 Task 10 Phase 3 is complete as provider-neutral infrastructure. It still provides no genuine external-system evidence and admits no candidate. The next bounded step is Task 10 Phase 4: minimal strict-v3 append/flush/resume/finalize persistence that binds authenticated canaries, adapter/probe configuration, normalized terminal rows, and hash-only private raw references without changing the v3 schemas.
+
+## vNext Core strict-v3 external run persistence
+
+### Motivation and contract boundary
+
+Core Task 10 Phase 4 adds the minimal crash-aware persistence layer needed for genuine external canary runs. It reuses `TaskRunRecordV3`, `RunManifestV3`, `ScorerConfigV3`, `AdapterInfoV3`, and `AdapterCapabilitiesV3` without changing any strict-v3 schema. It does not execute a provider, create a score, admit a candidate, or modify immutable Core data.
+
+`ExternalRunConfigV1` binds the source task manifest, authenticated canary/task view, adapter configuration, capability verification, model provenance, package provenance, environment lock, runtime/evaluation configuration hashes, parser/extractor/redaction versions, explicit redistributable normalized license, retrieval/answer policy, repetition identity, exact task order, and every source task-record hash. The SHA-256 of its canonical bytes is the output-location-independent run identity.
+
+### Append, resume, and public/private separation
+
+Runs are created only through authenticated `create()` or `resume()` factories; direct writer construction is rejected. Each `TaskRunRecordV3` is exact-revalidated, matched to the next expected task ID, checked against run/adapter/parser/extractor/redaction identity, security-scanned, appended as one canonical JSONL row, flushed, and file-fsynced before canonical progress is atomically replaced.
+
+Public rows reject private raw paths and embedded raw adapter state. Per-row `raw_provider_artifact_hash` and `raw_adapter_state_hash` remain hash-only provenance; the final manifest aggregates their unique hashes while leaving `raw_provider_response_artifacts` and `raw_adapter_state_artifacts` empty, so private paths or payloads do not enter the redistributable root. The normalized output license is part of run identity and must be the exact `REDISTRIBUTABLE` enum.
+
+Resume reauthenticates canonical `run_identity.json`, the exact incomplete tree, real single-link files, output directory identity, ordered canonical row prefix, row hashes, statuses, and progress. Exact stale progress prefixes are repaired from the fsynced JSONL source of truth. A complete precommit `finalized=true` progress file without a manifest is recognized as an interrupted commit window and safely returned to unfinalized state. Replaced identities, extra files, hardlinks, duplicate/reordered/extra rows, changed configuration, invalid nested types, and incoherent progress fail closed.
+
+The writer exposes rows as an immutable tuple; its mutable append state remains private.
+
+### Finalization and manifest binding
+
+Finalization requires exact complete ordered coverage and rejects any `FAILED` or `PARTIAL` row. It rereads and exact-validates the JSONL, reauthenticates `run_identity.json` immediately before publication, computes every run-record hash, and creates `RunManifestV3` with exact status counts. The manifest binds both `task_runs.jsonl` and `run_identity.json` as normalized artifacts and records task-view/runtime/evaluation/model/package/lock/repetition/license/private-raw hash evidence in the typed summary.
+
+Final progress is written before the manifest; the manifest is the final commit marker. Manifest installation uses same-directory hardlink-based atomic no-replace publication and directory fsync. Link, write, progress, and post-link fsync failures remove temporary files and roll back any installed manifest by verified file identity, preventing a failed finalize from appearing committed. A published manifest causes all later resume/finalize attempts to fail as already finalized.
+
+### Files and implementation checkpoint
+
+```text
+mub/vnext/runtime/__init__.py
+mub/vnext/runtime/run_v3.py
+tests/vnext/test_run_core_v3_persistence.py
+```
+
+```text
+c9c2fc249359609ffdc4e718db2022efae0ec63f
+feat: add strict v3 external run persistence
+```
+
+### Validation and review evidence
+
+RED regressions covered missing persistence/facade APIs, output-independent identity, exact ordered append, constructed contracts, changed identity, malformed rows, stale/tampered progress, extra/hardlinked artifacts, private paths/raw state/secrets, missing/failed/partial finalize, license binding, mutable writer rows, direct-construction bypass, identity replacement before finalize, precommit progress recovery, no-replace link failure, final-progress failure, and post-link directory-fsync rollback.
+
+```text
+strict-v3 persistence tests:             18 passed
+persistence/Core compatibility matrix:  379 passed
+py_compile:                              passed
+git diff --check:                        passed
+immutable Core/legacy/schema diffs:      empty
+```
+
+The routed review again recorded only Fable/Haiku usage and was not adopted as an authoritative verdict. Its two concrete claims—manifest remaining after a post-publication progress/fsync failure and identity replacement before finalize—were independently reproduced RED in the parent `gpt-5.6-sol` session. Final progress was moved before the commit marker, post-link rollback was added, and finalize now reauthenticates canonical identity bytes. Additional parent review added strict tree/progress crash recovery, factory-only construction, immutable row exposure, explicit normalized-license identity, and manifest binding of the complete run-identity artifact. All final gates passed.
+
+### Conclusion and next step
+
+Task 10 Phase 4 is complete as persistence infrastructure only. No external run or admission result exists yet. Before Mem0 preflight, Task 9 must freeze the already verified offline Qwen/MiniLM snapshots into a formal model-provenance artifact bound to the current task manifest and evaluation configuration; then Task 10 Phase 6 may build the isolated genuine Mem0 OSS worker.
