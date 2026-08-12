@@ -1740,3 +1740,84 @@ The two complete-gate skips are the existing Windows symbolic-link construction 
 The previously attempted exact routed Decision review could not be verified as the required model/effort profile, so its aggregate verdict was not reused and no further mismatched delegated verdict was requested. The parent `gpt-5.6-sol` session completed the specification, security, and code-quality inspection directly, with RED regressions for request-ID and health drift, untrusted error/metadata/source leakage, non-exportable and multi-entry effects, telemetry ordering, normalized-state ordering, and clean/nonzero worker termination.
 
 This is a code-path preflight only. No `mem0ai` or Qdrant package has been installed, no wheel or transitive lock has been downloaded, no local Qwen/MiniLM/Qdrant integration has run, and no authenticated candidate report exists. Therefore this work is neither Mem0 `PASS` nor candidate `FAIL`; it does not authorize LangGraph fallback and does not change overall Core status. The next step is the separately authorized isolated dependency/real-backend preflight, followed by 20/20 real reset trials and only then Canary A/B admission execution.
+
+## vNext Core Mem0 OSS isolated real-backend preflight
+
+### Authorized environment and dependency freeze
+
+The bounded real preflight installed only the approved Mem0 overlay inside:
+
+```text
+/NAS/yesh/MemUpdateBench/external/mem0_2_0_17/venv
+```
+
+The venv uses `--system-site-packages` solely to reuse the Task 9 authenticated offline Qwen/MiniLM runtime. It does not modify `gmsra`, download a model, use an API key, or write outside `/NAS/yesh/MemUpdateBench`. The frozen Linux CPython 3.10 overlay contains 16 exact wheel hashes in:
+
+```text
+requirements/external/mem0-2.0.17-linux-py310.lock
+requirements/external/mem0-2.0.17-linux-py310.wheels.sha256
+```
+
+`mem0ai==2.0.17` retains the official wheel hash `1521209f0ab4c77b7e5777aa1b0b5f0104efa06ca5b9eddb804cdd091c17726a`; `pip check` reports no broken requirements. The worker environment is rebuilt from an allowlist, forces Hugging Face and Transformers offline mode, disables Mem0 telemetry, and excludes unrelated credentials and secrets.
+
+### Real integration diagnosis and bounded repair
+
+The first real run established that the official backend and 20/20 namespace resets worked, but Qwen paraphrased the canonical memory sentence. A second instruction asked for exact text but returned the wrong official Mem0 JSON shape (`memory` contained a string instead of an object), so Mem0 2.0.17 failed inside its official extraction parser. Phase-localized and direct-backend diagnostics identified the exact boundary; resource contention encountered during one diagnostic was rerun on an available A40 and was not treated as a candidate failure.
+
+The bounded v3 extraction instruction now follows Mem0's own additive schema exactly:
+
+```json
+{"memory":[{"id":"0","text":"<entire input sentence>"}]}
+```
+
+It simultaneously requires byte-identical visible input text and explicitly forbids a string-valued memory array. The public configuration authenticates this instruction as:
+
+```text
+version: mem0-exact-visible-memory-v3
+SHA-256: 6ef4304659c0cde2c826165015064d632d91f674457280befd0e91a2f26e3913
+```
+
+Mem0 2.0.17 also exposes custom-provider registration through `LlmFactory` while its `LlmConfig` validator hard-codes built-in provider names. The worker therefore validates the complete official `MemoryConfig` using a temporary built-in provider name, restores the already registered `mub_local_qwen_v1` provider and its exact config, and constructs the genuine official `Memory` object. It does not relabel the provider as OpenAI, vLLM, or LangChain at runtime.
+
+### Successful real preflight evidence
+
+The isolated v3 run completed with status zero and recorded:
+
+```text
+20/20 namespace reset trials: PASS
+canonical ADD action:          EXECUTED
+normalized entry count:        1
+stored content:                byte-identical canonical sentence
+object/value extraction:       default|alice|city| / "Paris"
+native top-k retrieval:        entry ID/order/finite score retained
+slot_direct answer:            "Paris"
+secret scan findings:          0
+pip check:                     passed
+```
+
+Post-review rerun retained the same successful semantics while additionally enforcing exact stored content, retrieval of the exported native entry ID, a project-only worker `PYTHONPATH`, finite timeouts, immutable-Core output exclusion, wheel-to-install content authentication, and package-name/hash pairing in the lock regression. Private retained evidence and configuration hashes are:
+
+```text
+real-preflight-v3-reviewed.json
+  SHA-256 e77c56b9115883b721eaf5e395605e8d24ad9b03f5aaa6be02149b8584b33312
+  size 13292 bytes
+worker-configuration-v3.json
+  SHA-256 da3adbef8cf6ffe0b78f854dc9f4c1fb6c243b674870cbe5f29040c65b9cfd92
+  size 1965 bytes
+public configuration hash
+  d72bd37887267e390484fa1b04cadba204108584a761fb5ee0ded30e9de26662
+```
+
+The real worker preserved a native Mem0/Qdrant entry ID, timestamps, native retrieval score, visible source event linkage, and host-derived action trace. Object/value fields remain explicitly marked `evaluation_extractor`; they are not native Mem0 structured fields and were not filled from gold state.
+
+### Local validation and remaining admission boundary
+
+```text
+Mem0 focused tests and py_compile: 41 passed
+post-review focused gate:         54 passed
+complete external admission regression: 175 passed, 2 skipped
+```
+
+The two skips are the existing Windows symbolic-link privilege cases (`WinError 1314`); static reparse checks remain active. The immutable Core release, legacy fixtures, and strict-v3 schemas were not modified.
+
+This closes the isolated real-backend preflight, not external admission. No Canary A/B terminal run, determinism classification, authenticated `ExternalAdmissionReportV1`, or `AdmissionDecisionV1` has yet been produced. Mem0 is therefore not yet admitted, and this preflight must not be used to authorize LangGraph fallback or to claim overall Core `FINAL_APPROVED`. The next bounded step is the authenticated Mem0 determinism probe and Canary A/B admission run against the immutable derived views.

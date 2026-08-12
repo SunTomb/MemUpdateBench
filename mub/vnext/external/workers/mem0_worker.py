@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+import hashlib
 import importlib.metadata
 import os
 from pathlib import Path
@@ -17,6 +18,9 @@ from mub.vnext.external.bridge import (
     WorkerResponseV1,
 )
 from mub.vnext.external.providers.mem0 import (
+    MEM0_EXTRACTION_INSTRUCTIONS,
+    MEM0_INSTALLED_CONTENT_FILE_COUNT,
+    MEM0_INSTALLED_CONTENT_SHA256,
     MEM0_PACKAGE_VERSION,
     Mem0WorkerConfigurationV1,
     compute_mem0_configuration_hash,
@@ -36,14 +40,6 @@ from mub.vnext.external.visibility import (
     ProviderQueryInputV1,
 )
 from mub.vnext.io import canonical_json_bytes
-
-MEM0_EXTRACTION_INSTRUCTIONS = (
-    "Use only the visible message text. For canonical MemUpdateBench Add or "
-    "Update statements, preserve the complete statement exactly as the memory "
-    "text. Do not infer facts not stated in the message. Do not store the "
-    "sentence 'No memory object changes.'"
-)
-
 
 class Mem0DependencyUnavailable(RuntimeError):
     pass
@@ -393,6 +389,34 @@ def _namespace(value: object) -> str:
     return value
 
 
+def _installed_mem0_content_digest(distribution) -> tuple[str, int]:
+    rows: list[tuple[str, bytes]] = []
+    files = distribution.files
+    if files is None:
+        raise Mem0DependencyUnavailable(
+            "official Mem0 OSS installation manifest is unavailable"
+        )
+    for item in files:
+        name = str(item).replace("\\", "/")
+        if name.endswith(".pyc") or name.endswith(".dist-info/RECORD"):
+            continue
+        if name.endswith((".dist-info/INSTALLER", ".dist-info/REQUESTED")):
+            continue
+        path = Path(distribution.locate_file(item))
+        if not path.is_file() or path.is_symlink():
+            raise Mem0DependencyUnavailable(
+                "official Mem0 OSS installed content is unavailable"
+            )
+        rows.append((name, path.read_bytes()))
+    digest = hashlib.sha256()
+    for name, raw in sorted(rows):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(raw).digest())
+        digest.update(b"\n")
+    return digest.hexdigest(), len(rows)
+
+
 class OfficialMem0BackendV1:
     def __init__(self, worker_configuration: Mem0WorkerConfigurationV1) -> None:
         self._configuration = validate_mem0_worker_configuration(
@@ -400,24 +424,48 @@ class OfficialMem0BackendV1:
         )
         os.environ["MEM0_TELEMETRY"] = "false"
         try:
-            installed_version = importlib.metadata.version("mem0ai")
+            distribution = importlib.metadata.distribution("mem0ai")
+            installed_version = distribution.version
+            installed_digest, installed_file_count = (
+                _installed_mem0_content_digest(distribution)
+            )
+        except Exception:
+            raise Mem0DependencyUnavailable(
+                "official Mem0 OSS dependency is unavailable"
+            ) from None
+        if (
+            installed_version != MEM0_PACKAGE_VERSION
+            or installed_digest != MEM0_INSTALLED_CONTENT_SHA256
+            or installed_file_count != MEM0_INSTALLED_CONTENT_FILE_COUNT
+        ):
+            raise Mem0DependencyUnavailable(
+                "official Mem0 OSS dependency installation is unavailable"
+            )
+        try:
             from mem0 import Memory
+            from mem0.configs.base import MemoryConfig
             from mem0.utils.factory import LlmFactory
         except Exception:
             raise Mem0DependencyUnavailable(
                 "official Mem0 OSS dependency is unavailable"
             ) from None
-        if installed_version != MEM0_PACKAGE_VERSION:
-            raise Mem0DependencyUnavailable(
-                "official Mem0 OSS dependency version is unavailable"
-            )
         LlmFactory.register_provider(
             "mub_local_qwen_v1",
             "mub.vnext.external.workers.mem0_worker.LocalQwenMem0Llm",
         )
-        self._memory = Memory.from_config(
-            build_mem0_memory_config(self._configuration)
-        )
+        memory_config = build_mem0_memory_config(self._configuration)
+        llm_config = memory_config["llm"]
+        validation_config = {
+            **memory_config,
+            "llm": {**llm_config, "provider": "openai"},
+        }
+        validated_config = MemoryConfig(**validation_config)
+        # Mem0 2.0.17 exposes LlmFactory.register_provider but its LlmConfig
+        # validator hard-codes built-in names. Validate the complete config with
+        # a built-in placeholder, then restore the registered provider exactly.
+        validated_config.llm.provider = llm_config["provider"]
+        validated_config.llm.config = llm_config["config"]
+        self._memory = Memory(validated_config)
 
     def health(self) -> Mem0WorkerHealthV1:
         public = self._configuration.public_configuration

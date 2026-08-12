@@ -549,6 +549,19 @@ def test_jsonl_bridge_rejects_nonzero_exit_after_close_response(tmp_path):
             bridge.request(request)
 
 
+def test_jsonl_bridge_rejects_nonfinite_timeout(tmp_path):
+    from mub.vnext.external.bridge import JsonlSubprocessBridge
+
+    for value in (float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite positive"):
+            JsonlSubprocessBridge(
+                command=(sys.executable, "-c", "pass"),
+                cwd=tmp_path,
+                environment={},
+                timeout_seconds=value,
+            )
+
+
 def test_jsonl_bridge_timeout_terminates_worker_without_raw_stderr(tmp_path):
     from mub.vnext.external.bridge import (
         BridgeTimeoutError,

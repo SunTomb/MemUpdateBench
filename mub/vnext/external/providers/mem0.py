@@ -19,6 +19,26 @@ from mub.vnext.io import canonical_json_bytes
 
 MEM0_PACKAGE_VERSION = "2.0.17"
 MEM0_PROVIDER_CONTRACT_VERSION = "memupdatebench.external.mem0.v1"
+MEM0_EXTRACTION_INSTRUCTION_VERSION = "mem0-exact-visible-memory-v3"
+MEM0_EXTRACTION_INSTRUCTIONS = (
+    "Use only the visible user message and follow the Mem0 base output schema "
+    "exactly. For a canonical MemUpdateBench sentence beginning with Add or "
+    "Update, return exactly this JSON shape: "
+    '{"memory":[{"id":"0","text":"<entire input sentence>"}]}. '
+    "Replace the placeholder so the text is byte-for-byte identical to the "
+    "entire input sentence, preserving the canonical object ID, punctuation, "
+    "spacing, and JSON value. "
+    "The memory array must contain an object with id and text, never a string. "
+    "Never paraphrase, summarize, normalize, duplicate, or omit any part. When "
+    "the message is 'No memory object changes.', return {\"memory\":[]}."
+)
+MEM0_EXTRACTION_INSTRUCTION_SHA256 = hashlib.sha256(
+    MEM0_EXTRACTION_INSTRUCTIONS.encode("utf-8")
+).hexdigest()
+MEM0_INSTALLED_CONTENT_SHA256 = (
+    "7db803a06c5f1baa8303f73ae51da57b5fc3ce1654386229443aaddacc657d8e"
+)
+MEM0_INSTALLED_CONTENT_FILE_COUNT = 151
 MEM0_MODEL_PROVENANCE_SHA256 = (
     "8cf12307c7d421ae46623f0428e626e7b99a9cbf5e31444a83729b929acdec8e"
 )
@@ -87,6 +107,12 @@ class Mem0AdapterConfigurationV1(ImmutableContractModel):
     rerank: Literal[False] = False
     infer_memories: Literal[True] = True
     llm_provider: Literal["mub_local_qwen_v1"] = "mub_local_qwen_v1"
+    extraction_instruction_version: Literal[
+        "mem0-exact-visible-memory-v3"
+    ] = MEM0_EXTRACTION_INSTRUCTION_VERSION
+    extraction_instruction_sha256: StrictSha256 = (
+        MEM0_EXTRACTION_INSTRUCTION_SHA256
+    )
     embedding_provider: Literal["huggingface"] = "huggingface"
     embedding_dims: Literal[384] = 384
     vector_store_provider: Literal["qdrant"] = "qdrant"
@@ -105,6 +131,10 @@ class Mem0AdapterConfigurationV1(ImmutableContractModel):
             or model_ref.record_count != 1
         ):
             raise ValueError("frozen model provenance ref does not match")
+        if self.extraction_instruction_sha256 != (
+            MEM0_EXTRACTION_INSTRUCTION_SHA256
+        ):
+            raise ValueError("Mem0 extraction instruction hash does not match")
         expected_collection = _collection_name(
             self.run_id,
             model_ref.sha256,
@@ -347,6 +377,11 @@ def validate_mem0_worker_configuration(
 
 
 __all__ = [
+    "MEM0_EXTRACTION_INSTRUCTIONS",
+    "MEM0_EXTRACTION_INSTRUCTION_SHA256",
+    "MEM0_EXTRACTION_INSTRUCTION_VERSION",
+    "MEM0_INSTALLED_CONTENT_FILE_COUNT",
+    "MEM0_INSTALLED_CONTENT_SHA256",
     "MEM0_MODEL_PROVENANCE_SHA256",
     "MEM0_PACKAGE_VERSION",
     "MEM0_PROVIDER_CONTRACT_VERSION",

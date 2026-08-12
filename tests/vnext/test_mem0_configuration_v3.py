@@ -108,6 +108,7 @@ def test_mem0_package_provenance_rejects_constructed_drift() -> None:
 
 def test_mem0_adapter_configuration_is_deterministic_and_isolated() -> None:
     from mub.vnext.external.providers.mem0 import (
+        MEM0_EXTRACTION_INSTRUCTIONS,
         build_mem0_adapter_configuration,
         compute_mem0_configuration_hash,
     )
@@ -138,6 +139,14 @@ def test_mem0_adapter_configuration_is_deterministic_and_isolated() -> None:
     assert first.embedding_provider == "huggingface"
     assert first.embedding_dims == 384
     assert first.llm_provider == "mub_local_qwen_v1"
+    assert first.extraction_instruction_version == (
+        "mem0-exact-visible-memory-v3"
+    )
+    assert (
+        '{"memory":[{"id":"0","text":"<entire input sentence>"}]}'
+        in MEM0_EXTRACTION_INSTRUCTIONS
+    )
+    assert len(first.extraction_instruction_sha256) == 64
     assert first.vector_store_provider == "qdrant"
     assert first.telemetry_enabled is False
     assert compute_mem0_configuration_hash(first) == hashlib.sha256(
@@ -252,3 +261,46 @@ def test_mem0_worker_configuration_rejects_overlapping_storage(
             qdrant_path=storage,
             history_directory=storage,
         )
+
+
+def test_mem0_overlay_lock_matches_downloaded_wheel_hashes() -> None:
+    root = Path(__file__).resolve().parents[2] / "requirements" / "external"
+    lock_lines = tuple(
+        line
+        for line in (
+            root / "mem0-2.0.17-linux-py310.lock"
+        ).read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    )
+    manifest_lines = tuple(
+        line
+        for line in (
+            root / "mem0-2.0.17-linux-py310.wheels.sha256"
+        ).read_text(encoding="utf-8").splitlines()
+        if line
+    )
+    lock_pairs = {
+        (
+            line.partition("==")[0].casefold().replace("-", "_"),
+            line.rpartition("--hash=sha256:")[2],
+        )
+        for line in lock_lines
+    }
+    manifest_pairs = {
+        (
+            line.split(maxsplit=1)[1].split("-", 1)[0].casefold().replace("-", "_"),
+            line.split()[0],
+        )
+        for line in manifest_lines
+    }
+
+    assert len(lock_lines) == len(manifest_lines) == 16
+    assert len(lock_pairs) == 16
+    assert lock_pairs == manifest_pairs
+    assert any(
+        line.startswith("mem0ai==2.0.17 ")
+        and line.endswith(
+            "1521209f0ab4c77b7e5777aa1b0b5f0104efa06ca5b9eddb804cdd091c17726a"
+        )
+        for line in lock_lines
+    )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import Enum
+import math
 from pathlib import Path
 import queue
 import subprocess
@@ -137,8 +138,12 @@ class JsonlSubprocessBridge:
         working_directory = working_directory_input.resolve(strict=True)
         if not working_directory.is_dir() or working_directory.is_symlink():
             raise ValueError("bridge working directory must be a real directory")
-        if type(timeout_seconds) is not float or timeout_seconds <= 0:
-            raise ValueError("bridge timeout must be a positive exact float")
+        if (
+            type(timeout_seconds) is not float
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("bridge timeout must be a finite positive exact float")
         if type(max_response_bytes) is not int or max_response_bytes <= 0:
             raise ValueError("bridge response limit must be a positive integer")
         copied_environment: dict[str, str] = {}

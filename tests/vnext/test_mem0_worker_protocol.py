@@ -202,6 +202,9 @@ def test_mem0_memory_config_uses_frozen_local_components(tmp_path: Path) -> None
     }
     assert config["history_db_path"] == worker.history_db_path
     assert config["custom_instructions"] == MEM0_EXTRACTION_INSTRUCTIONS
+    assert "byte-for-byte identical" in MEM0_EXTRACTION_INSTRUCTIONS
+    assert "Never paraphrase" in MEM0_EXTRACTION_INSTRUCTIONS
+    assert "canonical object ID" in MEM0_EXTRACTION_INSTRUCTIONS
     assert "default" not in str(config).casefold()
 
 
@@ -594,33 +597,63 @@ def test_official_mem0_backend_disables_telemetry_before_sdk_import(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from mub.vnext.external.workers import mem0_worker
     from mub.vnext.external.workers.mem0_worker import OfficialMem0BackendV1
 
+    constructed_configs = []
+    registered_providers = []
+
     class DummyMemory:
+        def __init__(self, config):
+            constructed_configs.append(config)
+
         @classmethod
         def from_config(cls, config):
-            return cls()
+            raise AssertionError("custom provider cannot use from_config")
 
         def close(self):
             pass
 
+    class DummyMemoryConfig:
+        def __init__(self, *, llm, **kwargs):
+            if llm["provider"] != "openai":
+                raise ValueError("unsupported provider")
+            self.llm = types.SimpleNamespace(
+                provider=llm["provider"],
+                config=llm["config"],
+            )
+            self.values = kwargs
+
     class DummyLlmFactory:
         @classmethod
         def register_provider(cls, name, path):
-            pass
+            registered_providers.append((name, path))
 
     mem0_module = types.ModuleType("mem0")
     mem0_module.Memory = DummyMemory
     utils_module = types.ModuleType("mem0.utils")
     factory_module = types.ModuleType("mem0.utils.factory")
     factory_module.LlmFactory = DummyLlmFactory
+    configs_module = types.ModuleType("mem0.configs")
+    config_base_module = types.ModuleType("mem0.configs.base")
+    config_base_module.MemoryConfig = DummyMemoryConfig
     monkeypatch.setitem(sys.modules, "mem0", mem0_module)
     monkeypatch.setitem(sys.modules, "mem0.utils", utils_module)
     monkeypatch.setitem(sys.modules, "mem0.utils.factory", factory_module)
+    monkeypatch.setitem(sys.modules, "mem0.configs", configs_module)
+    monkeypatch.setitem(sys.modules, "mem0.configs.base", config_base_module)
     monkeypatch.setattr(
         importlib.metadata,
-        "version",
-        lambda package: "2.0.17",
+        "distribution",
+        lambda package: types.SimpleNamespace(version="2.0.17"),
+    )
+    monkeypatch.setattr(
+        mem0_worker,
+        "_installed_mem0_content_digest",
+        lambda distribution: (
+            mem0_worker.MEM0_INSTALLED_CONTENT_SHA256,
+            mem0_worker.MEM0_INSTALLED_CONTENT_FILE_COUNT,
+        ),
     )
     monkeypatch.setenv("MEM0_TELEMETRY", "true")
     observed: list[str | None] = []
@@ -634,6 +667,42 @@ def test_official_mem0_backend_disables_telemetry_before_sdk_import(
     monkeypatch.setattr(builtins, "__import__", recording_import)
     OfficialMem0BackendV1(_worker_config(tmp_path))
     assert observed == ["false"]
+    assert registered_providers == [
+        (
+            "mub_local_qwen_v1",
+            "mub.vnext.external.workers.mem0_worker.LocalQwenMem0Llm",
+        )
+    ]
+    assert len(constructed_configs) == 1
+    assert constructed_configs[0].llm.provider == "mub_local_qwen_v1"
+    assert constructed_configs[0].llm.config["temperature"] == 0.0
+
+
+def test_official_mem0_backend_rejects_same_version_content_drift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from mub.vnext.external.workers import mem0_worker
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distribution",
+        lambda package: types.SimpleNamespace(version="2.0.17"),
+    )
+    monkeypatch.setattr(
+        mem0_worker,
+        "_installed_mem0_content_digest",
+        lambda distribution: (
+            "f" * 64,
+            mem0_worker.MEM0_INSTALLED_CONTENT_FILE_COUNT,
+        ),
+    )
+
+    with pytest.raises(
+        mem0_worker.Mem0DependencyUnavailable,
+        match="installation",
+    ):
+        mem0_worker.OfficialMem0BackendV1(_worker_config(tmp_path))
 
 
 def test_official_mem0_backend_fails_closed_without_dependency(
