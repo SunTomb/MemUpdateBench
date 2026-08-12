@@ -1821,3 +1821,53 @@ complete external admission regression: 175 passed, 2 skipped
 The two skips are the existing Windows symbolic-link privilege cases (`WinError 1314`); static reparse checks remain active. The immutable Core release, legacy fixtures, and strict-v3 schemas were not modified.
 
 This closes the isolated real-backend preflight, not external admission. No Canary A/B terminal run, determinism classification, authenticated `ExternalAdmissionReportV1`, or `AdmissionDecisionV1` has yet been produced. Mem0 is therefore not yet admitted, and this preflight must not be used to authorize LangGraph fallback or to claim overall Core `FINAL_APPROVED`. The next bounded step is the authenticated Mem0 determinism probe and Canary A/B admission run against the immutable derived views.
+
+## vNext Core Mem0 capability admission verdict
+
+### Determinism and mutation-capability probes
+
+Three fresh isolated namespaces produced byte-identical normalized state, action, and retrieval-content snapshots:
+
+```text
+normalized semantic hash: 06915acc43090f4c013f2e422321a0747db108ed81c673be6d114a4e3d096615
+determinism status:       deterministic
+required repetitions:     1
+```
+
+The fixed real reset probe remained 20/20 PASS. A separate canonical `ADD → UPDATE → NOOP` probe established the candidate-specific boundary: ADD executed and created a native entry, UPDATE returned `no_effect` with `provider_no_effect`, and NOOP executed without a write. Final exported state retained only the original Paris entry. This supports the conservative declaration `supports_update=false`; changing it to true would overclaim observed behavior.
+
+### Complete canary capability rows
+
+The authenticated A/B views were rebuilt from the immutable Core release and compared canonically. For Mem0's declared capability bitset, every one of the 128 selected tasks requires at least one unsupported operation or query capability. The retained capability matrix therefore contains exactly one ordered terminal row per requested task:
+
+```text
+Canary A: 64 NOT_SUPPORTED
+Canary B: 64 NOT_SUPPORTED
+total:    128 ordered terminal rows
+FAILED:   0
+PARTIAL:  0
+```
+
+Rows preserve task ID, source record hash, runtime/operation/query support maps, and explicit missing-capability lists. They are not represented as zero scores or omitted work.
+
+### Authenticated Mem0 FAIL and fallback authorization
+
+The fixed 14-gate report passes source authentication, official provenance/license, offline model, environment, visible-only fairness, namespace reset, raw/normalized export, field provenance, terminal completeness, native retrieval policy, Level 3 presentation, security/redaction, and repetition. It records one candidate-specific eligible failure:
+
+```text
+capability_truthfulness: FAIL
+reason: required_update_capability_not_declared
+```
+
+The report and authorization artifacts are:
+
+```text
+results/vnext/core_task10_mem0_admission_v1/external_admission_report.json
+  SHA-256 64e44efeb5eff049502f6bb9208137934b3ed6c8860d8f589b40125305d878db
+results/vnext/core_task10_mem0_admission_v1/fallback_authorization.json
+  SHA-256 dfa1176b8e37a2835da6234fcb22aa4f3418454111cbd67696f21b09d8807147
+```
+
+Independent local reconstruction validates the exact `ExternalAdmissionReportV1`, all 128 rows, zero secret findings, presentation level 3, and `authorize_fallback(...) == true` against source task-manifest hash `38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3` and evaluation configuration hash `96addc9f12b7a73a0c762a7e31b5af035183dfbd3f7e4baeff276531d1c9b479`.
+
+Mem0 is not admitted and its feasibility artifacts must not enter the later main result table as a successful external baseline. Because this is a current-context, candidate-specific, fallback-eligible `FAIL` rather than a shared resource `BLOCKED`, the explicitly labeled `langgraph_store_extract_then_store` fallback is now authorized. No project-local approximation may be substituted. Overall Core remains in progress and Task 11 prompted-answer work has not started.
