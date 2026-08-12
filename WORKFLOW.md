@@ -1328,7 +1328,7 @@ repetition_rule
 
 Each gate is exactly one of `PASS`, `FAIL`, `BLOCKED`, or `NOT_RUN`, with status-coherent evidence and reasons. Reports bind the authenticated source task-manifest hash and reference, shared evaluation-configuration hash and reference, candidate-specific adapter configuration, probe, canary, package/model provenance, exact adapter identity, capabilities, state-transition linkage, fixed gate vector, aggregate outcome, and canonical reason.
 
-Admission requires all gates to pass, a recomputed presentation level of 2 or 3, and real event-ingest/add/update support. Extractor-dependent candidates must bind a coherent extractor ID/version rather than silently inheriting benchmark gold. Public evaluation, fallback, and exact-one selection APIs revalidate exact stored fields and nested contract types so `model_construct`, subclass overrides, raw enum/string substitution, malformed strict values, and forged nested references fail closed.
+Admission requires all gates to pass, a recomputed presentation level of 2 or 3, and real event-ingest/add support. Fine-grained mutation/query capability bits remain authoritative for task support and terminal-row coverage; admission does not impose native in-place UPDATE as a global requirement on append/extract-then-store systems. Extractor-dependent candidates must bind a coherent extractor ID/version rather than silently inheriting benchmark gold. Public evaluation, fallback, and exact-one selection APIs revalidate exact stored fields and nested contract types so `model_construct`, subclass overrides, raw enum/string substitution, malformed strict values, and forged nested references fail closed.
 
 Fallback eligibility and invariant gates are disjoint and exhaustive. Invariant provenance, license, offline-model, security, and repetition gates must pass; eligible gates must be terminal `PASS`/`FAIL`; at least one eligible Mem0 gate must fail; and any `BLOCKED` or `NOT_RUN` prevents fallback. Selection emits typed report references in canonical Mem0-then-LangGraph order and returns either exactly one admitted candidate or a canonical release-stopped decision. A `langgraph_fallback_not_authorized` reason is invalid unless a LangGraph report actually participated.
 
@@ -1850,24 +1850,35 @@ PARTIAL:  0
 
 Rows preserve task ID, source record hash, runtime/operation/query support maps, and explicit missing-capability lists. They are not represented as zero scores or omitted work.
 
-### Authenticated Mem0 FAIL and fallback authorization
+### Corrected admission policy and authenticated Mem0 PASS
 
-The fixed 14-gate report passes source authentication, official provenance/license, offline model, environment, visible-only fairness, namespace reset, raw/normalized export, field provenance, terminal completeness, native retrieval policy, Level 3 presentation, security/redaction, and repetition. It records one candidate-specific eligible failure:
+A policy consistency review found that the initial verdict incorrectly treated native in-place UPDATE as a global admission prerequisite. That condition conflicts with the Level 2/3 presentation contract and would also reject truthful append/extract-then-store systems. Admission now requires all fixed gates to pass, presentation level 2 or 3, event ingest, and ADD. Fine-grained capability bits—including `supports_update=false`—remain authoritative for task support and the complete terminal-row matrix.
 
-```text
-capability_truthfulness: FAIL
-reason: required_update_capability_not_declared
-```
-
-The report and authorization artifacts are:
+The prior `core_task10_mem0_admission_v1` FAIL and its fallback authorization were based on the invalid policy and have been removed from the active evidence tree; they must not authorize LangGraph. Rebuilding the same authenticated evidence under the corrected policy produced:
 
 ```text
-results/vnext/core_task10_mem0_admission_v1/external_admission_report.json
-  SHA-256 64e44efeb5eff049502f6bb9208137934b3ed6c8860d8f589b40125305d878db
-results/vnext/core_task10_mem0_admission_v1/fallback_authorization.json
-  SHA-256 dfa1176b8e37a2835da6234fcb22aa4f3418454111cbd67696f21b09d8807147
+candidate:                    mem0_oss
+fixed gates:                  14/14 PASS
+presentation level:           3
+supports_update:              false (truthful observed boundary)
+canary terminal rows:         128 ordered NOT_SUPPORTED rows
+report outcome:               PASS
+admission decision:           ADMITTED
+fallback authorized:          false
+secret scan findings:         0
 ```
 
-Independent local reconstruction validates the exact `ExternalAdmissionReportV1`, all 128 rows, zero secret findings, presentation level 3, and `authorize_fallback(...) == true` against source task-manifest hash `38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3` and evaluation configuration hash `96addc9f12b7a73a0c762a7e31b5af035183dfbd3f7e4baeff276531d1c9b479`.
+Canonical artifacts:
 
-Mem0 is not admitted and its feasibility artifacts must not enter the later main result table as a successful external baseline. Because this is a current-context, candidate-specific, fallback-eligible `FAIL` rather than a shared resource `BLOCKED`, the explicitly labeled `langgraph_store_extract_then_store` fallback is now authorized. No project-local approximation may be substituted. Overall Core remains in progress and Task 11 prompted-answer work has not started.
+```text
+results/vnext/core_task10_mem0_admission_v2/external_admission_report.json
+  SHA-256 2a00a350c750fc02f727af188a8f3d63f68df474e55a53a0710b5b62c6b43fae
+results/vnext/core_task10_mem0_admission_v2/admission_decision.json
+  SHA-256 c4355fdd1149325306eecf3242eeaf4e3e47a0d9ee616b0f9777058529e04f1c
+  status admitted
+  reason admitted_mem0_primary
+```
+
+The report remains bound by SHA-256 to the immutable local Core release and to the previously generated canary/model-provenance prerequisites; those roots remain intentionally outside this corrective commit and are authenticated in place rather than copied or rebound. The admission builder parses the UPDATE and NOOP probe as two bound typed `AdapterActionResultV3` records and verifies the frozen UPDATE object/value, so unrelated or wrong-target log fragments cannot satisfy capability truthfulness. It reparses all 20 reset trials through `NamespaceResetProbeV1`, reparses the public configuration as the exact frozen `Mem0AdapterConfigurationV1`, and structurally secret-scans both public configuration and adapter identity. All inputs, gate evidence, report, fallback check, and decision are closed in memory before a complete fsynced sibling staging tree is atomically installed; injected decision failure leaves no final root and a clean rerun succeeds. Independent local reconstruction revalidated the strict report and decision, reproduced the exact-one selection, confirmed `evaluate_candidate_admission(...) == true`, `authorize_fallback(...) == false`, 128 complete rows, and zero secret findings. The completed private LangGraph package/Store/extractor checks remain non-admission diagnostics only; because Mem0 is admitted, the fixed candidate order forbids executing or admitting the LangGraph fallback.
+
+This closes Core Task 10 as a bounded external-adapter qualification. It does not supply prompted-answer evidence, manager accuracy results, Task 13 statistics, or overall Core `FINAL_APPROVED`. Task 11 remains the next separate gate.

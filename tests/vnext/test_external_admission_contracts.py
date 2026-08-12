@@ -882,13 +882,18 @@ def test_public_candidate_admission_cannot_bypass_mem0_first_fallback() -> None:
     )
 
 
-def test_candidate_admission_requires_ingest_add_update_and_coherent_extractor() -> None:
+def test_candidate_admission_requires_ingest_and_add_but_not_native_update() -> None:
     base = _capabilities(2)
-    for field in ("supports_event_ingest", "supports_add", "supports_update"):
+    for field in ("supports_event_ingest", "supports_add"):
         assert not evaluate_candidate_admission(
             _report(capabilities=base.model_copy(update={field: False}))
         )
+    assert evaluate_candidate_admission(
+        _report(capabilities=base.model_copy(update={"supports_update": False}))
+    )
 
+
+def test_candidate_admission_requires_coherent_extractor() -> None:
     for capability_version, extractor_id, info_version in (
         (None, "extractor", "v1"),
         ("", "extractor", "v1"),

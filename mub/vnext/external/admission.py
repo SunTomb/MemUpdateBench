@@ -15,6 +15,7 @@ from mub.vnext.external.contracts import (
 from mub.vnext.io.canonical import sha256_model
 
 _SHA256_RE = re.compile(SHA256_PATTERN)
+EXTERNAL_ADMISSION_POLICY_VERSION = "memupdatebench.external.admission-policy.v2"
 _CANDIDATE_ORDER = {
     candidate_id: index for index, candidate_id in enumerate(ExternalCandidateId)
 }
@@ -99,7 +100,6 @@ def _evaluate_validated_candidate(report: ExternalAdmissionReportV1) -> bool:
         or level not in {2, 3}
         or not capabilities.supports_event_ingest
         or not capabilities.supports_add
-        or not capabilities.supports_update
     ):
         return False
     if not capabilities.requires_evaluation_extractor:
@@ -283,6 +283,7 @@ def select_single_admitted_candidate(
 
 
 __all__ = [
+    "EXTERNAL_ADMISSION_POLICY_VERSION",
     "authorize_fallback",
     "evaluate_candidate_admission",
     "select_single_admitted_candidate",

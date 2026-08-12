@@ -1,20 +1,39 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import uuid
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_project_root_text = str(PROJECT_ROOT)
+sys.path[:] = [entry for entry in sys.path if entry != _project_root_text]
+sys.path.insert(0, _project_root_text)
 
 from mub.vnext.contracts.common import ArtifactRef
-from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
-from mub.vnext.external.admission import authorize_fallback
+from mub.vnext.contracts.enums import Operation
+from mub.vnext.contracts.v3.adapter import (
+    AdapterActionResultV3,
+    AdapterCapabilitiesV3,
+    AdapterInfoV3,
+)
+from mub.vnext.contracts.v3.enums import ExecutionStatusV3
+from mub.vnext.external.admission import (
+    EXTERNAL_ADMISSION_POLICY_VERSION,
+    authorize_fallback,
+    evaluate_candidate_admission,
+    select_single_admitted_candidate,
+)
 from mub.vnext.external.canaries_v3 import (
+    _fsync_directory,
+    _rename_no_replace,
+    _write_fsynced,
     authenticate_core_release,
     build_canary_set,
     validate_canary_set,
@@ -29,11 +48,15 @@ from mub.vnext.external.contracts import (
 from mub.vnext.external.probe_v3 import (
     DeterminismStatus,
     NormalizedCandidateSnapshotV1,
+    NamespaceResetProbeV1,
     classify_determinism,
     required_canary_repetitions,
     verify_capability_truthfulness,
 )
-from mub.vnext.external.providers.mem0 import MEM0_PACKAGE_VERSION
+from mub.vnext.external.providers.mem0 import (
+    MEM0_PACKAGE_VERSION,
+    Mem0AdapterConfigurationV1,
+)
 from mub.vnext.external.security import scan_for_secrets
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.runtime.support_v3 import resolve_task_support_v3
@@ -71,6 +94,78 @@ def _capabilities_from_preflight(value: dict) -> AdapterCapabilitiesV3:
 
 def _info_from_preflight(value: dict) -> AdapterInfoV3:
     return AdapterInfoV3.model_validate(value["adapter_info"], strict=True)
+
+
+def _parse_update_noop_probe(text: str) -> dict[str, str]:
+    records: dict[str, AdapterActionResultV3] = {}
+    for line in text.splitlines():
+        label, separator, raw = line.partition(" ")
+        if label not in {"probe-update", "probe-noop"}:
+            continue
+        if not separator or label in records:
+            raise ValueError("Mem0 mutation probe records are malformed")
+        try:
+            payload = ast.literal_eval(raw)
+            records[label] = AdapterActionResultV3.model_validate(payload)
+        except Exception as exc:
+            raise ValueError(
+                f"Mem0 {label} record is not a typed action result"
+            ) from exc
+    update = records.get("probe-update")
+    noop = records.get("probe-noop")
+    if update is None or noop is None:
+        raise ValueError("Mem0 update/NOOP capability probe is incomplete")
+    expected_key = {
+        "object_type": "profile",
+        "namespace": "default",
+        "entity": "alice",
+        "attribute": "city",
+        "subkey": None,
+    }
+    if not (
+        update.event_id == "probe-update"
+        and update.requested_action.operation is Operation.UPDATE
+        and len(update.requested_action.target_object_keys) == 1
+        and update.requested_action.target_object_keys[0].model_dump(
+            mode="json"
+        ) == expected_key
+        and update.requested_action.value == "Prague"
+        and update.effective_action.operation is Operation.NOOP
+        and update.execution_status is ExecutionStatusV3.NO_EFFECT
+        and update.reason == "provider_no_effect"
+        and not update.affected_entry_ids
+    ):
+        raise ValueError("Mem0 UPDATE record is inconsistent")
+    if not (
+        noop.event_id == "probe-noop"
+        and noop.requested_action.operation is Operation.NOOP
+        and noop.effective_action.operation is Operation.NOOP
+        and noop.execution_status is ExecutionStatusV3.EXECUTED
+        and noop.reason is None
+        and not noop.affected_entry_ids
+    ):
+        raise ValueError("Mem0 NOOP record is inconsistent")
+    return {
+        "observed_update_behavior": "provider_no_effect",
+        "observed_noop_behavior": "executed",
+    }
+
+
+def _public_configuration_bytes(worker_value: dict) -> bytes:
+    public_configuration = worker_value.get("public_configuration")
+    try:
+        configuration = Mem0AdapterConfigurationV1.model_validate(
+            public_configuration,
+            strict=True,
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Mem0 public configuration is not strictly valid"
+        ) from exc
+    raw = canonical_json_bytes(configuration)
+    if scan_for_secrets(configuration.model_dump(mode="python")):
+        raise ValueError("Mem0 public configuration contains secrets")
+    return raw
 
 
 def _semantic_snapshot(value: dict) -> NormalizedCandidateSnapshotV1:
@@ -120,6 +215,79 @@ def _terminal_rows(canary_set, capabilities: AdapterCapabilitiesV3) -> tuple[dic
     return tuple(rows)
 
 
+def _passing_gates(
+    gate_artifacts: dict[str, ArtifactRef],
+) -> tuple[GateResultV1, ...]:
+    return tuple(
+        GateResultV1(
+            name=name,
+            status=GateStatus.PASS,
+            evidence_artifacts=(gate_artifacts[name],),
+        )
+        for name in ADMISSION_GATE_NAMES
+    )
+
+
+def _evaluation_configuration(
+    *,
+    canary_manifest_hashes: tuple[str, ...],
+    source_task_manifest_hash: str,
+    repetition_count: int,
+) -> dict[str, object]:
+    return {
+        "admission_policy_version": EXTERNAL_ADMISSION_POLICY_VERSION,
+        "candidate_id": "mem0_oss",
+        "answer_mode": "slot_direct",
+        "retrieval_policy": "normal_topk",
+        "retrieval_k": 10,
+        "determinism_probe_fresh_namespaces": 3,
+        "determinism_status": DeterminismStatus.DETERMINISTIC.value,
+        "repetition_count": repetition_count,
+        "canary_manifest_hashes": list(canary_manifest_hashes),
+        "source_task_manifest_hash": source_task_manifest_hash,
+    }
+
+
+def _publish_bundle(output_root: Path, artifacts: dict[str, bytes]) -> None:
+    output = Path(output_root).absolute()
+    if os.path.lexists(output):
+        raise FileExistsError(f"Mem0 admission output exists: {output}")
+    parent = output.parent
+    if not parent.is_dir():
+        raise ValueError("Mem0 admission output parent does not exist")
+    stage = parent / f".{output.name}.staging-{uuid.uuid4().hex}"
+    try:
+        stage.mkdir()
+        for name, raw in artifacts.items():
+            _write_fsynced(stage / name, raw)
+        _fsync_directory(stage)
+        observed = {path.name: path for path in stage.iterdir()}
+        if set(observed) != set(artifacts):
+            raise ValueError("Mem0 admission staged tree is incomplete")
+        for name, raw in artifacts.items():
+            path = observed[name]
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.stat(follow_symlinks=False).st_nlink != 1
+                or path.read_bytes() != raw
+            ):
+                raise ValueError("Mem0 admission staged artifact changed")
+        if os.path.lexists(output):
+            raise FileExistsError(f"Mem0 admission output exists: {output}")
+        try:
+            _rename_no_replace(stage, output)
+        except OSError as exc:
+            if exc.errno != errno.EINVAL or os.path.lexists(output):
+                raise
+            os.rename(stage, output)
+        _fsync_directory(parent)
+    except BaseException:
+        if os.path.lexists(stage) and not stage.is_symlink():
+            shutil.rmtree(stage)
+        raise
+
+
 def build_report(
     *,
     core_root: Path,
@@ -140,22 +308,28 @@ def build_report(
         evidence_root / "determinism-preflight-2.json",
     )
     preflights = tuple(_read_json(path) for path in preflight_paths)
-    if not all(value.get("passed") is True for value in preflights):
+    reset_probes = tuple(
+        NamespaceResetProbeV1.model_validate(
+            value.get("namespace_reset_probe")
+        )
+        for value in preflights
+    )
+    if not all(
+        value.get("passed") is True and reset.passed
+        for value, reset in zip(preflights, reset_probes, strict=True)
+    ):
         raise ValueError("all Mem0 determinism probes must pass")
     update_probe_raw = update_noop_probe_path.read_bytes()
     update_probe_text = update_probe_raw.decode("utf-8")
-    if (
-        "'requested_action': {'operation': 'UPDATE'" not in update_probe_text
-        or "'execution_status': 'no_effect'" not in update_probe_text
-        or "'reason': 'provider_no_effect'" not in update_probe_text
-        or "probe-noop" not in update_probe_text
-        or "'execution_status': 'executed'" not in update_probe_text
-    ):
-        raise ValueError("Mem0 update/NOOP capability probe is incomplete")
+    observed_mutation_behavior = _parse_update_noop_probe(
+        update_probe_text
+    )
     if scan_for_secrets(update_probe_text):
         raise ValueError("Mem0 update/NOOP capability probe contains secrets")
     info = _info_from_preflight(preflights[0])
     capabilities = _capabilities_from_preflight(preflights[0])
+    if scan_for_secrets(info.model_dump(mode="python")):
+        raise ValueError("Mem0 adapter identity contains secrets")
     if any(_info_from_preflight(value) != info for value in preflights[1:]):
         raise ValueError("Mem0 probe adapter identity drift")
     if any(_capabilities_from_preflight(value) != capabilities for value in preflights[1:]):
@@ -181,7 +355,6 @@ def build_report(
     if not capability.passed or capability.presentation_level != 3:
         raise ValueError("Mem0 capability verification failed")
 
-    output_root.mkdir(parents=True, exist_ok=False)
     artifacts: dict[str, ArtifactRef] = {}
     payloads = {
         "probe.json": {
@@ -190,10 +363,11 @@ def build_report(
             "normalized_snapshots": [snapshot.model_dump(mode="json") for snapshot in snapshots],
             "determinism_status": determinism.value,
             "required_canary_repetitions": repetitions,
-            "namespace_reset_passed": all(value["namespace_reset_probe"]["passed"] for value in preflights),
+            "namespace_reset_passed": all(
+                reset.passed for reset in reset_probes
+            ),
             "update_noop_probe_sha256": _sha256(update_probe_raw),
-            "observed_update_behavior": "provider_no_effect",
-            "observed_noop_behavior": "executed",
+            **observed_mutation_behavior,
         },
         "capability_verification.json": capability.model_dump(mode="json"),
         "canary_terminal_rows.json": {
@@ -202,19 +376,14 @@ def build_report(
             "expected_rows": 128,
             "terminal_rows": rows,
         },
-        "evaluation_configuration.json": {
-            "candidate_id": "mem0_oss",
-            "answer_mode": "slot_direct",
-            "retrieval_policy": "normal_topk",
-            "retrieval_k": 10,
-            "determinism_probe_fresh_namespaces": 3,
-            "determinism_status": determinism.value,
-            "repetition_count": repetitions,
-            "canary_manifest_hashes": [
-                _sha256(bundle.manifest_bytes) for bundle in canary_set.canaries
-            ],
-            "source_task_manifest_hash": release.task_manifest_ref.sha256,
-        },
+        "evaluation_configuration.json": _evaluation_configuration(
+            canary_manifest_hashes=tuple(
+                _sha256(bundle.manifest_bytes)
+                for bundle in canary_set.canaries
+            ),
+            source_task_manifest_hash=release.task_manifest_ref.sha256,
+            repetition_count=repetitions,
+        ),
         "package_provenance.json": {
             "package": "mem0ai",
             "version": MEM0_PACKAGE_VERSION,
@@ -224,21 +393,17 @@ def build_report(
             "license": "Apache-2.0",
         },
     }
+    artifact_bytes: dict[str, bytes] = {}
     for name, payload in payloads.items():
         raw = _canonical_object_bytes(payload)
-        (output_root / name).write_bytes(raw)
+        artifact_bytes[name] = raw
         artifacts[name] = _artifact(name, raw, "application/json")
 
     worker_value = _read_json(worker_configuration_path)
-    public_configuration = worker_value.get("public_configuration")
-    if not isinstance(public_configuration, dict):
-        raise ValueError("Mem0 worker configuration lacks public configuration")
-    public_configuration_raw = _canonical_object_bytes(public_configuration)
+    public_configuration_raw = _public_configuration_bytes(worker_value)
     if _sha256(public_configuration_raw) != info.configuration_hash:
         raise ValueError("Mem0 public configuration hash is inconsistent")
-    (output_root / "adapter_configuration.json").write_bytes(
-        public_configuration_raw
-    )
+    artifact_bytes["adapter_configuration.json"] = public_configuration_raw
     artifacts["adapter_configuration.json"] = _artifact(
         "adapter_configuration.json",
         public_configuration_raw,
@@ -262,22 +427,8 @@ def build_report(
         "security_redaction": artifacts["probe.json"],
         "repetition_rule": artifacts["probe.json"],
     }
-    gates = []
-    for name in ADMISSION_GATE_NAMES:
-        status = GateStatus.FAIL if name == "capability_truthfulness" else GateStatus.PASS
-        gates.append(
-            GateResultV1(
-                name=name,
-                status=status,
-                evidence_artifacts=(gate_artifacts[name],),
-                reasons=(
-                    ("required_update_capability_not_declared",)
-                    if status is GateStatus.FAIL
-                    else ()
-                ),
-            )
-        )
-    evaluation_raw = (output_root / "evaluation_configuration.json").read_bytes()
+    gates = _passing_gates(gate_artifacts)
+    evaluation_raw = artifact_bytes["evaluation_configuration.json"]
     report = ExternalAdmissionReportV1(
         candidate_id=ExternalCandidateId.MEM0_OSS,
         source_task_manifest_hash=release.task_manifest_ref.sha256,
@@ -293,28 +444,28 @@ def build_report(
         adapter_capabilities=capabilities,
         state_transition_linkage_available=True,
         gates=tuple(gates),
-        outcome=GateStatus.FAIL,
-        reasons=("candidate_gate_failed",),
+        outcome=GateStatus.PASS,
+        reasons=(),
     )
     report_raw = canonical_json_bytes(report)
-    (output_root / "external_admission_report.json").write_bytes(report_raw)
+    if not evaluate_candidate_admission(report):
+        raise ValueError("Mem0 PASS report was not admitted")
     fallback = authorize_fallback(
         report,
         release.task_manifest_ref.sha256,
         _sha256(evaluation_raw),
     )
-    decision_raw = _canonical_object_bytes(
-        {
-            "candidate_id": "mem0_oss",
-            "report_sha256": _sha256(report_raw),
-            "outcome": report.outcome.value,
-            "fallback_authorized": fallback,
-        }
+    if fallback:
+        raise ValueError("Mem0 PASS report cannot authorize fallback")
+    decision = select_single_admitted_candidate(
+        (report,),
+        current_manifest_hash=release.task_manifest_ref.sha256,
+        current_evaluation_configuration_hash=_sha256(evaluation_raw),
     )
-    (output_root / "fallback_authorization.json").write_bytes(decision_raw)
-    for path in output_root.iterdir():
-        with path.open("rb") as handle:
-            os.fsync(handle.fileno())
+    decision_raw = canonical_json_bytes(decision)
+    artifact_bytes["external_admission_report.json"] = report_raw
+    artifact_bytes["admission_decision.json"] = decision_raw
+    _publish_bundle(output_root, artifact_bytes)
     return report, fallback
 
 
