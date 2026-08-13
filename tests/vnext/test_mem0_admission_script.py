@@ -38,13 +38,16 @@ def _ref(name: str) -> ArtifactRef:
     )
 
 
-def test_mem0_admission_script_help_runs_without_pythonpath(
+def test_mem0_admission_script_help_prioritizes_project_root(
     tmp_path: Path,
 ) -> None:
     project = Path(__file__).resolve().parents[2]
     script = project / "mub/vnext/external/admission_scripts/mem0_v1.py"
+    shadow = tmp_path / "shadow"
+    (shadow / "mub").mkdir(parents=True)
+    (shadow / "mub/__init__.py").write_text("", encoding="utf-8")
     environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
+    environment["PYTHONPATH"] = os.pathsep.join((str(shadow), str(project)))
 
     result = subprocess.run(
         [sys.executable, str(script), "--help"],
