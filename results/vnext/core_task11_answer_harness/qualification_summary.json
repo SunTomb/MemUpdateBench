@@ -1,0 +1,69 @@
+{
+  "schema_version": "memupdatebench.core-task11-answer-harness.v1",
+  "status": "qualified",
+  "scope": "offline answer-model harness qualification only; no Task 12 manager matrix, scoring, statistics, or claims",
+  "code_revision": "7d51a9170b943abca9fb41cc4ec9997d46298fe4",
+  "offline_contract": {
+    "hf_hub_offline": true,
+    "transformers_offline": true,
+    "local_files_only": true,
+    "trust_remote_code": false,
+    "decoding": {
+      "do_sample": false,
+      "num_beams": 1,
+      "max_new_tokens": 32,
+      "seed": 0
+    },
+    "fresh_process_repetitions": 3
+  },
+  "slots": [
+    {
+      "slot_id": "answer_model_a",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "license_id": "apache-2.0",
+      "tree_manifest_sha256": "5c5fc08ade3cfa718521bbb2206deb1f0249527b8f210c95a4db9140460154ca",
+      "file_count": 11,
+      "size_bytes": 15242788168,
+      "determinism": {
+        "prompt_sha256": "c5f62f313f1595b01998e3bcaf0027c07ddb7a9e729ab25d80ff4a867c711183",
+        "input_token_sha256": "65d7946754ebc7f403f21158b3175f616d154a9b1c0888affe22c438e77394b4",
+        "generated_token_sha256": "adf4c160da9fae0b42e8439bae443deaf23ee7da48bfa27ad2f96f60e0cc7bfb",
+        "raw_output_sha256": "ba6de21c24655f4f0c3c6d4769129636c18eefbce6437c9a72b8b60b70492d76",
+        "format_valid": true
+      }
+    },
+    {
+      "slot_id": "answer_model_b",
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "license_id": "apache-2.0",
+      "tree_manifest_sha256": "31a92a122692365f74cc64939cc948fb21f1efa1d500afd3d92332ad319db015",
+      "file_count": 15,
+      "size_bytes": 28995471365,
+      "project_local_dependencies": [
+        {
+          "name": "protobuf",
+          "version": "4.25.3",
+          "wheel_sha256": "7c8daa26095f82482307bc717364e7c13f4f1c99659be82890dcfc215194554d"
+        },
+        {
+          "name": "sentencepiece",
+          "version": "0.2.0",
+          "wheel_sha256": "1380ce6540a368de2ef6d7e6ba14ba8f3258df650d39ba7d833b79ee68a52040"
+        }
+      ],
+      "determinism": {
+        "prompt_sha256": "c5f62f313f1595b01998e3bcaf0027c07ddb7a9e729ab25d80ff4a867c711183",
+        "input_token_sha256": "c1493492f5f04165473f794a95146d5375ebbf411aff105b30e9d761aa3bf0f5",
+        "generated_token_sha256": "f513132cd3400721f14973af9bb13d4008648e595200b215dac8c9a2240614b7",
+        "raw_output_sha256": "ba6de21c24655f4f0c3c6d4769129636c18eefbce6437c9a72b8b60b70492d76",
+        "format_valid": true
+      }
+    }
+  ],
+  "published_cli_preflight": {
+    "answer_model_a": "pass",
+    "answer_model_b": "pass"
+  }
+}
