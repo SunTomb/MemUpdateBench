@@ -6,10 +6,16 @@ import pytest
 
 from mub.vnext.contracts.common import ArtifactRef
 from mub.vnext.contracts.enums import CompletionStatus
-from mub.vnext.contracts.v3.adapter import AdapterCapabilitiesV3, AdapterInfoV3
+from mub.vnext.contracts.v3.adapter import (
+    AdapterActionResultV3,
+    AdapterCapabilitiesV3,
+    AdapterInfoV3,
+)
 from mub.vnext.contracts.v3.runtime import (
+    AnswerPredictionV3,
     MemorySnapshotV3,
     ParserExtractorProvenanceV3,
+    RetrievalTraceV3,
     TaskRunRecordV3,
 )
 from mub.vnext.io import canonical_json_bytes, sha256_model
@@ -109,6 +115,79 @@ def _config(**changes):
     return ExternalRunConfigV1(**values)
 
 
+def _prompted_config(**changes):
+    values = {
+        "answer_mode": "slot_prompt",
+        "answer_model_slot": "answer_model_a",
+        "model_revision": "a" * 40,
+        "prompt_config": {
+            "prompt_protocol_version": "prompted-answer-v1",
+            "renderer_version": "visible-context-v1",
+            "template_hash": "a" * 64,
+            "typed_output_format": "answer-envelope-v1",
+        },
+        "prompted_task_expectations": (
+            {
+                "task_id": "task-1",
+                "action_ids": ("action-1",),
+                "query_ids": ("query-1",),
+            },
+            {
+                "task_id": "task-2",
+                "action_ids": ("action-2",),
+                "query_ids": ("query-2",),
+            },
+        ),
+    }
+    values.update(changes)
+    return _config(**values)
+
+
+def _prompted_row(
+    task_id: str,
+    *,
+    action_id: str,
+    query_id: str,
+    prompt_hash: str = "a" * 64,
+) -> TaskRunRecordV3:
+    action = AdapterActionResultV3(
+        event_id=f"event-{action_id}",
+        requested_action={"operation": "NOOP"},
+        effective_action={"operation": "NOOP"},
+        execution_status="executed",
+    ).to_parsed_manager_action(
+        action_id=action_id,
+        raw_output="NOOP",
+        format_valid=True,
+        fallback_used=False,
+    )
+    return TaskRunRecordV3(
+        task_id=task_id,
+        adapter_id="mem0_oss",
+        run_id="external-run-v1",
+        parsed_actions=(action,),
+        retrieval_traces=(
+            RetrievalTraceV3(query_id=query_id, prompt_hash=prompt_hash),
+        ),
+        answer_predictions=(
+            AnswerPredictionV3(
+                query_id=query_id,
+                raw_output='{"disposition":"answered","answer":"value"}',
+                parsed_answer="value",
+                format_valid=True,
+            ),
+        ),
+        parser_extractor_provenance=ParserExtractorProvenanceV3(
+            action_parser_version="visible-action-v1",
+            answer_parser_version="typed-answer-v1",
+            memory_entry_extractor_version="provider-entry-v1",
+            object_value_extractor_config_hash="0" * 64,
+            redaction_policy_version="external-redaction-v1",
+        ),
+        completion_status=CompletionStatus.COMPLETED,
+    )
+
+
 def _row(
     task_id: str,
     *,
@@ -143,6 +222,89 @@ def _row(
         ),
         completion_status=status,
     )
+
+
+def test_prompted_run_config_requires_slot_and_prompt_protocol() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _config(answer_mode="slot_prompt")
+
+    prompted_bindings = {
+        "answer_model_slot": "answer_model_a",
+        "model_revision": "a" * 40,
+        "prompt_config": {
+            "prompt_protocol_version": "prompted-answer-v1",
+            "renderer_version": "visible-context-v1",
+            "template_hash": "a" * 64,
+            "typed_output_format": "answer-envelope-v1",
+        },
+    }
+    with pytest.raises(ValidationError):
+        _config(answer_mode="slot_prompt", **prompted_bindings)
+
+    config = _config(
+        answer_mode="slot_prompt",
+        **prompted_bindings,
+        prompted_task_expectations=(
+            {
+                "task_id": "task-1",
+                "action_ids": ("action-1",),
+                "query_ids": ("query-1",),
+            },
+            {
+                "task_id": "task-2",
+                "action_ids": ("action-2",),
+                "query_ids": ("query-2",),
+            },
+        ),
+    )
+    assert config.answer_model_slot == "answer_model_a"
+
+
+def test_prompted_run_rows_require_exact_action_query_and_prompt_coverage(tmp_path):
+    from mub.vnext.runtime.run_v3 import ExternalRunWriterV1
+
+    writer = ExternalRunWriterV1.create(tmp_path / "prompted", _prompted_config())
+    valid = _prompted_row(
+        "task-1",
+        action_id="action-1",
+        query_id="query-1",
+    )
+    writer.append(valid)
+
+    incomplete = _prompted_row(
+        "task-2",
+        action_id="action-2",
+        query_id="query-2",
+    ).validated_replace(retrieval_traces=())
+    with pytest.raises(ValueError, match="prompted"):
+        writer.append(incomplete)
+
+
+def test_prompted_resume_revalidates_inner_row_coverage(tmp_path):
+    from mub.vnext.runtime.run_v3 import ExternalRunWriterV1
+
+    output = tmp_path / "prompted-resume"
+    writer = ExternalRunWriterV1.create(output, _prompted_config())
+    writer.append(
+        _prompted_row(
+            "task-1",
+            action_id="action-1",
+            query_id="query-1",
+        )
+    )
+    row = _prompted_row(
+        "task-1",
+        action_id="action-1",
+        query_id="query-1",
+    ).validated_replace(
+        retrieval_traces=(RetrievalTraceV3(query_id="query-1"),),
+    )
+    (output / "task_runs.jsonl").write_bytes(canonical_json_bytes(row) + b"\n")
+
+    with pytest.raises(ValueError, match="prompted"):
+        ExternalRunWriterV1.resume(output, _prompted_config())
 
 
 def test_runtime_facade_exports_strict_v3_external_persistence():

@@ -117,6 +117,104 @@ def test_unsupported_core_task_still_returns_one_terminal_row(core_tasks) -> Non
     assert run.system_events[-1]["terminal_supported"] is False
 
 
+def test_prompted_model_route_uses_retrieval_trace_without_native_answer(core_tasks) -> None:
+    from mub.vnext.adapters.core_v3 import ReferenceAdapterV3
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
+
+    class TrackingPromptedModel:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def answer(self, request):
+            self.requests.append(request)
+            return AnswerPredictionV3(
+                query_id=request.query.query_id,
+                raw_output='{"disposition":"answered","answer":"prompted"}',
+                parsed_answer="prompted",
+                format_valid=True,
+                usage={"completion_tokens": 1},
+            )
+
+        def close(self) -> None:
+            pass
+
+    task = _task(core_tasks, "long_horizon_memory_synthesis")
+    adapter = ReferenceAdapterV3(task)
+    adapter.answer = lambda *_args, **_kwargs: pytest.fail(
+        "prompted model route must not call MemoryAdapterV3.answer"
+    )
+    prompted_model = TrackingPromptedModel()
+
+    run = execute_task_v3(
+        task,
+        adapter,
+        RuntimeConfigV3(run_id="prompted-route", answer_mode="slot_prompt"),
+        prompted_answer_model=prompted_model,
+    )
+
+    assert run.completion_status is CompletionStatus.COMPLETED
+    assert len(prompted_model.requests) == len(task.queries)
+    assert len(run.retrieval_traces) == len(task.queries)
+    assert all(trace.prompt_hash is not None for trace in run.retrieval_traces)
+    assert [prediction.parsed_answer for prediction in run.answer_predictions] == [
+        "prompted"
+    ] * len(task.queries)
+
+
+def test_slot_prompt_requires_an_explicit_prompted_model(core_tasks) -> None:
+    from mub.vnext.adapters.core_v3 import ReferenceAdapterV3
+    from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
+
+    task = _task(core_tasks, "long_horizon_memory_synthesis")
+    run = execute_task_v3(
+        task,
+        ReferenceAdapterV3(task),
+        RuntimeConfigV3(run_id="prompted-required", answer_mode="slot_prompt"),
+    )
+
+    assert run.completion_status is CompletionStatus.NOT_SUPPORTED
+    assert run.answer_predictions == ()
+    support = next(event for event in run.system_events if event["event"] == "task_support")
+    assert "prompted_answer_model" in support["missing_capabilities"]
+
+
+def test_prompted_unavailable_prediction_preserves_error_flags(core_tasks) -> None:
+    from mub.vnext.adapters.core_v3 import ReferenceAdapterV3
+    from mub.vnext.contracts.enums import AnswerDisposition
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+    from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
+
+    class UnavailablePromptedModel:
+        def answer(self, request):
+            return AnswerPredictionV3(
+                query_id=request.query.query_id,
+                raw_output="",
+                disposition=AnswerDisposition.UNAVAILABLE,
+                format_valid=False,
+                error_flags=("offline_model_unavailable",),
+            )
+
+        def close(self) -> None:
+            pass
+
+    task = _task(core_tasks, "long_horizon_memory_synthesis")
+    run = execute_task_v3(
+        task,
+        ReferenceAdapterV3(task),
+        RuntimeConfigV3(run_id="prompted-unavailable", answer_mode="slot_prompt"),
+        prompted_answer_model=UnavailablePromptedModel(),
+    )
+
+    assert run.completion_status is CompletionStatus.PARTIAL
+    assert run.retrieval_traces
+    assert run.answer_predictions[0].error_flags == ("offline_model_unavailable",)
+    answer_exception = next(
+        exception for exception in run.exceptions if exception["phase"] == "answer"
+    )
+    assert answer_exception["error_flags"] == ("offline_model_unavailable",)
+
+
 @pytest.mark.parametrize(
     "family",
     (

@@ -13,6 +13,8 @@ from mub.vnext.contracts.v3.adapter import (
     AdapterActionResultV3,
     AdapterCapabilitiesV3,
     MemoryAdapterV3,
+    PromptedAnswerModelV3,
+    PromptedAnswerRequestV3,
     ResetRequestV3,
     RetrievalRequestV3,
 )
@@ -24,6 +26,7 @@ from mub.vnext.contracts.v3.runtime import (
 )
 from mub.vnext.contracts.v3.task import MemUpdateTaskV3
 from mub.vnext.runtime.engine import isolated_namespace
+from mub.vnext.runtime.answer_model_v3 import render_visible_prompt_v3
 from mub.vnext.runtime.support_v3 import resolve_task_support_v3
 
 
@@ -148,6 +151,8 @@ def execute_task_v3(
     task: MemUpdateTaskV3,
     adapter: MemoryAdapterV3,
     run_config: RuntimeConfigV3,
+    *,
+    prompted_answer_model: PromptedAnswerModelV3 | None = None,
 ) -> TaskRunRecordV3:
     if not isinstance(task, MemUpdateTaskV3):
         raise TypeError("task must be a MemUpdateTaskV3")
@@ -195,11 +200,19 @@ def execute_task_v3(
         )
         runtime_support = dict(support.runtime_support)
         runtime_support["retrieval_policy_match"] = retrieval_policy_matched
+        prompted_model_required = run_config.answer_mode == "slot_prompt"
+        runtime_support["prompted_answer_model"] = (
+            prompted_answer_model is not None if prompted_model_required else True
+        )
         missing_capabilities = list(support.missing_capabilities)
+        if prompted_model_required and prompted_answer_model is None:
+            missing_capabilities.append("prompted_answer_model")
         if not retrieval_policy_matched:
             missing_capabilities.append("retrieval_policy_mismatch")
         terminal_supported = (
-            support.terminal_supported and retrieval_policy_matched
+            support.terminal_supported
+            and retrieval_policy_matched
+            and (not prompted_model_required or prompted_answer_model is not None)
         )
         system_events.append({
             "event": "retrieval_policy",
@@ -352,19 +365,46 @@ def execute_task_v3(
                                 "reason": "retrieval_policy_mismatch",
                             })
                             break
-                        retrievals.append(retrieval.trace)
-                        answer = adapter.answer(query, run_config.answer_mode)
-                        answers.append(answer.prediction)
+                        if prompted_model_required:
+                            rendered_prompt = render_visible_prompt_v3(
+                                query=query,
+                                retrieval_trace=retrieval.trace,
+                            )
+                            prompted_trace = retrieval.trace.model_copy(
+                                update={
+                                    "prompt_hash": hashlib.sha256(
+                                        rendered_prompt.encode("utf-8")
+                                    ).hexdigest(),
+                                }
+                            )
+                            retrievals.append(prompted_trace)
+                            prediction = prompted_answer_model.answer(
+                                PromptedAnswerRequestV3(
+                                    query=query,
+                                    retrieval_trace=prompted_trace,
+                                    rendered_prompt=rendered_prompt,
+                                    prompt_hash=prompted_trace.prompt_hash,
+                                )
+                            )
+                            if prediction.query_id != query.query_id:
+                                raise ValueError(
+                                    "prompted answer prediction query_id must match query"
+                                )
+                            answers.append(prediction)
+                        else:
+                            retrievals.append(retrieval.trace)
+                            answer = adapter.answer(query, run_config.answer_mode)
+                            answers.append(answer.prediction)
                     except Exception as exc:
                         status = CompletionStatus.PARTIAL
                         exceptions.append(_exception("answer", exc, query_id=query.query_id))
                         break
-                    if answer.prediction.disposition.value == "unavailable":
+                    if answers[-1].disposition.value == "unavailable":
                         status = CompletionStatus.PARTIAL
                         exceptions.append({
                             "phase": "answer",
                             "query_id": query.query_id,
-                            "error_flags": list(answer.prediction.error_flags),
+                            "error_flags": list(answers[-1].error_flags),
                         })
                         break
     except Exception as exc:
@@ -396,6 +436,8 @@ def execute_tasks_v3(
     tasks,
     adapter_factory,
     run_config: RuntimeConfigV3,
+    *,
+    prompted_answer_model: PromptedAnswerModelV3 | None = None,
 ) -> tuple[TaskRunRecordV3, ...]:
     task_list = tuple(tasks)
     records = []
@@ -418,7 +460,12 @@ def execute_tasks_v3(
             ))
             continue
         try:
-            records.append(execute_task_v3(task, adapter, run_config))
+            records.append(execute_task_v3(
+                task,
+                adapter,
+                run_config,
+                prompted_answer_model=prompted_answer_model,
+            ))
         except Exception as exc:
             try:
                 adapter.close()

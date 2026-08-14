@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Protocol, runtime_checkable
 
 from pydantic import Field, JsonValue, field_validator, model_validator
@@ -129,6 +130,33 @@ class AdapterActionResultV3(ImmutableContractModel):
 class AdapterAnswerResultV3(ImmutableContractModel):
     prediction: AnswerPredictionV3
     raw_result: FrozenJsonValue | None = None
+
+
+class PromptedAnswerRequestV3(ImmutableContractModel):
+    query: MemoryQueryV3
+    retrieval_trace: RetrievalTraceV3
+    rendered_prompt: str = Field(strict=True, min_length=1)
+    prompt_hash: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
+
+    @model_validator(mode="after")
+    def _bind_prompted_answer(self) -> Self:
+        if self.query.evaluation_mode.value != "retrieved_prompt":
+            raise ValueError("prompted answer requests require retrieved_prompt evaluation mode")
+        if self.retrieval_trace.query_id != self.query.query_id:
+            raise ValueError("retrieval trace query_id must match prompted query")
+        if self.retrieval_trace.prompt_hash != self.prompt_hash:
+            raise ValueError("retrieval trace prompt_hash must bind rendered prompt")
+        rendered_hash = hashlib.sha256(self.rendered_prompt.encode("utf-8")).hexdigest()
+        if self.prompt_hash != rendered_hash:
+            raise ValueError("prompt_hash must bind the rendered_prompt bytes")
+        return self
+
+
+@runtime_checkable
+class PromptedAnswerModelV3(Protocol):
+    def answer(self, request: PromptedAnswerRequestV3) -> AnswerPredictionV3: ...
+
+    def close(self) -> None: ...
 
 
 class ResetRequestV3(ImmutableContractModel):
@@ -362,6 +390,6 @@ class MemoryAdapterV3(Protocol):
 __all__ = [
     "AdapterActionPayloadV3", "AdapterActionResultV3", "AdapterAnswerResultV3", "AdapterCapabilitiesV3", "AdapterInfoV3",
     "ExportEntriesResultV3", "ExportStateResultV3", "ExportedEventAnchorV3", "ExportedVersionRecordV3", "MemoryAdapterV3",
-    "ObjectVersionHistoryV3", "ResetRequestV3", "ResetResultV3", "RetrievalRequestV3", "RetrievalResultV3",
+    "ObjectVersionHistoryV3", "PromptedAnswerModelV3", "PromptedAnswerRequestV3", "ResetRequestV3", "ResetResultV3", "RetrievalRequestV3", "RetrievalResultV3",
     "VersionHistoryExportRequestV3", "VersionHistoryExportResultV3",
 ]

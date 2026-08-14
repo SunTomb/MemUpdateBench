@@ -51,6 +51,20 @@ _ARTIFACT_FIELDS = (
 )
 
 
+class PromptedTaskExpectationV1(ImmutableContractModel):
+    task_id: StrictIdentifier
+    action_ids: tuple[StrictIdentifier, ...]
+    query_ids: tuple[StrictIdentifier, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _ordered_unique_ids(self) -> Self:
+        if len(self.action_ids) != len(set(self.action_ids)):
+            raise ValueError("prompted expectation action IDs must be unique")
+        if len(self.query_ids) != len(set(self.query_ids)):
+            raise ValueError("prompted expectation query IDs must be unique")
+        return self
+
+
 class ExternalRunConfigV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.external.run_config.v1"] = (
         "memupdatebench.external.run_config.v1"
@@ -74,6 +88,7 @@ class ExternalRunConfigV1(ImmutableContractModel):
     model_name: StrictIdentifier | None = None
     provider: StrictIdentifier | None = None
     model_revision: StrictIdentifier | None = None
+    answer_model_slot: StrictIdentifier | None = None
     prompt_config: FrozenJsonObjectV3 = Field(default_factory=dict)
     decoding_config: FrozenJsonObjectV3 = Field(default_factory=dict)
     seed_information: FrozenJsonObjectV3 = Field(default_factory=dict)
@@ -90,6 +105,7 @@ class ExternalRunConfigV1(ImmutableContractModel):
     repetition_count: int = Field(strict=True, gt=0)
     expected_task_ids: tuple[StrictIdentifier, ...] = Field(min_length=1)
     task_record_hashes: FrozenStringMap
+    prompted_task_expectations: tuple[PromptedTaskExpectationV1, ...] = ()
 
     @field_validator("task_record_hashes")
     @classmethod
@@ -145,6 +161,39 @@ class ExternalRunConfigV1(ImmutableContractModel):
         ):
             raise ValueError(
                 "adapter configuration reference must match adapter info"
+            )
+        if self.answer_mode == "slot_prompt":
+            required_prompt_fields = {
+                "prompt_protocol_version",
+                "renderer_version",
+                "template_hash",
+                "typed_output_format",
+            }
+            if (
+                self.answer_model_slot is None
+                or self.model_name is None
+                or self.provider is None
+                or self.model_revision is None
+                or not required_prompt_fields <= set(self.prompt_config)
+            ):
+                raise ValueError(
+                    "slot_prompt runs require frozen model and prompt bindings"
+                )
+            if (
+                len(self.model_revision) != 40
+                or any(char not in "0123456789abcdef" for char in self.model_revision)
+            ):
+                raise ValueError("slot_prompt model revision must be a SHA-1")
+            if tuple(
+                expectation.task_id
+                for expectation in self.prompted_task_expectations
+            ) != self.expected_task_ids:
+                raise ValueError(
+                    "slot_prompt expectations must cover task IDs in order"
+                )
+        elif self.prompted_task_expectations:
+            raise ValueError(
+                "non-prompted runs cannot carry prompted task expectations"
             )
         return self
 
@@ -537,6 +586,29 @@ def _validate_public_row(
         for snapshot in rebuilt.memory_snapshots
     ):
         raise ValueError("public task rows cannot contain raw adapter state")
+    if (
+        configuration.answer_mode == "slot_prompt"
+        and rebuilt.completion_status is CompletionStatus.COMPLETED
+    ):
+        expectation = next(
+            item
+            for item in configuration.prompted_task_expectations
+            if item.task_id == rebuilt.task_id
+        )
+        action_ids = tuple(action.action_id for action in rebuilt.parsed_actions)
+        retrieval_ids = tuple(trace.query_id for trace in rebuilt.retrieval_traces)
+        prediction_ids = tuple(
+            prediction.query_id for prediction in rebuilt.answer_predictions
+        )
+        if action_ids != expectation.action_ids:
+            raise ValueError("prompted row action coverage differs from expectation")
+        if (
+            retrieval_ids != expectation.query_ids
+            or prediction_ids != expectation.query_ids
+        ):
+            raise ValueError("prompted row query coverage differs from expectation")
+        if any(trace.prompt_hash is None for trace in rebuilt.retrieval_traces):
+            raise ValueError("prompted row retrieval traces require prompt hashes")
     require_redistributable_payload(
         rebuilt.model_dump(mode="json"),
         license_status=configuration.normalized_license_status,
