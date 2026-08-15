@@ -1737,6 +1737,38 @@ immutable Core/legacy/strict-v3 schema diffs:  empty
 
 The two complete-gate skips are the existing Windows symbolic-link construction cases (`WinError 1314`); static reparse checks remain active. The complete external snapshot passed before the final bounded source-linkage, metadata-redaction, and worker-exit diagnostics were added; every suite touched by those final changes was rerun independently and passed as shown above.
 
+## vNext Core Task 12 scientific freeze and admission-only preparation
+
+### Motivation and fixed boundary
+
+Task 12 freezes the approved Raw append version-arbitration mechanism study without executing it. The nine scientific cells are Family A only: chronological/no-label, reverse/no-label, and reverse/latest-outdated-label crossed with `normal_topk` retrieval `k=4/8/16`. The two Task 11 answer-model slots are replication/provenance bindings, producing 18 answer-run receipts rather than additional scientific cells. `reference`, `raw_add`, `exact_crud`, `heuristic_crud`, and `mem0_oss` remain an independent full 2,400-task Core test-split main-manager policy and are excluded from the intervention matrix.
+
+The fixed transformation order is:
+
+```text
+frozen raw trajectory -> normal_topk -> presentation order -> full-trajectory version labels
+```
+
+The trajectory artifact now records authenticated entry IDs, event order, per-object version indices, full-trajectory latest-entry IDs, and a canonical trajectory digest. Admission recomputes every receipt from the immutable Core task artifact and rejects missing, reordered, malformed, or content-mismatched provenance rather than trusting task IDs alone.
+
+### Scope, artifacts, and boundary
+
+The dry-run distinguishes three authenticated scopes: 240 A/F/G hard-source tasks, 80 Family A matrix tasks, and 2,400 immutable Core test tasks. It binds one canonical scientific-design authority, one 3x3 semantic matrix, two Task 11 answer bindings, nine cell receipts, and 18 `(cell, answer_model_slot)` run receipts. `execution_authorized=false`; no provider, answer model, result root, score, statistics, claim ledger, or publication artifact is created.
+
+Changed files include the Task 12 contracts/admission and admission-only CLI, mechanism context/matrix semantics, canonical scientific-design JSON, fixture provenance, and focused contract tests. Immutable `data/vnext/core/v3` and legacy fixtures remain untouched.
+
+### Verification evidence
+
+```text
+Task 12 preparation/admission suite:                           25 passed
+Task 12 compatibility, mechanism, and Task 10/11/runtime gate: 171 passed
+py_compile and git diff --check:                                passed
+```
+
+The blocker remediation adds three provenance controls: `mem0_oss` is accepted only with canonical, authenticated Task 10 `AdmissionDecisionV1` and `ExternalAdmissionReportV1` evidence bound to the Core task-manifest hash, with decision/report evaluation-configuration hashes cross-checked; Task 11 qualification reports must match canonical JSON bytes after typed validation; and Raw append receipts record object identity and reject receipts whose latest-entry IDs do not cover each object’s actual final `(event_index, version_index, entry_id)` version. Focused negative tests cover non-admitted decisions, mismatched report/evaluation hashes, and noncanonical qualification evidence.
+
+This is a preparation checkpoint only. Task 12 answer execution, Task 13 statistics/claim ledgers, and overall Core `FINAL_APPROVED` remain explicitly not started.
+
 The previously attempted exact routed Decision review could not be verified as the required model/effort profile, so its aggregate verdict was not reused and no further mismatched delegated verdict was requested. The parent `gpt-5.6-sol` session completed the specification, security, and code-quality inspection directly, with RED regressions for request-ID and health drift, untrusted error/metadata/source leakage, non-exportable and multi-entry effects, telemetry ordering, normalized-state ordering, and clean/nonzero worker termination.
 
 This is a code-path preflight only. No `mem0ai` or Qdrant package has been installed, no wheel or transitive lock has been downloaded, no local Qwen/MiniLM/Qdrant integration has run, and no authenticated candidate report exists. Therefore this work is neither Mem0 `PASS` nor candidate `FAIL`; it does not authorize LangGraph fallback and does not change overall Core status. The next step is the separately authorized isolated dependency/real-backend preflight, followed by 20/20 real reset trials and only then Canary A/B admission execution.

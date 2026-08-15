@@ -9,13 +9,14 @@ from pydantic import BaseModel
 from mub.vnext.contracts import MemoryObjectKey, MemUpdateTask, Split, TaskFamily
 from mub.vnext.generation.config import MechanismCondition, PilotConfig
 from mub.vnext.io import semantic_task_hash, sha256_model
-from mub.vnext.mechanisms.context import RenderedContext, entries_from_task, render_context
-
-APPROVED_CONDITIONS = (
-    ("chronological", "none"),
-    ("reverse_chronological", "none"),
-    ("reverse_chronological", "latest_outdated_label"),
+from mub.vnext.mechanisms.context import (
+    APPROVED_CONTEXT_CONDITIONS,
+    RenderedContext,
+    entries_from_task,
+    render_context,
 )
+
+APPROVED_CONDITIONS = APPROVED_CONTEXT_CONDITIONS
 ANSWER_MODEL = "deterministic_reference_smoke"
 
 

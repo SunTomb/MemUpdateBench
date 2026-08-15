@@ -64,46 +64,71 @@ def test_render_context_pairs_preserve_entries_and_gold_without_answer_labels():
 
 
 @pytest.mark.parametrize("annotation", ["none", "latest_outdated_label"])
-def test_reverse_order_places_reversed_stale_target_versions_before_current(annotation):
+def test_reverse_order_is_strict_newest_to_oldest(annotation):
     tasks = _tasks()
     assert {task.metadata.resolved_profile["stale_count"] for task in tasks} == {1, 16}
     for task in tasks:
         entries = entries_from_task(task)
-        target_key = task.queries[0].target_object_keys[0]
-        target_entries = [entry for entry in entries if entry.object_key == target_key]
-        current = max(
-            target_entries,
-            key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
-        )
-        stale = [entry for entry in target_entries if entry.entry_id != current.entry_id]
-        expected_stale_ids = [
+        expected_ids = [
             entry.entry_id
             for entry in sorted(
-                stale,
-                key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
-                reverse=True,
-            )
-        ]
-        auxiliary = [entry for entry in entries if entry.object_key != target_key]
-        expected_auxiliary_ids = [
-            entry.entry_id
-            for entry in sorted(
-                auxiliary,
-                key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+                entries,
+                key=lambda entry: (
+                    entry.event_index,
+                    entry.version_index,
+                    entry.entry_id,
+                ),
                 reverse=True,
             )
         ]
 
         rendered = render_context(entries, "reverse_chronological", annotation)
-        rendered_target_ids = [entry_id for entry_id in rendered.entry_ids if entry_id in {entry.entry_id for entry in target_entries}]
-        rendered_auxiliary_ids = [entry_id for entry_id in rendered.entry_ids if entry_id in {entry.entry_id for entry in auxiliary}]
 
-        assert rendered_target_ids == [*expected_stale_ids, current.entry_id]
-        assert all(rendered.entry_ids.index(entry_id) < rendered.entry_ids.index(current.entry_id) for entry_id in expected_stale_ids)
-        assert rendered_auxiliary_ids == expected_auxiliary_ids
+        assert rendered.entry_ids == expected_ids
         if annotation == "latest_outdated_label":
+            target_key = task.queries[0].target_object_keys[0]
+            target_entries = [entry for entry in entries if entry.object_key == target_key]
+            current = max(
+                target_entries,
+                key=lambda entry: (
+                    entry.event_index,
+                    entry.version_index,
+                    entry.entry_id,
+                ),
+            )
             assert rendered.labels[current.entry_id] == "latest"
-            assert all(rendered.labels[entry_id] == "outdated" for entry_id in expected_stale_ids)
+            assert all(
+                rendered.labels[entry.entry_id] == "outdated"
+                for entry in target_entries
+                if entry.entry_id != current.entry_id
+            )
+
+
+def test_version_labels_use_full_trajectory_truth_after_retrieval():
+    task = _tasks()[0]
+    trajectory = entries_from_task(task)
+    target_key = task.queries[0].target_object_keys[0]
+    target_entries = [entry for entry in trajectory if entry.object_key == target_key]
+    stale = min(
+        target_entries,
+        key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+    )
+
+    rendered = render_context(
+        [stale],
+        "reverse_chronological",
+        "latest_outdated_label",
+        reference_entries=trajectory,
+    )
+
+    assert rendered.labels == {stale.entry_id: "outdated"}
+    with pytest.raises(ValueError, match="reference entries"):
+        render_context(
+            trajectory,
+            "reverse_chronological",
+            "latest_outdated_label",
+            reference_entries=trajectory[:-1],
+        )
 
 
 def test_render_context_rejects_unsupported_cells_and_malformed_entries():

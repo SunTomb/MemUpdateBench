@@ -13,11 +13,13 @@ from mub.vnext.contracts.task import MemUpdateTask
 
 ContextOrder = Literal["chronological", "reverse_chronological"]
 ContextAnnotation = Literal["none", "latest_outdated_label"]
-_SUPPORTED = {
+APPROVED_CONTEXT_CONDITIONS: tuple[
+    tuple[ContextOrder, ContextAnnotation], ...
+] = (
     ("chronological", "none"),
     ("reverse_chronological", "none"),
     ("reverse_chronological", "latest_outdated_label"),
-}
+)
 
 
 class ContextEntry(ContractModel):
@@ -92,31 +94,12 @@ def _render_value(value: JsonValue) -> str:
     return json.dumps(thaw_json(value), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
-def _reverse_prompt_order(entries: Sequence[ContextEntry]) -> list[ContextEntry]:
-    ordered = sorted(
-        entries,
-        key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
-        reverse=True,
-    )
-    labels = _entry_label_map(entries)
-    positions_by_key: defaultdict[str, list[int]] = defaultdict(list)
-    for position, entry in enumerate(ordered):
-        positions_by_key[entry.object_key.canonical_id].append(position)
-    for positions in positions_by_key.values():
-        if len(positions) < 2:
-            continue
-        same_object = [ordered[position] for position in positions]
-        stale = [entry for entry in same_object if labels[entry.entry_id] == "outdated"]
-        current = [entry for entry in same_object if labels[entry.entry_id] == "latest"]
-        for position, entry in zip(positions, [*stale, *current]):
-            ordered[position] = entry
-    return ordered
-
-
 def render_context(
     entries: Sequence[ContextEntry | Mapping[str, Any]],
     order: str,
     annotation: str,
+    *,
+    reference_entries: Sequence[ContextEntry | Mapping[str, Any]] | None = None,
 ) -> RenderedContext:
     """Render one of the three approved paired context cells.
 
@@ -124,7 +107,7 @@ def render_context(
     derived from the four-part object identity and the latest event position;
     answer text is never an input to this function.
     """
-    if (order, annotation) not in _SUPPORTED:
+    if (order, annotation) not in APPROVED_CONTEXT_CONDITIONS:
         raise ValueError(f"unsupported mechanism context condition: {(order, annotation)!r}")
     normalized = [_coerce_entry(entry) for entry in entries]
     if not normalized:
@@ -137,11 +120,26 @@ def render_context(
         triples = [(entry.event_id, entry.object_key.canonical_id, entry.version_index) for entry in normalized]
         if len(set(triples)) != len(triples):
             raise ValueError("duplicate context entries are not allowed")
-    if order == "chronological":
-        ordered = sorted(normalized, key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id))
-    else:
-        ordered = _reverse_prompt_order(normalized)
-    labels = _entry_label_map(normalized) if annotation == "latest_outdated_label" else {}
+    label_reference = (
+        normalized
+        if reference_entries is None
+        else [_coerce_entry(entry) for entry in reference_entries]
+    )
+    reference_by_id = {entry.entry_id: entry for entry in label_reference}
+    if len(reference_by_id) != len(label_reference):
+        raise ValueError("duplicate reference entry IDs are not allowed")
+    if any(reference_by_id.get(entry.entry_id) != entry for entry in normalized):
+        raise ValueError("presented entries must be contained in reference entries")
+    ordered = sorted(
+        normalized,
+        key=lambda entry: (entry.event_index, entry.version_index, entry.entry_id),
+        reverse=order == "reverse_chronological",
+    )
+    labels = (
+        _entry_label_map(label_reference)
+        if annotation == "latest_outdated_label"
+        else {}
+    )
     lines = []
     for entry in ordered:
         label = f" [{labels[entry.entry_id]}]" if labels else ""
@@ -196,8 +194,11 @@ ContextEntryRecord = ContextEntry
 ContextRender = RenderedContext
 
 __all__ = [
+    "APPROVED_CONTEXT_CONDITIONS",
+    "ContextAnnotation",
     "ContextEntry",
     "ContextEntryRecord",
+    "ContextOrder",
     "ContextRender",
     "RenderedContext",
     "entries_from_task",
