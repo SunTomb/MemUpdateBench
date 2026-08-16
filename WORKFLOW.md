@@ -1981,3 +1981,38 @@ plan fingerprint:      b17306163b932c8a228211f0f28e0a206b304ae8a98853b781731987a
 The external output leaf remained absent after both admission invocations. Therefore this is authenticated preparation evidence only: no model/provider was loaded, no prompted answer was generated, no Task 12 execution/result/score was created, and Task 13 statistics, claim ledgers, and overall Core `FINAL_APPROVED` remain not started.
 
 A subsequent reproducibility and evidence-integrity audit rebuilt the bundle from the same immutable Core and approved Task 10/11 inputs. The manifest hash remained `7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542`, the trajectory hash remained `c615ee14b556faab566dd9b902c56b5b3cf793f0e4c0426ef3ddd94398245d0a`, and the dry-run receipt hash remained `73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd`. A clean-worktree admission rerun again produced 240/80/2,400 scopes, 9 cells, 18 answer-run bindings, `execution_authorized=false`, and no output leaf. All 15 uniquely bound Core/evidence artifacts matched their declared SHA-256 values, NDJSON record counts matched, and the evidence-root secret scan found zero findings. This audit remains pre-execution preparation and does not authorize Task 12 answer runs.
+
+## vNext Core Task 12 cluster offline answer-model load preflight
+
+The first real cluster preflight ran on Tang-2 (`Tang2`) using an NVIDIA A40 with 46,068 MiB visible memory. The Qwen snapshot was already present in the cluster HF cache and was independently rehashed with `snapshot_tree_sha256_v3`:
+
+```text
+slot:       answer_model_a
+model:      Qwen/Qwen2.5-7B-Instruct
+revision:   a09a35458c702b33eeacc393d103063234e8bc28
+tree hash:  5c5fc08ade3cfa718521bbb2206deb1f0249527b8f210c95a4db9140460154ca
+path:       /NAS/yesh/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28
+preflight:  PASS
+```
+
+The Mistral snapshot was found in the existing cluster Task 11 answer-model package and independently rehashed:
+
+```text
+slot:       answer_model_b
+model:      mistralai/Mistral-7B-Instruct-v0.3
+revision:   c170c708c41dac9275d15a8fff4eca08d52bab71
+tree hash:  31a92a122692365f74cc64939cc948fb21f1efa1d500afd3d92332ad319db015
+path:       /NAS/yesh/MemUpdateBench/external/task11_answer_models/mistral_7b_instruct_v03_snapshot
+file count: 16
+total size: 28,995,473,642 bytes
+preflight:  PASS
+```
+
+Both slots were loaded and released through the existing offline runner with `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `local_files_only=True`, and `trust_remote_code=False`. The Mistral tokenizer required `sentencepiece==0.2.0` and `protobuf==4.25.3`; these were installed into the isolated project directory `external/task11_answer_models/dependencies` from offline wheels only, without modifying the shared `gmsra` environment. The wheel hashes are recorded in the cluster evidence artifact:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/core_task12_answer_preflight_v1/answer_model_offline_preflight.json
+SHA-256 7d5c7e5713bf92f548687a48d995dad514b22e374bdfaf260f6583bf40e68e4d
+```
+
+The first Qwen attempt correctly failed before model loading because `activate.sh` lacked `TRANSFORMERS_OFFLINE=1`; the project-local cluster environment was repaired and the clean rerun passed. The first Mistral attempt correctly rejected an incorrectly copied tree-hash argument before model loading; the exact canonical hash was then supplied. The corrected Mistral load passed after the isolated tokenizer wheels were installed. Successful preflight means only that both frozen slots can load offline on the A40; it does not mean answer generation or Task 12 execution has started. No prompts, answers, scores, or result root were created.
