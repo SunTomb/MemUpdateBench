@@ -1939,3 +1939,43 @@ results/vnext/core_task11_answer_harness/mistral_snapshot_provenance.json
 ```
 
 Task 12 preparation schema is now explicitly `memupdatebench.core-task12-preparation.v2` because the required canonical Mistral provenance binding changes the manifest contract. Admission pins both Task 11 metadata artifact hashes above, so coordinated rebinding of the provenance record, qualification evidence, and answer-model binding cannot pass by self-consistency alone. The focused Task 10–12 regression gate completed with 112 passing tests; py_compile and `git diff --check` also passed. This closes the local snapshot-integrity binding only; the original download log records an unauthenticated Hugging Face request, so no upstream signature or provider attestation is claimed. No model inference, Task 12 result, score, statistics, or overall Core approval is produced by this step.
+
+## vNext Core Task 12 authenticated admission-only dry run
+
+A real preparation bundle was derived read-only from the authenticated Core v3 release and the approved Task 10/11 metadata artifacts. The immutable tree under `data/vnext/core/v3` was not modified. The bundle is retained at:
+
+```text
+results/vnext/core_task12_preparation_v2/task12_preparation_manifest.json
+  SHA-256 7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542
+results/vnext/core_task12_preparation_v2/evidence/raw_add/trajectories.jsonl
+  SHA-256 c615ee14b556faab566dd9b902c56b5b3cf793f0e4c0426ef3ddd94398245d0a
+  records 80
+results/vnext/core_task12_preparation_v2/dry_run_plan.json
+  SHA-256 73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd
+```
+
+The raw-append trajectory receipt was recomputed from the authenticated Family A tasks and includes ordered entry IDs, canonical object IDs, event/version indices, current-version entry IDs, and per-task trajectory hashes. Static Raw append adapter identity, capability verification, and canonical `normal_topk` retrieval contracts for `k=4/8/16` are retained beside it. Approved Task 10 admission and Task 11 qualification/provenance artifacts were copied byte-for-byte into the dedicated evidence root and remain bound by their previously approved hashes.
+
+The admission CLI was executed from a clean detached worktree at revision `ae3b55c187effd17da73899432359af07fc608c8`. It admitted exactly:
+
+```text
+A/F/G authenticated hard-source tasks: 240
+Family A matrix tasks:                80
+immutable Core test tasks:         2,400
+scientific cells:                      9
+answer-run bindings:                  18
+execution_authorized:              false
+```
+
+The plan fingerprints are:
+
+```text
+hard-source selection: bca5f60b931d71d6cb78c1bd01b78867df7e2243ae6fca8d1d09bb4cf8f85aac
+matrix selection:      e7def5d6ed8313f3c15bac723c019ca4f3607c4fd5d51c800f4c983187bb93c7
+main-test selection:   4f63450b2fd54925ceb2f97544bda1e8051456cd4877385ec762464b990620f0
+scientific design:     0e12f532f05976d650ea01c2ae62b8dbacb1e70a579b4e56b46d1e07721b0d12
+semantic matrix:       3a73ffb5555e4049800ce247bcbfe39596cfc2d8bc804d6a1bd6983d3d27e686
+plan fingerprint:      b17306163b932c8a228211f0f28e0a206b304ae8a98853b781731987aac323cf
+```
+
+The external output leaf remained absent after both admission invocations. Therefore this is authenticated preparation evidence only: no model/provider was loaded, no prompted answer was generated, no Task 12 execution/result/score was created, and Task 13 statistics, claim ledgers, and overall Core `FINAL_APPROVED` remain not started.
