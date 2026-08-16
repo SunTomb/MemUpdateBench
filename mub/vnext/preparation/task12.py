@@ -34,15 +34,18 @@ from mub.vnext.runtime.answer_model_v3 import DeterministicDecodeConfigV3
 from mub.vnext.runtime.support_v3 import resolve_task_support_v3
 
 
-_TASK12_PREPARATION_SCHEMA_VERSION = "memupdatebench.core-task12-preparation.v1"
+_TASK12_PREPARATION_SCHEMA_VERSION = "memupdatebench.core-task12-preparation.v2"
 _TASK12_SCIENTIFIC_DESIGN_SCHEMA_VERSION = (
     "memupdatebench.core-task12-scientific-design.v1"
 )
 _APPROVED_CORE_RELEASE_MANIFEST_HASH = "f953283a10dd45d3f9d1de066570a9c09b9d132ed458f8dea3c948641b89e99d"
+_APPROVED_CORE_RELEASE_ARTIFACT_SHA256 = "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
 _APPROVED_CORE_RELEASE_ROOT_DIGEST = "458d169a4732139f45361d90ea528f5ed0133f126a32bc5a16de23da6f8a2aba"
 _APPROVED_CORE_TASK_MANIFEST_SHA256 = "38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3"
 _APPROVED_CORE_HARD_SUITE_SHA256 = "ae4ff033857c7145115612a214ecbbbfd91c4ff37f60cf68400208dd4191044c"
 _APPROVED_CORE_TASKS_SHA256 = "5c4fd518542b0665d7313d68f1a339de38502c376aa93fbda228196587cdd2c6"
+_APPROVED_TASK11_QUALIFICATION_SHA256 = "00699e0d7a027d9bb63dca52753d53fe06bcdd0f7c87535aff6f25a7cb496672"
+_APPROVED_TASK11_MISTRAL_PROVENANCE_SHA256 = "0fc48730152bafa005e3f18b12861bec295db02d9ff221ff7b0871cb9bf409da"
 _AFG_FAMILIES = (
     "repeated_same_slot_update",
     "current_historical_query",
@@ -222,6 +225,25 @@ class Task11QualificationReportV1(ImmutableContractModel):
         return self
 
 
+class Task11SnapshotProvenanceV1(ImmutableContractModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    schema_version: Literal[
+        "memupdatebench.core-task11-mistral-provenance.v1"
+    ] = "memupdatebench.core-task11-mistral-provenance.v1"
+    model_id: Literal["mistralai/Mistral-7B-Instruct-v0.3"]
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$", strict=True)
+    source_uri: Literal[
+        "https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3"
+    ]
+    license_id: Literal["apache-2.0"]
+    tree_manifest_version: Literal[
+        "relative-path-sha256-size-canonical-json-v1"
+    ]
+    tree_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
+    file_count: int = Field(gt=0, strict=True)
+    size_bytes: int = Field(gt=0, strict=True)
+
+
 class Task11AnswerModelBindingV1(ImmutableContractModel):
     slot_id: Literal["answer_model_a", "answer_model_b"]
     qualification_report: Task12ArtifactLocationV1
@@ -238,6 +260,11 @@ class Task11AnswerModelBindingV1(ImmutableContractModel):
             raise ValueError("Task 11 qualification report must be evidence-rooted")
         if self.qualification_report.artifact.sha256 != self.qualification_report_sha256:
             raise ValueError("Task 11 qualification report hash must bind its artifact")
+        if (
+            self.qualification_report.artifact.media_type != "application/json"
+            or self.qualification_report.artifact.record_count != 1
+        ):
+            raise ValueError("Task 11 qualification report must be one JSON artifact")
         return self
 
 
@@ -586,6 +613,7 @@ class Task12PreparationManifestV1(ImmutableContractModel):
         Task11AnswerModelBindingV1,
         Task11AnswerModelBindingV1,
     ]
+    task11_mistral_provenance: Task12ArtifactLocationV1
     semantic_matrix: Task12SemanticMatrixV1
     main_manager_policy: Task12MainManagerPolicyV1
     task10_mem0_admission: Task12ExternalAdmissionBindingV1
@@ -611,6 +639,13 @@ class Task12PreparationManifestV1(ImmutableContractModel):
             )
         ):
             raise ValueError("Core task inputs must be core-rooted")
+        if self.task11_mistral_provenance.root != "evidence":
+            raise ValueError("Task 11 provenance must be evidence-rooted")
+        if (
+            self.task11_mistral_provenance.artifact.media_type != "application/json"
+            or self.task11_mistral_provenance.artifact.record_count != 1
+        ):
+            raise ValueError("Task 11 provenance must be one JSON artifact")
         if self.semantic_matrix.scientific_design != self.scientific_design:
             raise ValueError("semantic matrix must bind the approved scientific design")
         slots = tuple(binding.slot_id for binding in self.answer_models)
@@ -1010,6 +1045,17 @@ def _validate_authenticated_core(
         release = json.loads(release_raw)
     except (TypeError, ValueError) as exc:
         raise ValueError("Core release manifest is not JSON") from exc
+    canonical_release_bytes = json.dumps(
+        release,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if canonical_release_bytes != release_raw:
+        raise ValueError("Core release manifest is not canonical JSON")
+    if hashlib.sha256(release_raw).hexdigest() != _APPROVED_CORE_RELEASE_ARTIFACT_SHA256:
+        raise ValueError("Core release manifest artifact hash is not approved")
     if (
         type(release) is not dict
         or release.get("schema_version") != "memupdatebench.core.task_release.v1"
@@ -1113,6 +1159,8 @@ def _validate_answer_model_evidence(
         raise ValueError("Task 11 qualification report is invalid") from exc
     if canonical_json_bytes(report) != raw:
         raise ValueError("Task 11 qualification report must be canonical JSON")
+    if hashlib.sha256(raw).hexdigest() != _APPROVED_TASK11_QUALIFICATION_SHA256:
+        raise ValueError("Task 11 qualification report artifact is not approved")
     matches = [slot for slot in report.slots if slot.slot_id == binding.slot_id]
     if len(matches) != 1:
         raise ValueError("Task 11 qualification report does not bind the selected slot")
@@ -1128,6 +1176,33 @@ def _validate_answer_model_evidence(
         report.offline_contract.decoding.model_dump(mode="json")
     ) != binding.decoding_config_sha256:
         raise ValueError("Task 11 decoding contract does not match answer-model binding")
+
+
+def _validate_task11_mistral_provenance(
+    *,
+    location: Task12ArtifactLocationV1,
+    answer_models: tuple[Task11AnswerModelBindingV1, ...],
+    evidence_root: Path,
+) -> None:
+    raw = _read_artifact(root=evidence_root, location=location)
+    provenance = _canonical_json_model(
+        raw,
+        Task11SnapshotProvenanceV1,
+        label="Task 11 Mistral provenance",
+    )
+    if len(answer_models) != 2 or answer_models[1].slot_id != "answer_model_b":
+        raise ValueError("Task 11 Mistral provenance requires answer_model_b")
+    binding = answer_models[1]
+    if hashlib.sha256(raw).hexdigest() != location.artifact.sha256:
+        raise ValueError("Task 11 Mistral provenance artifact hash does not match")
+    if (
+        provenance.model_id != binding.model_id
+        or provenance.revision != binding.revision
+        or provenance.tree_manifest_sha256 != binding.tree_manifest_sha256
+    ):
+        raise ValueError("Task 11 Mistral provenance does not match answer_model_b")
+    if hashlib.sha256(raw).hexdigest() != _APPROVED_TASK11_MISTRAL_PROVENANCE_SHA256:
+        raise ValueError("Task 11 Mistral provenance artifact is not approved")
 
 
 def _validate_task10_mem0_admission(
@@ -1353,6 +1428,11 @@ def admit_task12_dry_run(
             binding=binding,
             evidence_root=resolved_evidence,
         )
+    _validate_task11_mistral_provenance(
+        location=manifest.task11_mistral_provenance,
+        answer_models=manifest.answer_models,
+        evidence_root=resolved_evidence,
+    )
     raw_intervention = semantic_matrix.raw_append_intervention
     raw_trajectory_bytes = _read_artifact(
         root=resolved_evidence,

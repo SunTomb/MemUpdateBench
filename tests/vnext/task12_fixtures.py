@@ -25,6 +25,7 @@ from mub.vnext.preparation.task12 import (
     RawAppendInterventionV1,
     RawAppendTrajectoryV1,
     Task11AnswerModelBindingV1,
+    Task11SnapshotProvenanceV1,
     Task12ArtifactLocationV1,
     Task12CapabilityVerificationV1,
     Task12ExternalAdmissionBindingV1,
@@ -243,6 +244,20 @@ def build_task12_inputs(tmp_path: Path) -> dict[str, object]:
         evidence_root / "task11" / "qualification_summary.json",
         json.dumps(qualification, sort_keys=True, separators=(",", ":")).encode("utf-8"),
     )
+    mistral_provenance = Task11SnapshotProvenanceV1(
+        model_id="mistralai/Mistral-7B-Instruct-v0.3",
+        revision="c" * 40,
+        source_uri="https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3",
+        license_id="apache-2.0",
+        tree_manifest_version="relative-path-sha256-size-canonical-json-v1",
+        tree_manifest_sha256="d" * 64,
+        file_count=15,
+        size_bytes=28_995_471_365,
+    )
+    mistral_provenance_ref = _write(
+        evidence_root / "task11" / "mistral_snapshot_provenance.json",
+        canonical_json_bytes(mistral_provenance),
+    )
     source_manifest_hash = refs["task_manifest.json"]["sha256"]
     evaluation_hash = "e" * 64
     mem0_config_hash = "9" * 64
@@ -409,6 +424,7 @@ def build_task12_inputs(tmp_path: Path) -> dict[str, object]:
         "release_ref": release_ref,
         "release_manifest_hash": release["release_manifest_hash"],
         "qualification_ref": qualification_ref,
+        "mistral_provenance_ref": mistral_provenance_ref,
         "task10_report_ref": task10_report_ref,
         "task10_decision_ref": task10_decision_ref,
         "raw_evidence_refs": raw_evidence_refs,
@@ -536,6 +552,11 @@ def build_task12_manifest(inputs: dict[str, object]) -> Task12PreparationManifes
         ),
         scientific_design=design,
         answer_models=answer_models,
+        task11_mistral_provenance=_location(
+            inputs["mistral_provenance_ref"],
+            root="evidence",
+            root_path=evidence_root,
+        ),
         semantic_matrix=matrix,
         main_manager_policy=Task12MainManagerPolicyV1(
             manager_ids=design.main_manager_ids,

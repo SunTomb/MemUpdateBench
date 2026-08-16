@@ -71,6 +71,21 @@ def _authorize_fixture_release(monkeypatch, inputs, manifest) -> None:
     )
     monkeypatch.setattr(
         task12,
+        "_APPROVED_TASK11_QUALIFICATION_SHA256",
+        inputs["qualification_ref"]["sha256"],
+    )
+    monkeypatch.setattr(
+        task12,
+        "_APPROVED_TASK11_MISTRAL_PROVENANCE_SHA256",
+        inputs["mistral_provenance_ref"]["sha256"],
+    )
+    monkeypatch.setattr(
+        task12,
+        "_APPROVED_CORE_RELEASE_ARTIFACT_SHA256",
+        inputs["release_ref"]["sha256"],
+    )
+    monkeypatch.setattr(
+        task12,
         "_APPROVED_CORE_RELEASE_ROOT_DIGEST",
         "f" * 64,
     )
@@ -239,6 +254,38 @@ def test_task12_admission_authenticates_three_scopes_and_writes_nothing(
     )
 
 
+def test_task12_rejects_rebound_noncanonical_release_manifest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+    release_path = inputs["core_root"] / manifest.release_manifest.relative_path
+    raw = release_path.read_bytes()
+    pretty = json.dumps(json.loads(raw), indent=2).encode("utf-8")
+    release_path.write_bytes(pretty)
+    rebound = manifest.model_copy(
+        update={
+            "release_manifest": manifest.release_manifest.model_copy(
+                update={
+                    "artifact": manifest.release_manifest.artifact.model_copy(
+                        update={"sha256": hashlib.sha256(pretty).hexdigest()}
+                    )
+                }
+            )
+        }
+    )
+    _authorize_fixture_release(monkeypatch, inputs, manifest)
+
+    with pytest.raises(ValueError, match="canonical|approved"):
+        task12.admit_task12_dry_run(
+            manifest=rebound,
+            core_root=inputs["core_root"],
+            evidence_root=inputs["evidence_root"],
+            output_dir=tmp_path,
+        )
+
+
 def test_task12_rejects_noncanonical_task11_qualification_artifact(
     tmp_path,
 ) -> None:
@@ -312,3 +359,100 @@ def test_task12_rejects_non_admitted_or_mismatched_mem0_decision(
             evidence_root=inputs["evidence_root"],
             source_task_manifest_sha256=manifest.task_manifest.artifact.sha256,
         )
+
+
+def test_task12_manifest_binds_canonical_mistral_provenance(tmp_path) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+
+    location = manifest.task11_mistral_provenance
+    raw = (
+        inputs["evidence_root"] / location.relative_path
+    ).read_bytes()
+    assert task12.canonical_json_bytes(
+        task12.Task11SnapshotProvenanceV1.model_validate_json(raw)
+    ) == raw
+    assert location.artifact.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_task12_rejects_mistral_provenance_binding_mismatch(tmp_path) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+    mismatched = manifest.answer_models[1].model_copy(
+        update={"tree_manifest_sha256": "0" * 64}
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        task12._validate_task11_mistral_provenance(
+            location=manifest.task11_mistral_provenance,
+            answer_models=(manifest.answer_models[0], mismatched),
+            evidence_root=inputs["evidence_root"],
+        )
+
+
+def test_task12_rejects_mistral_provenance_model_id_mismatch(tmp_path) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+    mismatched = manifest.answer_models[1].model_copy(
+        update={"model_id": "other/model"}
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        task12._validate_task11_mistral_provenance(
+            location=manifest.task11_mistral_provenance,
+            answer_models=(manifest.answer_models[0], mismatched),
+            evidence_root=inputs["evidence_root"],
+        )
+
+
+def test_task12_rejects_coordinated_mistral_provenance_rebinding(tmp_path) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+    provenance_path = (
+        inputs["evidence_root"]
+        / manifest.task11_mistral_provenance.relative_path
+    )
+    rebound_provenance = task12.Task11SnapshotProvenanceV1(
+        model_id="mistralai/Mistral-7B-Instruct-v0.3",
+        revision="e" * 40,
+        source_uri="https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3",
+        license_id="apache-2.0",
+        tree_manifest_version="relative-path-sha256-size-canonical-json-v1",
+        tree_manifest_sha256="1" * 64,
+        file_count=15,
+        size_bytes=28_995_471_365,
+    )
+    rebound_raw = task12.canonical_json_bytes(rebound_provenance)
+    provenance_path.write_bytes(rebound_raw)
+    rebound_location = manifest.task11_mistral_provenance.model_copy(
+        update={
+            "artifact": manifest.task11_mistral_provenance.artifact.model_copy(
+                update={"sha256": hashlib.sha256(rebound_raw).hexdigest()}
+            )
+        }
+    )
+    rebound_binding = manifest.answer_models[1].model_copy(
+        update={
+            "revision": rebound_provenance.revision,
+            "tree_manifest_sha256": rebound_provenance.tree_manifest_sha256,
+        }
+    )
+
+    with pytest.raises(ValueError, match="approved"):
+        task12._validate_task11_mistral_provenance(
+            location=rebound_location,
+            answer_models=(manifest.answer_models[0], rebound_binding),
+            evidence_root=inputs["evidence_root"],
+        )
+
+
+def test_task12_manifest_rejects_scientific_design_drift(tmp_path) -> None:
+    inputs = build_task12_inputs(tmp_path)
+    manifest = build_task12_manifest(inputs)
+    drifted_design = manifest.scientific_design.model_copy()
+    object.__setattr__(drifted_design, "main_manager_ids", ("reference",))
+    drifted_manifest = manifest.model_copy()
+    object.__setattr__(drifted_manifest, "scientific_design", drifted_design)
+
+    with pytest.raises(ValueError, match="semantic matrix"):
+        drifted_manifest._validate_frozen_design()

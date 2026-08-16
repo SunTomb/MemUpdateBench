@@ -1,6 +1,7 @@
 from mub.vnext.preparation.task12 import (
     RawAppendInterventionV1,
     Task11AnswerModelBindingV1,
+    Task11SnapshotProvenanceV1,
     Task12CapabilityVerificationV1,
     Task12ExternalAdmissionBindingV1,
     Task12ContextInterventionV1,
@@ -22,6 +23,7 @@ from mub.vnext.preparation.task12 import (
 __all__ = [
     "RawAppendInterventionV1",
     "Task11AnswerModelBindingV1",
+    "Task11SnapshotProvenanceV1",
     "Task12CapabilityVerificationV1",
     "Task12ExternalAdmissionBindingV1",
     "Task12ContextInterventionV1",

@@ -1914,3 +1914,28 @@ results/vnext/core_task10_mem0_admission_v2/admission_decision.json
 The report remains bound by SHA-256 to the immutable local Core release and to the previously generated canary/model-provenance prerequisites; those roots remain intentionally outside this corrective commit and are authenticated in place rather than copied or rebound. The admission builder parses the UPDATE and NOOP probe as two bound typed `AdapterActionResultV3` records and verifies the frozen UPDATE object/value, so unrelated or wrong-target log fragments cannot satisfy capability truthfulness. It reparses all 20 reset trials through `NamespaceResetProbeV1`, reparses the public configuration as the exact frozen `Mem0AdapterConfigurationV1`, and structurally secret-scans both public configuration and adapter identity. All inputs, gate evidence, report, fallback check, and decision are closed in memory before a complete fsynced sibling staging tree is atomically installed; injected decision failure leaves no final root and a clean rerun succeeds. Independent local reconstruction revalidated the strict report and decision, reproduced the exact-one selection, confirmed `evaluate_candidate_admission(...) == true`, `authorize_fallback(...) == false`, 128 complete rows, and zero secret findings. The completed private LangGraph package/Store/extractor checks remain non-admission diagnostics only; because Mem0 is admitted, the fixed candidate order forbids executing or admitting the LangGraph fallback.
 
 This closes Core Task 10 as a bounded external-adapter qualification. It does not supply prompted-answer evidence, manager accuracy results, Task 13 statistics, or overall Core `FINAL_APPROVED`. Task 11 remains the next separate gate.
+
+## vNext Core Task 11 canonical Mistral provenance binding
+
+The previously retained Mistral transfer snapshot was revalidated directly with `snapshot_tree_sha256_v3` over all 15 local snapshot files. The observed tree hash exactly matched the transfer manifest:
+
+```text
+model:              mistralai/Mistral-7B-Instruct-v0.3
+revision:           c170c708c41dac9275d15a8fff4eca08d52bab71
+file count:         15
+size:               28,995,471,365 bytes
+tree SHA-256:       31a92a122692365f74cc64939cc948fb21f1efa1d500afd3d92332ad319db015
+manifest SHA-256:   579eb20207419eb53cfb0c8352487ec07276d55a9ded3b81137f53be4e53fe3d
+recomputed match:   true
+```
+
+Two new canonical, redistributable metadata artifacts preserve the strict Task 11 contract without copying model weights or private raw payloads:
+
+```text
+results/vnext/core_task11_answer_harness/qualification_report.json
+  SHA-256 00699e0d7a027d9bb63dca52753d53fe06bcdd0f7c87535aff6f25a7cb496672
+results/vnext/core_task11_answer_harness/mistral_snapshot_provenance.json
+  SHA-256 0fc48730152bafa005e3f18b12861bec295db02d9ff221ff7b0871cb9bf409da
+```
+
+Task 12 preparation schema is now explicitly `memupdatebench.core-task12-preparation.v2` because the required canonical Mistral provenance binding changes the manifest contract. Admission pins both Task 11 metadata artifact hashes above, so coordinated rebinding of the provenance record, qualification evidence, and answer-model binding cannot pass by self-consistency alone. The focused Task 10–12 regression gate completed with 112 passing tests; py_compile and `git diff --check` also passed. This closes the local snapshot-integrity binding only; the original download log records an unauthenticated Hugging Face request, so no upstream signature or provider attestation is claimed. No model inference, Task 12 result, score, statistics, or overall Core approval is produced by this step.

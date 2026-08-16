@@ -212,6 +212,7 @@ def test_task12_manifest_has_one_matrix_authority_and_two_answer_bindings() -> N
     assert "answer_models" in fields
     assert "main_manager_policy" in fields
     assert "task10_mem0_admission" in fields
+    assert "task11_mistral_provenance" in fields
     assert "answer_model" not in fields
     assert "adapter_cells" not in fields
     assert "raw_append_intervention" not in fields
