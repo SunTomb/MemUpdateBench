@@ -2350,3 +2350,76 @@ python -m pytest \
 ```
 
 The `f88588b` matrix root is retained only as authenticated single-run smoke evidence and an incomplete launcher diagnostic. It must not be resumed under changed code or interpreted as the complete 18-run matrix. The corrected launcher requires a new clean runtime commit, freshly bound bundles, and a separate final matrix root.
+
+## vNext Core Task 12 complete real offline answer matrix
+
+### Final authenticated execution
+
+The corrected launcher was committed and transferred to a new clean detached Tang-2 runtime worktree. Fresh bundles were built under a separate empty result root; no row or artifact from the incomplete `f88588b` root was reused:
+
+```text
+runtime revision:     9c798df5bb66e853466831ddae8ede3a1f2c01f4
+runtime tree SHA-256: c6584f1d6db3241d6d80d9648d7b349483cf1e07301a212f9f92323d9af4d296
+result root:          /NAS/yesh/MemUpdateBench/results/vnext/core_task12_answer_matrix_9c798df_v1
+matrix manifest:      85145a8a460ee6cec3785926f9aaa85c8bee8cd41d4ad0582d2b0333b8cf10d2
+```
+
+The real matrix ran in tmux with revision-pinned offline Qwen and Mistral snapshots on separate A40 devices. It completed all 18 frozen runs:
+
+```text
+run count:          18
+terminal task rows: 1,440
+score rows:         1,440
+FAILED/PARTIAL:     0
+matrix summary:     a1c4f89af2b9f39de9791ce9c6348c24b4c81474abf3da865f22e5dfe68f1f15
+```
+
+### Integrity and privacy audit
+
+Every authorization, task view, run config, task row, run manifest, score row, and score receipt was reloaded through the final contracts. Summary run/score hashes matched all 18 artifacts. Public rows contained no Qwen/Mistral snapshot path. The audit artifact is outside the matrix root, under the sibling logs root:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/core_task12_answer_matrix_9c798df_v1_logs/matrix_integrity_audit.json
+SHA-256 bfc85922c36dcc87deca983ce39ff395b10da00c2ee91c8aba7a6c02c3f04f60
+```
+
+A production `--resume --execute` check then reloaded all 18 finalized runs, 1,440 rows, 1,440 scores, and the existing summary without any checkpoint load or inference. Its log is:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/core_task12_answer_matrix_9c798df_v1_logs/resume_check.log
+```
+
+The first audit compared adapter `entry_id` values across runs and correctly failed because those IDs include the isolated run namespace. This was not a retrieval-content mismatch. Re-auditing the frozen multiset by semantic entry identity `(object, source event, version, value, event index)` produced:
+
+```text
+(slot, k, task, query) groups: 480
+incomplete groups:              0
+semantic multiset mismatches:   0
+snapshot-path hits:             0
+```
+
+Thus all three presentation conditions at a fixed `(slot, k, task, query)` preserve exactly the same retrieved semantic-entry multiset.
+
+### Direct per-cell results
+
+These are direct 80-task cell means only. They are Task 12 execution outputs, not Task 13 confidence intervals, claim-ledger entries, or final paper claims. `Fmt` is the fraction of typed answer outputs accepted as format-valid; `Stale` is the scored stale-copy rate. Retrieval stale exposure/count remain null under the frozen capability contract and must not be read as zero.
+
+| context | k | Qwen EM | Qwen Fmt | Qwen Stale | Mistral EM | Mistral Fmt | Mistral Stale |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| chronological / no label | 4 | 0.3875 | 0.7250 | 0.3125 | 0.7000 | 0.9250 | 0.2125 |
+| chronological / no label | 8 | 0.5750 | 0.8125 | 0.2000 | 0.4250 | 0.8125 | 0.3125 |
+| chronological / no label | 16 | 0.3875 | 0.9000 | 0.4125 | 0.2375 | 0.7625 | 0.5125 |
+| reverse / no label | 4 | 0.7250 | 0.7625 | 0.0375 | 0.9500 | 0.9750 | 0.0125 |
+| reverse / no label | 8 | 0.7625 | 0.8125 | 0.0250 | 0.9000 | 0.9375 | 0.0125 |
+| reverse / no label | 16 | 0.8000 | 0.9000 | 0.0750 | 0.9000 | 0.9000 | 0.0000 |
+| reverse / latest-outdated label | 4 | 0.7250 | 0.7375 | 0.0000 | 1.0000 | 1.0000 | 0.0000 |
+| reverse / latest-outdated label | 8 | 0.8500 | 0.8625 | 0.0000 | 1.0000 | 1.0000 | 0.0000 |
+| reverse / latest-outdated label | 16 | 0.9375 | 0.9375 | 0.0000 | 0.9750 | 0.9750 | 0.0000 |
+
+The typed parser explicitly recorded invalid outputs rather than silently coercing them. Across 720 predictions per model, Qwen had 124 invalid outputs and Mistral had 57; per-run `answer_json_invalid` and `answer_schema_mismatch` counts are preserved in the audit artifact.
+
+### Bounded conclusion and next step
+
+Task 12 real offline execution and its row/hash completeness audit are complete. The direct matrix shows strong sensitivity to presentation order and explicit version labels, but its ordering differs from the earlier P8.3 surface construction: reverse/no-label is stronger than chronological/no-label here. This is a boundary result, not evidence that one order is universally best or that stale same-slot conflict is universally the strongest distractor. The latest/outdated intervention removes scored stale copying in both slots across all three k values, while format failures remain a separate answer-layer mechanism.
+
+Do not start Task 13 implicitly from these means. The next task is the explicitly separate Task 13 statistics/claim-ledger/case-verification gate, which must treat semantic cores as independent units and bind every reported cell to the authenticated artifacts above. Overall Core is still not `FINAL_APPROVED`.
