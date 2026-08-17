@@ -2016,3 +2016,211 @@ SHA-256 7d5c7e5713bf92f548687a48d995dad514b22e374bdfaf260f6583bf40e68e4d
 ```
 
 The first Qwen attempt correctly failed before model loading because `activate.sh` lacked `TRANSFORMERS_OFFLINE=1`; the project-local cluster environment was repaired and the clean rerun passed. The first Mistral attempt correctly rejected an incorrectly copied tree-hash argument before model loading; the exact canonical hash was then supplied. The corrected Mistral load passed after the isolated tokenizer wheels were installed. Successful preflight means only that both frozen slots can load offline on the A40; it does not mean answer generation or Task 12 execution has started. No prompts, answers, scores, or result root were created.
+
+## vNext Core Task 12 single-run CLI and fake offline e2e gate
+
+### Motivation
+
+Task 12 now has a bounded execution layer for exactly one authorized `(cell_id, answer_model_slot)` run at a time. The admission-only dry-run remains immutable and keeps `execution_authorized=false`; execution requires the separate `Task12ExecutionAuthorizationV1`, matching the authenticated preparation manifest hash, plan fingerprint, cell binding, answer-model slot, and a one-component output leaf.
+
+### Implementation
+
+Added a Task 12 execution module and CLI that reuse the existing strict-v3 runtime, public run writer, and authenticated scorer instead of creating a parallel result format:
+
+```text
+mub/vnext/runtime/task12_execution_v3.py
+scripts/vnext_run_core_task12.py
+tests/vnext/test_core_task12_execution.py
+tests/vnext/test_core_task12_cli_e2e.py
+```
+
+The runner executes only Raw append Family A cells with `slot_prompt` and `normal_topk(k)`. It applies the frozen presentation transform after retrieval: chronological/no-label, reverse/no-label, or reverse/latest-outdated-label. Latest/outdated labels are derived from the full raw trajectory, not from the retrieved subset. Public rows are persisted through `ExternalRunWriterV1`, finalized as `RunManifestV3`, reloaded, scored through `VerifiedScoringContextV3.from_authenticated_manifests`, and written as canonical `scores/scores.jsonl` plus `scores/score_receipt.json`.
+
+The CLI also contains a hidden `--fake-offline-answer` test path. That path exercises the same CLI orchestration, persistence, manifest reload, authenticated scoring, and score-receipt writing without loading Qwen or Mistral. It is regression infrastructure only and is not prompted-answer scientific evidence.
+
+### Verification
+
+Fresh local verification after cleanup:
+
+```text
+python -m py_compile scripts/vnext_run_core_task12.py mub/vnext/runtime/task12_execution_v3.py
+  PASS
+python -m pytest tests/vnext/test_core_task12_cli_e2e.py tests/vnext/test_core_task12_execution.py tests/vnext/test_core_task12_cli.py tests/vnext/test_core_task12_run_contract.py tests/vnext/test_core_task12_matrix_contract.py tests/vnext/test_run_core_v3_persistence.py tests/vnext/test_v3_runtime_score_adapter.py -q
+  54 passed in 16.10s
+git diff --check
+  PASS
+```
+
+### Boundary and next steps
+
+This closes the local fake-offline end-to-end runner gate only. It does not run Qwen or Mistral, does not create a real Task 12 answer-matrix result root, does not start Task 13 statistics or claim ledgers, and does not declare overall Core `FINAL_APPROVED`. Before any real 18-run matrix, the production single-cell `ExternalRunConfigV1` binding should be reviewed against the authenticated preparation artifacts, then one real offline slot/cell run should be executed and inspected before expansion.
+
+## vNext Core Task 12 single-run bundle builder
+
+### Motivation
+
+Task 12 execution now needs a production-facing preparation step that derives exactly one authorized `(cell_id, answer_model_slot)` execution bundle from the authenticated preparation manifest and admitted dry-run plan. This keeps execution configuration out of ad hoc shell arguments and preserves the separation between admission-only planning and execution authorization.
+
+### Implementation
+
+Added a bundle builder and CLI:
+
+```text
+mub/vnext/runtime/task12_bundle_v3.py
+scripts/vnext_prepare_core_task12_run.py
+tests/vnext/test_core_task12_run_bundle.py
+tests/vnext/test_core_task12_run_bundle_cli.py
+```
+
+The builder reads canonical `Task12PreparationManifestV1` and `Task12DryRunPlanV1`, checks that the plan binds the preparation manifest's Core task-manifest, hard-suite, and task artifact hashes, selects exactly one admitted answer run, and writes an isolated bundle containing `tasks.jsonl`, `task_manifest.json`, `run_config.json`, and `authorization.json`. The generated `ExternalRunConfigV1` points to the 80-task view manifest rather than the full Core task manifest so authenticated scoring coverage matches the run rows. Output-root guards reject existing roots and roots inside the immutable Core or evidence roots.
+
+The execution CLI now consumes the preparation manifest explicitly through `--preparation-manifest`, validates authorization against `sha256_model(Task12PreparationManifestV1)`, checks the run config's task-manifest/task-view/task-record hashes against the files supplied on the command line, requires `offline_hf`, and uses the deterministic decoding values embedded in `ExternalRunConfigV1`.
+
+### Verification
+
+Fresh local verification:
+
+```text
+python -m pytest tests/vnext/test_core_task12_cli_e2e.py -q
+  1 passed in 288.79s (0:04:48)
+python -m pytest tests/vnext/test_core_task12_run_bundle.py tests/vnext/test_core_task12_run_bundle_cli.py -q
+  5 passed in 1132.39s (0:18:52)
+python -m pytest tests/vnext/test_core_task12_execution.py -q
+  5 passed in 1.18s
+python -m py_compile scripts/vnext_run_core_task12.py scripts/vnext_prepare_core_task12_run.py mub/vnext/runtime/task12_execution_v3.py mub/vnext/runtime/task12_bundle_v3.py
+  PASS
+```
+
+### Boundary
+
+The bundle builder prepares one cell/slot run but does not execute models, does not launch the full 18-run matrix, does not write into `data/vnext/core/v3`, does not start Task 13, and does not declare overall Core `FINAL_APPROVED`.
+
+## vNext Core Task 12 full 18-run matrix execution expansion
+
+### Motivation
+
+Task 12 already had one-cell execution and one-cell bundle preparation. The remaining expansion was to preserve that single-run contract while adding production-facing orchestration for the complete 9-cell × 2-answer-slot matrix. This must remain separate from Task 13 statistics and from any overall Core approval claim.
+
+### Files changed/generated
+
+```text
+mub/vnext/runtime/task12_execution_v3.py
+mub/vnext/runtime/task12_matrix_v3.py
+scripts/vnext_run_core_task12_matrix.py
+tests/vnext/test_core_task12_matrix_bundle.py
+```
+
+### Implementation
+
+- Added `Task12MatrixRunRecordV1`, `Task12MatrixRunSummaryV1`, and `Task12MatrixRunResultV1` for a canonical 18-run execution summary.
+- Added `execute_task12_matrix_bundles_v3(...)`, which validates a prepared matrix bundle manifest, loads both prompted answer-model slots once, executes every bound `(cell_id, answer_model_slot)` via `run_task12_cell_v3(...)`, requires complete task and score row coverage, and writes `matrix_run_summary.json`.
+- Added `scripts/vnext_run_core_task12_matrix.py` as the production-facing matrix execution CLI. It requires `--execute`, constructs offline answer-model slots from the prepared run configs and caller-supplied snapshot/tree hashes, and exposes no provider/token/API configuration path.
+- Fixed the Task 12 presentation transform to accept the built-in raw append adapter's `sequence_index` metadata as the event-order source, while preserving the existing `event_index` fixture path.
+- Extended matrix tests with fake-offline 18-run execution, canonical summary reload checks, per-run manifest/score artifact checks, and matrix runner CLI help constraints.
+
+### Commands run
+
+```bash
+python -m py_compile scripts/vnext_run_core_task12.py scripts/vnext_prepare_core_task12_run.py scripts/vnext_prepare_core_task12_matrix.py scripts/vnext_run_core_task12_matrix.py mub/vnext/runtime/task12_execution_v3.py mub/vnext/runtime/task12_bundle_v3.py mub/vnext/runtime/task12_matrix_v3.py
+python -m pytest tests/vnext/test_core_task12_execution.py tests/vnext/test_core_task12_run_bundle.py tests/vnext/test_core_task12_run_bundle_cli.py -q
+python -m pytest tests/vnext/test_core_task12_matrix_bundle.py::test_task12_matrix_runner_executes_all_18_fake_offline_runs -q
+python -m pytest tests/vnext/test_core_task12_matrix_bundle.py -q
+python -m pytest tests/vnext/test_core_task12_cli_e2e.py -q
+git diff --check
+```
+
+### Current validation evidence
+
+```text
+py_compile: passed
+Task 12 execution + bundle regression tests: 10 passed in 1148.28s (0:19:08)
+Task 12 fake-offline 18-run matrix execution test: 1 passed in 705.70s (0:11:45)
+Task 12 full matrix bundle test suite: 6 passed in 1918.85s (0:31:58)
+Task 12 CLI fake-offline e2e test: 1 passed in 288.83s (0:04:48)
+Consolidated focused Task 12 regression suite: 17 passed in 3297.04s (0:54:57)
+git diff --check: passed
+```
+
+Earlier full matrix test runs exposed two root causes: adapter entries emitted `sequence_index` rather than `event_index`, and the prompted public-row/scorer path requires canonical gold action IDs rather than built-in observed action IDs. The fixes were to accept both metadata keys in `_event_index(...)` and wrap matrix-run adapters so `raw_result.parsed_action_id` is rebound to each task's gold action IDs before public row validation and authenticated scoring.
+
+### Boundary
+
+This expands the local authenticated execution layer and fake-offline regression coverage only. It does not launch real Qwen/Mistral scientific matrix jobs, does not modify `data/vnext/core/v3`, does not start Task 13, and does not declare overall Core `FINAL_APPROVED`.
+
+## vNext Core Task 12 execution-layer final hardening and commit gate
+
+### Motivation
+
+A final adversarial review of the uncommitted Task 12 execution layer found that internal bundle consistency was not yet sufficient to prove closure against the admitted plan, immutable inputs, execution code, frozen answer-model slots, and exact matrix outputs. The implementation was therefore held back from commit and from any real model run until each confirmed boundary defect had a failing regression or a direct authenticated check.
+
+### Files changed
+
+The hardening remains confined to the existing Task 12 engineering unit:
+
+```text
+mub/vnext/runtime/task12_execution_v3.py
+mub/vnext/runtime/task12_bundle_v3.py
+mub/vnext/runtime/task12_matrix_v3.py
+scripts/vnext_run_core_task12.py
+scripts/vnext_prepare_core_task12_run.py
+scripts/vnext_prepare_core_task12_matrix.py
+scripts/vnext_run_core_task12_matrix.py
+tests/vnext/test_core_task12_execution.py
+tests/vnext/test_core_task12_cli_e2e.py
+tests/vnext/test_core_task12_run_bundle.py
+tests/vnext/test_core_task12_run_bundle_cli.py
+tests/vnext/test_core_task12_matrix_bundle.py
+```
+
+Immutable Core and legacy fixtures were not modified.
+
+### Confirmed findings and fixes
+
+- Closed execution authorization over the preparation-manifest hash, plan fingerprint, cell/model/run bindings, exact 80-task view, task manifest, run config, output leaf, and a separately authenticated execution-code revision/tree. Preparation provenance and execution provenance remain distinct by design.
+- Replaced free single-run task/config/output/hash arguments with one validated bundle root. Output is derived only from the authorization leaf; production CLIs expose no fake answer, provider, token, model-ID, revision, or tree-hash override.
+- Bound both real answer-model objects to their frozen Task 11 slots and derive model ID, revision, license, and tree hash from the preparation manifest before offline loading.
+- Parse immutable Core tasks only from bytes already verified by the Core `ArtifactRef`; all used evidence artifacts are digest-checked, canonical, regular, single-link files. Bundle children, finalized rows/manifests, and score artifacts reject symlinks/reparse points and hard links.
+- Recompute and verify the complete manifest/plan binding, including scientific design, semantic matrix, manager policy, answer-model bindings, admitted cells, and all 18 admitted answer runs.
+- Require the authenticated frozen raw-trajectory receipt for every presentation transform. Runtime retrieval `k`, context order, annotation, run ID, and `capture_snapshots=False` are rehashed and compared with the frozen run configuration before any task executes.
+- Restrict action-ID rebinding to `observed_action:<current_event_id>` and the event's unique gold action ID; malformed observed IDs remain failures instead of being overwritten.
+- Enforce unique ordered task/run coverage for scoring, exact persisted-prefix equality for resume, public-row validation on finalized reload, manifest counts/scorer/config/artifact checks, and atomic score publication with a hash-complete receipt.
+- Make single bundles transactionally publish their four artifacts. Build the complete 18-bundle matrix under an owned staging root and rename it only after every child and the matrix manifest are complete; failed preparation removes its staging tree without exposing a partial final root.
+- Resume now reloads and verifies finalized runs and scores without re-running inference. A fully finalized matrix resumes without loading either answer model; model-load failure closes every slot that began loading.
+
+### Review and verification
+
+The final specification review concluded `SPEC_COMPLIANT`; the final blocker-only code-quality review concluded `FINAL_CODE_QUALITY_APPROVED`.
+
+Fresh final gate:
+
+```text
+python -m py_compile \
+  scripts/vnext_run_core_task12.py \
+  scripts/vnext_prepare_core_task12_run.py \
+  scripts/vnext_prepare_core_task12_matrix.py \
+  scripts/vnext_run_core_task12_matrix.py \
+  mub/vnext/runtime/task12_execution_v3.py \
+  mub/vnext/runtime/task12_bundle_v3.py \
+  mub/vnext/runtime/task12_matrix_v3.py
+  PASS
+
+python -m pytest \
+  tests/vnext/test_core_task12_execution.py \
+  tests/vnext/test_core_task12_cli_e2e.py \
+  tests/vnext/test_core_task12_run_bundle.py \
+  tests/vnext/test_core_task12_run_bundle_cli.py \
+  tests/vnext/test_core_task12_matrix_bundle.py -q
+  20 passed in 2690.39s (0:44:50)
+```
+
+The complete fake-offline matrix again produced 18 × 80 = 1,440 terminal task rows and 1,440 score rows, then authenticated a no-inference resume. This remains orchestration evidence only and must not be interpreted as Qwen/Mistral prompted-answer scientific evidence.
+
+### Error analysis and conclusion
+
+The first final-suite attempt had 19 passing tests and one stale error-message assertion after manifest/plan validation was moved earlier; the implementation correctly rejected the mismatch. Updating the assertion and rerunning the entire gate produced the clean 20-test result above. No runtime defect remained.
+
+This closes the local Task 12 execution-layer engineering gate only. It does not modify the immutable Core release, start Task 13, create real answer-model results, or declare overall Core `FINAL_APPROVED`.
+
+### Next steps
+
+After preserving this coherent engineering unit in a clean commit, rebuild the execution bundles so their runtime code revision/tree binds that commit. Then verify the canonical Qwen and Mistral snapshots, offline environment, devices, and an output root outside the repository/Core/evidence roots. Run one authenticated real single-cell smoke first; only after its typed parsing, 80 terminal rows, public-row privacy, run/score hashes, and authenticated scoring pass may the complete 18-run real matrix begin.
