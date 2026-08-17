@@ -142,6 +142,19 @@ def test_task12_matrix_bundle_prepares_all_18_cell_slot_bundles(tmp_path, monkey
     assert run_config.task_view_ref.sha256 == hashlib.sha256(first.task_view_path.read_bytes()).hexdigest()
     assert run_config.expected_task_ids == tuple(task.task_id for task in first.tasks)
 
+    from scripts.vnext_run_core_task12_matrix import _model_for_slot
+
+    production_model = _model_for_slot(
+        manifest=manifest,
+        matrix_root=matrix.matrix_root,
+        matrix_manifest=matrix.manifest,
+        slot_id="answer_model_a",
+        snapshot_path=tmp_path / "not-loaded-snapshot",
+        device="cpu",
+    )
+    assert production_model.slot.slot_id == "answer_model_a"
+    assert production_model.slot.model_id == manifest.answer_models[0].model_id
+
     from mub.vnext.adapters.core_v3 import RawAppendAdapterV3
 
     production_fake_models = {

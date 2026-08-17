@@ -2285,4 +2285,68 @@ python -m pytest \
   21 passed in 2503.21s (0:41:43)
 ```
 
-The failed cluster preparation created no matrix/output root and loaded no model. Real Task 12 execution remains not started.
+The failed cluster preparation created no matrix/output root and loaded no model. At this checkpoint, real Task 12 execution had not started.
+
+## vNext Core Task 12 first real offline smoke and launcher correction
+
+### Motivation and authenticated setup
+
+The final local loader-compatible code was transferred to Tang-2 as a Git bundle and checked out in a clean detached runtime worktree. The dirty 445-entry remote main worktree was not modified or cleaned. Because the shared NAS ownership differs from the login UID, Task 12 uses an isolated `HOME` under the authorized project root with exact `safe.directory` entries; no user-global Git configuration was changed.
+
+The canonical preparation/evidence root was absent remotely, so only the authenticated `task12_preparation_manifest.json`, `dry_run_plan.json`, and `evidence/` tree were transactionally synchronized. Immutable Core was not copied or modified. Remote hashes matched:
+
+```text
+runtime revision:              f88588b64ebc896c1cda6951adc464d9f000904a
+runtime tree SHA-256:          108fe06093480bfc653d14bea4e35ad4d117bf00ba283e6dee147121399aa838
+preparation manifest SHA-256:  7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542
+dry-run plan SHA-256:          73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd
+Core task manifest SHA-256:    38e623e6888c8f692e6aeb4d7f8c593e72c8fab655d52aca96de954339a439d3
+Core tasks SHA-256:            5c4fd518542b0665d7313d68f1a339de38502c376aa93fbda228196587cdd2c6
+```
+
+Both snapshots were freshly rehashed under the final runtime code with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`:
+
+```text
+Qwen tree:    5c5fc08ade3cfa718521bbb2206deb1f0249527b8f210c95a4db9140460154ca
+Mistral tree: 31a92a122692365f74cc64939cc948fb21f1efa1d500afd3d92332ad319db015
+```
+
+### Bundle preparation and real Qwen smoke
+
+The first production matrix root was prepared outside the clean runtime worktree, immutable Core, and evidence roots:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/core_task12_answer_matrix_f88588b_v1
+matrix manifest SHA-256: 99e7fb0245fc524f9013cccf68dca3fcc8135111d8164c88dd1d48223e0f0e8f
+bundle count: 18
+rows per bundle: 80
+run outputs before smoke: 0
+```
+
+A real Qwen `raw-add-chronological-none-k04 / answer_model_a` smoke ran on an A40 and completed 80/80 terminal rows plus 80/80 authenticated score rows:
+
+```text
+run manifest SHA-256: 24bb78bfb8657b830382c9c30ec4396d6d27eecfab96e154acc6306b315c3096
+score artifact SHA-256: 87c676fad0bab06537ba723423a17198ce09a0180cbfb3284261383945f21649
+completion statuses: completed=80
+answer dispositions: answered=80
+exact-match mean: 0.3875
+format-valid: 58/80
+```
+
+The 22 invalid-format predictions were explicit parser outcomes, not silent coercions: 17 `answer_json_invalid` and five `answer_schema_mismatch`, all with JSON-object-shaped raw outputs. Snapshot paths had zero public-row hits. The apparent `raw_provider`/`raw_adapter_state` text hits were schema field names only, not private paths or payloads.
+
+### Full-matrix launcher failure and boundary
+
+The first `--resume` full-matrix launch failed before loading either model or creating a second run. Deduplicating the four CLI control-file loaders had left two stale `_load_canonical(...)` calls inside the matrix runner's `_model_for_slot(...)`; Python raised `NameError`. The root therefore contains exactly the authenticated Qwen smoke run, 17 absent run roots, and no matrix summary.
+
+The two calls were changed to the shared strict control loader, and the matrix production-helper test now constructs both frozen slot models without loading them. Targeted verification passed:
+
+```text
+python -m py_compile scripts/vnext_run_core_task12_matrix.py
+python -m pytest \
+  tests/vnext/test_core_task12_matrix_bundle.py::test_task12_matrix_bundle_prepares_all_18_cell_slot_bundles -q
+  1 passed in 435.79s
+```
+
+The `f88588b` matrix root is retained only as authenticated single-run smoke evidence and an incomplete launcher diagnostic. It must not be resumed under changed code or interpreted as the complete 18-run matrix. The corrected launcher requires a new clean runtime commit, freshly bound bundles, and a separate final matrix root.

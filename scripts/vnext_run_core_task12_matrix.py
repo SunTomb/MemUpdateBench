@@ -59,12 +59,12 @@ def _model_for_slot(
     )
     if not refs:
         raise ValueError(f"matrix bundle manifest has no run for {slot_id}")
-    config = _load_canonical(
+    config = load_task12_control_json_v3(
         matrix_root / refs[0].bundle_leaf / "run_config.json",
         ExternalRunConfigV1,
     )
     for ref in refs:
-        other = _load_canonical(
+        other = load_task12_control_json_v3(
             matrix_root / ref.bundle_leaf / "run_config.json",
             ExternalRunConfigV1,
         )
