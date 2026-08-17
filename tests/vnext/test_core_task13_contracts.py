@@ -437,27 +437,10 @@ def test_sha256_fields_are_lowercase_exact_hashes() -> None:
             artifact_id="artifact-a",
             artifact=ArtifactRef(path="a.json", sha256="A" * 64, media_type="application/json"),
         )
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseRecordV1(
-            case_id="case-a",
-            category="correct",
-            run_id="run-a",
-            task_id="task-a",
-            semantic_core_id="core-a",
-            answer_model_slot="qwen",
-            k=4,
-            task_artifact_sha256="short",
-            task_manifest_sha256=SHA,
-            run_manifest_sha256=SHA,
-            score_artifact_sha256=SHA,
-            matrix_summary_sha256=SHA,
-            task_payload={},
-            timeline_payload={},
-            run_payload={},
-            score_payload={},
-            retrieval_payload={},
-            answer_payload={},
-        )
+    payload = _case("case-a").model_dump(mode="python")
+    payload["task_artifact_sha256"] = "short"
+    with pytest.raises(ValidationError):
+        Task13CaseRecordV1.model_validate(payload)
 
 
 def test_canonical_roundtrip_preserves_immutable_interval() -> None:
