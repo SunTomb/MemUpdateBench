@@ -1,5 +1,6 @@
 from mub.vnext.statistics.contracts_v3 import (
     CORE_TASK13_METRIC_PATHS,
+    TASK13_METRIC_PATHS,
     CanonicalDecimal,
     Task13ArtifactBindingV1,
     Task13ArtifactIndexV1,
@@ -18,6 +19,7 @@ from mub.vnext.statistics.contracts_v3 import (
 
 __all__ = [
     "CORE_TASK13_METRIC_PATHS",
+    "TASK13_METRIC_PATHS",
     "CanonicalDecimal",
     "Task13ArtifactBindingV1",
     "Task13ArtifactIndexV1",

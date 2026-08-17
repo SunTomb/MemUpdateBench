@@ -4,7 +4,7 @@ from enum import Enum
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import AliasChoices, BeforeValidator, Field, field_validator, model_validator
 
 from mub.vnext.contracts.common import (
     ArtifactRef,
@@ -24,7 +24,7 @@ TASK13_SEED_HEX = "9e3779b97f4a7c15d1b54a32d192ed03e47b8a31f5c6d2098374ab10ce69d
 
 # The order here is part of the tracked configuration contract.  It is not
 # derived from set or mapping iteration order.
-CORE_TASK13_METRIC_PATHS = (
+TASK13_METRIC_PATHS = (
     "answer_scores.exact_match",
     "answer_scores.gold_retrieved_wrong_answer",
     "answer_scores.stale_copied",
@@ -33,7 +33,11 @@ CORE_TASK13_METRIC_PATHS = (
     "retrieval_scores.stale_count_in_context",
     "retrieval_scores.stale_exposure_rate",
 )
-if len(CORE_TASK13_METRIC_PATHS) != 7 or not set(CORE_TASK13_METRIC_PATHS) <= CORE_METRIC_FIELD_PATHS:
+# Backwards-compatible name retained for the first contract commit.  Both
+# names reference the same immutable tuple, so no parallel metric dictionary
+# can drift from the frozen Task 13 set.
+CORE_TASK13_METRIC_PATHS = TASK13_METRIC_PATHS
+if len(TASK13_METRIC_PATHS) != 7 or not set(TASK13_METRIC_PATHS) <= CORE_METRIC_FIELD_PATHS:
     raise RuntimeError("Task 13 metric paths must be a unique subset of the v3 core registry")
 
 SHA256 = Annotated[str, Field(strict=True, pattern=SHA256_PATTERN)]
@@ -110,7 +114,7 @@ class Task13BootstrapConfigV1(ImmutableContractModel):
         if any(type(path) is not str for path in value):
             raise ValueError("metric paths must be exact built-in strings")
         paths = tuple(value)
-        if paths != CORE_TASK13_METRIC_PATHS:
+        if paths != TASK13_METRIC_PATHS:
             raise ValueError("metric_paths must equal the frozen Task 13 metric order")
         if len(paths) != len(set(paths)) or not set(paths) <= CORE_METRIC_FIELD_PATHS:
             raise ValueError("metric_paths contain unknown or duplicate core metrics")
@@ -182,8 +186,8 @@ class Task13CellStatisticV1(ImmutableContractModel):
     @field_validator("metric_path")
     @classmethod
     def _core_metric(cls, value: str) -> str:
-        if value not in CORE_METRIC_FIELD_PATHS:
-            raise ValueError("metric_path must belong to CORE_METRIC_FIELD_PATHS")
+        if value not in TASK13_METRIC_PATHS:
+            raise ValueError("metric_path must belong to the frozen TASK13_METRIC_PATHS")
         return value
 
 
@@ -211,8 +215,8 @@ class Task13PairedContrastV1(ImmutableContractModel):
     @field_validator("metric_path")
     @classmethod
     def _core_metric(cls, value: str) -> str:
-        if value not in CORE_METRIC_FIELD_PATHS:
-            raise ValueError("metric_path must belong to CORE_METRIC_FIELD_PATHS")
+        if value not in TASK13_METRIC_PATHS:
+            raise ValueError("metric_path must belong to the frozen TASK13_METRIC_PATHS")
         return value
 
     @model_validator(mode="after")
@@ -261,10 +265,17 @@ class Task13CaseSelectorV1(ImmutableContractModel):
     max_cases_per_category: Literal[1] = 1
     selected_case_ids: tuple[StrictIdentifier, ...] = ()
 
-    @field_validator("categories", "selected_case_ids")
+    @field_validator("categories")
     @classmethod
-    def _unique_values(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
-        return _require_unique(value, info.field_name)
+    def _exact_categories(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != _CASE_CATEGORIES:
+            raise ValueError("categories must equal the frozen Task 13 category order")
+        return value
+
+    @field_validator("selected_case_ids")
+    @classmethod
+    def _unique_selected_case_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _require_unique(value, "selected_case_ids")
 
 
 class Task13CaseRecordV1(ImmutableContractModel):
@@ -277,27 +288,64 @@ class Task13CaseRecordV1(ImmutableContractModel):
     answer_model_slot: StrictIdentifier
     k: StrictPositiveInt
     task_artifact_sha256: SHA256
+    task_manifest_sha256: SHA256
     run_manifest_sha256: SHA256
     score_artifact_sha256: SHA256
-    task_payload: FrozenJsonObjectV3 | None = None
-    timeline_payload: FrozenJsonObjectV3 | None = None
-    run_payload: FrozenJsonObjectV3 | None = None
-    score_payload: FrozenJsonObjectV3 | None = None
-    retrieval_payload: FrozenJsonObjectV3 | None = None
-    answer_payload: FrozenJsonObjectV3 | None = None
+    matrix_summary_sha256: SHA256
+    task: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("task", "task_payload"))
+    timeline: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("timeline", "timeline_payload"))
+    run: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("run", "run_payload"))
+    score: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("score", "score_payload"))
+    retrieval: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("retrieval", "retrieval_payload"))
+    answer: FrozenJsonObjectV3 = Field(validation_alias=AliasChoices("answer", "answer_payload"))
+
+    @property
+    def task_payload(self) -> FrozenJsonObjectV3:
+        return self.task
+
+    @property
+    def timeline_payload(self) -> FrozenJsonObjectV3:
+        return self.timeline
+
+    @property
+    def run_payload(self) -> FrozenJsonObjectV3:
+        return self.run
+
+    @property
+    def score_payload(self) -> FrozenJsonObjectV3:
+        return self.score
+
+    @property
+    def retrieval_payload(self) -> FrozenJsonObjectV3:
+        return self.retrieval
+
+    @property
+    def answer_payload(self) -> FrozenJsonObjectV3:
+        return self.answer
 
 
 class Task13CaseIndexV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     case_ids: tuple[StrictIdentifier, ...]
     cases_artifact: ArtifactRef
-    record_count: StrictNonnegativeInt
+    record_count: StrictPositiveInt
+    run_ids: tuple[StrictIdentifier, ...]
+    run_manifest_hashes: tuple[SHA256, ...]
+    score_artifact_hashes: tuple[SHA256, ...]
+    category_coverage: FrozenJsonObjectV3
     source_bindings: tuple[Task13ArtifactBindingV1, ...] = ()
 
     @field_validator("case_ids")
     @classmethod
     def _unique_case_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _require_unique(value, "case_ids")
+
+    @field_validator("run_ids")
+    @classmethod
+    def _exact_run_coverage(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != 18:
+            raise ValueError("case index must cover exactly 18 Task 12 runs")
+        return _require_unique(value, "run_ids")
 
     @field_validator("cases_artifact")
     @classmethod
@@ -306,9 +354,28 @@ class Task13CaseIndexV1(ImmutableContractModel):
         return value
 
     @model_validator(mode="after")
-    def _count_and_sources(self) -> Task13CaseIndexV1:
+    def _count_sources_and_categories(self) -> Task13CaseIndexV1:
         if self.record_count != len(self.case_ids):
             raise ValueError("record_count must equal the number of case_ids")
+        if not self.run_ids or not self.run_manifest_hashes or not self.score_artifact_hashes:
+            raise ValueError("case index run IDs and source hashes must be non-empty")
+        if not (
+            len(self.run_ids)
+            == len(self.run_manifest_hashes)
+            == len(self.score_artifact_hashes)
+        ):
+            raise ValueError("run IDs and source hashes must have equal lengths")
+        if set(self.category_coverage) != set(_CASE_CATEGORIES):
+            raise ValueError("category_coverage must contain exactly all four case categories")
+        case_id_set = set(self.case_ids)
+        for category in _CASE_CATEGORIES:
+            selected = self.category_coverage[category]
+            if not isinstance(selected, (list, tuple)) or not selected:
+                raise ValueError("every category_coverage value must be a non-empty case-ID list")
+            if any(type(case_id) is not str or case_id not in case_id_set for case_id in selected):
+                raise ValueError("category_coverage must reference known case IDs")
+            if len(selected) != len(set(selected)):
+                raise ValueError("category_coverage case IDs must be unique per category")
         _validate_unique_bindings(self.source_bindings)
         return self
 
@@ -317,6 +384,7 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     claim_id: StrictIdentifier
     kind: Literal["direct_cell", "paired_contrast"]
+    direction: Literal["self", "left_minus_right", "left-minus-right"]
     slot: StrictIdentifier
     cell_or_contrast: StrictIdentifier
     metric_path: StrictIdentifier
@@ -328,29 +396,33 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
     run_manifest_sha256s: tuple[SHA256, ...]
     score_artifact_sha256s: tuple[SHA256, ...]
     statistics_receipt_sha256: SHA256
-    case_ids: tuple[StrictIdentifier, ...] = ()
-    case_index_sha256: SHA256 | None = None
+    case_ids: tuple[StrictIdentifier, ...]
+    case_index_sha256: SHA256
 
     @field_validator("metric_path")
     @classmethod
     def _core_metric(cls, value: str) -> str:
-        if value not in CORE_METRIC_FIELD_PATHS:
-            raise ValueError("metric_path must belong to CORE_METRIC_FIELD_PATHS")
+        if value not in TASK13_METRIC_PATHS:
+            raise ValueError("metric_path must belong to the frozen TASK13_METRIC_PATHS")
         return value
 
     @field_validator("run_ids", "run_manifest_sha256s", "score_artifact_sha256s", "case_ids")
     @classmethod
     def _unique_sequences(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
+        if not value:
+            raise ValueError(f"{info.field_name} must be non-empty")
         return _require_unique(value, info.field_name)
 
     @model_validator(mode="after")
     def _ledger_consistency(self) -> Task13ClaimLedgerRecordV1:
         if self.status != self.interval.status:
             raise ValueError("claim status must equal the bound interval status")
+        if self.kind == "direct_cell" and self.direction != "self":
+            raise ValueError("direct_cell claims require direction='self'")
+        if self.kind == "paired_contrast" and self.direction not in {"left_minus_right", "left-minus-right"}:
+            raise ValueError("paired_contrast claims require a left-minus-right direction")
         if len(self.run_ids) != len(self.run_manifest_sha256s) or len(self.run_ids) != len(self.score_artifact_sha256s):
             raise ValueError("claim run IDs and source hashes must have equal lengths")
-        if bool(self.case_ids) != (self.case_index_sha256 is not None):
-            raise ValueError("case IDs and case-index hash must be supplied together")
         return self
 
 
@@ -375,6 +447,7 @@ def _validate_unique_bindings(bindings: tuple[Task13ArtifactBindingV1, ...]) -> 
 
 __all__ = [
     "CORE_TASK13_METRIC_PATHS",
+    "TASK13_METRIC_PATHS",
     "CanonicalDecimal",
     "Task13ArtifactBindingV1",
     "Task13ArtifactIndexV1",

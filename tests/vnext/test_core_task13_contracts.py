@@ -8,16 +8,21 @@ from pydantic import ValidationError
 
 from mub.vnext.contracts.common import ArtifactRef, MetricFieldSupport
 from mub.vnext.contracts.enums import SupportReason
+from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS
 from mub.vnext.io import sha256_model
 from mub.vnext.statistics.contracts_v3 import (
     CORE_TASK13_METRIC_PATHS,
+    TASK13_METRIC_PATHS,
     Task13ArtifactBindingV1,
     Task13ArtifactIndexV1,
     Task13BootstrapConfigV1,
     Task13CaseIndexV1,
     Task13CaseRecordV1,
+    Task13CaseSelectorV1,
+    Task13CellStatisticV1,
     Task13ClaimLedgerRecordV1,
     Task13IntervalV1,
+    Task13PairedContrastV1,
     Task13StatisticStatus,
 )
 
@@ -40,28 +45,107 @@ def _binding(identifier: str = "artifact-a", path: str = "cell_statistics.jsonl"
     )
 
 
-def _case(case_id: str) -> Task13CaseRecordV1:
+def _cell(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13CellStatisticV1:
+    return Task13CellStatisticV1(
+        cell_id="cell-a",
+        answer_model_slot="qwen",
+        k=4,
+        metric_path=metric_path,
+        interval=Task13IntervalV1(
+            status=Task13StatisticStatus.NUMERIC,
+            estimate="0.5",
+            lower="0.4",
+            upper="0.6",
+        ),
+        task_count=80,
+        core_count=80,
+        core_ids_sha256=SHA,
+        run_id="run-a",
+        run_manifest_sha256=SHA,
+        score_artifact_sha256=SHA,
+        bootstrap_config_sha256=SHA,
+        bootstrap_indices_sha256=SHA,
+    )
+
+
+def _contrast(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13PairedContrastV1:
+    return Task13PairedContrastV1(
+        contrast_id="contrast-a",
+        left_cell_id="cell-left",
+        right_cell_id="cell-right",
+        direction="left_minus_right",
+        answer_model_slot="qwen",
+        k=4,
+        metric_path=metric_path,
+        interval=Task13IntervalV1(
+            status=Task13StatisticStatus.NUMERIC,
+            estimate="0.1",
+            lower="0",
+            upper="0.2",
+        ),
+        core_count=80,
+        core_ids_sha256=SHA,
+        left_run_id="run-left",
+        left_run_manifest_sha256=SHA,
+        left_score_artifact_sha256=SHA,
+        right_run_id="run-right",
+        right_run_manifest_sha256=SHA,
+        right_score_artifact_sha256=SHA,
+        bootstrap_config_sha256=SHA,
+        bootstrap_indices_sha256=SHA,
+    )
+
+
+def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
     return Task13CaseRecordV1(
         case_id=case_id,
-        category="correct",
+        category=category,
         run_id="run-a",
         task_id="task-a",
         semantic_core_id="core-a",
         answer_model_slot="qwen",
         k=4,
         task_artifact_sha256=SHA,
+        task_manifest_sha256=SHA,
         run_manifest_sha256=SHA,
         score_artifact_sha256=SHA,
+        matrix_summary_sha256=SHA,
+        task_payload={"task": "payload"},
+        timeline_payload={"timeline": "payload"},
+        run_payload={"run": "payload"},
+        score_payload={"score": "payload"},
+        retrieval_payload={"retrieval": "payload"},
+        answer_payload={"answer": "payload"},
     )
 
 
-def _claim(claim_id: str) -> Task13ClaimLedgerRecordV1:
+def _case_index(case_ids: tuple[str, ...] = ("case-a", "case-b", "case-c", "case-d")) -> Task13CaseIndexV1:
+    run_ids = tuple(f"run-{index:02d}" for index in range(18))
+    return Task13CaseIndexV1(
+        case_ids=case_ids,
+        cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
+        record_count=len(case_ids),
+        run_ids=run_ids,
+        run_manifest_hashes=(SHA,) * 18,
+        score_artifact_hashes=(SHA,) * 18,
+        category_coverage={
+            "correct": ["case-a"],
+            "stale_copied": ["case-b"],
+            "answer_parse_invalid": ["case-c"],
+            "other_wrong": ["case-d"],
+        },
+        source_bindings=(_binding("run-a", "run.json"),),
+    )
+
+
+def _claim(claim_id: str, *, kind: str = "direct_cell", direction: str = "self") -> Task13ClaimLedgerRecordV1:
     return Task13ClaimLedgerRecordV1(
         claim_id=claim_id,
-        kind="direct_cell",
+        kind=kind,
+        direction=direction,
         slot="qwen",
         cell_or_contrast="cell-a",
-        metric_path="answer_scores.exact_match",
+        metric_path=TASK13_METRIC_PATHS[0],
         slice_payload={},
         denominator=80,
         status=Task13StatisticStatus.NUMERIC,
@@ -99,6 +183,7 @@ def test_task13_bootstrap_contract_is_exact() -> None:
     assert config.decimal_rounding == "ROUND_HALF_EVEN"
     assert config.support_policy == "all_supported_or_all_unsupported"
     assert config.metric_paths == CORE_TASK13_METRIC_PATHS
+    assert config.metric_paths == TASK13_METRIC_PATHS
 
 
 @pytest.mark.parametrize(
@@ -106,7 +191,7 @@ def test_task13_bootstrap_contract_is_exact() -> None:
     [
         ("answer_scores.exact_match", "answer_scores.unknown"),
         ("answer_scores.exact_match", "answer_scores.exact_match"),
-        tuple(reversed(CORE_TASK13_METRIC_PATHS)),
+        tuple(reversed(TASK13_METRIC_PATHS)),
     ],
 )
 def test_task13_bootstrap_rejects_unknown_duplicate_or_reordered_metrics(metric_paths: tuple[str, ...]) -> None:
@@ -183,6 +268,15 @@ def test_case_claim_and_artifact_ids_and_paths_are_unique() -> None:
             case_ids=("case-a", "case-a"),
             cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
             record_count=2,
+            run_ids=tuple(f"run-{index:02d}" for index in range(18)),
+            run_manifest_hashes=(SHA,) * 18,
+            score_artifact_hashes=(SHA,) * 18,
+            category_coverage={
+                "correct": ["case-a"],
+                "stale_copied": [],
+                "answer_parse_invalid": [],
+                "other_wrong": [],
+            },
             source_bindings=(_binding("run-a", "run.json"),),
         )
     with pytest.raises((ValidationError, ValueError)):
@@ -219,8 +313,16 @@ def test_sha256_fields_are_lowercase_exact_hashes() -> None:
             answer_model_slot="qwen",
             k=4,
             task_artifact_sha256="short",
+            task_manifest_sha256=SHA,
             run_manifest_sha256=SHA,
             score_artifact_sha256=SHA,
+            matrix_summary_sha256=SHA,
+            task_payload={},
+            timeline_payload={},
+            run_payload={},
+            score_payload={},
+            retrieval_payload={},
+            answer_payload={},
         )
 
 
@@ -243,3 +345,98 @@ def test_case_and_claim_helpers_construct_complete_records() -> None:
     claim = _claim("claim-a")
     assert case.case_id == "case-a"
     assert claim.claim_id == "claim-a"
+
+
+def test_only_frozen_task13_metrics_are_accepted_by_all_statistic_records() -> None:
+    foreign_metric = next(path for path in CORE_METRIC_FIELD_PATHS if path not in TASK13_METRIC_PATHS)
+    with pytest.raises((ValidationError, ValueError)):
+        _cell(foreign_metric)
+    with pytest.raises((ValidationError, ValueError)):
+        _contrast(foreign_metric)
+    claim = _claim("claim-foreign")
+    payload = claim.model_dump(mode="python")
+    payload["metric_path"] = foreign_metric
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+def test_case_selector_requires_exact_category_universe_and_order() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseSelectorV1(
+            selector_id="selector-a",
+            run_id="run-a",
+            categories=("correct",),
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseSelectorV1(
+            selector_id="selector-a",
+            run_id="run-a",
+            categories=("stale_copied", "correct", "answer_parse_invalid", "other_wrong"),
+        )
+
+
+def test_case_record_requires_complete_projection_and_source_hashes() -> None:
+    case = _case("case-a")
+    assert all(
+        getattr(case, field) is not None
+        for field in (
+            "task_payload",
+            "timeline_payload",
+            "run_payload",
+            "score_payload",
+            "retrieval_payload",
+            "answer_payload",
+            "task_manifest_sha256",
+            "matrix_summary_sha256",
+        )
+    )
+    payload = case.model_dump(mode="python")
+    payload["answer"] = None
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+    payload = case.model_dump(mode="python")
+    payload.pop("task_manifest_sha256")
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+def test_case_index_requires_all_18_runs_and_aligned_hashes_and_categories() -> None:
+    index = _case_index()
+    assert len(index.run_ids) == 18
+    assert set(index.category_coverage) == {
+        "correct",
+        "stale_copied",
+        "answer_parse_invalid",
+        "other_wrong",
+    }
+    payload = index.model_dump(mode="python")
+    payload["run_ids"] = payload["run_ids"][:-1]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+    payload = index.model_dump(mode="python")
+    payload["run_manifest_hashes"] = payload["run_manifest_hashes"][:-1]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+    payload = index.model_dump(mode="python")
+    payload["category_coverage"] = {"correct": ["case-a"]}
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+
+def test_claim_ledger_requires_direction_nonempty_sources_and_case_index() -> None:
+    assert _claim("claim-a").direction == "self"
+    assert _claim("claim-contrast", kind="paired_contrast", direction="left-minus-right").direction == "left-minus-right"
+    with pytest.raises((ValidationError, ValueError)):
+        _claim("claim-bad-direction", direction="left_minus_right")
+    payload = _claim("claim-empty").model_dump(mode="python")
+    payload["run_ids"] = ()
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+    payload = _claim("claim-no-case-index").model_dump(mode="python")
+    payload["case_index_sha256"] = None
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+    payload = _claim("claim-no-cases").model_dump(mode="python")
+    payload["case_ids"] = ()
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
