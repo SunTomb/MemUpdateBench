@@ -34,10 +34,15 @@ TASK13_METRIC_PATHS = (
     "retrieval_scores.stale_exposure_rate",
 )
 TASK13_K = Literal[4, 8, 16]
+TASK13_CELL_STATISTICS_ARTIFACT_ID = "cell_statistics"
+TASK13_CELL_STATISTICS_ARTIFACT_PATH = "cell_statistics.jsonl"
+TASK13_PAIRED_CONTRASTS_ARTIFACT_ID = "paired_contrasts"
+TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH = "paired_contrasts.jsonl"
+
 TASK13_ARTIFACT_PATHS = (
     "bootstrap_indices.bin",
-    "cell_statistics.jsonl",
-    "paired_contrasts.jsonl",
+    TASK13_CELL_STATISTICS_ARTIFACT_PATH,
+    TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH,
     "statistics_receipt.json",
     "cases.jsonl",
     "case_index.json",
@@ -280,6 +285,14 @@ class Task13StatisticsReceiptV1(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _distinct_artifacts(self) -> Task13StatisticsReceiptV1:
+        if self.cell_statistics_artifact_id != TASK13_CELL_STATISTICS_ARTIFACT_ID:
+            raise ValueError("cell_statistics_artifact_id must be 'cell_statistics'")
+        if self.cell_statistics_artifact.path != TASK13_CELL_STATISTICS_ARTIFACT_PATH:
+            raise ValueError("cell_statistics_artifact.path must be 'cell_statistics.jsonl'")
+        if self.paired_contrasts_artifact_id != TASK13_PAIRED_CONTRASTS_ARTIFACT_ID:
+            raise ValueError("paired_contrasts_artifact_id must be 'paired_contrasts'")
+        if self.paired_contrasts_artifact.path != TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH:
+            raise ValueError("paired_contrasts_artifact.path must be 'paired_contrasts.jsonl'")
         if self.cell_statistics_artifact_id == self.paired_contrasts_artifact_id:
             raise ValueError("receipt artifact IDs must be distinct")
         if self.cell_statistics_artifact.path == self.paired_contrasts_artifact.path:
@@ -520,6 +533,12 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
             raise ValueError(
                 f"{self.kind} claims must bind exactly {expected_sources} typed run sources"
             )
+        if self.kind == "paired_contrast":
+            left, right = self.run_sources
+            if left.run_id == right.run_id:
+                raise ValueError("paired_contrast sources must use different run IDs")
+            if left == right:
+                raise ValueError("paired_contrast sources must be different complete records")
         return self
 
 
@@ -551,8 +570,12 @@ def _validate_unique_bindings(bindings: tuple[Task13ArtifactBindingV1, ...]) -> 
 __all__ = [
     "CORE_TASK13_METRIC_PATHS",
     "TASK13_ARTIFACT_PATHS",
+    "TASK13_CELL_STATISTICS_ARTIFACT_ID",
+    "TASK13_CELL_STATISTICS_ARTIFACT_PATH",
     "TASK13_K",
     "TASK13_METRIC_PATHS",
+    "TASK13_PAIRED_CONTRASTS_ARTIFACT_ID",
+    "TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH",
     "CanonicalDecimal",
     "Task13AnswerProjectionV1",
     "Task13ArtifactBindingV1",

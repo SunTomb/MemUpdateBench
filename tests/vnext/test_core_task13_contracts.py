@@ -236,9 +236,9 @@ def _receipt() -> Task13StatisticsReceiptV1:
         paired_contrast_count=84,
         core_ids_sha256=SHA_B,
         bootstrap_indices_sha256=SHA_C,
-        cell_statistics_artifact_id="cell_statistics.jsonl",
+        cell_statistics_artifact_id="cell_statistics",
         cell_statistics_artifact=ArtifactRef(path="cell_statistics.jsonl", sha256=SHA, media_type="application/jsonl"),
-        paired_contrasts_artifact_id="paired_contrasts.jsonl",
+        paired_contrasts_artifact_id="paired_contrasts",
         paired_contrasts_artifact=ArtifactRef(path="paired_contrasts.jsonl", sha256=SHA_B, media_type="application/jsonl"),
     )
 
@@ -645,3 +645,33 @@ def test_numeric_interval_requires_estimate_inside_endpoints() -> None:
     for estimate, lower, upper in (("0.9", "0.1", "0.8"), ("0.1", "0.2", "0.8")):
         with pytest.raises((ValidationError, ValueError)):
             Task13IntervalV1(status=Task13StatisticStatus.NUMERIC, estimate=estimate, lower=lower, upper=upper)
+
+
+def test_claim_ledger_paired_sources_require_distinct_complete_records() -> None:
+    claim = _claim("claim-paired", kind="paired_contrast", direction="left_minus_right")
+    payload = claim.model_dump(mode="python")
+    payload["run_sources"] = (payload["run_sources"][0], payload["run_sources"][0])
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+    payload = claim.model_dump(mode="python")
+    payload["run_sources"][1]["run_id"] = payload["run_sources"][0]["run_id"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+def test_statistics_receipt_requires_role_specific_artifact_ids_and_paths() -> None:
+    receipt = _receipt()
+    assert receipt.cell_statistics_artifact_id == "cell_statistics"
+    assert receipt.cell_statistics_artifact.path == "cell_statistics.jsonl"
+    assert receipt.paired_contrasts_artifact_id == "paired_contrasts"
+    assert receipt.paired_contrasts_artifact.path == "paired_contrasts.jsonl"
+    for field in ("cell_statistics_artifact_id", "paired_contrasts_artifact_id"):
+        payload = receipt.model_dump(mode="python")
+        payload[field] = "foo"
+        with pytest.raises((ValidationError, ValueError)):
+            Task13StatisticsReceiptV1.model_validate(payload)
+    for field in ("cell_statistics_artifact", "paired_contrasts_artifact"):
+        payload = receipt.model_dump(mode="python")
+        payload[field]["path"] = "bar.jsonl"
+        with pytest.raises((ValidationError, ValueError)):
+            Task13StatisticsReceiptV1.model_validate(payload)
