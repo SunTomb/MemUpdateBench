@@ -1,11 +1,12 @@
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Context, Decimal, Inexact, getcontext, setcontext
 import hashlib
 from typing import Mapping
 
 import pytest
 
 from mub.vnext.statistics.bootstrap_v3 import (
+    FROZEN_BOOTSTRAP_INDEX_SHA256,
     BootstrapIndicesV1,
     build_bootstrap_indices_v1,
     clustered_percentile_interval_v1,
@@ -81,10 +82,21 @@ def test_bootstrap_golden_is_independent_and_order_invariant(
     )
     assert matrix.rows[0][:8] == expected_first == (13, 78, 21, 16, 64, 28, 64, 69)
     assert len(matrix.raw) == 800_000
-    assert matrix.sha256 == (
+    assert FROZEN_BOOTSTRAP_INDEX_SHA256 == (
         "2b68e56c70cfbbda4777240b9fa8ed61b8c9d006e7201fed536dae50c07c6dee"
     )
+    assert matrix.sha256 == FROZEN_BOOTSTRAP_INDEX_SHA256
     assert build_bootstrap_indices_v1(tuple(reversed(CORE_IDS)), config=config) == matrix
+
+
+def test_self_consistent_alternative_matrix_is_rejected(
+    matrix: BootstrapIndicesV1,
+) -> None:
+    zero_rows = tuple((0,) * 80 for _ in range(10_000))
+    zero_raw = b"\x00" * 800_000
+    zero_sha256 = hashlib.sha256(zero_raw).hexdigest()
+    with pytest.raises(ValueError, match="frozen|canonical|golden"):
+        replace(matrix, rows=zero_rows, raw=zero_raw, sha256=zero_sha256)
 
 
 def test_bootstrap_rejects_wrong_count_duplicate_blank_and_non_string(
@@ -215,8 +227,43 @@ def test_interval_rejects_matrix_config_and_core_hash_mismatch(
         )
 
 
+
+
 def test_config_is_explicitly_supported_without_implicit_prng() -> None:
     first = build_bootstrap_indices_v1(CORE_IDS, config=_config())
     second = build_bootstrap_indices_v1(CORE_IDS, config=_config())
     assert first.raw == second.raw
     assert first.config.seed_hex == TASK13_SEED_HEX
+
+
+def test_decimal_results_use_an_independent_context(
+    matrix: BootstrapIndicesV1,
+    config: Task13BootstrapConfigV1,
+) -> None:
+    long_decimal = Decimal("1." + "1234567890" * 6)
+    short_decimal = Decimal("0." + "9876543210" * 6)
+    values = {core_id: long_decimal for core_id in CORE_IDS}
+    right_values = {core_id: short_decimal for core_id in CORE_IDS}
+    expected_cluster = clustered_percentile_interval_v1(values, matrix, config=config)
+    expected_paired = paired_percentile_interval_v1(
+        values, right_values, matrix, config=config
+    )
+    previous = getcontext().copy()
+    try:
+        caller_context = Context(
+            prec=7,
+            rounding="ROUND_FLOOR",
+            Emin=-3,
+            Emax=3,
+        )
+        caller_context.traps[Inexact] = True
+        setcontext(caller_context)
+        actual_cluster = clustered_percentile_interval_v1(values, matrix, config=config)
+        actual_paired = paired_percentile_interval_v1(
+            values, right_values, matrix, config=config
+        )
+        assert actual_cluster.model_dump_json() == expected_cluster.model_dump_json()
+        assert actual_paired.model_dump_json() == expected_paired.model_dump_json()
+    finally:
+        setcontext(previous)
+    assert getcontext() == previous

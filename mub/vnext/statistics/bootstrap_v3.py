@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 import hashlib
 import json
 
@@ -22,6 +22,9 @@ _U64_LIMIT = 1 << 64
 _EXPECTED_CORE_COUNT = 80
 _EXPECTED_REPLICATES = 10_000
 _EXPECTED_DRAWS = 80
+FROZEN_BOOTSTRAP_INDEX_SHA256 = (
+    "2b68e56c70cfbbda4777240b9fa8ed61b8c9d006e7201fed536dae50c07c6dee"
+)
 
 
 def _tracked_default_config() -> Task13BootstrapConfigV1:
@@ -54,6 +57,11 @@ def _resolve_config(config: Task13BootstrapConfigV1 | None) -> Task13BootstrapCo
     if not isinstance(config, Task13BootstrapConfigV1):
         raise TypeError("config must be Task13BootstrapConfigV1")
     return config
+
+
+def _require_frozen_config(config: Task13BootstrapConfigV1) -> None:
+    if config != DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1:
+        raise ValueError("bootstrap config must equal the frozen Task 13 config")
 
 
 def _ordered_core_ids(core_ids: Iterable[str], config: Task13BootstrapConfigV1) -> tuple[str, ...]:
@@ -116,6 +124,9 @@ class BootstrapIndicesV1:
     core_ids_sha256: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.config, Task13BootstrapConfigV1):
+            raise TypeError("bootstrap config must be Task13BootstrapConfigV1")
+        _require_frozen_config(self.config)
         expected_config_hash = sha256_model(self.config)
         if self.config_sha256 != expected_config_hash:
             raise ValueError("bootstrap config hash does not match config")
@@ -144,6 +155,8 @@ class BootstrapIndicesV1:
         expected_raw = bytes(index for row in self.rows for index in row)
         if self.raw != expected_raw:
             raise ValueError("bootstrap raw matrix does not match rows")
+        if self.sha256 != FROZEN_BOOTSTRAP_INDEX_SHA256:
+            raise ValueError("bootstrap SHA-256 must equal the frozen canonical matrix digest")
         expected_sha256 = hashlib.sha256(self.raw).hexdigest()
         if self.sha256 != expected_sha256:
             raise ValueError("bootstrap SHA-256 does not match raw matrix")
@@ -162,6 +175,7 @@ def build_bootstrap_indices_v1(
     """Build the frozen 10,000-by-80 counter-stream index matrix."""
 
     resolved_config = _resolve_config(config)
+    _require_frozen_config(resolved_config)
     ordered_ids = _ordered_core_ids(core_ids, resolved_config)
     seed = bytes.fromhex(resolved_config.seed_hex)
     rows: list[tuple[int, ...]] = []
@@ -196,12 +210,15 @@ def _validate_matrix(
 ) -> None:
     if not isinstance(matrix, BootstrapIndicesV1):
         raise TypeError("matrix must be BootstrapIndicesV1")
+    _require_frozen_config(config)
     if matrix.config != config:
         raise ValueError("bootstrap matrix config does not match supplied config")
     if matrix.config_sha256 != sha256_model(config):
         raise ValueError("bootstrap matrix config hash does not match config")
     if matrix.core_ids_sha256 != _core_ids_sha256(matrix.ordered_core_ids):
         raise ValueError("bootstrap matrix core ID hash does not match ordered cores")
+    if matrix.sha256 != FROZEN_BOOTSTRAP_INDEX_SHA256:
+        raise ValueError("bootstrap matrix SHA-256 is not the frozen canonical digest")
     if matrix.sha256 != hashlib.sha256(matrix.raw).hexdigest():
         raise ValueError("bootstrap matrix SHA-256 does not match raw bytes")
 
@@ -240,10 +257,8 @@ def _replicate_means(
     matrix: BootstrapIndicesV1,
     config: Task13BootstrapConfigV1,
 ) -> tuple[Decimal, ...]:
-    denominator = Decimal(config.draws_per_replicate)
-    with localcontext() as context:
-        context.prec = config.decimal_precision
-        context.rounding = ROUND_HALF_EVEN
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        denominator = Decimal(config.draws_per_replicate)
         means: list[Decimal] = []
         for row in matrix.rows:
             total = Decimal(0)
@@ -258,9 +273,7 @@ def _point_mean(
     matrix: BootstrapIndicesV1,
     config: Task13BootstrapConfigV1,
 ) -> Decimal:
-    with localcontext() as context:
-        context.prec = config.decimal_precision
-        context.rounding = ROUND_HALF_EVEN
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
         total = Decimal(0)
         for core_id in matrix.ordered_core_ids:
             total += values[core_id]
@@ -333,10 +346,8 @@ def paired_percentile_interval_v1(
     _validate_matrix(matrix, resolved_config)
     _validate_values(left_values, matrix)
     _validate_values(right_values, matrix)
-    denominator = Decimal(resolved_config.draws_per_replicate)
-    with localcontext() as context:
-        context.prec = resolved_config.decimal_precision
-        context.rounding = ROUND_HALF_EVEN
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        denominator = Decimal(resolved_config.draws_per_replicate)
         replicate_means: list[Decimal] = []
         for row in matrix.rows:
             total = Decimal(0)
@@ -356,6 +367,7 @@ __all__ = [
     "BootstrapIndicesV1",
     "BootstrapMatrixV1",
     "DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1",
+    "FROZEN_BOOTSTRAP_INDEX_SHA256",
     "build_bootstrap_indices_v1",
     "clustered_percentile_interval_v1",
     "paired_percentile_interval_v1",
