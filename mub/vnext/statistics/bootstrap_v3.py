@@ -124,42 +124,46 @@ class BootstrapIndicesV1:
     core_ids_sha256: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.config, Task13BootstrapConfigV1):
-            raise TypeError("bootstrap config must be Task13BootstrapConfigV1")
-        _require_frozen_config(self.config)
-        expected_config_hash = sha256_model(self.config)
-        if self.config_sha256 != expected_config_hash:
-            raise ValueError("bootstrap config hash does not match config")
-        ordered_ids = _ordered_core_ids(self.ordered_core_ids, self.config)
-        if ordered_ids != self.ordered_core_ids:
-            raise ValueError("ordered_core_ids must be sorted by UTF-8 bytes")
-        expected_core_hash = _core_ids_sha256(ordered_ids)
-        if self.core_ids_sha256 != expected_core_hash:
-            raise ValueError("bootstrap core ID hash does not match ordered_core_ids")
-        if len(self.rows) != self.config.replicates:
-            raise ValueError("bootstrap rows must contain exactly 10,000 replicates")
-        if any(len(row) != self.config.draws_per_replicate for row in self.rows):
-            raise ValueError("each bootstrap row must contain exactly 20 draws")
-        if any(
-            type(index) is not int
-            or index < 0
-            or index >= self.config.expected_cluster_count
-            for row in self.rows
-            for index in row
-        ):
-            raise ValueError("bootstrap indices must be integers in [0, 20)")
-        if type(self.raw) is not bytes:
-            raise ValueError("bootstrap raw matrix must be bytes")
-        if len(self.raw) != self.config.replicates * self.config.draws_per_replicate:
-            raise ValueError("bootstrap raw matrix must contain exactly 200000 bytes")
-        expected_raw = bytes(index for row in self.rows for index in row)
-        if self.raw != expected_raw:
-            raise ValueError("bootstrap raw matrix does not match rows")
-        if self.sha256 != FROZEN_BOOTSTRAP_INDEX_SHA256:
-            raise ValueError("bootstrap SHA-256 must equal the frozen canonical matrix digest")
-        expected_sha256 = hashlib.sha256(self.raw).hexdigest()
-        if self.sha256 != expected_sha256:
-            raise ValueError("bootstrap SHA-256 does not match raw matrix")
+        _validate_matrix_invariants(self)
+
+
+def _validate_matrix_invariants(matrix: BootstrapIndicesV1) -> None:
+    if not isinstance(matrix.config, Task13BootstrapConfigV1):
+        raise TypeError("bootstrap config must be Task13BootstrapConfigV1")
+    _require_frozen_config(matrix.config)
+    expected_config_hash = sha256_model(matrix.config)
+    if matrix.config_sha256 != expected_config_hash:
+        raise ValueError("bootstrap config hash does not match config")
+    ordered_ids = _ordered_core_ids(matrix.ordered_core_ids, matrix.config)
+    if ordered_ids != matrix.ordered_core_ids:
+        raise ValueError("ordered_core_ids must be sorted by UTF-8 bytes")
+    expected_core_hash = _core_ids_sha256(ordered_ids)
+    if matrix.core_ids_sha256 != expected_core_hash:
+        raise ValueError("bootstrap core ID hash does not match ordered_core_ids")
+    if len(matrix.rows) != matrix.config.replicates:
+        raise ValueError("bootstrap rows must contain exactly 10,000 replicates")
+    if any(len(row) != matrix.config.draws_per_replicate for row in matrix.rows):
+        raise ValueError("each bootstrap row must contain exactly 20 draws")
+    if any(
+        type(index) is not int
+        or index < 0
+        or index >= matrix.config.expected_cluster_count
+        for row in matrix.rows
+        for index in row
+    ):
+        raise ValueError("bootstrap indices must be integers in [0, 20)")
+    if type(matrix.raw) is not bytes:
+        raise ValueError("bootstrap raw matrix must be bytes")
+    if len(matrix.raw) != matrix.config.replicates * matrix.config.draws_per_replicate:
+        raise ValueError("bootstrap raw matrix must contain exactly 200000 bytes")
+    expected_raw = bytes(index for row in matrix.rows for index in row)
+    if matrix.raw != expected_raw:
+        raise ValueError("bootstrap raw matrix does not match rows")
+    if matrix.sha256 != FROZEN_BOOTSTRAP_INDEX_SHA256:
+        raise ValueError("bootstrap SHA-256 must equal the frozen canonical matrix digest")
+    expected_sha256 = hashlib.sha256(matrix.raw).hexdigest()
+    if matrix.sha256 != expected_sha256:
+        raise ValueError("bootstrap SHA-256 does not match raw matrix")
 
 
 # Descriptive aliases keep the return type discoverable without introducing a
@@ -210,17 +214,10 @@ def _validate_matrix(
 ) -> None:
     if not isinstance(matrix, BootstrapIndicesV1):
         raise TypeError("matrix must be BootstrapIndicesV1")
+    _validate_matrix_invariants(matrix)
     _require_frozen_config(config)
     if matrix.config != config:
         raise ValueError("bootstrap matrix config does not match supplied config")
-    if matrix.config_sha256 != sha256_model(config):
-        raise ValueError("bootstrap matrix config hash does not match config")
-    if matrix.core_ids_sha256 != _core_ids_sha256(matrix.ordered_core_ids):
-        raise ValueError("bootstrap matrix core ID hash does not match ordered cores")
-    if matrix.sha256 != FROZEN_BOOTSTRAP_INDEX_SHA256:
-        raise ValueError("bootstrap matrix SHA-256 is not the frozen canonical digest")
-    if matrix.sha256 != hashlib.sha256(matrix.raw).hexdigest():
-        raise ValueError("bootstrap matrix SHA-256 does not match raw bytes")
 
 
 def _validate_values(

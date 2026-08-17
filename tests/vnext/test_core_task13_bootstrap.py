@@ -239,6 +239,25 @@ def test_interval_rejects_matrix_config_and_core_hash_mismatch(
 
 
 
+def test_interval_validates_matrix_rows_after_post_construction_forgery(
+    matrix: BootstrapIndicesV1,
+    config: Task13BootstrapConfigV1,
+) -> None:
+    values = {core_id: Decimal(index) for index, core_id in enumerate(CORE_IDS)}
+    left_values = values
+    right_values = {core_id: Decimal(0) for core_id in CORE_IDS}
+    original_rows = matrix.rows
+    forged_first_row = ((original_rows[0][0] + 1) % 20,) + original_rows[0][1:]
+    object.__setattr__(matrix, "rows", (forged_first_row,) + original_rows[1:])
+    try:
+        with pytest.raises(ValueError, match="raw|rows|matrix"):
+            clustered_percentile_interval_v1(values, matrix, config=config)
+        with pytest.raises(ValueError, match="raw|rows|matrix"):
+            paired_percentile_interval_v1(left_values, right_values, matrix, config=config)
+    finally:
+        object.__setattr__(matrix, "rows", original_rows)
+
+
 def test_config_is_explicitly_supported_without_implicit_prng() -> None:
     first = build_bootstrap_indices_v1(CORE_IDS, config=_config())
     second = build_bootstrap_indices_v1(CORE_IDS, config=_config())
