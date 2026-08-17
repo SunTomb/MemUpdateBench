@@ -498,6 +498,8 @@ claim_ledger.jsonl
 task13_artifact_index.json
 ```
 
+The final index binds the preceding seven artifacts exactly; it does not self-hash. The CLI prints the index file SHA-256 for `WORKFLOW.md` and Task 14.
+
 Use canonical JSON lines and `publish_files_atomically` within an owned staging root. Verify every staged model/hash, then rename staging to the absent final root. On failure remove only the owned staging root.
 
 - [ ] **Step 3: Implement the production CLI**

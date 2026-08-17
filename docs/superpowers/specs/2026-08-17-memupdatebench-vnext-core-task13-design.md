@@ -160,7 +160,7 @@ Each `Task13PairedContrastV1` binds the directed left/right cells, common slot a
 
 ### Statistics receipt
 
-`Task13StatisticsReceiptV1` binds all Task 12 input hashes, the statistics-config hash, runtime revision for Task 13, core and bootstrap-index hashes, counts, and hashes of `cell_statistics.jsonl` and `paired_contrasts.jsonl`.
+`Task13StatisticsReceiptV1` binds all Task 12 input hashes, the statistics-config hash, runtime revision for Task 13, core and bootstrap-index hashes, exactly 1,440 source task/score rows, exactly 126 cell-statistic records (`18 x 7`), exactly 84 paired-contrast records (`12 x 7`), and hashes of `cell_statistics.jsonl` and `paired_contrasts.jsonl`.
 
 ### Generated claim ledger
 
@@ -222,7 +222,7 @@ Publication order resolves hashes without cycles:
 2. statistics receipt binding those artifacts;
 3. cases and case index;
 4. claim ledger binding receipt and case index;
-5. final artifact index binding every output.
+5. final artifact index binding the preceding seven outputs. The index never self-hashes; its own SHA-256 is emitted by the CLI and recorded in `WORKFLOW.md` and the later Task 14 root index.
 
 Any validation, statistics, case, or ledger failure leaves no final output root.
 
