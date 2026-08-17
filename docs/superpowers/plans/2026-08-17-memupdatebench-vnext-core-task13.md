@@ -276,6 +276,7 @@ Reuse Task 12 fixture builders, but keep the loader tests fake-model-free. Tests
 
 ```python
 def test_task13_loader_returns_18_exact_runs_and_shared_20_cores_x4_tasks(...): ...
+def test_task13_loader_rejects_shape_preserving_task_substitution_or_core_reassignment(...): ...
 def test_task13_loader_rejects_summary_hash_tampering(...): ...
 def test_task13_loader_rejects_missing_score_row(...): ...
 def test_task13_loader_rejects_foreign_runtime_binding(...): ...
@@ -300,7 +301,7 @@ The loader accepts explicit paths for Core, preparation/evidence, matrix root, m
 6. read each authorization and use its recorded runtime binding when calling the internal Task 12 bundle validator;
 7. call `load_finalized_task12_run_v3` and `verify_task12_score_artifact_v3`;
 8. compare every run/score hash with the matrix summary;
-9. require 18 x 80 task rows, each run's exact 80 ordered task IDs grouped into shared sorted 20 core IDs with four tasks per core, and zero FAILED/PARTIAL;
+9. require 18 x 80 task rows, and require all 18 runs to expose one exact canonical 80-task-ID sequence: 20 semantic-core IDs ordered by UTF-8 bytes, followed within each core by four task IDs ordered by UTF-8 bytes, with identical task-to-core assignment; reject any run that substitutes a task ID or reassigns a task to a different core even if it preserves the 80-row/20-core-x4 shape; require zero FAILED/PARTIAL;
 10. verify the integrity-audit artifact hash and matching runtime/matrix/summary identifiers.
 
 Return immutable run objects containing task, runtime row, score, source hashes, typed cell metadata, and `semantic_core_id`.
@@ -359,7 +360,7 @@ reverse_no_label - chronological_no_label
 reverse_labeled - reverse_no_label
 ```
 
-For paired contrasts, align the exact same four task IDs within each of the 20 cores before subtracting per-core projections; report `core_count=20` and keep the source task-row cardinality explicit as 80 per side where represented. Use the one shared bootstrap matrix from Task 2. Bind each output to run/score hashes and core/bootstrap hashes.
+For paired contrasts, align the exact same canonical four task IDs within each of the 20 cores across both compared cells before subtracting per-core projections; the task IDs and task-to-core assignment must be identical on both sides. Report `core_count=20` and keep the source task-row cardinality explicit as 80 per side where represented. Use the one shared bootstrap matrix from Task 2. Bind each output to run/score hashes and core/bootstrap hashes.
 
 - [ ] **Step 5: Run tests and commit**
 

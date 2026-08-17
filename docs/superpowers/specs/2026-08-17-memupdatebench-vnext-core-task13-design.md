@@ -24,6 +24,8 @@ The incomplete `f88588b` smoke root, fake-offline runs, deterministic `slot_dire
 
 The independent unit is exactly `task.metadata.split_key.semantic_core_id`. Every cell contains 80 authenticated task/surface rows grouped into exactly 20 shared semantic cores, with exactly four distinct task IDs per core. Surface tasks are not independent bootstrap units.
 
+All 18 runs must expose one exact canonical 80-task-ID sequence, not merely the same row count and 20-by-4 shape. Construct that sequence by ordering the 20 unique `semantic_core_id` values by ascending UTF-8 bytes, then ordering the four unique `task_id` values within each core by ascending UTF-8 bytes. Every run must use that byte-for-byte identical task sequence and identical task-to-core assignment. A run that substitutes a task ID or reassigns a task to another core is invalid even when it preserves 80 rows and four tasks in each of 20 cores.
+
 For cell `c`, metric `m`, and semantic core `i`, let the four canonical task-level metric values copied from `ScoreRecordV3` be `y[i,j,c,m]`, where `j` is ordered by ascending UTF-8 `task_id`. Define the per-core observation as the Decimal arithmetic mean:
 
 ```text
@@ -38,7 +40,7 @@ theta[c,m] = sum_i z[i,c,m] / 20
 
 Because every core has exactly four task rows, this point estimate equals the 80-task mean, but all statistical language, interval construction, and inference operate on the 20 core means.
 
-For a directed contrast `A - B`, the paired estimand first computes per-core differences on the exact same four task IDs:
+For a directed contrast `A - B`, the paired estimand first computes per-core differences on the exact same four task IDs, with that task-ID sequence and task-to-core assignment identical across the compared cells:
 
 ```text
 d[i,A-B,m] = z[i,A,m] - z[i,B,m]
@@ -142,7 +144,7 @@ Task 13 revalidates, rather than trusts, Task 12 outputs:
 - matrix bundle manifest and matrix summary;
 - 18 authorization, task-view, run-config, run-manifest, task-run, score, and score-receipt artifacts;
 - exact 18 ordered `(cell_id, answer_model_slot)` pairs;
-- exact 80 ordered task IDs per run, grouped into exactly 20 ordered semantic-core IDs with four task IDs per core;
+- all 18 runs share one exact canonical 80-task-ID sequence: 20 semantic-core IDs ordered by UTF-8 bytes, then four task IDs per core ordered by UTF-8 bytes, with identical task-to-core assignment;
 - runtime revision/tree, run/score hashes, 1,440-row totals, zero FAILED/PARTIAL;
 - integrity-audit artifact hash.
 
@@ -165,7 +167,7 @@ Each `Task13CellStatisticV1` binds:
 
 ### Paired contrasts
 
-Each `Task13PairedContrastV1` binds the directed left/right cells, common slot and k, metric, 20 paired core means projected from the same 80 task IDs (four per core), estimate/interval or typed unsupported state, both source run/score hashes, and bootstrap hashes.
+Each `Task13PairedContrastV1` binds the directed left/right cells, common slot and k, metric, 20 paired core means projected from the same canonical 80 task IDs (the identical four task IDs and task-to-core assignment in each core across both cells), estimate/interval or typed unsupported state, both source run/score hashes, and bootstrap hashes.
 
 ### Statistics receipt
 
