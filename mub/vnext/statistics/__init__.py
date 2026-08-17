@@ -9,6 +9,14 @@ from mub.vnext.statistics.bootstrap_v3 import (
     paired_percentile_interval_v1,
     type1_percentile_endpoints_v1,
 )
+from mub.vnext.statistics.input_v3 import (
+    Task13AuthenticatedMatrixV1,
+    Task13AuthenticatedObservationV1,
+    Task13AuthenticatedRunV1,
+    Task13IntegrityAuditV1,
+    Task13IntegrityCountsV1,
+    load_task13_authenticated_matrix_v1,
+)
 from mub.vnext.statistics.contracts_v3 import (
     CORE_TASK13_METRIC_PATHS,
     TASK13_ARTIFACT_PATHS,
@@ -58,6 +66,12 @@ __all__ = [
     "clustered_percentile_interval_v1",
     "paired_percentile_interval_v1",
     "type1_percentile_endpoints_v1",
+    "Task13AuthenticatedMatrixV1",
+    "Task13AuthenticatedObservationV1",
+    "Task13AuthenticatedRunV1",
+    "Task13IntegrityAuditV1",
+    "Task13IntegrityCountsV1",
+    "load_task13_authenticated_matrix_v1",
     "CORE_TASK13_METRIC_PATHS",
     "TASK13_ARTIFACT_PATHS",
     "TASK13_CELL_STATISTICS_ARTIFACT_ID",
