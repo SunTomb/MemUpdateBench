@@ -180,6 +180,16 @@ def test_interval_type_and_exact_type1_endpoints() -> None:
     assert lower < upper
 
 
+def test_type1_rejects_pseudo_config_from_model_copy(
+    config: Task13BootstrapConfigV1,
+) -> None:
+    increasing = tuple(Decimal(index) for index in range(10_000))
+    pseudo = config.model_copy(update={})
+    object.__setattr__(pseudo, "lower_order_statistic", 1)
+    with pytest.raises(ValueError, match="frozen"):
+        type1_percentile_endpoints_v1(increasing, config=pseudo)
+
+
 def test_intervals_require_exact_finite_core_mapping(
     matrix: BootstrapIndicesV1,
     config: Task13BootstrapConfigV1,

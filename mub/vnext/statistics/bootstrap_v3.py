@@ -287,6 +287,7 @@ def type1_percentile_endpoints_v1(
     """Return exact Type-1 inverted-CDF endpoints at the tracked offsets."""
 
     resolved_config = _resolve_config(config)
+    _require_frozen_config(resolved_config)
     try:
         values = tuple(replicate_values)
     except TypeError as exc:
