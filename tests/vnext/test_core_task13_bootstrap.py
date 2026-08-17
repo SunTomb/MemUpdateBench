@@ -23,16 +23,16 @@ from mub.vnext.statistics.contracts_v3 import (
 
 
 DOMAIN = b"MUB-Core-Task13-bootstrap-v1\x00"
-CORE_IDS = tuple(f"core-{index:03d}" for index in range(80))
+CORE_IDS = tuple(f"core-{index:03d}" for index in range(20))
 
 
 def _config(seed_hex: str = TASK13_SEED_HEX) -> Task13BootstrapConfigV1:
     return Task13BootstrapConfigV1(
         cluster_key="semantic_core_id",
-        expected_cluster_count=80,
+        expected_cluster_count=20,
         seed_hex=seed_hex,
         replicates=10_000,
-        draws_per_replicate=80,
+        draws_per_replicate=20,
         confidence_level="0.95",
         interval_method="clustered_percentile",
         quantile_method="inverted_cdf",
@@ -77,13 +77,13 @@ def test_bootstrap_golden_is_independent_and_order_invariant(
     config: Task13BootstrapConfigV1,
 ) -> None:
     expected_first = tuple(
-        _independent_draw(bytes.fromhex(config.seed_hex), 0, draw, 80)
+        _independent_draw(bytes.fromhex(config.seed_hex), 0, draw, 20)
         for draw in range(8)
     )
-    assert matrix.rows[0][:8] == expected_first == (13, 78, 21, 16, 64, 28, 64, 69)
-    assert len(matrix.raw) == 800_000
+    assert matrix.rows[0][:8] == expected_first == (13, 18, 1, 16, 4, 8, 4, 9)
+    assert len(matrix.raw) == 200_000
     assert FROZEN_BOOTSTRAP_INDEX_SHA256 == (
-        "2b68e56c70cfbbda4777240b9fa8ed61b8c9d006e7201fed536dae50c07c6dee"
+        "0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53"
     )
     assert matrix.sha256 == FROZEN_BOOTSTRAP_INDEX_SHA256
     assert build_bootstrap_indices_v1(tuple(reversed(CORE_IDS)), config=config) == matrix
@@ -92,8 +92,8 @@ def test_bootstrap_golden_is_independent_and_order_invariant(
 def test_self_consistent_alternative_matrix_is_rejected(
     matrix: BootstrapIndicesV1,
 ) -> None:
-    zero_rows = tuple((0,) * 80 for _ in range(10_000))
-    zero_raw = b"\x00" * 800_000
+    zero_rows = tuple((0,) * 20 for _ in range(10_000))
+    zero_raw = b"\x00" * 200_000
     zero_sha256 = hashlib.sha256(zero_raw).hexdigest()
     with pytest.raises(ValueError, match="frozen|canonical|golden"):
         replace(matrix, rows=zero_rows, raw=zero_raw, sha256=zero_sha256)
@@ -102,7 +102,7 @@ def test_self_consistent_alternative_matrix_is_rejected(
 def test_bootstrap_rejects_wrong_count_duplicate_blank_and_non_string(
     config: Task13BootstrapConfigV1,
 ) -> None:
-    with pytest.raises(ValueError, match="exactly 80"):
+    with pytest.raises(ValueError, match="exactly 20"):
         build_bootstrap_indices_v1(CORE_IDS[:-1], config=config)
     with pytest.raises(ValueError, match="unique"):
         build_bootstrap_indices_v1(CORE_IDS[:-1] + (CORE_IDS[0],), config=config)
@@ -116,10 +116,10 @@ def test_bootstrap_rows_are_binary_bytes_and_indices_are_in_range(
     matrix: BootstrapIndicesV1,
 ) -> None:
     assert len(matrix.rows) == 10_000
-    assert all(len(row) == 80 for row in matrix.rows)
-    assert len(matrix.raw) == 10_000 * 80
-    assert set(matrix.raw) <= set(range(80))
-    assert all(0 <= index < 80 for row in matrix.rows for index in row)
+    assert all(len(row) == 20 for row in matrix.rows)
+    assert len(matrix.raw) == 10_000 * 20
+    assert set(matrix.raw) <= set(range(20))
+    assert all(0 <= index < 20 for row in matrix.rows for index in row)
     assert matrix.raw == bytes(index for row in matrix.rows for index in row)
 
 

@@ -34,6 +34,9 @@ TASK13_METRIC_PATHS = (
     "retrieval_scores.stale_exposure_rate",
 )
 TASK13_K = Literal[4, 8, 16]
+TASK13_TASK_COUNT = 80
+TASK13_SEMANTIC_CORE_COUNT = 20
+TASK13_TASKS_PER_CORE = 4
 TASK13_CELL_STATISTICS_ARTIFACT_ID = "cell_statistics"
 TASK13_CELL_STATISTICS_ARTIFACT_PATH = "cell_statistics.jsonl"
 TASK13_PAIRED_CONTRASTS_ARTIFACT_ID = "paired_contrasts"
@@ -119,10 +122,10 @@ def _require_nonblank_path(value: str) -> str:
 class Task13BootstrapConfigV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONFIG_SCHEMA_VERSION] = TASK13_CONFIG_SCHEMA_VERSION
     cluster_key: Literal["semantic_core_id"]
-    expected_cluster_count: Literal[80]
+    expected_cluster_count: Literal[20]
     seed_hex: Literal[TASK13_SEED_HEX]
     replicates: Literal[10_000]
-    draws_per_replicate: Literal[80]
+    draws_per_replicate: Literal[20]
     confidence_level: Literal["0.95"]
     interval_method: Literal["clustered_percentile"]
     quantile_method: Literal["inverted_cdf"]
@@ -209,7 +212,7 @@ class Task13CellStatisticV1(ImmutableContractModel):
     metric_path: StrictIdentifier
     interval: Task13IntervalV1
     task_count: Literal[80]
-    core_count: Literal[80]
+    core_count: Literal[20]
     core_ids_sha256: SHA256
     run_id: StrictIdentifier
     run_manifest_sha256: SHA256
@@ -235,7 +238,7 @@ class Task13PairedContrastV1(ImmutableContractModel):
     k: TASK13_K
     metric_path: StrictIdentifier
     interval: Task13IntervalV1
-    core_count: Literal[80]
+    core_count: Literal[20]
     core_ids_sha256: SHA256
     left_source: Task13RunSourceV1
     right_source: Task13RunSourceV1
@@ -274,7 +277,7 @@ class Task13StatisticsReceiptV1(ImmutableContractModel):
     statistics_config_sha256: SHA256
     task13_runtime_revision: StrictIdentifier
     task13_runtime_tree_sha256: SHA256
-    semantic_core_count: Literal[80]
+    semantic_core_count: Literal[20]
     task_count: Literal[1440]
     run_count: Literal[18]
     cell_statistic_count: Literal[126]
@@ -306,6 +309,21 @@ class Task13StatisticsReceiptV1(ImmutableContractModel):
             raise ValueError("receipt artifact IDs must be distinct")
         if self.cell_statistics_artifact.path == self.paired_contrasts_artifact.path:
             raise ValueError("receipt artifact paths must be distinct")
+        return self
+
+
+class Task13DenominatorV1(ImmutableContractModel):
+    """Frozen binding between task observations and independent core means."""
+
+    schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    task_count: Literal[80]
+    semantic_core_count: Literal[20]
+    tasks_per_core: Literal[4]
+
+    @model_validator(mode="after")
+    def _balanced_partition(self) -> Task13DenominatorV1:
+        if self.task_count != self.semantic_core_count * self.tasks_per_core:
+            raise ValueError("task_count must equal semantic_core_count * tasks_per_core")
         return self
 
 
@@ -544,7 +562,7 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
     cell_or_contrast: StrictIdentifier
     metric_path: StrictIdentifier
     slice_payload: FrozenJsonObjectV3
-    denominator: Literal[80]
+    denominator: Task13DenominatorV1
     status: Task13StatisticStatus
     interval: Task13IntervalV1
     run_sources: tuple[Task13RunSourceV1, ...]
@@ -626,6 +644,9 @@ __all__ = [
     "TASK13_CELL_STATISTICS_ARTIFACT_ID",
     "TASK13_CELL_STATISTICS_ARTIFACT_PATH",
     "TASK13_K",
+    "TASK13_TASK_COUNT",
+    "TASK13_SEMANTIC_CORE_COUNT",
+    "TASK13_TASKS_PER_CORE",
     "TASK13_METRIC_PATHS",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_ID",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH",
@@ -641,6 +662,7 @@ __all__ = [
     "Task13CaseSelectorV1",
     "Task13CellStatisticV1",
     "Task13ClaimLedgerRecordV1",
+    "Task13DenominatorV1",
     "Task13IntervalV1",
     "Task13PairedContrastV1",
     "Task13RunCaseCoverageV1",

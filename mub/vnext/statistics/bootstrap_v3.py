@@ -19,11 +19,11 @@ from mub.vnext.statistics.contracts_v3 import (
 
 _DOMAIN = b"MUB-Core-Task13-bootstrap-v1\x00"
 _U64_LIMIT = 1 << 64
-_EXPECTED_CORE_COUNT = 80
+_EXPECTED_CORE_COUNT = 20
 _EXPECTED_REPLICATES = 10_000
-_EXPECTED_DRAWS = 80
+_EXPECTED_DRAWS = 20
 FROZEN_BOOTSTRAP_INDEX_SHA256 = (
-    "2b68e56c70cfbbda4777240b9fa8ed61b8c9d006e7201fed536dae50c07c6dee"
+    "0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53"
 )
 
 
@@ -70,7 +70,7 @@ def _ordered_core_ids(core_ids: Iterable[str], config: Task13BootstrapConfigV1) 
     except TypeError as exc:
         raise ValueError("core IDs must be an iterable of strings") from exc
     if len(candidate_ids) != config.expected_cluster_count:
-        raise ValueError("core IDs must contain exactly 80 entries")
+        raise ValueError("core IDs must contain exactly 20 entries")
     if any(type(core_id) is not str for core_id in candidate_ids):
         raise ValueError("core IDs must contain only built-in strings")
     if any(not core_id.strip() for core_id in candidate_ids):
@@ -139,7 +139,7 @@ class BootstrapIndicesV1:
         if len(self.rows) != self.config.replicates:
             raise ValueError("bootstrap rows must contain exactly 10,000 replicates")
         if any(len(row) != self.config.draws_per_replicate for row in self.rows):
-            raise ValueError("each bootstrap row must contain exactly 80 draws")
+            raise ValueError("each bootstrap row must contain exactly 20 draws")
         if any(
             type(index) is not int
             or index < 0
@@ -147,11 +147,11 @@ class BootstrapIndicesV1:
             for row in self.rows
             for index in row
         ):
-            raise ValueError("bootstrap indices must be integers in [0, 80)")
+            raise ValueError("bootstrap indices must be integers in [0, 20)")
         if type(self.raw) is not bytes:
             raise ValueError("bootstrap raw matrix must be bytes")
         if len(self.raw) != self.config.replicates * self.config.draws_per_replicate:
-            raise ValueError("bootstrap raw matrix must contain exactly 800000 bytes")
+            raise ValueError("bootstrap raw matrix must contain exactly 200000 bytes")
         expected_raw = bytes(index for row in self.rows for index in row)
         if self.raw != expected_raw:
             raise ValueError("bootstrap raw matrix does not match rows")
@@ -172,7 +172,7 @@ def build_bootstrap_indices_v1(
     core_ids: Iterable[str],
     config: Task13BootstrapConfigV1 | None = None,
 ) -> BootstrapIndicesV1:
-    """Build the frozen 10,000-by-80 counter-stream index matrix."""
+    """Build the frozen 10,000-by-20 counter-stream index matrix."""
 
     resolved_config = _resolve_config(config)
     _require_frozen_config(resolved_config)

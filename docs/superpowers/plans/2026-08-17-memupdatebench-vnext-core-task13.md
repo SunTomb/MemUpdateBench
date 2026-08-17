@@ -68,7 +68,7 @@ def test_task13_bootstrap_contract_is_exact():
         Path("configs/vnext/core_task13_statistics_v1.json").read_bytes()
     )
     assert config.cluster_key == "semantic_core_id"
-    assert config.expected_cluster_count == 80
+    assert config.expected_cluster_count == 20
     assert config.replicates == 10_000
     assert config.confidence_level == "0.95"
     assert config.quantile_method == "inverted_cdf"
@@ -112,10 +112,10 @@ class Task13BootstrapConfigV1(ImmutableContractModel):
         "memupdatebench.core-task13-statistics-config.v1"
     ] = "memupdatebench.core-task13-statistics-config.v1"
     cluster_key: Literal["semantic_core_id"]
-    expected_cluster_count: Literal[80]
+    expected_cluster_count: Literal[20]
     seed_hex: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
     replicates: Literal[10000]
-    draws_per_replicate: Literal[80]
+    draws_per_replicate: Literal[20]
     confidence_level: Literal["0.95"]
     interval_method: Literal["clustered_percentile"]
     quantile_method: Literal["inverted_cdf"]
@@ -149,7 +149,7 @@ Use canonical decimal-string validation instead of JSON floats for estimates and
 Write `configs/vnext/core_task13_statistics_v1.json` with:
 
 ```json
-{"cluster_key":"semantic_core_id","confidence_level":"0.95","decimal_precision":50,"decimal_rounding":"ROUND_HALF_EVEN","draws_per_replicate":80,"expected_cluster_count":80,"interval_method":"clustered_percentile","lower_order_statistic":250,"metric_paths":["answer_scores.exact_match","answer_scores.gold_retrieved_wrong_answer","answer_scores.stale_copied","answer_scores.token_f1","protocol_scores.answer_parse_valid","retrieval_scores.stale_count_in_context","retrieval_scores.stale_exposure_rate"],"quantile_method":"inverted_cdf","replicates":10000,"schema_version":"memupdatebench.core-task13-statistics-config.v1","seed_hex":"9e3779b97f4a7c15d1b54a32d192ed03e47b8a31f5c6d2098374ab10ce69d542","support_policy":"all_supported_or_all_unsupported","upper_order_statistic":9750}
+{"cluster_key":"semantic_core_id","confidence_level":"0.95","decimal_precision":50,"decimal_rounding":"ROUND_HALF_EVEN","draws_per_replicate":20,"expected_cluster_count":20,"interval_method":"clustered_percentile","lower_order_statistic":250,"metric_paths":["answer_scores.exact_match","answer_scores.gold_retrieved_wrong_answer","answer_scores.stale_copied","answer_scores.token_f1","protocol_scores.answer_parse_valid","retrieval_scores.stale_count_in_context","retrieval_scores.stale_exposure_rate"],"quantile_method":"inverted_cdf","replicates":10000,"schema_version":"memupdatebench.core-task13-statistics-config.v1","seed_hex":"9e3779b97f4a7c15d1b54a32d192ed03e47b8a31f5c6d2098374ab10ce69d542","support_policy":"all_supported_or_all_unsupported","upper_order_statistic":9750}
 ```
 
 - [ ] **Step 5: Run contract tests and compile**
@@ -188,16 +188,16 @@ from mub.vnext.statistics.bootstrap_v3 import (
 
 
 def test_bootstrap_index_stream_is_golden_and_order_invariant():
-    core_ids = tuple(f"core-{index:03d}" for index in range(80))
+    core_ids = tuple(f"core-{index:03d}" for index in range(20))
     matrix = build_bootstrap_indices_v1(core_ids)
-    assert len(matrix.raw) == 800_000
-    assert matrix.sha256 == "2b68e56c70cfbbda4777240b9fa8ed61b8c9d006e7201fed536dae50c07c6dee"
-    assert matrix.rows[0][:8] == (13, 78, 21, 16, 64, 28, 64, 69)
+    assert len(matrix.raw) == 200_000
+    assert matrix.sha256 == "0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53"
+    assert matrix.rows[0][:8] == (13, 18, 1, 16, 4, 8, 4, 9)
     assert build_bootstrap_indices_v1(tuple(reversed(core_ids))).sha256 == matrix.sha256
 
 
 def test_paired_identity_is_exact_zero():
-    values = {f"core-{index:03d}": Decimal(index) / Decimal(79) for index in range(80)}
+    values = {f"core-{index:03d}": Decimal(index) / Decimal(19) for index in range(20)}
     result = paired_percentile_interval_v1(values, values)
     assert result.estimate == result.lower == result.upper == "0"
 ```
@@ -236,11 +236,11 @@ def _draw(seed: bytes, replicate: int, draw: int, cluster_count: int) -> int:
         attempt += 1
 ```
 
-Sort core IDs by UTF-8 bytes before creating 10,000 rows. Serialize every index as one byte. Reject non-80, duplicate, blank, or non-string core IDs.
+Sort core IDs by UTF-8 bytes before creating 10,000 rows. Serialize every index as one byte. Reject non-20, duplicate, blank, or non-string core IDs.
 
 - [ ] **Step 4: Implement Decimal cell and paired intervals**
 
-Use `localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN))`. For each replicate, sum in draw order and divide by `Decimal(80)`. Sort replicate `Decimal` values and choose offsets 249 and 9,749. Canonicalize Decimal strings by removing redundant trailing zeros and normalizing negative zero to `"0"`.
+Use `localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN))`. For each replicate, sum in draw order and divide by `Decimal(20)`. Sort replicate `Decimal` values and choose offsets 249 and 9,749. Canonicalize Decimal strings by removing redundant trailing zeros and normalizing negative zero to `"0"`.
 
 - [ ] **Step 5: Add all-zero/all-one, constant contrast, Type-1 quantile, and shuffle tests**
 
@@ -275,7 +275,7 @@ git commit -m "feat: add deterministic semantic-core bootstrap"
 Reuse Task 12 fixture builders, but keep the loader tests fake-model-free. Tests must cover:
 
 ```python
-def test_task13_loader_returns_18_exact_runs_and_shared_80_cores(...): ...
+def test_task13_loader_returns_18_exact_runs_and_shared_20_cores_x4_tasks(...): ...
 def test_task13_loader_rejects_summary_hash_tampering(...): ...
 def test_task13_loader_rejects_missing_score_row(...): ...
 def test_task13_loader_rejects_foreign_runtime_binding(...): ...
@@ -300,7 +300,7 @@ The loader accepts explicit paths for Core, preparation/evidence, matrix root, m
 6. read each authorization and use its recorded runtime binding when calling the internal Task 12 bundle validator;
 7. call `load_finalized_task12_run_v3` and `verify_task12_score_artifact_v3`;
 8. compare every run/score hash with the matrix summary;
-9. require 18 x 80 rows, shared sorted 80 core IDs, and zero FAILED/PARTIAL;
+9. require 18 x 80 task rows, each run's exact 80 ordered task IDs grouped into shared sorted 20 core IDs with four tasks per core, and zero FAILED/PARTIAL;
 10. verify the integrity-audit artifact hash and matching runtime/matrix/summary identifiers.
 
 Return immutable run objects containing task, runtime row, score, source hashes, typed cell metadata, and `semantic_core_id`.
@@ -348,7 +348,7 @@ Require the metric path to exist in `CORE_METRIC_REGISTRY_V3` and the tracked co
 
 - [ ] **Step 3: Implement support classification**
 
-For each cell/metric, map the 80 cores. If all values are null, require the same exact `MetricFieldSupport` model on all rows and emit typed unsupported. If all are non-null, require no support entry and compute. Reject mixed state or non-finite Decimal.
+For each cell/metric, validate all 80 task rows and their exact 20-core x4 grouping. If all values are numeric and finite, order the four task IDs within each UTF-8 ordered core, compute one Decimal per-core projection `z[i,c,m] = mean(task_values[i,0:4])`, and pass the resulting 20-core mapping to the interval code. If all values are null, require the same exact `MetricFieldSupport` model on all 80 rows and emit typed unsupported. Reject mixed state, non-finite values, missing/duplicate task or core IDs, wrong rows-per-core, or wrong total count.
 
 - [ ] **Step 4: Implement cell statistics and predeclared contrasts**
 
@@ -359,7 +359,7 @@ reverse_no_label - chronological_no_label
 reverse_labeled - reverse_no_label
 ```
 
-Use the one shared bootstrap matrix from Task 2. Bind each output to run/score hashes and core/bootstrap hashes.
+For paired contrasts, align the exact same four task IDs within each of the 20 cores before subtracting per-core projections; report `core_count=20` and keep the source task-row cardinality explicit as 80 per side where represented. Use the one shared bootstrap matrix from Task 2. Bind each output to run/score hashes and core/bootstrap hashes.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -434,7 +434,7 @@ def test_ledger_preserves_unsupported_as_null(): ...
 
 - [ ] **Step 2: Build `Task13StatisticsReceiptV1`**
 
-Bind Task 12 preparation/plan/matrix/summary/audit hashes, Task 13 config hash, Task 13 runtime revision/tree, 80-core hash, bootstrap binary hash, cell/contrast artifact hashes and counts.
+Bind Task 12 preparation/plan/matrix/summary/audit hashes, Task 13 config hash, Task 13 runtime revision/tree, `semantic_core_count=20`, `task_count=1,440`, 20-core hash, bootstrap binary hash, cell/contrast artifact hashes and counts. Claim rows use the typed denominator `{task_count: 80, semantic_core_count: 20, tasks_per_core: 4}` so observation and independent-cluster counts cannot be conflated.
 
 - [ ] **Step 3: Build the case index**
 
@@ -642,7 +642,7 @@ Verify:
 ```text
 18 cell-statistic groups x 7 metrics
 12 directed slot/k contrast pairs x 7 metrics
-10,000 x 80 bootstrap indices
+10,000 x 20 bootstrap indices (`bootstrap_indices.bin` is exactly 200,000 bytes; SHA-256 `0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53`)
 all ledger rows accounted for
 all case records rejoin and reproduce scores
 unsupported retrieval metrics remain typed null

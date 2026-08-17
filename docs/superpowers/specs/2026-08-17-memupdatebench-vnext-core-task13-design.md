@@ -22,18 +22,27 @@ The incomplete `f88588b` smoke root, fake-offline runs, deterministic `slot_dire
 
 ### Independent unit and estimands
 
-The independent unit is exactly `task.metadata.split_key.semantic_core_id`. The matrix contains 80 shared semantic cores in every cell. Surface tasks are not independent bootstrap units.
+The independent unit is exactly `task.metadata.split_key.semantic_core_id`. Every cell contains 80 authenticated task/surface rows grouped into exactly 20 shared semantic cores, with exactly four distinct task IDs per core. Surface tasks are not independent bootstrap units.
 
-For cell `c`, metric `m`, and semantic core `i`, let `y[i,c,m]` be the authenticated task-level metric value copied from `ScoreRecordV3`. The cell estimand is the equal-core mean:
+For cell `c`, metric `m`, and semantic core `i`, let the four canonical task-level metric values copied from `ScoreRecordV3` be `y[i,j,c,m]`, where `j` is ordered by ascending UTF-8 `task_id`. Define the per-core observation as the Decimal arithmetic mean:
 
 ```text
-theta[c,m] = sum_i y[i,c,m] / 80
+z[i,c,m] = (y[i,0,c,m] + y[i,1,c,m] + y[i,2,c,m] + y[i,3,c,m]) / 4
 ```
 
-For a directed contrast `A - B`, the paired estimand is:
+The cell estimand is the equal-core mean over 20 independent observations:
 
 ```text
-delta[A-B,m] = sum_i (y[i,A,m] - y[i,B,m]) / 80
+theta[c,m] = sum_i z[i,c,m] / 20
+```
+
+Because every core has exactly four task rows, this point estimate equals the 80-task mean, but all statistical language, interval construction, and inference operate on the 20 core means.
+
+For a directed contrast `A - B`, the paired estimand first computes per-core differences on the exact same four task IDs:
+
+```text
+d[i,A-B,m] = z[i,A,m] - z[i,B,m]
+delta[A-B,m] = sum_i d[i,A-B,m] / 20
 ```
 
 A contrast is never computed by subtracting endpoints from two independent intervals. Both cells use the same resampled core indices in every replicate.
@@ -46,7 +55,7 @@ Core IDs are ordered by ascending UTF-8 bytes. Input file order, mapping iterati
 method: nonparametric clustered percentile bootstrap
 confidence level: two-sided 95%
 replicates: 10,000
-draws per replicate: 80 semantic cores with replacement
+draws per replicate: 20 semantic cores with replacement
 quantile definition: Hyndman-Fan Type 1 / inverted_cdf
 lower endpoint: sorted replicate value 250 (1-based)
 upper endpoint: sorted replicate value 9,750 (1-based)
@@ -54,7 +63,7 @@ decimal precision: 50
 rounding: ROUND_HALF_EVEN
 ```
 
-All cells, metrics, and paired contrasts reuse one canonical `10,000 x 80` index matrix.
+All cells, metrics, and paired contrasts reuse one canonical `10,000 x 20` index matrix.
 
 ### Deterministic random stream
 
@@ -76,9 +85,9 @@ SHA-256(
 )
 ```
 
-Take the first 64 digest bits as an unsigned integer. Map it to `[0,79]` by rejection sampling against `2^64 - (2^64 mod 80)` and then `% 80`. Increment `rejection_attempt` only after rejection.
+Take the first 64 digest bits as an unsigned integer. Map it to `[0,19]` by rejection sampling against `2^64 - (2^64 mod 20)` and then `% 20`. Increment `rejection_attempt` only after rejection.
 
-`bootstrap_indices.bin` stores each selected index as one byte in row-major replicate/draw order. The statistics receipt records its SHA-256, the seed, and the canonical core-ID-list SHA-256.
+`bootstrap_indices.bin` stores exactly `10,000 x 20 = 200,000` selected indices as one byte in row-major replicate/draw order. The canonical matrix SHA-256 is `0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53`. The statistics receipt records its SHA-256, the seed, and the canonical core-ID-list SHA-256.
 
 ### Decimal arithmetic
 
@@ -106,13 +115,13 @@ retrieval_scores.stale_count_in_context
 
 `answer_scores.exact_match` is the principal Task 12 metric. The others are answer-layer or retrieval diagnostics.
 
-For one `(cell, metric)`:
+For one `(cell, metric)`, support classification inspects all 80 authenticated task rows; no row may be dropped or silently collapsed:
 
-1. all 80 values non-null and finite: compute estimate and interval;
+1. all 80 values non-null and finite, with exactly four task rows per core: aggregate the four values into each of 20 `z[i,c,m]` core means and compute the estimate and interval;
 2. all 80 values null with exactly the same typed support record: emit `unsupported` with null estimate and interval;
-3. mixed null/non-null, differing support records, missing/duplicate core, non-finite value, or wrong count: validation failure; publish nothing.
+3. mixed null/non-null, differing support records, missing/duplicate task or core IDs, a core with anything other than four task rows, non-finite value, or wrong count: validation failure; publish nothing.
 
-Unsupported never becomes zero and unsupported cores are never dropped. A paired contrast is numeric only when both cells are numeric on the same 80 cores. Two all-unsupported cells produce a typed-null contrast; mixed support states are invalid.
+Unsupported never becomes zero and unsupported rows are never dropped. A paired contrast is numeric only when both cells are numeric on the same 20 cores and the same four task IDs per core. Two all-unsupported cells produce a typed-null contrast; mixed support states are invalid.
 
 ### Predeclared paired contrasts
 
@@ -133,7 +142,7 @@ Task 13 revalidates, rather than trusts, Task 12 outputs:
 - matrix bundle manifest and matrix summary;
 - 18 authorization, task-view, run-config, run-manifest, task-run, score, and score-receipt artifacts;
 - exact 18 ordered `(cell_id, answer_model_slot)` pairs;
-- exact 80 ordered task IDs and semantic-core IDs per run;
+- exact 80 ordered task IDs per run, grouped into exactly 20 ordered semantic-core IDs with four task IDs per core;
 - runtime revision/tree, run/score hashes, 1,440-row totals, zero FAILED/PARTIAL;
 - integrity-audit artifact hash.
 
@@ -149,18 +158,18 @@ Each `Task13CellStatisticV1` binds:
 
 - cell and answer-model slot;
 - metric descriptor and support status;
-- task/core counts and canonical core-list hash;
+- exactly `task_count=80` source task rows, `core_count=20` ordered core means, and canonical core-list hash;
 - point estimate and percentile endpoints as canonical decimal strings;
 - source run-manifest and score-artifact hashes;
 - bootstrap config and index-matrix hashes.
 
 ### Paired contrasts
 
-Each `Task13PairedContrastV1` binds the directed left/right cells, common slot and k, metric, 80 paired cores, estimate/interval or typed unsupported state, both source run/score hashes, and bootstrap hashes.
+Each `Task13PairedContrastV1` binds the directed left/right cells, common slot and k, metric, 20 paired core means projected from the same 80 task IDs (four per core), estimate/interval or typed unsupported state, both source run/score hashes, and bootstrap hashes.
 
 ### Statistics receipt
 
-`Task13StatisticsReceiptV1` binds all Task 12 input hashes, the statistics-config hash, runtime revision for Task 13, core and bootstrap-index hashes, exactly 1,440 source task/score rows, exactly 126 cell-statistic records (`18 x 7`), exactly 84 paired-contrast records (`12 x 7`), and hashes of `cell_statistics.jsonl` and `paired_contrasts.jsonl`.
+`Task13StatisticsReceiptV1` binds all Task 12 input hashes, the statistics-config hash, runtime revision for Task 13, `semantic_core_count=20`, `task_count=1,440`, core and bootstrap-index hashes, exactly 126 cell-statistic records (`18 x 7`), exactly 84 paired-contrast records (`12 x 7`), and hashes of `cell_statistics.jsonl` and `paired_contrasts.jsonl`.
 
 ### Generated claim ledger
 
@@ -168,7 +177,7 @@ The claim ledger is generated from statistics records, not manually maintained p
 
 - stable claim/table-cell ID;
 - `direct_cell` or `paired_contrast` kind;
-- metric path, direction, slice, denominator, and support status;
+- metric path, direction, slice, and the frozen typed denominator `{task_count: 80, semantic_core_count: 20, tasks_per_core: 4}`;
 - raw estimate/interval copied from statistics;
 - exact run IDs and run/score artifact hashes;
 - statistics receipt hash;
@@ -230,7 +239,7 @@ Any validation, statistics, case, or ledger failure leaves no final output root.
 
 Tests must cover:
 
-- exact 80-core coverage and duplicate/missing/foreign-core rejection;
+- exact 20-core coverage, exact 80-task/20-core x4 grouping, and duplicate/missing/foreign task/core rejection;
 - input-order invariance;
 - golden index-matrix digest and Type-1 endpoint selection;
 - all-zero/all-one degenerate intervals;

@@ -22,6 +22,7 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13CaseSelectorV1,
     Task13CellStatisticV1,
     Task13ClaimLedgerRecordV1,
+    Task13DenominatorV1,
     Task13IntervalV1,
     Task13PairedContrastV1,
     Task13RunCaseCoverageV1,
@@ -94,7 +95,7 @@ def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: 
             upper="0.6",
         ),
         task_count=task_count,
-        core_count=80,
+        core_count=20,
         core_ids_sha256=SHA,
         run_id="run-a",
         run_manifest_sha256=SHA,
@@ -119,7 +120,7 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
             lower="0",
             upper="0.2",
         ),
-        core_count=80,
+        core_count=20,
         core_ids_sha256=SHA,
         left_source=_source("run-left", SHA, SHA_B),
         right_source=_source("run-right", SHA_B, SHA_C),
@@ -264,7 +265,7 @@ def _receipt() -> Task13StatisticsReceiptV1:
         statistics_config_sha256=SHA_C,
         task13_runtime_revision="rev-a",
         task13_runtime_tree_sha256=SHA,
-        semantic_core_count=80,
+        semantic_core_count=20,
         task_count=1440,
         run_count=18,
         cell_statistic_count=126,
@@ -293,10 +294,10 @@ def test_task13_bootstrap_contract_is_exact() -> None:
     assert len(raw.splitlines()) == 1
     config = Task13BootstrapConfigV1.model_validate_json(raw)
     assert config.cluster_key == "semantic_core_id"
-    assert config.expected_cluster_count == 80
+    assert config.expected_cluster_count == 20
     assert config.seed_hex == "9e3779b97f4a7c15d1b54a32d192ed03e47b8a31f5c6d2098374ab10ce69d542"
     assert config.replicates == 10_000
-    assert config.draws_per_replicate == 80
+    assert config.draws_per_replicate == 20
     assert config.confidence_level == "0.95"
     assert config.interval_method == "clustered_percentile"
     assert config.quantile_method == "inverted_cdf"
@@ -308,6 +309,18 @@ def test_task13_bootstrap_contract_is_exact() -> None:
     assert config.metric_paths == CORE_TASK13_METRIC_PATHS
     assert config.metric_paths == TASK13_METRIC_PATHS
 
+
+def test_task13_denominator_binds_task_observations_to_balanced_core_means() -> None:
+    denominator = Task13DenominatorV1(
+        task_count=80,
+        semantic_core_count=20,
+        tasks_per_core=4,
+    )
+    assert denominator.task_count == 80
+    assert denominator.semantic_core_count == 20
+    assert denominator.tasks_per_core == 4
+    with pytest.raises((ValidationError, ValueError)):
+        Task13DenominatorV1(task_count=80, semantic_core_count=80, tasks_per_core=1)
 
 @pytest.mark.parametrize(
     "metric_paths",
@@ -402,7 +415,11 @@ def _claim(
         cell_or_contrast="cell-a",
         metric_path=TASK13_METRIC_PATHS[0],
         slice_payload={},
-        denominator=80,
+        denominator=Task13DenominatorV1(
+            task_count=80,
+            semantic_core_count=20,
+            tasks_per_core=4,
+        ),
         status=Task13StatisticStatus.NUMERIC,
         interval=Task13IntervalV1(
             status=Task13StatisticStatus.NUMERIC,
@@ -462,6 +479,9 @@ def test_case_and_claim_helpers_construct_complete_records() -> None:
     claim = _claim("claim-a")
     assert case.case_id == "case-a"
     assert claim.claim_id == "claim-a"
+    assert claim.denominator.task_count == 80
+    assert claim.denominator.semantic_core_count == 20
+    assert claim.denominator.tasks_per_core == 4
 
 
 def test_only_frozen_task13_metrics_are_accepted_by_all_statistic_records() -> None:
@@ -588,12 +608,17 @@ def test_claim_ledger_requires_canonical_direction_and_typed_source_cardinality(
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(paired_payload)
     payload = _claim("claim-bad-denominator").model_dump(mode="python")
-    payload["denominator"] = 79
+    payload["denominator"]["task_count"] = 79
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(payload)
 
 
 def test_exact_k_and_count_literals_reject_out_of_contract_values() -> None:
+    cell = _cell()
+    contrast = _contrast()
+    assert cell.task_count == 80
+    assert cell.core_count == 20
+    assert contrast.core_count == 20
     for bad_k in (1, 3, 5, 12):
         with pytest.raises((ValidationError, ValueError)):
             _cell(k=bad_k)
@@ -602,15 +627,17 @@ def test_exact_k_and_count_literals_reject_out_of_contract_values() -> None:
     with pytest.raises((ValidationError, ValueError)):
         _cell(task_count=79)
     payload = _cell().model_dump(mode="python")
-    payload["core_count"] = 79
+    payload["core_count"] = 19
     with pytest.raises((ValidationError, ValueError)):
         Task13CellStatisticV1.model_validate(payload)
 
 
 def test_receipt_count_literals_and_artifact_id_path_collisions_are_rejected() -> None:
     receipt = _receipt()
+    assert receipt.semantic_core_count == 20
+    assert receipt.task_count == 1440
     for field, bad in (
-        ("semantic_core_count", 79),
+        ("semantic_core_count", 19),
         ("task_count", 1439),
         ("run_count", 17),
         ("cell_statistic_count", 125),
