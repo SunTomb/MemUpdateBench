@@ -351,6 +351,7 @@ class Task13CaseBindingV1(ImmutableContractModel):
 class Task13TaskProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     task_id: StrictIdentifier
+    semantic_core_id: StrictIdentifier | None = None
     family: StrictIdentifier
     difficulty: StrictIdentifier
     metadata: FrozenJsonObjectV3
@@ -367,6 +368,10 @@ class Task13TimelineProjectionV1(ImmutableContractModel):
 
 class Task13RunProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    run_id: StrictIdentifier | None = None
+    task_id: StrictIdentifier | None = None
+    semantic_core_id: StrictIdentifier | None = None
+    category: CaseCategory | None = None
     completion_status: StrictIdentifier
     parsed_actions: tuple[FrozenJsonObjectV3, ...]
     memory_snapshots: tuple[FrozenJsonObjectV3, ...]
@@ -376,6 +381,10 @@ class Task13RunProjectionV1(ImmutableContractModel):
 
 class Task13ScoreProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    run_id: StrictIdentifier | None = None
+    task_id: StrictIdentifier | None = None
+    semantic_core_id: StrictIdentifier | None = None
+    category: CaseCategory | None = None
     metric_layers: FrozenJsonObjectV3
     support: FrozenJsonObjectV3
     failure_flags: tuple[StrictIdentifier, ...]
@@ -415,6 +424,25 @@ class Task13CaseRecordV1(ImmutableContractModel):
     retrieval: Task13RetrievalProjectionV1
     answer: Task13AnswerProjectionV1
 
+    @model_validator(mode="after")
+    def _projection_identity_matches(self) -> Task13CaseRecordV1:
+        if self.task.task_id != self.task_id:
+            raise ValueError("task projection task_id must match the case task_id")
+        projections = (self.run, self.score)
+        for projection in projections:
+            for field_name, expected in (
+                ("run_id", self.run_id),
+                ("task_id", self.task_id),
+                ("semantic_core_id", self.semantic_core_id),
+                ("category", self.category),
+            ):
+                value = getattr(projection, field_name)
+                if value is not None and value != expected:
+                    raise ValueError(f"{field_name} must match the outer case identity")
+        if self.task.semantic_core_id is not None and self.task.semantic_core_id != self.semantic_core_id:
+            raise ValueError("task projection semantic_core_id must match the case semantic_core_id")
+        return self
+
 
 class Task13CaseIndexV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
@@ -446,7 +474,8 @@ class Task13CaseIndexV1(ImmutableContractModel):
     @field_validator("cases_artifact")
     @classmethod
     def _artifact_path(cls, value: ArtifactRef) -> ArtifactRef:
-        _require_nonblank_path(value.path)
+        if value.path != "cases.jsonl":
+            raise ValueError("cases_artifact.path must be 'cases.jsonl'")
         return value
 
     @model_validator(mode="after")

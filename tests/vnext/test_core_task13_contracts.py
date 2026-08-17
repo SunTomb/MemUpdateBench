@@ -647,6 +647,48 @@ def test_numeric_interval_requires_estimate_inside_endpoints() -> None:
             Task13IntervalV1(status=Task13StatisticStatus.NUMERIC, estimate=estimate, lower=lower, upper=upper)
 
 
+def test_case_record_rejects_projection_identity_splices_and_case_index_alternate_path() -> None:
+    case = _case("case-a")
+    payload = case.model_dump(mode="python")
+    payload["task"]["task_id"] = "task-b"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    payload = case.model_dump(mode="python")
+    payload["run"]["run_id"] = "run-b"
+    payload["run"]["task_id"] = "task-a"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    payload = case.model_dump(mode="python")
+    payload["score"]["run_id"] = "run-b"
+    payload["score"]["task_id"] = "task-a"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    payload = case.model_dump(mode="python")
+    payload["task"]["semantic_core_id"] = "core-b"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    payload = case.model_dump(mode="python")
+    payload["run"]["semantic_core_id"] = "core-b"
+    payload["run"]["category"] = "stale_copied"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    payload = case.model_dump(mode="python")
+    payload["score"]["semantic_core_id"] = "core-b"
+    payload["score"]["category"] = "stale_copied"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+    index_payload = _case_index().model_dump(mode="python")
+    index_payload["cases_artifact"]["path"] = "alternate_cases.jsonl"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(index_payload)
+
+
 def test_claim_ledger_paired_sources_require_distinct_complete_records() -> None:
     claim = _claim("claim-paired", kind="paired_contrast", direction="left_minus_right")
     payload = claim.model_dump(mode="python")
