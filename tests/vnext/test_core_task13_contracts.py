@@ -61,10 +61,15 @@ def _support() -> MetricFieldSupport:
     )
 
 
-def _binding(identifier: str = "artifact-a", path: str = "cell_statistics.jsonl") -> Task13ArtifactBindingV1:
+def _binding(
+    identifier: str = "artifact-a",
+    path: str = "cell_statistics.jsonl",
+    role: str | None = None,
+) -> Task13ArtifactBindingV1:
     return Task13ArtifactBindingV1(
         artifact_id=identifier,
         artifact=ArtifactRef(path=path, sha256=SHA, media_type="application/jsonl"),
+        role=role,
     )
 
 
@@ -126,6 +131,7 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
 def _task_projection() -> Task13TaskProjectionV1:
     return Task13TaskProjectionV1(
         task_id="task-a",
+        semantic_core_id="core-a",
         family="A",
         difficulty="hard",
         metadata={"semantic_core_id": "core-a"},
@@ -141,6 +147,10 @@ def _timeline_projection() -> Task13TimelineProjectionV1:
 
 def _run_projection() -> Task13RunProjectionV1:
     return Task13RunProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
         completion_status="complete",
         parsed_actions=({"action": "ADD"},),
         memory_snapshots=({"step": 1},),
@@ -151,6 +161,10 @@ def _run_projection() -> Task13RunProjectionV1:
 
 def _score_projection() -> Task13ScoreProjectionV1:
     return Task13ScoreProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
         metric_layers={"exact_match": 1.0},
         support={"supported": True},
         failure_flags=(),
@@ -159,11 +173,25 @@ def _score_projection() -> Task13ScoreProjectionV1:
 
 
 def _retrieval_projection() -> Task13RetrievalProjectionV1:
-    return Task13RetrievalProjectionV1(available=True, items=({"rank": 1},))
+    return Task13RetrievalProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
+        available=True,
+        items=({"rank": 1},),
+    )
 
 
 def _answer_projection() -> Task13AnswerProjectionV1:
-    return Task13AnswerProjectionV1(available=True, items=({"raw": "value"},))
+    return Task13AnswerProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
+        available=True,
+        items=({"raw": "value"},),
+    )
 
 
 def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
@@ -207,7 +235,14 @@ def _case_index(case_ids: tuple[str, ...] | None = None) -> Task13CaseIndexV1:
         }
         row[field] = case_ids[index]
         coverage.append(row)
-        bindings.append(Task13CaseBindingV1(case_id=case_ids[index], run_id=run_id, category=category))
+        bindings.append(
+            Task13CaseBindingV1(
+                case_id=case_ids[index],
+                run_id=run_id,
+                task_id=f"task-{index:02d}",
+                category=category,
+            )
+        )
     return Task13CaseIndexV1(
         cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
         record_count=len(case_ids),
@@ -246,7 +281,7 @@ def _receipt() -> Task13StatisticsReceiptV1:
 def _artifact_index() -> Task13ArtifactIndexV1:
     return Task13ArtifactIndexV1(
         artifacts=tuple(
-            _binding(name, name)
+            _binding(name, name, name)
             for name in TASK13_ARTIFACT_NAMES
         )
     )
@@ -506,7 +541,14 @@ def test_case_record_requires_complete_typed_projections() -> None:
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseRecordV1.model_validate(payload)
     payload = case.model_dump(mode="python")
-    payload["answer"] = Task13AnswerProjectionV1(available=False, items=())
+    payload["answer"] = Task13AnswerProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
+        available=False,
+        items=(),
+    )
     assert Task13CaseRecordV1.model_validate(payload).answer.available is False
 
 
@@ -534,7 +576,7 @@ def test_case_index_requires_ordered_18_run_coverage_and_aligned_sources() -> No
         Task13CaseIndexV1.model_validate(payload)
     payload = index.model_dump(mode="python")
     payload["case_bindings"] = (*payload["case_bindings"], Task13CaseBindingV1(
-        case_id="uncovered-case", run_id="run-00", category="correct"
+        case_id="uncovered-case", run_id="run-00", task_id="task-extra", category="correct"
     ))
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
@@ -636,8 +678,22 @@ def test_projection_envelopes_reject_bogus_keys_but_allow_empty_unavailable_item
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseRecordV1.model_validate(payload)
     payload = _case("case-a").model_dump(mode="python")
-    payload["retrieval"] = Task13RetrievalProjectionV1(available=False, items=())
-    payload["answer"] = Task13AnswerProjectionV1(available=False, items=())
+    payload["retrieval"] = Task13RetrievalProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
+        available=False,
+        items=(),
+    )
+    payload["answer"] = Task13AnswerProjectionV1(
+        run_id="run-a",
+        task_id="task-a",
+        semantic_core_id="core-a",
+        category="correct",
+        available=False,
+        items=(),
+    )
     assert Task13CaseRecordV1.model_validate(payload).retrieval.items == ()
 
 
@@ -699,6 +755,93 @@ def test_claim_ledger_paired_sources_require_distinct_complete_records() -> None
     payload["run_sources"][1]["run_id"] = payload["run_sources"][0]["run_id"]
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+def test_case_projection_identity_fields_are_required() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        Task13TaskProjectionV1(
+            task_id="task-a",
+            family="A",
+            difficulty="hard",
+            metadata={},
+            source={},
+            target_objects=(),
+            queries=(),
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13RunProjectionV1(
+            completion_status="complete",
+            parsed_actions=(),
+            memory_snapshots=(),
+            provenance={},
+            exceptions=(),
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ScoreProjectionV1(
+            metric_layers={},
+            support={},
+            failure_flags=(),
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13RetrievalProjectionV1(available=False, items=())
+    with pytest.raises((ValidationError, ValueError)):
+        Task13AnswerProjectionV1(available=False, items=())
+    valid = _case("case-a").model_dump(mode="python")
+    projection_fields = {
+        "task": (Task13TaskProjectionV1, ("semantic_core_id",)),
+        "run": (Task13RunProjectionV1, ("run_id", "task_id", "semantic_core_id", "category")),
+        "score": (Task13ScoreProjectionV1, ("run_id", "task_id", "semantic_core_id", "category")),
+        "retrieval": (Task13RetrievalProjectionV1, ("run_id", "task_id", "semantic_core_id", "category")),
+        "answer": (Task13AnswerProjectionV1, ("run_id", "task_id", "semantic_core_id", "category")),
+    }
+    for field_name, (projection_type, fields) in projection_fields.items():
+        for identity_field in fields:
+            projection_payload = dict(valid[field_name])
+            projection_payload.pop(identity_field)
+            with pytest.raises((ValidationError, ValueError)):
+                projection_type.model_validate(projection_payload)
+
+
+def test_case_record_rejects_retrieval_and_answer_identity_splices() -> None:
+    case = _case("case-a")
+    payload = case.model_dump(mode="python")
+    payload["retrieval"].update(
+        run_id="run-b", task_id="task-a", semantic_core_id="core-a", category="correct"
+    )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+    payload = case.model_dump(mode="python")
+    payload["answer"].update(
+        run_id="run-a", task_id="task-b", semantic_core_id="core-a", category="correct"
+    )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+def test_case_binding_requires_task_id_and_same_run_task_ids_are_unique() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseBindingV1(case_id="case-a", run_id="run-a", category="correct")
+    payload = _case_index().model_dump(mode="python")
+    extra = dict(payload["case_bindings"][0])
+    extra["case_id"] = "case-extra"
+    extra["category"] = "stale_copied"
+    payload["case_bindings"] = (*payload["case_bindings"], extra)
+    payload["record_count"] += 1
+    payload["coverage"][0]["stale_copied_case_id"] = "case-extra"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+
+def test_task13_artifact_index_requires_exact_nonself_roles() -> None:
+    payload = _artifact_index().model_dump(mode="python")
+    assert all(binding["role"] == binding["artifact_id"] for binding in payload["artifacts"])
+    payload["artifacts"][0]["role"] = None
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1.model_validate(payload)
+    payload = _artifact_index().model_dump(mode="python")
+    payload["artifacts"][0]["role"] = "wrong-role"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1.model_validate(payload)
 
 
 def test_statistics_receipt_requires_role_specific_artifact_ids_and_paths() -> None:

@@ -48,6 +48,15 @@ TASK13_ARTIFACT_PATHS = (
     "case_index.json",
     "claim_ledger.jsonl",
 )
+Task13ArtifactRole = Literal[
+    "bootstrap_indices.bin",
+    "cell_statistics.jsonl",
+    "paired_contrasts.jsonl",
+    "statistics_receipt.json",
+    "cases.jsonl",
+    "case_index.json",
+    "claim_ledger.jsonl",
+]
 if len(TASK13_ARTIFACT_PATHS) != 7 or len(set(TASK13_ARTIFACT_PATHS)) != 7:
     raise RuntimeError("Task 13 artifact paths must be a unique seven-artifact publication set")
 
@@ -143,7 +152,7 @@ class Task13ArtifactBindingV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     artifact_id: StrictIdentifier
     artifact: ArtifactRef
-    role: StrictIdentifier | None = None
+    role: Task13ArtifactRole | None = None
 
     @field_validator("artifact")
     @classmethod
@@ -345,13 +354,14 @@ class Task13CaseBindingV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     case_id: StrictIdentifier
     run_id: StrictIdentifier
+    task_id: StrictIdentifier
     category: CaseCategory
 
 
 class Task13TaskProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     task_id: StrictIdentifier
-    semantic_core_id: StrictIdentifier | None = None
+    semantic_core_id: StrictIdentifier
     family: StrictIdentifier
     difficulty: StrictIdentifier
     metadata: FrozenJsonObjectV3
@@ -368,10 +378,10 @@ class Task13TimelineProjectionV1(ImmutableContractModel):
 
 class Task13RunProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
-    run_id: StrictIdentifier | None = None
-    task_id: StrictIdentifier | None = None
-    semantic_core_id: StrictIdentifier | None = None
-    category: CaseCategory | None = None
+    run_id: StrictIdentifier
+    task_id: StrictIdentifier
+    semantic_core_id: StrictIdentifier
+    category: CaseCategory
     completion_status: StrictIdentifier
     parsed_actions: tuple[FrozenJsonObjectV3, ...]
     memory_snapshots: tuple[FrozenJsonObjectV3, ...]
@@ -381,10 +391,10 @@ class Task13RunProjectionV1(ImmutableContractModel):
 
 class Task13ScoreProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
-    run_id: StrictIdentifier | None = None
-    task_id: StrictIdentifier | None = None
-    semantic_core_id: StrictIdentifier | None = None
-    category: CaseCategory | None = None
+    run_id: StrictIdentifier
+    task_id: StrictIdentifier
+    semantic_core_id: StrictIdentifier
+    category: CaseCategory
     metric_layers: FrozenJsonObjectV3
     support: FrozenJsonObjectV3
     failure_flags: tuple[StrictIdentifier, ...]
@@ -393,12 +403,20 @@ class Task13ScoreProjectionV1(ImmutableContractModel):
 
 class Task13RetrievalProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    run_id: StrictIdentifier
+    task_id: StrictIdentifier
+    semantic_core_id: StrictIdentifier
+    category: CaseCategory
     available: bool = Field(strict=True)
     items: tuple[FrozenJsonObjectV3, ...]
 
 
 class Task13AnswerProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    run_id: StrictIdentifier
+    task_id: StrictIdentifier
+    semantic_core_id: StrictIdentifier
+    category: CaseCategory
     available: bool = Field(strict=True)
     items: tuple[FrozenJsonObjectV3, ...]
 
@@ -428,19 +446,17 @@ class Task13CaseRecordV1(ImmutableContractModel):
     def _projection_identity_matches(self) -> Task13CaseRecordV1:
         if self.task.task_id != self.task_id:
             raise ValueError("task projection task_id must match the case task_id")
-        projections = (self.run, self.score)
-        for projection in projections:
-            for field_name, expected in (
-                ("run_id", self.run_id),
-                ("task_id", self.task_id),
-                ("semantic_core_id", self.semantic_core_id),
-                ("category", self.category),
-            ):
-                value = getattr(projection, field_name)
-                if value is not None and value != expected:
-                    raise ValueError(f"{field_name} must match the outer case identity")
-        if self.task.semantic_core_id is not None and self.task.semantic_core_id != self.semantic_core_id:
+        if self.task.semantic_core_id != self.semantic_core_id:
             raise ValueError("task projection semantic_core_id must match the case semantic_core_id")
+        for projection in (self.run, self.score, self.retrieval, self.answer):
+            if projection.run_id != self.run_id:
+                raise ValueError("projection run_id must match the case run_id")
+            if projection.task_id != self.task_id:
+                raise ValueError("projection task_id must match the case task_id")
+            if projection.semantic_core_id != self.semantic_core_id:
+                raise ValueError("projection semantic_core_id must match the case semantic_core_id")
+            if projection.category != self.category:
+                raise ValueError("projection category must match the case category")
         return self
 
 
@@ -482,6 +498,9 @@ class Task13CaseIndexV1(ImmutableContractModel):
     def _validate_case_coverage(self) -> Task13CaseIndexV1:
         if self.record_count != len(self.case_bindings):
             raise ValueError("record_count must equal the number of case_bindings")
+        run_task_keys = tuple((binding.run_id, binding.task_id) for binding in self.case_bindings)
+        if len(run_task_keys) != len(set(run_task_keys)):
+            raise ValueError("task_id must be unique within each run")
         run_ids = tuple(source.run_id for source in self.run_sources)
         coverage_run_ids = tuple(row.run_id for row in self.coverage)
         if len(set(run_ids)) != 18:
@@ -582,8 +601,13 @@ class Task13ArtifactIndexV1(ImmutableContractModel):
             raise ValueError("Task 13 final artifact index must contain exactly seven artifacts")
         paths = tuple(binding.artifact.path for binding in self.artifacts)
         ids = tuple(binding.artifact_id for binding in self.artifacts)
+        roles = tuple(binding.role for binding in self.artifacts)
         if paths != TASK13_ARTIFACT_PATHS or ids != TASK13_ARTIFACT_PATHS:
             raise ValueError("Task 13 artifact index must contain the ordered non-self publication set")
+        if roles != TASK13_ARTIFACT_PATHS:
+            raise ValueError("Task 13 artifact roles must be present and match artifact IDs")
+        if any(binding.role != binding.artifact_id for binding in self.artifacts):
+            raise ValueError("Task 13 artifact role must match its artifact ID")
         return self
 
 
@@ -605,8 +629,9 @@ __all__ = [
     "TASK13_METRIC_PATHS",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_ID",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH",
-    "CanonicalDecimal",
     "Task13AnswerProjectionV1",
+    "Task13ArtifactRole",
+    "CanonicalDecimal",
     "Task13ArtifactBindingV1",
     "Task13ArtifactIndexV1",
     "Task13BootstrapConfigV1",
