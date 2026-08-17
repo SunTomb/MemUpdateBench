@@ -370,8 +370,8 @@ class Task13CaseIndexV1(ImmutableContractModel):
         case_id_set = set(self.case_ids)
         for category in _CASE_CATEGORIES:
             selected = self.category_coverage[category]
-            if not isinstance(selected, (list, tuple)) or not selected:
-                raise ValueError("every category_coverage value must be a non-empty case-ID list")
+            if not isinstance(selected, (list, tuple)):
+                raise ValueError("category_coverage values must be case-ID lists")
             if any(type(case_id) is not str or case_id not in case_id_set for case_id in selected):
                 raise ValueError("category_coverage must reference known case IDs")
             if len(selected) != len(set(selected)):
@@ -384,7 +384,7 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     claim_id: StrictIdentifier
     kind: Literal["direct_cell", "paired_contrast"]
-    direction: Literal["self", "left_minus_right", "left-minus-right"]
+    direction: Literal["self", "left_minus_right"]
     slot: StrictIdentifier
     cell_or_contrast: StrictIdentifier
     metric_path: StrictIdentifier
@@ -419,10 +419,15 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
             raise ValueError("claim status must equal the bound interval status")
         if self.kind == "direct_cell" and self.direction != "self":
             raise ValueError("direct_cell claims require direction='self'")
-        if self.kind == "paired_contrast" and self.direction not in {"left_minus_right", "left-minus-right"}:
-            raise ValueError("paired_contrast claims require a left-minus-right direction")
+        if self.kind == "paired_contrast" and self.direction != "left_minus_right":
+            raise ValueError("paired_contrast claims require direction='left_minus_right'")
         if len(self.run_ids) != len(self.run_manifest_sha256s) or len(self.run_ids) != len(self.score_artifact_sha256s):
             raise ValueError("claim run IDs and source hashes must have equal lengths")
+        expected_sources = 1 if self.kind == "direct_cell" else 2
+        if len(self.run_ids) != expected_sources:
+            raise ValueError(
+                f"{self.kind} claims must bind exactly {expected_sources} run/manifest/score sources"
+            )
         return self
 
 

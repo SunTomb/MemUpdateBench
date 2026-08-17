@@ -28,6 +28,7 @@ from mub.vnext.statistics.contracts_v3 import (
 
 
 SHA = "a" * 64
+SHA_B = "b" * 64
 
 
 def _support() -> MetricFieldSupport:
@@ -139,6 +140,8 @@ def _case_index(case_ids: tuple[str, ...] = ("case-a", "case-b", "case-c", "case
 
 
 def _claim(claim_id: str, *, kind: str = "direct_cell", direction: str = "self") -> Task13ClaimLedgerRecordV1:
+    source_ids = ("run-a", "run-b") if kind == "paired_contrast" else ("run-a",)
+    source_hashes = (SHA, SHA_B) if kind == "paired_contrast" else (SHA,)
     return Task13ClaimLedgerRecordV1(
         claim_id=claim_id,
         kind=kind,
@@ -155,9 +158,9 @@ def _claim(claim_id: str, *, kind: str = "direct_cell", direction: str = "self")
             lower="0.4",
             upper="0.6",
         ),
-        run_ids=("run-a",),
-        run_manifest_sha256s=(SHA,),
-        score_artifact_sha256s=(SHA,),
+        run_ids=source_ids,
+        run_manifest_sha256s=source_hashes,
+        score_artifact_sha256s=source_hashes,
         statistics_receipt_sha256=SHA,
         case_ids=("case-a",),
         case_index_sha256=SHA,
@@ -425,7 +428,8 @@ def test_case_index_requires_all_18_runs_and_aligned_hashes_and_categories() -> 
 
 def test_claim_ledger_requires_direction_nonempty_sources_and_case_index() -> None:
     assert _claim("claim-a").direction == "self"
-    assert _claim("claim-contrast", kind="paired_contrast", direction="left-minus-right").direction == "left-minus-right"
+    with pytest.raises((ValidationError, ValueError)):
+        _claim("claim-contrast", kind="paired_contrast", direction="left-minus-right")
     with pytest.raises((ValidationError, ValueError)):
         _claim("claim-bad-direction", direction="left_minus_right")
     payload = _claim("claim-empty").model_dump(mode="python")
@@ -440,3 +444,50 @@ def test_claim_ledger_requires_direction_nonempty_sources_and_case_index() -> No
     payload["case_ids"] = ()
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+def test_case_index_allows_empty_category_coverage_but_rejects_foreign_case_ids() -> None:
+    index = _case_index()
+    payload = index.model_dump(mode="python")
+    payload["category_coverage"] = {
+        "correct": [],
+        "stale_copied": [],
+        "answer_parse_invalid": [],
+        "other_wrong": [],
+    }
+    empty_categories = Task13CaseIndexV1.model_validate(payload)
+    assert all(not selected for selected in empty_categories.category_coverage.values())
+
+    payload["category_coverage"] = {
+        "correct": ["foreign-case"],
+        "stale_copied": [],
+        "answer_parse_invalid": [],
+        "other_wrong": [],
+    }
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+
+def test_claim_ledger_uses_only_canonical_directions_and_source_cardinality() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        _claim("claim-hyphen", kind="paired_contrast", direction="left-minus-right")
+
+    direct_payload = _claim("claim-direct-extra").model_dump(mode="python")
+    direct_payload["run_ids"] = ("run-a", "run-b")
+    direct_payload["run_manifest_sha256s"] = (SHA, SHA_B)
+    direct_payload["score_artifact_sha256s"] = (SHA, SHA_B)
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(direct_payload)
+
+    paired = _claim("claim-paired", kind="paired_contrast", direction="left_minus_right")
+    paired_payload = paired.model_dump(mode="python")
+    paired_payload["run_ids"] = ("run-a", "run-b")
+    paired_payload["run_manifest_sha256s"] = (SHA, SHA_B)
+    paired_payload["score_artifact_sha256s"] = (SHA, SHA_B)
+    assert Task13ClaimLedgerRecordV1.model_validate(paired_payload).direction == "left_minus_right"
+
+    paired_payload["run_ids"] = ("run-a",)
+    paired_payload["run_manifest_sha256s"] = (SHA,)
+    paired_payload["score_artifact_sha256s"] = (SHA,)
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(paired_payload)
