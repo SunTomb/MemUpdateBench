@@ -62,6 +62,20 @@ def read_task12_regular_file_v3(path: str | Path) -> bytes:
     return selected.read_bytes()
 
 
+def load_task12_control_json_v3(
+    path: str | Path,
+    model_type,
+    *,
+    allow_trailing_lf: bool = False,
+):
+    raw = read_task12_regular_file_v3(path)
+    model = model_type.model_validate_json(raw)
+    canonical = canonical_json_bytes(model)
+    if raw != canonical and not (allow_trailing_lf and raw == canonical + b"\n"):
+        raise ValueError(f"noncanonical artifact: {path}")
+    return model
+
+
 class Task12RuntimeCodeBindingV1(ImmutableContractModel):
     code_revision: str = Field(strict=True, pattern=r"^[0-9a-f]{40}$")
     code_tree_sha256: str = Field(strict=True, pattern=r"^[0-9a-f]{64}$")
@@ -877,6 +891,7 @@ __all__ = [
     "execute_task12_task_v3",
     "find_admitted_answer_run_v3",
     "load_finalized_task12_run_v3",
+    "load_task12_control_json_v3",
     "persist_task12_rows_v3",
     "persist_task12_scores_v3",
     "read_task12_regular_file_v3",

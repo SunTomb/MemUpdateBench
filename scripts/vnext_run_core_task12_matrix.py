@@ -10,7 +10,6 @@ _project_root_text = str(_PROJECT_ROOT)
 sys.path[:] = [entry for entry in sys.path if entry != _project_root_text]
 sys.path.insert(0, _project_root_text)
 
-from mub.vnext.io import canonical_json_bytes
 from mub.vnext.preparation.task12 import (
     Task12DryRunPlanV1,
     Task12PreparationManifestV1,
@@ -22,19 +21,14 @@ from mub.vnext.runtime.answer_model_v3 import (
 )
 from mub.vnext.runtime.run_v3 import ExternalRunConfigV1
 from mub.vnext.runtime.task12_bundle_v3 import _binding_for_slot
-from mub.vnext.runtime.task12_execution_v3 import task12_runtime_code_binding_v3
+from mub.vnext.runtime.task12_execution_v3 import (
+    load_task12_control_json_v3,
+    task12_runtime_code_binding_v3,
+)
 from mub.vnext.runtime.task12_matrix_v3 import (
     Task12MatrixBundleManifestV1,
     execute_task12_matrix_bundles_v3,
 )
-
-
-def _load_canonical(path: Path, model_type):
-    raw = path.read_bytes()
-    model = model_type.model_validate_json(raw)
-    if canonical_json_bytes(model) != raw:
-        raise ValueError(f"noncanonical artifact: {path}")
-    return model
 
 
 def _decoding_from_config(
@@ -120,9 +114,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.execute:
         raise SystemExit("refusing to execute matrix without --execute")
-    manifest = _load_canonical(args.manifest, Task12PreparationManifestV1)
-    plan = _load_canonical(args.plan, Task12DryRunPlanV1)
-    matrix_manifest = _load_canonical(
+    manifest = load_task12_control_json_v3(
+        args.manifest,
+        Task12PreparationManifestV1,
+    )
+    plan = load_task12_control_json_v3(
+        args.plan,
+        Task12DryRunPlanV1,
+        allow_trailing_lf=True,
+    )
+    matrix_manifest = load_task12_control_json_v3(
         args.matrix_bundle_manifest,
         Task12MatrixBundleManifestV1,
     )

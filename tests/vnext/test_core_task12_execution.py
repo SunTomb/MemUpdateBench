@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from mub.vnext.io import canonical_json_bytes
+
 from mub.vnext.contracts.v3.common import FrozenMemoryObjectKey
 from mub.vnext.contracts.v3.runtime import MemoryEntryRecordV3, RetrievalTraceV3
 from mub.vnext.preparation.task12 import (
@@ -19,6 +21,7 @@ from mub.vnext.runtime.task12_execution_v3 import (
     persist_task12_scores_v3,
     select_admitted_answer_run_v3,
     load_finalized_task12_run_v3,
+    load_task12_control_json_v3,
     transform_retrieval_trace_v3,
     task12_runtime_configuration_sha256_v3,
     validate_task12_runtime_configuration_v3,
@@ -80,6 +83,31 @@ def _trajectory_receipt(
             ).encode("utf-8")
         ).hexdigest(),
     )
+
+
+def test_task12_control_loader_allows_only_one_explicit_trailing_lf(
+    tmp_path,
+) -> None:
+    binding = Task12RuntimeCodeBindingV1(
+        code_revision="a" * 40,
+        code_tree_sha256="b" * 64,
+    )
+    path = tmp_path / "binding.json"
+    path.write_bytes(canonical_json_bytes(binding) + b"\n")
+    assert load_task12_control_json_v3(
+        path,
+        Task12RuntimeCodeBindingV1,
+        allow_trailing_lf=True,
+    ) == binding
+    with pytest.raises(ValueError, match="noncanonical artifact"):
+        load_task12_control_json_v3(path, Task12RuntimeCodeBindingV1)
+    path.write_bytes(canonical_json_bytes(binding) + b"\n\n")
+    with pytest.raises(ValueError, match="noncanonical artifact"):
+        load_task12_control_json_v3(
+            path,
+            Task12RuntimeCodeBindingV1,
+            allow_trailing_lf=True,
+        )
 
 
 def test_task12_runtime_configuration_rejects_k_or_context_drift() -> None:

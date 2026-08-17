@@ -2257,3 +2257,32 @@ python -m pytest \
 ```
 
 This correction supersedes the earlier code-quality approval for the affected boundary. The corrected code again has no known Critical or Important Task 12 execution finding. The fake-offline result remains regression evidence only; no real prompted-answer run or Task 13 work was started.
+
+### Authenticated dry-run plan loader compatibility
+
+The first clean-cluster matrix-bundle preparation attempt failed before creating its output root because the authenticated `dry_run_plan.json` was one byte longer than `canonical_json_bytes(Task12DryRunPlanV1)`. Byte-level comparison proved that all 9,736 canonical content bytes matched and the only difference was one terminal LF at byte 9,736:
+
+```text
+authenticated plan SHA-256: 73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd
+canonical content SHA-256:   aa21d5c711f86a5de17f5165a72c5d5a4739a1d03a358994221518c197c1722d
+raw length / canonical:      9737 / 9736
+first difference:            terminal LF only
+```
+
+The authenticated plan was not rewritten or rebound. A shared Task 12 control-file loader now remains strict by default and permits exactly `canonical_json_bytes(model) + b"\n"` only when callers explicitly enable `allow_trailing_lf=True`; all four production CLIs enable it only for the authoritative dry-run plan. Two trailing LFs, a trailing LF on other control artifacts, and all other noncanonical bytes remain rejected. The previous four duplicated CLI loaders were removed.
+
+Fresh loader-compatible gate:
+
+```text
+python -m py_compile <the seven Task 12 runtime/CLI files>
+  PASS
+python -m pytest \
+  tests/vnext/test_core_task12_execution.py \
+  tests/vnext/test_core_task12_cli_e2e.py \
+  tests/vnext/test_core_task12_run_bundle.py \
+  tests/vnext/test_core_task12_run_bundle_cli.py \
+  tests/vnext/test_core_task12_matrix_bundle.py -q
+  21 passed in 2503.21s (0:41:43)
+```
+
+The failed cluster preparation created no matrix/output root and loaded no model. Real Task 12 execution remains not started.
