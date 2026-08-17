@@ -25,6 +25,7 @@ from mub.vnext.preparation.task12 import (
     Task12AdmittedAnswerRunV1,
     Task12AdmittedCellV1,
 )
+from mub.vnext.runtime.answer_model_v3 import OfflinePromptedAnswerModelV3
 from mub.vnext.runtime.engine_v3 import RuntimeConfigV3, execute_task_v3
 from mub.vnext.runtime.run_v3 import (
     ExternalRunConfigV1,
@@ -44,6 +45,7 @@ _APPROVED = {
     ("reverse_chronological", "none"),
     ("reverse_chronological", "latest_outdated_label"),
 }
+_TASK12_TEST_MODEL_TOKEN = object()
 
 
 def read_task12_regular_file_v3(path: str | Path) -> bytes:
@@ -741,8 +743,16 @@ def run_task12_cell_v3(
     task_artifact: ArtifactRef,
     authenticated_task_manifest_sha256: str,
     resume: bool = False,
+    _test_model_token: object | None = None,
 ) -> tuple[RunManifestV3, tuple[TaskRunRecordV3, ...], tuple[ScoreRecordV3, ...], dict[str, object]]:
     """Execute, finalize, reload, and authenticated-score one cell/slot run."""
+    if (
+        type(prompted_answer_model) is not OfflinePromptedAnswerModelV3
+        and _test_model_token is not _TASK12_TEST_MODEL_TOKEN
+    ):
+        raise TypeError(
+            "Task 12 production execution requires OfflinePromptedAnswerModelV3"
+        )
     ordered_tasks = tuple(tasks)
     if set(frozen_trajectories) != {task.task_id for task in ordered_tasks}:
         raise ValueError("Task 12 frozen trajectories must cover the run task set exactly")

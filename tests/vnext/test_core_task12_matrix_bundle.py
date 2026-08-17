@@ -20,6 +20,7 @@ from mub.vnext.runtime.task12_execution_v3 import (
 from mub.vnext.runtime.task12_matrix_v3 import (
     Task12MatrixBundleManifestV1,
     Task12MatrixRunSummaryV1,
+    _execute_task12_matrix_bundles_for_test_v3,
     build_task12_matrix_bundles_v3,
     execute_task12_matrix_bundles_v3,
 )
@@ -141,6 +142,34 @@ def test_task12_matrix_bundle_prepares_all_18_cell_slot_bundles(tmp_path, monkey
     assert run_config.task_view_ref.sha256 == hashlib.sha256(first.task_view_path.read_bytes()).hexdigest()
     assert run_config.expected_task_ids == tuple(task.task_id for task in first.tasks)
 
+    from mub.vnext.adapters.core_v3 import RawAppendAdapterV3
+
+    production_fake_models = {
+        "answer_model_a": _FakePromptedAnswerModel("city-80", "answer_model_a"),
+        "answer_model_b": _FakePromptedAnswerModel("city-80", "answer_model_b"),
+    }
+    with pytest.raises(
+        TypeError,
+        match="production matrix requires OfflinePromptedAnswerModelV3",
+    ):
+        execute_task12_matrix_bundles_v3(
+            manifest=manifest,
+            plan=plan,
+            matrix_bundle_manifest=matrix.manifest,
+            matrix_root=matrix.matrix_root,
+            core_root=inputs["core_root"],
+            evidence_root=inputs["evidence_root"],
+            repository_root=ROOT,
+            runtime_code_binding=RUNTIME_CODE_BINDING,
+            adapter_factory=lambda task: RawAppendAdapterV3(
+                task,
+                retrieval_policy="normal_topk",
+            ),
+            prompted_answer_models=production_fake_models,
+        )
+    assert production_fake_models["answer_model_a"].load_count == 0
+    assert production_fake_models["answer_model_b"].load_count == 0
+
     tampered_ref = matrix.manifest.run_bundles[0].model_copy(
         update={"cell_id": "raw-add-chronological-none-k32"}
     )
@@ -160,7 +189,7 @@ def test_task12_matrix_bundle_prepares_all_18_cell_slot_bundles(tmp_path, monkey
     from mub.vnext.adapters.core_v3 import RawAppendAdapterV3
 
     with pytest.raises(ValueError, match="admitted answer runs"):
-        execute_task12_matrix_bundles_v3(
+        _execute_task12_matrix_bundles_for_test_v3(
             manifest=manifest,
             plan=plan,
             matrix_bundle_manifest=tampered_manifest,
@@ -184,7 +213,7 @@ def test_task12_matrix_bundle_prepares_all_18_cell_slot_bundles(tmp_path, monkey
         "answer_model_b": _FailingLoadModel("city-80", "answer_model_b"),
     }
     with pytest.raises(RuntimeError, match="intentional load failure"):
-        execute_task12_matrix_bundles_v3(
+        _execute_task12_matrix_bundles_for_test_v3(
             manifest=manifest,
             plan=plan,
             matrix_bundle_manifest=matrix.manifest,
@@ -229,7 +258,7 @@ def test_task12_matrix_runner_executes_all_18_fake_offline_runs(tmp_path, monkey
     }
     from mub.vnext.adapters.core_v3 import RawAppendAdapterV3
 
-    result = execute_task12_matrix_bundles_v3(
+    result = _execute_task12_matrix_bundles_for_test_v3(
         manifest=manifest,
         plan=plan,
         matrix_bundle_manifest=matrix.manifest,
@@ -266,7 +295,7 @@ def test_task12_matrix_runner_executes_all_18_fake_offline_runs(tmp_path, monkey
         "answer_model_a": _FakePromptedAnswerModel("city-80", "answer_model_a"),
         "answer_model_b": _FakePromptedAnswerModel("city-80", "answer_model_b"),
     }
-    resumed = execute_task12_matrix_bundles_v3(
+    resumed = _execute_task12_matrix_bundles_for_test_v3(
         manifest=manifest,
         plan=plan,
         matrix_bundle_manifest=matrix.manifest,

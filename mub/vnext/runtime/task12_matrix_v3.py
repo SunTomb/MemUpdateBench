@@ -17,7 +17,9 @@ from mub.vnext.contracts.v3.manifest import TaskManifestV3
 from mub.vnext.external.artifacts import RawPayloadLicenseStatus
 from mub.vnext.external.registry import _validate_portable_path
 from mub.vnext.io import canonical_json_bytes, sha256_model
+from mub.vnext.io.atomic import publish_files_atomically
 from mub.vnext.preparation.task12 import Task12DryRunPlanV1, Task12PreparationManifestV1
+from mub.vnext.runtime.answer_model_v3 import OfflinePromptedAnswerModelV3
 from mub.vnext.runtime.run_v3 import ExternalRunConfigV1
 from mub.vnext.runtime.engine_v3 import RuntimeConfigV3
 from mub.vnext.runtime.task12_bundle_v3 import (
@@ -47,6 +49,7 @@ from mub.vnext.runtime.task12_execution_v3 import (
     ContextOrder,
     Task12ExecutionAuthorizationV1,
     Task12RuntimeCodeBindingV1,
+    _TASK12_TEST_MODEL_TOKEN,
     read_task12_regular_file_v3,
     run_task12_cell_v3,
     task12_runtime_configuration_sha256_v3,
@@ -370,7 +373,7 @@ def task12_cell_runtime_v3(
     )
 
 
-def execute_task12_matrix_bundles_v3(
+def _execute_task12_matrix_bundles_v3(
     *,
     manifest: Task12PreparationManifestV1,
     plan: Task12DryRunPlanV1,
@@ -383,6 +386,7 @@ def execute_task12_matrix_bundles_v3(
     adapter_factory,
     prompted_answer_models: Mapping[Literal["answer_model_a", "answer_model_b"], Any],
     resume: bool = False,
+    _test_model_token: object | None = None,
 ) -> Task12MatrixRunResultV1:
     core = Path(core_root).resolve(strict=True)
     evidence = Path(evidence_root).resolve(strict=True)
@@ -417,13 +421,24 @@ def execute_task12_matrix_bundles_v3(
     if set(prompted_answer_models) != expected_slots:
         raise ValueError("Task 12 matrix execution requires both answer-model slots")
     for slot_id, model in prompted_answer_models.items():
-        observed_slot = getattr(
-            getattr(model, "slot", None),
-            "slot_id",
-            getattr(model, "slot_id", None),
-        )
-        if observed_slot != slot_id:
-            raise ValueError("Task 12 answer model object is bound to the wrong slot")
+        binding = _binding_for_slot(manifest, slot_id)
+        if _test_model_token is _TASK12_TEST_MODEL_TOKEN:
+            if getattr(model, "slot_id", None) != slot_id:
+                raise ValueError("Task 12 test model object is bound to the wrong slot")
+            continue
+        if type(model) is not OfflinePromptedAnswerModelV3:
+            raise TypeError(
+                "Task 12 production matrix requires OfflinePromptedAnswerModelV3"
+            )
+        if (
+            model.slot.slot_id != binding.slot_id
+            or model.slot.model_id != binding.model_id
+            or model.slot.revision != binding.revision
+            or model.slot.license_id != binding.license_id
+            or model.slot.tree_manifest_sha256 != binding.tree_manifest_sha256
+            or sha256_model(model.decoding) != binding.decoding_config_sha256
+        ):
+            raise ValueError("Task 12 answer model differs from frozen slot binding")
     source_manifest_raw = _read_artifact(
         root=core,
         location=manifest.task_manifest,
@@ -534,6 +549,7 @@ def execute_task12_matrix_bundles_v3(
                     bundle.authorization.task_manifest_sha256
                 ),
                 resume=resume,
+                _test_model_token=_test_model_token,
             )
             if len(rows) != len(tasks) or len(scores) != len(tasks):
                 raise ValueError("Task 12 matrix run did not complete all task and score rows")
@@ -577,12 +593,56 @@ def execute_task12_matrix_bundles_v3(
             raise ValueError("existing Task 12 matrix summary differs from resumed runs")
         summary = existing_summary
     else:
-        _write_new(summary_path, canonical_json_bytes(summary))
+        publish_files_atomically(
+            {summary_path: canonical_json_bytes(summary)},
+            overwrite=False,
+        )
     return Task12MatrixRunResultV1(
         matrix_root=root,
         summary_path=summary_path,
         summary=summary,
     )
+
+def execute_task12_matrix_bundles_v3(
+    *,
+    manifest: Task12PreparationManifestV1,
+    plan: Task12DryRunPlanV1,
+    matrix_bundle_manifest: Task12MatrixBundleManifestV1,
+    matrix_root: str | Path,
+    core_root: str | Path,
+    evidence_root: str | Path,
+    repository_root: str | Path,
+    runtime_code_binding: Task12RuntimeCodeBindingV1,
+    adapter_factory,
+    prompted_answer_models: Mapping[
+        Literal["answer_model_a", "answer_model_b"],
+        OfflinePromptedAnswerModelV3,
+    ],
+    resume: bool = False,
+) -> Task12MatrixRunResultV1:
+    return _execute_task12_matrix_bundles_v3(
+        manifest=manifest,
+        plan=plan,
+        matrix_bundle_manifest=matrix_bundle_manifest,
+        matrix_root=matrix_root,
+        core_root=core_root,
+        evidence_root=evidence_root,
+        repository_root=repository_root,
+        runtime_code_binding=runtime_code_binding,
+        adapter_factory=adapter_factory,
+        prompted_answer_models=prompted_answer_models,
+        resume=resume,
+    )
+
+
+def _execute_task12_matrix_bundles_for_test_v3(
+    **kwargs,
+) -> Task12MatrixRunResultV1:
+    return _execute_task12_matrix_bundles_v3(
+        **kwargs,
+        _test_model_token=_TASK12_TEST_MODEL_TOKEN,
+    )
+
 
 def build_task12_matrix_bundles_v3(
     *,

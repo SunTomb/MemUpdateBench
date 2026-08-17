@@ -2224,3 +2224,36 @@ This closes the local Task 12 execution-layer engineering gate only. It does not
 ### Next steps
 
 After preserving this coherent engineering unit in a clean commit, rebuild the execution bundles so their runtime code revision/tree binds that commit. Then verify the canonical Qwen and Mistral snapshots, offline environment, devices, and an output root outside the repository/Core/evidence roots. Run one authenticated real single-cell smoke first; only after its typed parsing, 80 terminal rows, public-row privacy, run/score hashes, and authenticated scoring pass may the complete 18-run real matrix begin.
+
+### Post-commit blocker correction
+
+A final blocker-only review corrected its earlier approval after the first engineering commit and identified two library-boundary defects that the production CLI surface alone did not close:
+
+- a same-slot fake object could call the public matrix executor and create run/score artifacts attributed to the frozen offline model;
+- `matrix_run_summary.json` used a direct write, so interruption could leave a partial summary that blocked authenticated resume after all 18 child runs had completed.
+
+The follow-up hardening requires exact `OfflinePromptedAnswerModelV3` values on production single-run and matrix paths, verifies the full frozen slot/model/revision/license/tree/decoding binding before model load, and moves fake models behind a private test-only executor/token. Matrix summary publication now uses the Phase 0 atomic publisher. No production CLI exposes the test-only path.
+
+Fresh post-review gate:
+
+```text
+python -m py_compile \
+  scripts/vnext_run_core_task12.py \
+  scripts/vnext_prepare_core_task12_run.py \
+  scripts/vnext_prepare_core_task12_matrix.py \
+  scripts/vnext_run_core_task12_matrix.py \
+  mub/vnext/runtime/task12_execution_v3.py \
+  mub/vnext/runtime/task12_bundle_v3.py \
+  mub/vnext/runtime/task12_matrix_v3.py
+  PASS
+
+python -m pytest \
+  tests/vnext/test_core_task12_execution.py \
+  tests/vnext/test_core_task12_cli_e2e.py \
+  tests/vnext/test_core_task12_run_bundle.py \
+  tests/vnext/test_core_task12_run_bundle_cli.py \
+  tests/vnext/test_core_task12_matrix_bundle.py -q
+  20 passed in 2530.85s (0:42:10)
+```
+
+This correction supersedes the earlier code-quality approval for the affected boundary. The corrected code again has no known Critical or Important Task 12 execution finding. The fake-offline result remains regression evidence only; no real prompted-answer run or Task 13 work was started.
