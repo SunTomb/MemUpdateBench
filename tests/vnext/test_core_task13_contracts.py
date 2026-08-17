@@ -16,6 +16,7 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13ArtifactBindingV1,
     Task13ArtifactIndexV1,
     Task13BootstrapConfigV1,
+    Task13CaseBindingV1,
     Task13CaseIndexV1,
     Task13CaseRecordV1,
     Task13CaseSelectorV1,
@@ -23,12 +24,33 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13ClaimLedgerRecordV1,
     Task13IntervalV1,
     Task13PairedContrastV1,
+    Task13RunCaseCoverageV1,
+    Task13RunSourceV1,
     Task13StatisticStatus,
+    Task13TaskProjectionV1,
+    Task13TimelineProjectionV1,
+    Task13RunProjectionV1,
+    Task13StatisticsReceiptV1,
+    Task13ScoreProjectionV1,
+    Task13RetrievalProjectionV1,
+    Task13AnswerProjectionV1,
 )
 
 
 SHA = "a" * 64
 SHA_B = "b" * 64
+SHA_C = "c" * 64
+
+
+TASK13_ARTIFACT_NAMES = (
+    "bootstrap_indices.bin",
+    "cell_statistics.jsonl",
+    "paired_contrasts.jsonl",
+    "statistics_receipt.json",
+    "cases.jsonl",
+    "case_index.json",
+    "claim_ledger.jsonl",
+)
 
 
 def _support() -> MetricFieldSupport:
@@ -46,11 +68,19 @@ def _binding(identifier: str = "artifact-a", path: str = "cell_statistics.jsonl"
     )
 
 
-def _cell(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13CellStatisticV1:
+def _source(run_id: str, manifest: str = SHA, score: str = SHA_B) -> Task13RunSourceV1:
+    return Task13RunSourceV1(
+        run_id=run_id,
+        run_manifest_sha256=manifest,
+        score_artifact_sha256=score,
+    )
+
+
+def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: int = 80) -> Task13CellStatisticV1:
     return Task13CellStatisticV1(
         cell_id="cell-a",
         answer_model_slot="qwen",
-        k=4,
+        k=k,
         metric_path=metric_path,
         interval=Task13IntervalV1(
             status=Task13StatisticStatus.NUMERIC,
@@ -58,25 +88,25 @@ def _cell(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13CellStatisticV1:
             lower="0.4",
             upper="0.6",
         ),
-        task_count=80,
+        task_count=task_count,
         core_count=80,
         core_ids_sha256=SHA,
         run_id="run-a",
         run_manifest_sha256=SHA,
-        score_artifact_sha256=SHA,
+        score_artifact_sha256=SHA_B,
         bootstrap_config_sha256=SHA,
-        bootstrap_indices_sha256=SHA,
+        bootstrap_indices_sha256=SHA_B,
     )
 
 
-def _contrast(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13PairedContrastV1:
+def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task13PairedContrastV1:
     return Task13PairedContrastV1(
         contrast_id="contrast-a",
         left_cell_id="cell-left",
         right_cell_id="cell-right",
         direction="left_minus_right",
         answer_model_slot="qwen",
-        k=4,
+        k=k,
         metric_path=metric_path,
         interval=Task13IntervalV1(
             status=Task13StatisticStatus.NUMERIC,
@@ -86,15 +116,54 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0]) -> Task13PairedContrast
         ),
         core_count=80,
         core_ids_sha256=SHA,
-        left_run_id="run-left",
-        left_run_manifest_sha256=SHA,
-        left_score_artifact_sha256=SHA,
-        right_run_id="run-right",
-        right_run_manifest_sha256=SHA,
-        right_score_artifact_sha256=SHA,
+        left_source=_source("run-left", SHA, SHA_B),
+        right_source=_source("run-right", SHA_B, SHA_C),
         bootstrap_config_sha256=SHA,
-        bootstrap_indices_sha256=SHA,
+        bootstrap_indices_sha256=SHA_B,
     )
+
+
+def _task_projection() -> Task13TaskProjectionV1:
+    return Task13TaskProjectionV1(
+        task_id="task-a",
+        family="A",
+        difficulty="hard",
+        metadata={"semantic_core_id": "core-a"},
+        source={"task_manifest_sha256": SHA},
+        target_objects=({"object_id": "object-a"},),
+        queries=({"query_id": "query-a"},),
+    )
+
+
+def _timeline_projection() -> Task13TimelineProjectionV1:
+    return Task13TimelineProjectionV1(redacted=False, items=({"event": "update"},))
+
+
+def _run_projection() -> Task13RunProjectionV1:
+    return Task13RunProjectionV1(
+        completion_status="complete",
+        parsed_actions=({"action": "ADD"},),
+        memory_snapshots=({"step": 1},),
+        provenance={"runtime_revision": "rev-a"},
+        exceptions=(),
+    )
+
+
+def _score_projection() -> Task13ScoreProjectionV1:
+    return Task13ScoreProjectionV1(
+        metric_layers={"exact_match": 1.0},
+        support={"supported": True},
+        failure_flags=(),
+        primary_failure=None,
+    )
+
+
+def _retrieval_projection() -> Task13RetrievalProjectionV1:
+    return Task13RetrievalProjectionV1(available=True, items=({"rank": 1},))
+
+
+def _answer_projection() -> Task13AnswerProjectionV1:
+    return Task13AnswerProjectionV1(available=True, items=({"raw": "value"},))
 
 
 def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
@@ -109,64 +178,77 @@ def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
         task_artifact_sha256=SHA,
         task_manifest_sha256=SHA,
         run_manifest_sha256=SHA,
-        score_artifact_sha256=SHA,
-        matrix_summary_sha256=SHA,
-        task_payload={"task": "payload"},
-        timeline_payload={"timeline": "payload"},
-        run_payload={"run": "payload"},
-        score_payload={"score": "payload"},
-        retrieval_payload={"retrieval": "payload"},
-        answer_payload={"answer": "payload"},
+        score_artifact_sha256=SHA_B,
+        matrix_summary_sha256=SHA_C,
+        task=_task_projection(),
+        timeline=_timeline_projection(),
+        run=_run_projection(),
+        score=_score_projection(),
+        retrieval=_retrieval_projection(),
+        answer=_answer_projection(),
     )
 
 
 def _case_index(case_ids: tuple[str, ...] | None = None) -> Task13CaseIndexV1:
     case_ids = case_ids or tuple(f"case-{index:02d}" for index in range(18))
     run_ids = tuple(f"run-{index:02d}" for index in range(18))
-    categories = ("correct_case_id", "stale_copied_case_id", "answer_parse_invalid_case_id", "other_wrong_case_id")
+    categories = ("correct", "stale_copied", "answer_parse_invalid", "other_wrong")
     coverage = []
+    bindings = []
     for index, run_id in enumerate(run_ids):
-        row = {category: None for category in categories}
-        row[categories[index % len(categories)]] = case_ids[index]
-        row["run_id"] = run_id
+        category = categories[index % len(categories)]
+        field = f"{category}_case_id"
+        row = {
+            "run_id": run_id,
+            "correct_case_id": None,
+            "stale_copied_case_id": None,
+            "answer_parse_invalid_case_id": None,
+            "other_wrong_case_id": None,
+        }
+        row[field] = case_ids[index]
         coverage.append(row)
+        bindings.append(Task13CaseBindingV1(case_id=case_ids[index], run_id=run_id, category=category))
     return Task13CaseIndexV1(
-        case_ids=case_ids,
         cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
         record_count=len(case_ids),
-        run_ids=run_ids,
-        run_manifest_hashes=(SHA,) * 18,
-        score_artifact_hashes=(SHA,) * 18,
+        case_bindings=tuple(bindings),
         coverage=tuple(coverage),
+        run_sources=tuple(_source(run_id, SHA, SHA_B) for run_id in run_ids),
         source_bindings=(_binding("run-a", "run.json"),),
     )
 
 
-def _claim(claim_id: str, *, kind: str = "direct_cell", direction: str = "self") -> Task13ClaimLedgerRecordV1:
-    source_ids = ("run-a", "run-b") if kind == "paired_contrast" else ("run-a",)
-    source_hashes = (SHA, SHA_B) if kind == "paired_contrast" else (SHA,)
-    return Task13ClaimLedgerRecordV1(
-        claim_id=claim_id,
-        kind=kind,
-        direction=direction,
-        slot="qwen",
-        cell_or_contrast="cell-a",
-        metric_path=TASK13_METRIC_PATHS[0],
-        slice_payload={},
-        denominator=80,
-        status=Task13StatisticStatus.NUMERIC,
-        interval=Task13IntervalV1(
-            status=Task13StatisticStatus.NUMERIC,
-            estimate="0.5",
-            lower="0.4",
-            upper="0.6",
-        ),
-        run_ids=source_ids,
-        run_manifest_sha256s=source_hashes,
-        score_artifact_sha256s=source_hashes,
-        statistics_receipt_sha256=SHA,
-        case_ids=("case-a",),
-        case_index_sha256=SHA,
+def _receipt() -> Task13StatisticsReceiptV1:
+    return Task13StatisticsReceiptV1(
+        receipt_id="receipt-a",
+        task12_preparation_manifest_sha256=SHA,
+        task12_plan_sha256=SHA_B,
+        task12_matrix_manifest_sha256=SHA_C,
+        task12_matrix_summary_sha256=SHA,
+        task12_integrity_audit_sha256=SHA_B,
+        statistics_config_sha256=SHA_C,
+        task13_runtime_revision="rev-a",
+        task13_runtime_tree_sha256=SHA,
+        semantic_core_count=80,
+        task_count=1440,
+        run_count=18,
+        cell_statistic_count=126,
+        paired_contrast_count=84,
+        core_ids_sha256=SHA_B,
+        bootstrap_indices_sha256=SHA_C,
+        cell_statistics_artifact_id="cell_statistics.jsonl",
+        cell_statistics_artifact=ArtifactRef(path="cell_statistics.jsonl", sha256=SHA, media_type="application/jsonl"),
+        paired_contrasts_artifact_id="paired_contrasts.jsonl",
+        paired_contrasts_artifact=ArtifactRef(path="paired_contrasts.jsonl", sha256=SHA_B, media_type="application/jsonl"),
+    )
+
+
+def _artifact_index() -> Task13ArtifactIndexV1:
+    return Task13ArtifactIndexV1(
+        artifacts=tuple(
+            _binding(name, name)
+            for name in TASK13_ARTIFACT_NAMES
+        )
     )
 
 
@@ -268,28 +350,50 @@ def test_intervals_reject_noncanonical_decimals_and_inverted_bounds() -> None:
         )
 
 
-def test_case_claim_and_artifact_ids_and_paths_are_unique() -> None:
-    duplicate_case_ids = _case_index().model_dump(mode="python")
-    duplicate_case_ids["case_ids"] = ("case-a", "case-a")
-    duplicate_case_ids["record_count"] = 2
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1.model_validate(duplicate_case_ids)
-    with pytest.raises((ValidationError, ValueError)):
-        Task13ArtifactIndexV1(
-            artifacts=(_binding("artifact-a", "a.json"), _binding("artifact-b", "a.json")),
-        )
-    with pytest.raises((ValidationError, ValueError)):
-        Task13ArtifactIndexV1(
-            artifacts=(_binding("artifact-a", "a.json"), _binding("artifact-a", "b.json")),
-        )
+def _claim(
+    claim_id: str,
+    *,
+    kind: str = "direct_cell",
+    direction: str = "self",
+) -> Task13ClaimLedgerRecordV1:
+    sources = (_source("run-a", SHA, SHA_B),)
+    if kind == "paired_contrast":
+        sources = (_source("run-a", SHA, SHA_B), _source("run-b", SHA_B, SHA_C))
+    return Task13ClaimLedgerRecordV1(
+        claim_id=claim_id,
+        kind=kind,
+        direction=direction,
+        slot="qwen",
+        cell_or_contrast="cell-a",
+        metric_path=TASK13_METRIC_PATHS[0],
+        slice_payload={},
+        denominator=80,
+        status=Task13StatisticStatus.NUMERIC,
+        interval=Task13IntervalV1(
+            status=Task13StatisticStatus.NUMERIC,
+            estimate="0.5",
+            lower="0.4",
+            upper="0.6",
+        ),
+        run_sources=sources,
+        statistics_receipt_sha256=SHA,
+        case_ids=("case-a",),
+        case_index_sha256=SHA,
+    )
 
-    first = _claim("claim-a")
-    second = _claim("claim-a")
-    assert first == second
+
+def test_case_claim_and_artifact_ids_and_paths_are_unique() -> None:
+    index = _case_index()
+    assert len(index.case_bindings) == 18
+    duplicate = index.model_dump(mode="python")
+    duplicate["case_bindings"] = (*duplicate["case_bindings"][:-1], duplicate["case_bindings"][0])
     with pytest.raises((ValidationError, ValueError)):
-        Task13ArtifactIndexV1(
-            artifacts=(_binding("artifact-a", "a.json"), _binding("artifact-a", "b.json")),
-        )
+        Task13CaseIndexV1.model_validate(duplicate)
+    assert tuple(binding.artifact_id for binding in _artifact_index().artifacts) == TASK13_ARTIFACT_NAMES
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1(artifacts=())
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1(artifacts=tuple(_binding(name, name) for name in TASK13_ARTIFACT_NAMES[:-1]))
 
 
 def test_sha256_fields_are_lowercase_exact_hashes() -> None:
@@ -355,172 +459,189 @@ def test_only_frozen_task13_metrics_are_accepted_by_all_statistic_records() -> N
         Task13ClaimLedgerRecordV1.model_validate(payload)
 
 
-def test_case_selector_requires_exact_category_universe_and_order() -> None:
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseSelectorV1(
-            selector_id="selector-a",
-            run_id="run-a",
-            categories=("correct",),
-        )
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseSelectorV1(
-            selector_id="selector-a",
-            run_id="run-a",
-            categories=("stale_copied", "correct", "answer_parse_invalid", "other_wrong"),
-        )
-
-
-def test_case_selector_caps_selection_at_one_case_per_category() -> None:
-    valid = Task13CaseSelectorV1(
-        selector_id="selector-valid",
+def test_case_selector_uses_exact_per_category_coverage() -> None:
+    coverage = Task13RunCaseCoverageV1(
         run_id="run-a",
-        selected_case_ids=("case-a", "case-b", "case-c", "case-d"),
+        correct_case_id="case-a",
+        stale_copied_case_id="case-b",
+        answer_parse_invalid_case_id="case-c",
+        other_wrong_case_id="case-d",
     )
-    assert len(valid.selected_case_ids) == 4
+    selector = Task13CaseSelectorV1(selector_id="selector-a", run_id="run-a", coverage=coverage)
+    assert selector.coverage.correct_case_id == "case-a"
     with pytest.raises((ValidationError, ValueError)):
-        Task13CaseSelectorV1(
-            selector_id="selector-too-many",
-            run_id="run-a",
-            selected_case_ids=("case-a", "case-b", "case-c", "case-d", "case-e"),
+        Task13CaseSelectorV1(selector_id="selector-mismatch", run_id="run-b", coverage=coverage)
+    with pytest.raises((ValidationError, ValueError)):
+        Task13RunCaseCoverageV1(run_id="run-a")
+    with pytest.raises((ValidationError, ValueError)):
+        Task13RunCaseCoverageV1(
+            run_id="run-a", correct_case_id="case-a", stale_copied_case_id="case-a"
         )
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseSelectorV1(
-            selector_id="selector-duplicate",
-            run_id="run-a",
-            selected_case_ids=("case-a", "case-a"),
+            selector_id="selector-flat", run_id="run-a", selected_case_ids=("case-a",)
         )
 
 
-def test_case_record_requires_complete_projection_and_source_hashes() -> None:
+def test_case_record_requires_complete_typed_projections() -> None:
     case = _case("case-a")
-    assert all(
-        getattr(case, field) is not None
-        for field in (
-            "task_payload",
-            "timeline_payload",
-            "run_payload",
-            "score_payload",
-            "retrieval_payload",
-            "answer_payload",
-            "task_manifest_sha256",
-            "matrix_summary_sha256",
-        )
-    )
+    assert isinstance(case.task, Task13TaskProjectionV1)
+    assert isinstance(case.timeline, Task13TimelineProjectionV1)
+    assert isinstance(case.run, Task13RunProjectionV1)
+    assert isinstance(case.score, Task13ScoreProjectionV1)
+    assert isinstance(case.retrieval, Task13RetrievalProjectionV1)
+    assert isinstance(case.answer, Task13AnswerProjectionV1)
+    payload = case.model_dump(mode="python")
+    payload["task"]["bogus"] = True
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
     for field in ("task", "timeline", "run", "score", "retrieval", "answer"):
         payload = case.model_dump(mode="python")
         payload[field] = {}
         with pytest.raises((ValidationError, ValueError)):
             Task13CaseRecordV1.model_validate(payload)
     payload = case.model_dump(mode="python")
-    payload.pop("task_manifest_sha256")
+    payload.pop("task")
+    payload["task_payload"] = {}
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseRecordV1.model_validate(payload)
+    payload = case.model_dump(mode="python")
+    payload["answer"] = Task13AnswerProjectionV1(available=False, items=())
+    assert Task13CaseRecordV1.model_validate(payload).answer.available is False
 
 
-def test_case_index_requires_ordered_18_run_coverage_and_aligned_hashes() -> None:
+def test_case_index_requires_ordered_18_run_coverage_and_aligned_sources() -> None:
     index = _case_index()
-    assert len(index.run_ids) == 18
-    assert tuple(row.run_id for row in index.coverage) == index.run_ids
-    payload = index.model_dump(mode="python")
-    payload["run_ids"] = payload["run_ids"][:-1]
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1.model_validate(payload)
-    payload = index.model_dump(mode="python")
-    payload["run_manifest_hashes"] = payload["run_manifest_hashes"][:-1]
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1.model_validate(payload)
+    assert len(index.run_sources) == 18
+    assert tuple(row.run_id for row in index.coverage) == tuple(
+        source.run_id for source in index.run_sources
+    )
     payload = index.model_dump(mode="python")
     payload["coverage"] = payload["coverage"][:-1]
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
     payload = index.model_dump(mode="python")
-    payload["coverage"][0]["run_id"] = "run-01"
+    payload["run_sources"] = payload["run_sources"][:-1]
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
-
-
-def test_claim_ledger_requires_direction_nonempty_sources_and_case_index() -> None:
-    assert _claim("claim-a").direction == "self"
-    with pytest.raises((ValidationError, ValueError)):
-        _claim("claim-contrast", kind="paired_contrast", direction="left-minus-right")
-    with pytest.raises((ValidationError, ValueError)):
-        _claim("claim-bad-direction", direction="left_minus_right")
-    payload = _claim("claim-empty").model_dump(mode="python")
-    payload["run_ids"] = ()
-    with pytest.raises((ValidationError, ValueError)):
-        Task13ClaimLedgerRecordV1.model_validate(payload)
-    payload = _claim("claim-no-case-index").model_dump(mode="python")
-    payload["case_index_sha256"] = None
-    with pytest.raises((ValidationError, ValueError)):
-        Task13ClaimLedgerRecordV1.model_validate(payload)
-    payload = _claim("claim-no-cases").model_dump(mode="python")
-    payload["case_ids"] = ()
-    with pytest.raises((ValidationError, ValueError)):
-        Task13ClaimLedgerRecordV1.model_validate(payload)
-
-
-def test_case_index_allows_empty_categories_but_rejects_missing_or_foreign_coverage() -> None:
-    index = _case_index()
-    payload = index.model_dump(mode="python")
-    for row in payload["coverage"]:
-        selected = [key for key in row if key.endswith("_case_id") and row[key] is not None]
-        for key in selected:
-            row[key] = None
-        row["correct_case_id"] = index.case_ids[int(row["run_id"].split("-")[-1])]
-    assert Task13CaseIndexV1.model_validate(payload).coverage
-
-    payload = index.model_dump(mode="python")
-    payload["coverage"] = list(payload["coverage"])
-    payload["coverage"][0] = {
-        "run_id": "run-00",
-        "correct_case_id": None,
-        "stale_copied_case_id": None,
-        "answer_parse_invalid_case_id": None,
-        "other_wrong_case_id": None,
-    }
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1.model_validate(payload)
-
     payload = index.model_dump(mode="python")
     payload["coverage"][0]["correct_case_id"] = "foreign-case"
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
-
-
-def test_case_index_rejects_duplicate_and_union_mismatch_coverage() -> None:
-    index = _case_index()
     payload = index.model_dump(mode="python")
-    payload["coverage"][0]["stale_copied_case_id"] = payload["coverage"][0]["correct_case_id"]
+    payload["coverage"][1]["correct_case_id"] = payload["coverage"][0]["correct_case_id"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+    payload = index.model_dump(mode="python")
+    payload["case_bindings"] = (*payload["case_bindings"], Task13CaseBindingV1(
+        case_id="uncovered-case", run_id="run-00", category="correct"
+    ))
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+    payload = index.model_dump(mode="python")
+    payload["run_sources"] = ("run-a",) * 18
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
 
-    payload = index.model_dump(mode="python")
-    payload["case_ids"] = (*payload["case_ids"], "uncovered-case")
-    payload["record_count"] = len(payload["case_ids"])
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1.model_validate(payload)
 
-
-def test_claim_ledger_uses_only_canonical_directions_and_source_cardinality() -> None:
+def test_claim_ledger_requires_canonical_direction_and_typed_source_cardinality() -> None:
+    assert _claim("claim-a").direction == "self"
     with pytest.raises((ValidationError, ValueError)):
         _claim("claim-hyphen", kind="paired_contrast", direction="left-minus-right")
-
-    direct_payload = _claim("claim-direct-extra").model_dump(mode="python")
-    direct_payload["run_ids"] = ("run-a", "run-b")
-    direct_payload["run_manifest_sha256s"] = (SHA, SHA_B)
-    direct_payload["score_artifact_sha256s"] = (SHA, SHA_B)
     with pytest.raises((ValidationError, ValueError)):
-        Task13ClaimLedgerRecordV1.model_validate(direct_payload)
-
+        _claim("claim-bad-direction", direction="left_minus_right")
+    payload = _claim("claim-direct-extra").model_dump(mode="python")
+    payload["run_sources"] = (*payload["run_sources"], _source("run-b"))
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
     paired = _claim("claim-paired", kind="paired_contrast", direction="left_minus_right")
     paired_payload = paired.model_dump(mode="python")
-    paired_payload["run_ids"] = ("run-a", "run-b")
-    paired_payload["run_manifest_sha256s"] = (SHA, SHA_B)
-    paired_payload["score_artifact_sha256s"] = (SHA, SHA_B)
-    assert Task13ClaimLedgerRecordV1.model_validate(paired_payload).direction == "left_minus_right"
-
-    paired_payload["run_ids"] = ("run-a",)
-    paired_payload["run_manifest_sha256s"] = (SHA,)
-    paired_payload["score_artifact_sha256s"] = (SHA,)
+    paired_payload["run_sources"] = paired_payload["run_sources"][:1]
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(paired_payload)
+    paired_payload["run_sources"] = ("run-a", "run-b")
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(paired_payload)
+    payload = _claim("claim-bad-denominator").model_dump(mode="python")
+    payload["denominator"] = 79
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+def test_exact_k_and_count_literals_reject_out_of_contract_values() -> None:
+    for bad_k in (1, 3, 5, 12):
+        with pytest.raises((ValidationError, ValueError)):
+            _cell(k=bad_k)
+        with pytest.raises((ValidationError, ValueError)):
+            _contrast(k=bad_k)
+    with pytest.raises((ValidationError, ValueError)):
+        _cell(task_count=79)
+    payload = _cell().model_dump(mode="python")
+    payload["core_count"] = 79
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CellStatisticV1.model_validate(payload)
+
+
+def test_receipt_count_literals_and_artifact_id_path_collisions_are_rejected() -> None:
+    receipt = _receipt()
+    for field, bad in (
+        ("semantic_core_count", 79),
+        ("task_count", 1439),
+        ("run_count", 17),
+        ("cell_statistic_count", 125),
+        ("paired_contrast_count", 83),
+    ):
+        payload = receipt.model_dump(mode="python")
+        payload[field] = bad
+        with pytest.raises((ValidationError, ValueError)):
+            Task13StatisticsReceiptV1.model_validate(payload)
+    payload = receipt.model_dump(mode="python")
+    payload["paired_contrasts_artifact_id"] = payload["cell_statistics_artifact_id"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13StatisticsReceiptV1.model_validate(payload)
+    payload = receipt.model_dump(mode="python")
+    payload["paired_contrasts_artifact"]["path"] = payload["cell_statistics_artifact"]["path"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13StatisticsReceiptV1.model_validate(payload)
+
+
+def test_paired_sources_reject_same_run_and_duplicate_hash_pair() -> None:
+    payload = _contrast().model_dump(mode="python")
+    payload["right_source"]["run_id"] = payload["left_source"]["run_id"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13PairedContrastV1.model_validate(payload)
+    payload = _contrast().model_dump(mode="python")
+    payload["right_source"]["run_manifest_sha256"] = payload["left_source"]["run_manifest_sha256"]
+    payload["right_source"]["score_artifact_sha256"] = payload["left_source"]["score_artifact_sha256"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13PairedContrastV1.model_validate(payload)
+
+
+def test_artifact_index_rejects_partial_foreign_and_duplicate_paths() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1(artifacts=tuple(_binding(name, name) for name in TASK13_ARTIFACT_NAMES[:-1]))
+    foreign = list(_artifact_index().artifacts)
+    foreign[0] = _binding("foreign.json", "foreign.json")
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1(artifacts=tuple(foreign))
+    collision = list(_artifact_index().artifacts)
+    collision[1] = _binding(TASK13_ARTIFACT_NAMES[1], TASK13_ARTIFACT_NAMES[0])
+    with pytest.raises((ValidationError, ValueError)):
+        Task13ArtifactIndexV1(artifacts=tuple(collision))
+
+
+def test_projection_envelopes_reject_bogus_keys_but_allow_empty_unavailable_items() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["retrieval"] = {"available": False, "items": (), "bogus": True}
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseRecordV1.model_validate(payload)
+    payload = _case("case-a").model_dump(mode="python")
+    payload["retrieval"] = Task13RetrievalProjectionV1(available=False, items=())
+    payload["answer"] = Task13AnswerProjectionV1(available=False, items=())
+    assert Task13CaseRecordV1.model_validate(payload).retrieval.items == ()
+
+
+def test_numeric_interval_requires_estimate_inside_endpoints() -> None:
+    for estimate, lower, upper in (("0.9", "0.1", "0.8"), ("0.1", "0.2", "0.8")):
+        with pytest.raises((ValidationError, ValueError)):
+            Task13IntervalV1(status=Task13StatisticStatus.NUMERIC, estimate=estimate, lower=lower, upper=upper)
