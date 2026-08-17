@@ -277,6 +277,15 @@ class Task13CaseSelectorV1(ImmutableContractModel):
     def _unique_selected_case_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _require_unique(value, "selected_case_ids")
 
+    @model_validator(mode="after")
+    def _selection_bound(self) -> Task13CaseSelectorV1:
+        max_selected = self.max_cases_per_category * len(self.categories)
+        if len(self.selected_case_ids) > max_selected:
+            raise ValueError(
+                "selected_case_ids cannot exceed max_cases_per_category for each category"
+            )
+        return self
+
 
 class Task13CaseRecordV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
@@ -323,6 +332,51 @@ class Task13CaseRecordV1(ImmutableContractModel):
     def answer_payload(self) -> FrozenJsonObjectV3:
         return self.answer
 
+    @field_validator("task", "timeline", "run", "score", "retrieval", "answer")
+    @classmethod
+    def _nonempty_projection(
+        cls, value: FrozenJsonObjectV3, info
+    ) -> FrozenJsonObjectV3:
+        if not value:
+            raise ValueError(f"{info.field_name} projection must be a non-empty mapping")
+        return value
+
+
+class Task13RunCaseCoverageV1(ImmutableContractModel):
+    schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
+    run_id: StrictIdentifier
+    correct_case_id: StrictIdentifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("correct_case_id", "correct"),
+    )
+    stale_copied_case_id: StrictIdentifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("stale_copied_case_id", "stale_copied"),
+    )
+    answer_parse_invalid_case_id: StrictIdentifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("answer_parse_invalid_case_id", "answer_parse_invalid"),
+    )
+    other_wrong_case_id: StrictIdentifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("other_wrong_case_id", "other_wrong"),
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_unique_case(self) -> Task13RunCaseCoverageV1:
+        case_ids = (
+            self.correct_case_id,
+            self.stale_copied_case_id,
+            self.answer_parse_invalid_case_id,
+            self.other_wrong_case_id,
+        )
+        selected = tuple(case_id for case_id in case_ids if case_id is not None)
+        if not selected:
+            raise ValueError("each run must have at least one selected case")
+        if len(selected) != len(set(selected)):
+            raise ValueError("non-null case IDs must be unique within each run")
+        return self
+
 
 class Task13CaseIndexV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
@@ -332,7 +386,7 @@ class Task13CaseIndexV1(ImmutableContractModel):
     run_ids: tuple[StrictIdentifier, ...]
     run_manifest_hashes: tuple[SHA256, ...]
     score_artifact_hashes: tuple[SHA256, ...]
-    category_coverage: FrozenJsonObjectV3
+    coverage: tuple[Task13RunCaseCoverageV1, ...]
     source_bindings: tuple[Task13ArtifactBindingV1, ...] = ()
 
     @field_validator("case_ids")
@@ -347,6 +401,15 @@ class Task13CaseIndexV1(ImmutableContractModel):
             raise ValueError("case index must cover exactly 18 Task 12 runs")
         return _require_unique(value, "run_ids")
 
+    @field_validator("coverage")
+    @classmethod
+    def _exact_coverage_rows(
+        cls, value: tuple[Task13RunCaseCoverageV1, ...]
+    ) -> tuple[Task13RunCaseCoverageV1, ...]:
+        if len(value) != 18:
+            raise ValueError("case index must contain exactly 18 per-run coverage rows")
+        return value
+
     @field_validator("cases_artifact")
     @classmethod
     def _artifact_path(cls, value: ArtifactRef) -> ArtifactRef:
@@ -354,28 +417,37 @@ class Task13CaseIndexV1(ImmutableContractModel):
         return value
 
     @model_validator(mode="after")
-    def _count_sources_and_categories(self) -> Task13CaseIndexV1:
+    def _count_sources_and_coverage(self) -> Task13CaseIndexV1:
         if self.record_count != len(self.case_ids):
             raise ValueError("record_count must equal the number of case_ids")
         if not self.run_ids or not self.run_manifest_hashes or not self.score_artifact_hashes:
             raise ValueError("case index run IDs and source hashes must be non-empty")
+        if len(self.run_manifest_hashes) != 18 or len(self.score_artifact_hashes) != 18:
+            raise ValueError("case index source hash sequences must cover exactly 18 runs")
         if not (
             len(self.run_ids)
             == len(self.run_manifest_hashes)
             == len(self.score_artifact_hashes)
+            == len(self.coverage)
         ):
-            raise ValueError("run IDs and source hashes must have equal lengths")
-        if set(self.category_coverage) != set(_CASE_CATEGORIES):
-            raise ValueError("category_coverage must contain exactly all four case categories")
+            raise ValueError("run IDs, source hashes, and coverage must have equal lengths")
+        if tuple(row.run_id for row in self.coverage) != self.run_ids:
+            raise ValueError("per-run coverage must follow the exact run ID order")
+
         case_id_set = set(self.case_ids)
-        for category in _CASE_CATEGORIES:
-            selected = self.category_coverage[category]
-            if not isinstance(selected, (list, tuple)):
-                raise ValueError("category_coverage values must be case-ID lists")
-            if any(type(case_id) is not str or case_id not in case_id_set for case_id in selected):
-                raise ValueError("category_coverage must reference known case IDs")
-            if len(selected) != len(set(selected)):
-                raise ValueError("category_coverage case IDs must be unique per category")
+        covered_case_ids: list[str] = []
+        for row in self.coverage:
+            selected = (
+                row.correct_case_id,
+                row.stale_copied_case_id,
+                row.answer_parse_invalid_case_id,
+                row.other_wrong_case_id,
+            )
+            covered_case_ids.extend(case_id for case_id in selected if case_id is not None)
+        if any(case_id not in case_id_set for case_id in covered_case_ids):
+            raise ValueError("per-run coverage must reference known case IDs")
+        if set(covered_case_ids) != case_id_set:
+            raise ValueError("per-run coverage union must equal case_ids")
         _validate_unique_bindings(self.source_bindings)
         return self
 
@@ -464,6 +536,7 @@ __all__ = [
     "Task13ClaimLedgerRecordV1",
     "Task13IntervalV1",
     "Task13PairedContrastV1",
+    "Task13RunCaseCoverageV1",
     "Task13StatisticStatus",
     "Task13StatisticsReceiptV1",
     "canonical_decimal_string",

@@ -120,8 +120,16 @@ def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
     )
 
 
-def _case_index(case_ids: tuple[str, ...] = ("case-a", "case-b", "case-c", "case-d")) -> Task13CaseIndexV1:
+def _case_index(case_ids: tuple[str, ...] | None = None) -> Task13CaseIndexV1:
+    case_ids = case_ids or tuple(f"case-{index:02d}" for index in range(18))
     run_ids = tuple(f"run-{index:02d}" for index in range(18))
+    categories = ("correct_case_id", "stale_copied_case_id", "answer_parse_invalid_case_id", "other_wrong_case_id")
+    coverage = []
+    for index, run_id in enumerate(run_ids):
+        row = {category: None for category in categories}
+        row[categories[index % len(categories)]] = case_ids[index]
+        row["run_id"] = run_id
+        coverage.append(row)
     return Task13CaseIndexV1(
         case_ids=case_ids,
         cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
@@ -129,12 +137,7 @@ def _case_index(case_ids: tuple[str, ...] = ("case-a", "case-b", "case-c", "case
         run_ids=run_ids,
         run_manifest_hashes=(SHA,) * 18,
         score_artifact_hashes=(SHA,) * 18,
-        category_coverage={
-            "correct": ["case-a"],
-            "stale_copied": ["case-b"],
-            "answer_parse_invalid": ["case-c"],
-            "other_wrong": ["case-d"],
-        },
+        coverage=tuple(coverage),
         source_bindings=(_binding("run-a", "run.json"),),
     )
 
@@ -266,22 +269,11 @@ def test_intervals_reject_noncanonical_decimals_and_inverted_bounds() -> None:
 
 
 def test_case_claim_and_artifact_ids_and_paths_are_unique() -> None:
+    duplicate_case_ids = _case_index().model_dump(mode="python")
+    duplicate_case_ids["case_ids"] = ("case-a", "case-a")
+    duplicate_case_ids["record_count"] = 2
     with pytest.raises((ValidationError, ValueError)):
-        Task13CaseIndexV1(
-            case_ids=("case-a", "case-a"),
-            cases_artifact=ArtifactRef(path="cases.jsonl", sha256=SHA, media_type="application/jsonl"),
-            record_count=2,
-            run_ids=tuple(f"run-{index:02d}" for index in range(18)),
-            run_manifest_hashes=(SHA,) * 18,
-            score_artifact_hashes=(SHA,) * 18,
-            category_coverage={
-                "correct": ["case-a"],
-                "stale_copied": [],
-                "answer_parse_invalid": [],
-                "other_wrong": [],
-            },
-            source_bindings=(_binding("run-a", "run.json"),),
-        )
+        Task13CaseIndexV1.model_validate(duplicate_case_ids)
     with pytest.raises((ValidationError, ValueError)):
         Task13ArtifactIndexV1(
             artifacts=(_binding("artifact-a", "a.json"), _binding("artifact-b", "a.json")),
@@ -378,6 +370,27 @@ def test_case_selector_requires_exact_category_universe_and_order() -> None:
         )
 
 
+def test_case_selector_caps_selection_at_one_case_per_category() -> None:
+    valid = Task13CaseSelectorV1(
+        selector_id="selector-valid",
+        run_id="run-a",
+        selected_case_ids=("case-a", "case-b", "case-c", "case-d"),
+    )
+    assert len(valid.selected_case_ids) == 4
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseSelectorV1(
+            selector_id="selector-too-many",
+            run_id="run-a",
+            selected_case_ids=("case-a", "case-b", "case-c", "case-d", "case-e"),
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseSelectorV1(
+            selector_id="selector-duplicate",
+            run_id="run-a",
+            selected_case_ids=("case-a", "case-a"),
+        )
+
+
 def test_case_record_requires_complete_projection_and_source_hashes() -> None:
     case = _case("case-a")
     assert all(
@@ -393,25 +406,21 @@ def test_case_record_requires_complete_projection_and_source_hashes() -> None:
             "matrix_summary_sha256",
         )
     )
-    payload = case.model_dump(mode="python")
-    payload["answer"] = None
-    with pytest.raises((ValidationError, ValueError)):
-        Task13CaseRecordV1.model_validate(payload)
+    for field in ("task", "timeline", "run", "score", "retrieval", "answer"):
+        payload = case.model_dump(mode="python")
+        payload[field] = {}
+        with pytest.raises((ValidationError, ValueError)):
+            Task13CaseRecordV1.model_validate(payload)
     payload = case.model_dump(mode="python")
     payload.pop("task_manifest_sha256")
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseRecordV1.model_validate(payload)
 
 
-def test_case_index_requires_all_18_runs_and_aligned_hashes_and_categories() -> None:
+def test_case_index_requires_ordered_18_run_coverage_and_aligned_hashes() -> None:
     index = _case_index()
     assert len(index.run_ids) == 18
-    assert set(index.category_coverage) == {
-        "correct",
-        "stale_copied",
-        "answer_parse_invalid",
-        "other_wrong",
-    }
+    assert tuple(row.run_id for row in index.coverage) == index.run_ids
     payload = index.model_dump(mode="python")
     payload["run_ids"] = payload["run_ids"][:-1]
     with pytest.raises((ValidationError, ValueError)):
@@ -421,7 +430,11 @@ def test_case_index_requires_all_18_runs_and_aligned_hashes_and_categories() -> 
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
     payload = index.model_dump(mode="python")
-    payload["category_coverage"] = {"correct": ["case-a"]}
+    payload["coverage"] = payload["coverage"][:-1]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+    payload = index.model_dump(mode="python")
+    payload["coverage"][0]["run_id"] = "run-01"
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
 
@@ -446,24 +459,44 @@ def test_claim_ledger_requires_direction_nonempty_sources_and_case_index() -> No
         Task13ClaimLedgerRecordV1.model_validate(payload)
 
 
-def test_case_index_allows_empty_category_coverage_but_rejects_foreign_case_ids() -> None:
+def test_case_index_allows_empty_categories_but_rejects_missing_or_foreign_coverage() -> None:
     index = _case_index()
     payload = index.model_dump(mode="python")
-    payload["category_coverage"] = {
-        "correct": [],
-        "stale_copied": [],
-        "answer_parse_invalid": [],
-        "other_wrong": [],
-    }
-    empty_categories = Task13CaseIndexV1.model_validate(payload)
-    assert all(not selected for selected in empty_categories.category_coverage.values())
+    for row in payload["coverage"]:
+        selected = [key for key in row if key.endswith("_case_id") and row[key] is not None]
+        for key in selected:
+            row[key] = None
+        row["correct_case_id"] = index.case_ids[int(row["run_id"].split("-")[-1])]
+    assert Task13CaseIndexV1.model_validate(payload).coverage
 
-    payload["category_coverage"] = {
-        "correct": ["foreign-case"],
-        "stale_copied": [],
-        "answer_parse_invalid": [],
-        "other_wrong": [],
+    payload = index.model_dump(mode="python")
+    payload["coverage"] = list(payload["coverage"])
+    payload["coverage"][0] = {
+        "run_id": "run-00",
+        "correct_case_id": None,
+        "stale_copied_case_id": None,
+        "answer_parse_invalid_case_id": None,
+        "other_wrong_case_id": None,
     }
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+    payload = index.model_dump(mode="python")
+    payload["coverage"][0]["correct_case_id"] = "foreign-case"
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+
+def test_case_index_rejects_duplicate_and_union_mismatch_coverage() -> None:
+    index = _case_index()
+    payload = index.model_dump(mode="python")
+    payload["coverage"][0]["stale_copied_case_id"] = payload["coverage"][0]["correct_case_id"]
+    with pytest.raises((ValidationError, ValueError)):
+        Task13CaseIndexV1.model_validate(payload)
+
+    payload = index.model_dump(mode="python")
+    payload["case_ids"] = (*payload["case_ids"], "uncovered-case")
+    payload["record_count"] = len(payload["case_ids"])
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
 
