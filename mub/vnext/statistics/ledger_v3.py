@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel
 from mub.vnext.io import canonical_json_bytes, sha256_model
+from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.contracts_v3 import (
     TASK13_CELL_STATISTICS_ARTIFACT_ID,
     TASK13_CELL_STATISTICS_ARTIFACT_PATH,
@@ -194,16 +195,28 @@ def _validate_contrasts(
         for record in cells
     }
     keys = [
-        (record.answer_model_slot, record.k, record.contrast_id, record.metric_path)
+        (
+            record.answer_model_slot,
+            record.k,
+            record.left_cell_id,
+            record.right_cell_id,
+            record.metric_path,
+        )
         for record in contrasts
     ]
     if len(set(keys)) != len(keys):
         raise ValueError("paired contrasts contain duplicate statistic rows")
     coordinate_counts = Counter(
-        (record.answer_model_slot, record.k, record.contrast_id) for record in contrasts
+        (
+            record.answer_model_slot,
+            record.k,
+            record.left_cell_id,
+            record.right_cell_id,
+        )
+        for record in contrasts
     )
     if len(coordinate_counts) != 12 or set(coordinate_counts.values()) != {_EXPECTED_METRIC_COUNT}:
-        raise ValueError("paired contrasts must contain 12 complete contrasts with seven metrics")
+        raise ValueError("paired contrasts must contain 12 complete pairs with seven metrics")
     if set(record.answer_model_slot for record in contrasts) != set(_EXPECTED_SLOTS):
         raise ValueError("paired contrasts contain a foreign answer-model slot")
     if set(record.k for record in contrasts) != set(_EXPECTED_K):
@@ -217,12 +230,26 @@ def _validate_contrasts(
         metric_paths = {
             record.metric_path
             for record in contrasts
-            if (record.answer_model_slot, record.k, record.contrast_id) == coordinate
+            if (
+                record.answer_model_slot,
+                record.k,
+                record.left_cell_id,
+                record.right_cell_id,
+            ) == coordinate
         }
         if count != _EXPECTED_METRIC_COUNT or metric_paths != set(TASK13_METRIC_PATHS):
             raise ValueError("paired contrasts have missing or foreign metric rows")
 
     for record in contrasts:
+        expected_contrast_id = task13_contrast_id_v1(
+            record.answer_model_slot,
+            record.k,
+            record.left_cell_id,
+            record.right_cell_id,
+            record.metric_path,
+        )
+        if record.contrast_id != expected_contrast_id:
+            raise ValueError("paired contrast ID is not deterministic for its coordinates")
         left_key = (record.answer_model_slot, record.k, record.left_cell_id, record.metric_path)
         right_key = (record.answer_model_slot, record.k, record.right_cell_id, record.metric_path)
         left_cell = cell_by_key.get(left_key)
@@ -312,6 +339,11 @@ def build_task13_statistics_receipt_v1(
     }
     if len(bootstrap_config_hashes) != 1:
         raise ValueError("statistics use inconsistent bootstrap-config hashes")
+    bootstrap_config_sha256 = next(iter(bootstrap_config_hashes))
+    if statistics_config_sha256 != bootstrap_config_sha256:
+        raise ValueError(
+            "statistics_config_sha256 must equal the sole bootstrap-config hash"
+        )
 
     return Task13StatisticsReceiptV1(
         receipt_id=receipt_id,
@@ -375,10 +407,46 @@ def _binding_from_case(case: Task13CaseRecordV1 | Task13CaseBindingV1) -> Task13
     raise TypeError("cases must be Task13CaseRecordV1 or Task13CaseBindingV1 records")
 
 
+def _canonical_case_bindings(
+    bindings: Sequence[Task13CaseBindingV1],
+    sources: Sequence[Task13RunSourceV1],
+) -> tuple[Task13CaseBindingV1, ...]:
+    source_order = {source.run_id: index for index, source in enumerate(sources)}
+    try:
+        return tuple(
+            sorted(
+                bindings,
+                key=lambda binding: (
+                    source_order[binding.run_id],
+                    _CASE_CATEGORY_ORDER[binding.category],
+                    binding.case_id.encode("utf-8"),
+                ),
+            )
+        )
+    except KeyError as exc:
+        raise ValueError("case binding uses an unknown category or run source") from exc
+
+
+def _validate_canonical_case_binding_order(
+    bindings: Sequence[Task13CaseBindingV1],
+    sources: Sequence[Task13RunSourceV1],
+) -> None:
+    expected = _canonical_case_bindings(bindings, sources)
+    if tuple(bindings) != expected:
+        raise ValueError(
+            "case bindings are not in canonical order for the supplied run sources"
+        )
+
+
 def _revalidate_case_index(index: Task13CaseIndexV1) -> Task13CaseIndexV1:
     if not isinstance(index, Task13CaseIndexV1):
         raise TypeError("case_index must be Task13CaseIndexV1")
-    return Task13CaseIndexV1.model_validate(index.model_dump(mode="python"))
+    validated = Task13CaseIndexV1.model_validate(index.model_dump(mode="python"))
+    _validate_canonical_case_binding_order(
+        validated.case_bindings,
+        validated.run_sources,
+    )
+    return validated
 
 
 def build_task13_case_index_v1(
@@ -430,18 +498,8 @@ def build_task13_case_index_v1(
     if tuple(row.run_id for row in supplied_coverage) != tuple(source.run_id for source in supplied_sources):
         raise ValueError("coverage must use the exact ordered run-source IDs")
 
-    # Cases are grouped in the source-run order, then in the frozen category
-    # order.  This is the order consumed by claim relevance selection.
-    ordered_bindings = tuple(
-        sorted(
-            supplied_bindings,
-            key=lambda binding: (
-                source_order[binding.run_id],
-                _CASE_CATEGORY_ORDER[binding.category],
-                binding.case_id.encode("utf-8"),
-            ),
-        )
-    )
+    _validate_canonical_case_binding_order(supplied_bindings, supplied_sources)
+    ordered_bindings = supplied_bindings
     index = Task13CaseIndexV1(
         cases_artifact=_validate_artifact(
             cases_artifact,

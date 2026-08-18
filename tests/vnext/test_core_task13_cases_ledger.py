@@ -34,6 +34,7 @@ from mub.vnext.statistics.input_v3 import (
     _task13_observation_evidence_sha256,
     _task13_observation_membership_root_sha256,
 )
+from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.cases_v3 import (
     _project_task13_case_v1,
     _select_task13_cases_for_run_v1,
@@ -701,7 +702,6 @@ def _ledger_statistics() -> tuple[tuple[Task13CellStatisticV1, ...], tuple[Task1
                         )
                     )
     contrasts = []
-    contrast_index = 0
     for slot in ("answer_model_a", "answer_model_b"):
         for k in (4, 8, 16):
             pairs = (
@@ -713,9 +713,14 @@ def _ledger_statistics() -> tuple[tuple[Task13CellStatisticV1, ...], tuple[Task1
                 right_id = f"{slot}-k{k:02d}-{right_condition}"
                 left = cell_sources[(slot, k, left_id)]
                 right = cell_sources[(slot, k, right_id)]
-                contrast_id = f"contrast-{slot}-k{k:02d}-{contrast_index:02d}"
-                contrast_index += 1
                 for metric_path in TASK13_METRIC_PATHS:
+                    contrast_id = task13_contrast_id_v1(
+                        slot,
+                        k,
+                        left_id,
+                        right_id,
+                        metric_path,
+                    )
                     contrasts.append(
                         Task13PairedContrastV1(
                             contrast_id=contrast_id,
@@ -769,7 +774,12 @@ def _ledger_case_index() -> Task13CaseIndexV1:
     )
 
 
-def _ledger_receipt(cells, contrasts) -> Task13StatisticsReceiptV1:
+def _ledger_receipt(
+    cells,
+    contrasts,
+    *,
+    statistics_config_sha256=_LEDGER_SHA[2],
+) -> Task13StatisticsReceiptV1:
     return build_task13_statistics_receipt_v1(
         cells,
         contrasts,
@@ -778,7 +788,7 @@ def _ledger_receipt(cells, contrasts) -> Task13StatisticsReceiptV1:
         task12_matrix_manifest_sha256=_LEDGER_SHA[7],
         task12_matrix_summary_sha256=_LEDGER_SHA[8],
         task12_integrity_audit_sha256=_LEDGER_SHA[9],
-        statistics_config_sha256=_LEDGER_SHA[10],
+        statistics_config_sha256=statistics_config_sha256,
         task13_runtime_revision="a" * 40,
         task13_runtime_tree_sha256=_LEDGER_SHA[11],
         core_ids_sha256=_LEDGER_SHA[0],
@@ -919,6 +929,74 @@ def test_ledger_rejects_altered_receipt_and_case_hash_bindings():
             receipt=receipt,
             case_index=case_index,
             expected_case_index_sha256="0" * 64,
+        )
+
+
+def test_receipt_rejects_statistics_config_different_from_bootstrap_config():
+    cells, contrasts = _ledger_statistics()
+
+    with pytest.raises(ValueError, match="statistics.*config|bootstrap.*config"):
+        _ledger_receipt(
+            cells,
+            contrasts,
+            statistics_config_sha256=_LEDGER_SHA[10],
+        )
+
+
+def test_case_index_rejects_noncanonical_case_binding_order():
+    index = _ledger_case_index()
+
+    with pytest.raises(ValueError, match="canonical|ordered"):
+        build_task13_case_index_v1(
+            case_bindings=tuple(reversed(index.case_bindings)),
+            coverage=index.coverage,
+            run_sources=index.run_sources,
+            cases_artifact=index.cases_artifact,
+        )
+
+
+def test_case_index_joint_source_and_coverage_reorder_is_a_new_supplied_authority():
+    index = _ledger_case_index()
+    sources = tuple(reversed(index.run_sources))
+    coverage = tuple(reversed(index.coverage))
+    bindings = tuple(reversed(index.case_bindings))
+
+    rebuilt = build_task13_case_index_v1(
+        case_bindings=bindings,
+        coverage=coverage,
+        run_sources=sources,
+        cases_artifact=index.cases_artifact,
+    )
+
+    assert tuple(source.run_id for source in rebuilt.run_sources) == tuple(
+        source.run_id for source in sources
+    )
+    assert tuple(row.run_id for row in rebuilt.coverage) == tuple(
+        row.run_id for row in coverage
+    )
+    assert tuple(binding.case_id for binding in rebuilt.case_bindings) == tuple(
+        binding.case_id for binding in bindings
+    )
+
+
+def test_ledger_rejects_changed_contrast_id():
+    cells, contrasts = _ledger_statistics()
+    target_id = contrasts[0].contrast_id
+    forged_contrasts = tuple(
+        record.model_copy(update={"contrast_id": "forged-contrast-id"})
+        if record.contrast_id == target_id
+        else record
+        for record in contrasts
+    )
+    receipt = _ledger_receipt(cells, contrasts)
+    case_index = _ledger_case_index()
+
+    with pytest.raises(ValueError, match="contrast ID|contrast_id|deterministic"):
+        build_task13_claim_ledger_v1(
+            cells,
+            forged_contrasts,
+            receipt=receipt,
+            case_index=case_index,
         )
 
 

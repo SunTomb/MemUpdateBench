@@ -248,9 +248,17 @@ def _coordinate(run: Any) -> tuple[str, int, str, str]:
     )
 
 
-def _contrast_id(slot: str, k: int, left: Any, right: Any, metric: str) -> str:
+def task13_contrast_id_v1(
+    slot: str,
+    k: int,
+    left_cell_id: str,
+    right_cell_id: str,
+    metric: str,
+) -> str:
+    """Return the frozen deterministic ID for one directed metric contrast."""
+
     metric_token = metric.replace(".", "-")
-    return f"contrast-{slot}-k{k:02d}-{left.cell_id}-minus-{right.cell_id}-{metric_token}"
+    return f"contrast-{slot}-k{k:02d}-{left_cell_id}-minus-{right_cell_id}-{metric_token}"
 
 
 def compute_task13_statistics_v1(
@@ -314,7 +322,13 @@ def compute_task13_statistics_v1(
                         interval = left_projection.interval
                     contrasts.append(
                         Task13PairedContrastV1(
-                            contrast_id=_contrast_id(slot, k, left_run.cell, right_run.cell, metric_path),
+                            contrast_id=task13_contrast_id_v1(
+                                slot,
+                                k,
+                                left_run.cell.cell_id,
+                                right_run.cell.cell_id,
+                                metric_path,
+                            ),
                             left_cell_id=left_run.cell.cell_id,
                             right_cell_id=right_run.cell.cell_id,
                             direction="left_minus_right",
@@ -342,4 +356,5 @@ __all__ = [
     "compute_task13_statistics_v1",
     "decimal_metric_v1",
     "project_metric_v1",
+    "task13_contrast_id_v1",
 ]

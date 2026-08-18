@@ -23,6 +23,7 @@ from mub.vnext.statistics.input_v3 import (
     Task13IntegrityCountsV1,
     load_task13_authenticated_matrix_v1,
 )
+from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.ledger_v3 import (
     Task13LedgerResultV1,
     build_task13_case_index_v1,
@@ -81,6 +82,7 @@ __all__ = [
     "clustered_percentile_interval_v1",
     "paired_percentile_interval_v1",
     "type1_percentile_endpoints_v1",
+    "task13_contrast_id_v1",
     "Task13CasesResultV1",
     "build_task13_cases_v1",
     "classify_task13_case_v1",
