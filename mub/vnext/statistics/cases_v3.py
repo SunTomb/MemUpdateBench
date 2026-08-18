@@ -170,6 +170,11 @@ def project_task13_case_v1(
             completion_status=run.completion_status.value,
             parsed_actions=tuple(_json(item) for item in run.parsed_actions),
             memory_snapshots=tuple(_json(item) for item in run.memory_snapshots),
+            final_state=(
+                _json(run.memory_snapshots[-1])["state_by_object"]
+                if run.memory_snapshots
+                else None
+            ),
             system_events=tuple(dict(item) for item in run.system_events),
             provenance=_json(run.parser_extractor_provenance),
             exceptions=tuple(dict(item) for item in run.exceptions),
@@ -253,16 +258,10 @@ def _coverage(run_id: str, cases: Sequence[Task13CaseRecordV1]) -> Task13RunCase
     )
 
 
-def build_task13_cases_v1(
-    matrix_input: Any,
-    *,
-    require_18_runs: bool = True,
-) -> Task13CasesResultV1:
+def build_task13_cases_v1(matrix_input: Any) -> Task13CasesResultV1:
     runs = tuple(matrix_input.runs)
-    if require_18_runs and len(runs) != 18:
+    if len(runs) != 18:
         raise ValueError("Task 13 case export requires exactly 18 authenticated runs")
-    if not runs:
-        raise ValueError("Task 13 case export requires authenticated runs")
     run_ids = tuple(run.source.run_id for run in runs)
     if len(run_ids) != len(set(run_ids)):
         raise ValueError("Task 13 case export requires unique run IDs")
@@ -275,7 +274,7 @@ def build_task13_cases_v1(
         )
         cases.extend(run_cases)
         coverage.append(_coverage(run.source.run_id, run_cases))
-    if require_18_runs and not 18 <= len(cases) <= 72:
+    if not 18 <= len(cases) <= 72:
         raise AssertionError("Task 13 case export must contain between 18 and 72 cases")
     return Task13CasesResultV1(tuple(cases), tuple(coverage))
 
@@ -283,11 +282,9 @@ def build_task13_cases_v1(
 def verify_task13_cases_v1(
     cases: Sequence[Task13CaseRecordV1],
     matrix_input: Any,
-    *,
-    require_18_runs: bool = True,
 ) -> None:
     supplied = tuple(cases)
-    expected = build_task13_cases_v1(matrix_input, require_18_runs=require_18_runs).cases
+    expected = build_task13_cases_v1(matrix_input).cases
     if len(supplied) != len(expected):
         raise ValueError("case export does not equal authenticated source evidence")
     if tuple(case.case_id for case in supplied) != tuple(case.case_id for case in expected):

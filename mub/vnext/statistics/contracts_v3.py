@@ -404,6 +404,7 @@ class Task13RunProjectionV1(ImmutableContractModel):
     completion_status: StrictIdentifier
     parsed_actions: tuple[FrozenJsonObjectV3, ...]
     memory_snapshots: tuple[FrozenJsonObjectV3, ...]
+    final_state: FrozenJsonObjectV3 | None = None
     system_events: tuple[FrozenJsonObjectV3, ...]
     provenance: FrozenJsonObjectV3
     exceptions: tuple[FrozenJsonObjectV3, ...]

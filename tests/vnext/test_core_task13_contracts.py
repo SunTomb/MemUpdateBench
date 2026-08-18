@@ -156,6 +156,7 @@ def _run_projection() -> Task13RunProjectionV1:
         completion_status="complete",
         parsed_actions=({"action": "ADD"},),
         memory_snapshots=({"step": 1},),
+        final_state={"object-a": "value-a"},
         system_events=(),
         provenance={"runtime_revision": "rev-a"},
         exceptions=(),

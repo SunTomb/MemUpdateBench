@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
 from mub.vnext.contracts.v3.score import ScoreRecordV3
 from mub.vnext.statistics.contracts_v3 import Task13RunSourceV1
 from mub.vnext.statistics.input_v3 import Task13AuthenticatedObservationV1
@@ -77,7 +78,19 @@ def case_fixture():
     )
     observations = []
     for task, base_score, (exact, stale, invalid) in zip(tasks, base_scores, categories):
-        row = _prompted_row(task, config)
+        row = _prompted_row(task, config).model_copy(
+            update={
+                "memory_snapshots": (
+                    MemorySnapshotV3(
+                        after_event_id=task.events[-1].event_id,
+                        state_by_object={
+                            task.target_objects[0].canonical_id: "case-final-value"
+                        },
+                        store_size=1,
+                    ),
+                )
+            }
+        )
         if invalid:
             row = _invalid_answer(row)
         observations.append(
@@ -107,7 +120,41 @@ def case_fixture():
             "task12_matrix_summary": SHA_B,
         },
     )
-    return SimpleNamespace(run=run, matrix=matrix, observations=tuple(observations))
+    full_runs = []
+    for index in range(18):
+        run_id = f"run-case-{index:02d}"
+        cloned_source = Task13RunSourceV1(
+            run_id=run_id,
+            run_manifest_sha256=SHA_A,
+            score_artifact_sha256=SHA_B,
+        )
+        cloned_observations = tuple(
+            replace(
+                observation,
+                cell_id=f"cell-case-{index:02d}",
+                run=observation.run.model_copy(update={"run_id": run_id}),
+                score=observation.score.model_copy(update={"run_id": run_id}),
+                source=cloned_source,
+            )
+            for observation in observations
+        )
+        full_runs.append(
+            SimpleNamespace(
+                source=cloned_source,
+                observations=cloned_observations,
+                run_configuration=_run_config(run_id),
+            )
+        )
+    full_matrix = SimpleNamespace(
+        runs=tuple(full_runs),
+        input_hashes=matrix.input_hashes,
+    )
+    return SimpleNamespace(
+        run=run,
+        matrix=matrix,
+        full_matrix=full_matrix,
+        observations=tuple(observations),
+    )
 
 
 def test_case_selection_is_stratified_and_order_invariant(case_fixture):
@@ -153,6 +200,9 @@ def test_case_metrics_are_copied_not_recomputed(case_fixture):
         path: support.model_dump(mode="json")
         for path, support in case_fixture.observations[1].score.supported_metric_fields.items()
     }
+    assert case.run.model_dump(mode="json")["final_state"] == case_fixture.observations[
+        1
+    ].run.memory_snapshots[-1].model_dump(mode="json")["state_by_object"]
     assert case.task.model_dump(mode="json")["gold_actions"] == [
         action.model_dump(mode="json")
         for action in case_fixture.observations[1].task.actions
@@ -160,8 +210,8 @@ def test_case_metrics_are_copied_not_recomputed(case_fixture):
 
 
 def test_case_verifier_rejects_changed_score_or_trace(case_fixture):
-    result = build_task13_cases_v1(case_fixture.matrix, require_18_runs=False)
-    verify_task13_cases_v1(result.cases, case_fixture.matrix, require_18_runs=False)
+    result = build_task13_cases_v1(case_fixture.full_matrix)
+    verify_task13_cases_v1(result.cases, case_fixture.full_matrix)
 
     first = result.cases[0]
     changed_layers = dict(first.score.metric_layers)
@@ -172,22 +222,33 @@ def test_case_verifier_rejects_changed_score_or_trace(case_fixture):
     changed_case = first.model_copy(update={"score": changed_score})
     with pytest.raises(ValueError, match="does not equal authenticated source evidence"):
         verify_task13_cases_v1(
-            (changed_case, *result.cases[1:]), case_fixture.matrix, require_18_runs=False
+            (changed_case, *result.cases[1:]), case_fixture.full_matrix
         )
 
-    changed_row = case_fixture.observations[0].run.model_copy(update={"system_events": ({"changed": True},)})
-    changed_observation = replace(case_fixture.observations[0], run=changed_row)
+    first_run = case_fixture.full_matrix.runs[0]
+    changed_row = first_run.observations[0].run.model_copy(
+        update={"system_events": ({"changed": True},)}
+    )
+    changed_observation = replace(first_run.observations[0], run=changed_row)
     changed_run = SimpleNamespace(
         **{
-            **case_fixture.run.__dict__,
-            "observations": (changed_observation, *case_fixture.observations[1:]),
+            **first_run.__dict__,
+            "observations": (changed_observation, *first_run.observations[1:]),
         }
     )
     changed_matrix = SimpleNamespace(
-        runs=(changed_run,), input_hashes=case_fixture.matrix.input_hashes
+        runs=(changed_run, *case_fixture.full_matrix.runs[1:]),
+        input_hashes=case_fixture.full_matrix.input_hashes,
     )
     with pytest.raises(ValueError, match="does not equal authenticated source evidence"):
-        verify_task13_cases_v1(result.cases, changed_matrix, require_18_runs=False)
+        verify_task13_cases_v1(result.cases, changed_matrix)
+
+
+def test_case_build_and_verify_have_no_run_count_bypass(case_fixture):
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        build_task13_cases_v1(case_fixture.matrix, require_18_runs=False)
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        verify_task13_cases_v1((), case_fixture.matrix, require_18_runs=False)
 
 
 def test_private_source_text_is_redacted(case_fixture):
