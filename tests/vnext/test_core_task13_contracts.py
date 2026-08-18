@@ -139,6 +139,7 @@ def _task_projection() -> Task13TaskProjectionV1:
         source={"task_manifest_sha256": SHA},
         target_objects=({"object_id": "object-a"},),
         queries=({"query_id": "query-a"},),
+        gold_actions=({"action_id": "action-a"},),
     )
 
 
@@ -155,6 +156,7 @@ def _run_projection() -> Task13RunProjectionV1:
         completion_status="complete",
         parsed_actions=({"action": "ADD"},),
         memory_snapshots=({"step": 1},),
+        system_events=(),
         provenance={"runtime_revision": "rev-a"},
         exceptions=(),
     )
