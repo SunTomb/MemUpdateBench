@@ -35,6 +35,7 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13ScoreProjectionV1,
     Task13RetrievalProjectionV1,
     Task13AnswerProjectionV1,
+    task13_case_id_v1,
 )
 
 
@@ -136,7 +137,16 @@ def _task_projection() -> Task13TaskProjectionV1:
         family="A",
         difficulty="hard",
         metadata={"semantic_core_id": "core-a"},
-        source={"task_manifest_sha256": SHA},
+        source={
+            "source_id": "source-a",
+            "source_type": "synthetic",
+            "source_uri": "https://example.invalid/source-a",
+            "license_or_privacy": "public-test-fixture",
+            "raw_hash": SHA,
+            "normalized_hash": SHA_B,
+            "normalization_version": "norm-v1",
+            "redacted": False,
+        },
         target_objects=({"object_id": "object-a"},),
         queries=({"query_id": "query-a"},),
         gold_actions=({"action_id": "action-a"},),
@@ -155,7 +165,9 @@ def _run_projection() -> Task13RunProjectionV1:
         category="correct",
         completion_status="complete",
         parsed_actions=({"action": "ADD"},),
-        memory_snapshots=({"step": 1},),
+        memory_snapshots=(
+            {"after_event_id": "event-a", "state_by_object": {"object-a": "value-a"}},
+        ),
         final_state={"object-a": "value-a"},
         system_events=(),
         provenance={"runtime_revision": "rev-a"},
@@ -200,7 +212,7 @@ def _answer_projection() -> Task13AnswerProjectionV1:
 
 def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
     return Task13CaseRecordV1(
-        case_id=case_id,
+        case_id=task13_case_id_v1("run-a", "task-a", category),
         category=category,
         run_id="run-a",
         task_id="task-a",
@@ -480,7 +492,7 @@ def test_canonical_roundtrip_preserves_immutable_interval() -> None:
 def test_case_and_claim_helpers_construct_complete_records() -> None:
     case = _case("case-a")
     claim = _claim("claim-a")
-    assert case.case_id == "case-a"
+    assert case.case_id == task13_case_id_v1("run-a", "task-a", "correct")
     assert claim.claim_id == "claim-a"
     assert claim.denominator.task_count == 80
     assert claim.denominator.semantic_core_count == 20
@@ -845,7 +857,51 @@ def test_case_binding_requires_task_id_and_same_run_task_ids_are_unique() -> Non
         Task13CaseIndexV1.model_validate(payload)
 
 
-def test_task13_artifact_index_requires_exact_nonself_roles() -> None:
+
+
+
+def test_redacted_timeline_rejects_private_event_fields_recursively() -> None:
+    with pytest.raises((ValidationError, ValueError), match="redacted|forbidden"):
+        Task13TimelineProjectionV1(
+            redacted=True,
+            items=({"event_id": "event-a", "metadata": {"secret": "value"}},),
+        )
+    with pytest.raises((ValidationError, ValueError), match="redacted|forbidden"):
+        Task13TimelineProjectionV1(
+            redacted=True,
+            items=({"event_id": "event-a", "nested": {"raw_text": "secret"}},),
+        )
+
+
+def test_run_projection_final_state_must_match_a_snapshot() -> None:
+    with pytest.raises((ValidationError, ValueError), match="final_state|snapshot"):
+        Task13RunProjectionV1(
+            run_id="run-a",
+            task_id="task-a",
+            semantic_core_id="core-a",
+            category="correct",
+            completion_status="complete",
+            parsed_actions=(),
+            memory_snapshots=({"state_by_object": {"object-a": "actual"}},),
+            final_state={"object-a": "forged"},
+            system_events=(),
+            provenance={},
+            exceptions=(),
+        )
+    with pytest.raises((ValidationError, ValueError), match="final_state|snapshot"):
+        Task13RunProjectionV1(
+            run_id="run-a",
+            task_id="task-a",
+            semantic_core_id="core-a",
+            category="correct",
+            completion_status="complete",
+            parsed_actions=(),
+            memory_snapshots=(),
+            final_state={},
+            system_events=(),
+            provenance={},
+            exceptions=(),
+        )
     payload = _artifact_index().model_dump(mode="python")
     assert all(binding["role"] == binding["artifact_id"] for binding in payload["artifacts"])
     payload["artifacts"][0]["role"] = None

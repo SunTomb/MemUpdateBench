@@ -13,8 +13,6 @@ from mub.vnext.statistics.cases_v3 import (
     Task13CasesResultV1,
     build_task13_cases_v1,
     classify_task13_case_v1,
-    project_task13_case_v1,
-    select_task13_cases_for_run_v1,
     verify_task13_cases_v1,
 )
 from mub.vnext.statistics.input_v3 import (
@@ -77,8 +75,6 @@ __all__ = [
     "Task13CasesResultV1",
     "build_task13_cases_v1",
     "classify_task13_case_v1",
-    "project_task13_case_v1",
-    "select_task13_cases_for_run_v1",
     "verify_task13_cases_v1",
     "Task13AuthenticatedMatrixV1",
     "Task13AuthenticatedObservationV1",

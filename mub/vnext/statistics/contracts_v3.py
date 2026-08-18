@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
+import hashlib
+import json
+from collections.abc import Mapping
 import re
 from typing import Annotated, Any, Literal
 
@@ -117,6 +120,86 @@ def _require_nonblank_path(value: str) -> str:
     if type(value) is not str or not value or not value.strip():
         raise ValueError("artifact paths must be nonblank strings")
     return value
+
+
+_TASK13_SAFE_SOURCE_FIELDS = frozenset({
+    "source_id",
+    "source_type",
+    "source_uri",
+    "license_or_privacy",
+    "raw_hash",
+    "normalized_hash",
+    "normalization_version",
+    "redacted",
+})
+_TASK13_REDACTED_TIMELINE_FIELDS = frozenset({
+    "event_id",
+    "sequence_index",
+    "timestamp",
+    "speaker",
+    "gold_action_ids",
+    "role",
+})
+_TASK13_REDACTED_FORBIDDEN_FIELDS = frozenset({
+    "raw_text",
+    "normalized_text",
+    "source_anchor",
+    "metadata",
+    "provenance",
+    "generator",
+})
+
+
+def _contains_forbidden_field(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key in _TASK13_REDACTED_FORBIDDEN_FIELDS:
+                return key
+            found = _contains_forbidden_field(item)
+            if found is not None:
+                return found
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            found = _contains_forbidden_field(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _redacted_timeline_violation(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key not in _TASK13_REDACTED_TIMELINE_FIELDS:
+                return str(key)
+            if isinstance(item, Mapping):
+                return str(key)
+            if isinstance(item, (tuple, list)) and any(isinstance(child, Mapping) for child in item):
+                return str(key)
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            found = _redacted_timeline_violation(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _source_nested_container(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    for key, item in value.items():
+        if isinstance(item, (Mapping, tuple, list)):
+            return str(key)
+    return None
+
+
+def task13_case_id_v1(run_id: str, task_id: str, category: str) -> str:
+    raw = json.dumps(
+        {"category": category, "run_id": run_id, "task_id": task_id},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return f"case-{hashlib.sha256(raw).hexdigest()}"
 
 
 class Task13BootstrapConfigV1(ImmutableContractModel):
@@ -394,6 +477,21 @@ class Task13TimelineProjectionV1(ImmutableContractModel):
     redacted: bool = Field(strict=True)
     items: tuple[FrozenJsonObjectV3, ...]
 
+    @model_validator(mode="after")
+    def _redaction_policy(self) -> Task13TimelineProjectionV1:
+        if self.redacted:
+            forbidden = _contains_forbidden_field(self.items)
+            if forbidden is not None:
+                raise ValueError(
+                    f"redacted timeline contains forbidden field: {forbidden}"
+                )
+            violation = _redacted_timeline_violation(self.items)
+            if violation is not None:
+                raise ValueError(
+                    f"redacted timeline contains non-allowlisted field: {violation}"
+                )
+        return self
+
 
 class Task13RunProjectionV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
@@ -408,6 +506,25 @@ class Task13RunProjectionV1(ImmutableContractModel):
     system_events: tuple[FrozenJsonObjectV3, ...]
     provenance: FrozenJsonObjectV3
     exceptions: tuple[FrozenJsonObjectV3, ...]
+
+    @model_validator(mode="after")
+    def _final_state_consistency(self) -> Task13RunProjectionV1:
+        if not self.memory_snapshots:
+            if self.final_state is not None:
+                raise ValueError("final_state requires at least one memory snapshot")
+            return self
+        if self.final_state is None:
+            raise ValueError("memory snapshots require a final_state projection")
+        snapshot_states = tuple(
+            snapshot.get("state_by_object")
+            for snapshot in self.memory_snapshots
+            if "state_by_object" in snapshot
+        )
+        if len(snapshot_states) != len(self.memory_snapshots):
+            raise ValueError("memory snapshots must expose state_by_object")
+        if self.final_state not in snapshot_states:
+            raise ValueError("final_state must equal one authenticated snapshot state")
+        return self
 
 
 class Task13ScoreProjectionV1(ImmutableContractModel):
@@ -465,10 +582,25 @@ class Task13CaseRecordV1(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _projection_identity_matches(self) -> Task13CaseRecordV1:
+        if self.case_id != task13_case_id_v1(self.run_id, self.task_id, self.category):
+            raise ValueError("case_id does not match its run, task, and category")
         if self.task.task_id != self.task_id:
             raise ValueError("task projection task_id must match the case task_id")
         if self.task.semantic_core_id != self.semantic_core_id:
             raise ValueError("task projection semantic_core_id must match the case semantic_core_id")
+        source = self.task.source
+        if set(source) != _TASK13_SAFE_SOURCE_FIELDS:
+            raise ValueError("task source projection must use the explicit safe-field allowlist")
+        if source.get("redacted") is not self.timeline.redacted:
+            raise ValueError("task source and timeline redaction flags must agree")
+        forbidden = _contains_forbidden_field(source)
+        if forbidden is not None:
+            raise ValueError(f"task source contains forbidden field: {forbidden}")
+        nested = _source_nested_container(source)
+        if nested is not None:
+            raise ValueError(f"task source safe fields must be scalar: {nested}")
+        if self.timeline.redacted and source.get("source_uri") is not None:
+            raise ValueError("redacted task source must not expose source_uri")
         for projection in (self.run, self.score, self.retrieval, self.answer):
             if projection.run_id != self.run_id:
                 raise ValueError("projection run_id must match the case run_id")
@@ -678,4 +810,5 @@ __all__ = [
     "Task13TimelineProjectionV1",
     "Task13RetrievalProjectionV1",
     "canonical_decimal_string",
+    "task13_case_id_v1",
 ]

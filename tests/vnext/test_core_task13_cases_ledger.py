@@ -6,13 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
+from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.contracts.v3.score import ScoreRecordV3
 from mub.vnext.statistics.contracts_v3 import Task13RunSourceV1
 from mub.vnext.statistics.input_v3 import Task13AuthenticatedObservationV1
 from mub.vnext.statistics.cases_v3 import (
+    _project_task13_case_v1,
+    _select_task13_cases_for_run_v1,
     build_task13_cases_v1,
-    project_task13_case_v1,
-    select_task13_cases_for_run_v1,
     verify_task13_cases_v1,
 )
 from tests.vnext.task12_fixtures import ROOT
@@ -157,61 +158,36 @@ def case_fixture():
     )
 
 
-def test_case_selection_is_stratified_and_order_invariant(case_fixture):
-    hashes = case_fixture.matrix.input_hashes
-    forward = select_task13_cases_for_run_v1(case_fixture.run, input_hashes=hashes)
-    shuffled_run = SimpleNamespace(
-        **{
-            **case_fixture.run.__dict__,
-            "observations": tuple(reversed(case_fixture.run.observations)),
-        }
-    )
-    reverse = select_task13_cases_for_run_v1(shuffled_run, input_hashes=hashes)
+def test_case_selection_is_stratified_and_order_invariant(authenticated_case_matrix):
+    matrix = authenticated_case_matrix
+    run = matrix.runs[0]
+    forward = _select_task13_cases_for_run_v1(run, matrix)
+    shuffled_run = replace(run, observations=tuple(reversed(run.observations)))
+    reverse = _select_task13_cases_for_run_v1(shuffled_run, matrix)
 
-    assert tuple(case.category for case in forward) == (
-        "correct",
-        "stale_copied",
-        "answer_parse_invalid",
-        "other_wrong",
-    )
     assert tuple(case.case_id for case in forward) == tuple(case.case_id for case in reverse)
-    assert len({case.task_id for case in forward}) == 4
-    expected_correct = min(
-        (
-            observation
-            for observation in case_fixture.observations
-            if observation.score.answer_scores.exact_match == 1
-        ),
-        key=lambda observation: (
-            observation.semantic_core_id.encode("utf-8"),
-            observation.task.task_id.encode("utf-8"),
-        ),
-    )
-    assert forward[0].task_id == expected_correct.task.task_id
+    assert len({case.task_id for case in forward}) == len(forward)
+    assert all(case.run_id == run.source.run_id for case in forward)
 
 
-def test_case_metrics_are_copied_not_recomputed(case_fixture):
-    case = project_task13_case_v1(
-        case_fixture.observations[1], input_hashes=case_fixture.matrix.input_hashes
-    )
+def test_case_metrics_are_copied_not_recomputed(authenticated_case_matrix):
+    observation = authenticated_case_matrix.runs[0].observations[0]
+    case = _project_task13_case_v1(observation, authenticated_case_matrix)
 
-    assert case.score.metric_layers["answer_scores"]["stale_copied"] == 1.0
+    assert case.score.metric_layers["answer_scores"] == observation.score.answer_scores.model_dump(mode="json")
     assert case.score.support == {
         path: support.model_dump(mode="json")
-        for path, support in case_fixture.observations[1].score.supported_metric_fields.items()
+        for path, support in observation.score.supported_metric_fields.items()
     }
-    assert case.run.model_dump(mode="json")["final_state"] == case_fixture.observations[
-        1
-    ].run.memory_snapshots[-1].model_dump(mode="json")["state_by_object"]
+    assert case.run.model_dump(mode="json")["final_state"] is None
     assert case.task.model_dump(mode="json")["gold_actions"] == [
-        action.model_dump(mode="json")
-        for action in case_fixture.observations[1].task.actions
+        action.model_dump(mode="json") for action in observation.task.actions
     ]
 
 
-def test_case_verifier_rejects_changed_score_or_trace(case_fixture):
-    result = build_task13_cases_v1(case_fixture.full_matrix)
-    verify_task13_cases_v1(result.cases, case_fixture.full_matrix)
+def test_case_verifier_rejects_changed_score_or_trace(authenticated_case_matrix):
+    result = build_task13_cases_v1(authenticated_case_matrix)
+    verify_task13_cases_v1(result.cases, authenticated_case_matrix)
 
     first = result.cases[0]
     changed_layers = dict(first.score.metric_layers)
@@ -221,26 +197,14 @@ def test_case_verifier_rejects_changed_score_or_trace(case_fixture):
     changed_score = first.score.model_copy(update={"metric_layers": changed_layers})
     changed_case = first.model_copy(update={"score": changed_score})
     with pytest.raises(ValueError, match="does not equal authenticated source evidence"):
-        verify_task13_cases_v1(
-            (changed_case, *result.cases[1:]), case_fixture.full_matrix
-        )
+        verify_task13_cases_v1((changed_case, *result.cases[1:]), authenticated_case_matrix)
 
-    first_run = case_fixture.full_matrix.runs[0]
-    changed_row = first_run.observations[0].run.model_copy(
-        update={"system_events": ({"changed": True},)}
-    )
+    first_run = authenticated_case_matrix.runs[0]
+    changed_row = first_run.observations[0].run.model_copy(update={"system_events": ({"changed": True},)})
     changed_observation = replace(first_run.observations[0], run=changed_row)
-    changed_run = SimpleNamespace(
-        **{
-            **first_run.__dict__,
-            "observations": (changed_observation, *first_run.observations[1:]),
-        }
-    )
-    changed_matrix = SimpleNamespace(
-        runs=(changed_run, *case_fixture.full_matrix.runs[1:]),
-        input_hashes=case_fixture.full_matrix.input_hashes,
-    )
-    with pytest.raises(ValueError, match="does not equal authenticated source evidence"):
+    changed_run = replace(first_run, observations=(changed_observation, *first_run.observations[1:]))
+    changed_matrix = replace(authenticated_case_matrix, runs=(changed_run, *authenticated_case_matrix.runs[1:]))
+    with pytest.raises(ValueError, match="authenticated|source|linkage"):
         verify_task13_cases_v1(result.cases, changed_matrix)
 
 
@@ -251,19 +215,216 @@ def test_case_build_and_verify_have_no_run_count_bypass(case_fixture):
         verify_task13_cases_v1((), case_fixture.matrix, require_18_runs=False)
 
 
-def test_private_source_text_is_redacted(case_fixture):
-    observation = case_fixture.observations[0]
-    private_source = observation.task.source.model_copy(
-        update={"provenance": {"redistributable": False}}
-    )
+def test_private_source_text_is_redacted(authenticated_case_matrix):
+    matrix = authenticated_case_matrix
+    run = matrix.runs[0]
+    observation = run.observations[0]
+    private_source = observation.task.source.model_copy(update={"provenance": {"redistributable": False}})
     private_task = observation.task.model_copy(update={"source": private_source})
     private_observation = replace(observation, task=private_task)
+    task_hashes = dict(run.run_configuration.task_record_hashes)
+    task_hashes[private_task.task_id] = sha256_model(private_task)
+    private_config = run.run_configuration.model_copy(update={"task_record_hashes": task_hashes})
+    private_run = replace(run, observations=(private_observation, *run.observations[1:]), run_configuration=private_config)
+    private_matrix = replace(matrix, runs=(private_run, *matrix.runs[1:]))
 
-    case = project_task13_case_v1(
-        private_observation, input_hashes=case_fixture.matrix.input_hashes
-    )
+    case = _project_task13_case_v1(private_observation, private_matrix)
 
     assert case.task.source["source_uri"] is None
     assert case.timeline.redacted is True
     assert all("raw_text" not in event for event in case.timeline.items)
-    assert all("normalized_text" not in event for event in case.timeline.items)
+
+
+@pytest.fixture(scope="module")
+def authenticated_case_matrix(tmp_path_factory):
+    from mub.vnext.runtime.task12_execution_v3 import Task12RuntimeCodeBindingV1
+    from mub.vnext.statistics.input_v3 import load_task13_authenticated_matrix_v1
+    from tests.vnext.task13_input_fixtures import build_compact_authenticated_task13_fixture
+
+    fixture = build_compact_authenticated_task13_fixture(
+        tmp_path_factory.mktemp("task13-cases-authenticated"),
+        ROOT,
+        Task12RuntimeCodeBindingV1(code_revision="8" * 40, code_tree_sha256="9" * 64),
+    )
+    expected = fixture["expected_hashes"]
+    return load_task13_authenticated_matrix_v1(
+        preparation_manifest_path=fixture["preparation_manifest_path"],
+        plan_path=fixture["plan_path"],
+        core_root=fixture["inputs"]["core_root"],
+        evidence_root=fixture["inputs"]["evidence_root"],
+        matrix_root=fixture["matrix"].matrix_root,
+        matrix_manifest_path=fixture["matrix_manifest_path"],
+        matrix_summary_path=fixture["summary_path"],
+        integrity_audit_path=fixture["audit_path"],
+        repository_root=ROOT,
+        expected_preparation_manifest_sha256=expected["preparation_manifest"],
+        expected_plan_sha256=expected["plan"],
+        expected_matrix_manifest_sha256=expected["matrix_manifest"],
+        expected_matrix_summary_sha256=expected["matrix_summary"],
+        expected_integrity_audit_sha256=expected["integrity_audit"],
+    )
+
+
+def test_case_build_requires_the_authenticated_matrix_type(case_fixture):
+    with pytest.raises(TypeError, match="Task13AuthenticatedMatrixV1"):
+        build_task13_cases_v1(case_fixture.full_matrix)
+
+
+def test_case_build_revalidates_exact_production_shape(authenticated_case_matrix):
+    matrix = authenticated_case_matrix
+    assert len(matrix.runs) == 18
+    assert all(len(run.observations) == 80 for run in matrix.runs)
+    truncated = replace(
+        matrix,
+        runs=(
+            replace(matrix.runs[0], observations=matrix.runs[0].observations[:-1]),
+            *matrix.runs[1:],
+        ),
+    )
+    with pytest.raises(ValueError, match="exactly 80 observations"):
+        build_task13_cases_v1(truncated)
+
+
+def test_case_build_rejects_duplicate_task_observation(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    duplicate = replace(
+        run,
+        observations=(run.observations[0], run.observations[0], *run.observations[2:]),
+    )
+    forged = replace(authenticated_case_matrix, runs=(duplicate, *authenticated_case_matrix.runs[1:]))
+    with pytest.raises(ValueError, match="unique task|canonical task identity"):
+        build_task13_cases_v1(forged)
+
+
+def test_case_build_rejects_cross_run_task_identity_mismatch(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[1]
+    observation = run.observations[0]
+    forged_observation = replace(observation, semantic_core_id="foreign-core")
+    forged_run = replace(run, observations=(forged_observation, *run.observations[1:]))
+    forged = replace(
+        authenticated_case_matrix,
+        runs=(authenticated_case_matrix.runs[0], forged_run, *authenticated_case_matrix.runs[2:]),
+    )
+    with pytest.raises(ValueError, match="semantic-core|canonical task identity|identity sequence"):
+        build_task13_cases_v1(forged)
+
+
+def test_case_build_rejects_noncanonical_run_order(authenticated_case_matrix):
+    with pytest.raises(ValueError, match="run order|canonical"):
+        build_task13_cases_v1(
+            replace(authenticated_case_matrix, runs=tuple(reversed(authenticated_case_matrix.runs)))
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cell_id", "forged-cell"),
+        ("slot", "answer_model_b"),
+        ("k", 8),
+        ("context_order", "reverse_chronological"),
+        ("context_annotation", "latest_outdated_label"),
+    ],
+)
+def test_case_build_rejects_coordinate_relabeling(authenticated_case_matrix, field, value):
+    run = authenticated_case_matrix.runs[0]
+    observation = run.observations[0]
+    forged_observation = replace(observation, **{field: value})
+    forged_run = replace(run, observations=(forged_observation, *run.observations[1:]))
+    forged = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    with pytest.raises(ValueError, match="coordinate|cell|slot|k|context"):
+        build_task13_cases_v1(forged)
+
+
+def test_case_build_rejects_spoofed_input_hashes(authenticated_case_matrix):
+    spoofed = dict(authenticated_case_matrix.input_hashes)
+    spoofed["core_tasks"] = "f" * 64
+    with pytest.raises(ValueError, match="input hash|authenticated"):
+        build_task13_cases_v1(replace(authenticated_case_matrix, input_hashes=spoofed))
+
+
+def test_case_build_rejects_spoofed_source_hash(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    observation = run.observations[0]
+    forged_observation = replace(
+        observation,
+        source=Task13RunSourceV1(
+            run_id=observation.source.run_id,
+            run_manifest_sha256="f" * 64,
+            score_artifact_sha256=observation.source.score_artifact_sha256,
+        ),
+    )
+    forged_run = replace(run, observations=(forged_observation, *run.observations[1:]))
+    forged = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    with pytest.raises(ValueError, match="source|hash"):
+        build_task13_cases_v1(forged)
+
+
+def test_case_projection_redacts_nested_private_fields(authenticated_case_matrix):
+    matrix = authenticated_case_matrix
+    run = matrix.runs[0]
+    observation = run.observations[0]
+    private_source = observation.task.source.model_copy(
+        update={
+            "provenance": {
+                "redistributable": False,
+                "nested_secret": {"token": "DO_NOT_EXPORT"},
+            }
+        }
+    )
+    private_events = tuple(
+        event.model_copy(
+            update={
+                "metadata": {"secret": "DO_NOT_EXPORT"},
+                "source_anchor": {"secret": "DO_NOT_EXPORT"},
+                "raw_text": "DO_NOT_EXPORT",
+                "normalized_text": "DO_NOT_EXPORT",
+            }
+        )
+        for event in observation.task.events
+    )
+    private_task = observation.task.model_copy(update={"source": private_source, "events": private_events})
+    private_observation = replace(observation, task=private_task)
+    task_hashes = dict(run.run_configuration.task_record_hashes)
+    task_hashes[private_task.task_id] = sha256_model(private_task)
+    private_config = run.run_configuration.model_copy(update={"task_record_hashes": task_hashes})
+    private_run = replace(run, observations=(private_observation, *run.observations[1:]), run_configuration=private_config)
+    private_matrix = replace(matrix, runs=(private_run, *matrix.runs[1:]))
+    case = _project_task13_case_v1(private_observation, private_matrix)
+    serialized = canonical_json_bytes(case)
+    assert b"DO_NOT_EXPORT" not in serialized
+    assert "provenance" not in case.task.source
+    assert all("metadata" not in item and "source_anchor" not in item for item in case.timeline.items)
+
+
+def test_final_snapshot_resolves_by_event_chronology_and_rejects_bad_anchors(case_fixture):
+    from mub.vnext.scoring.scorer_v3 import resolve_final_snapshot_v3
+
+    observation = case_fixture.observations[0]
+    early = MemorySnapshotV3(
+        after_event_id=observation.task.events[0].event_id,
+        state_by_object={"object": "early"},
+        store_size=1,
+    )
+    late = MemorySnapshotV3(
+        after_event_id=observation.task.events[-1].event_id,
+        state_by_object={"object": "late"},
+        store_size=1,
+    )
+    reversed_run = observation.run.model_copy(update={"memory_snapshots": (late, early)})
+    assert resolve_final_snapshot_v3(reversed_run, observation.task).state_by_object == {"object": "late"}
+
+    duplicate = observation.run.model_copy(update={"memory_snapshots": (early, early)})
+    with pytest.raises(ValueError, match="duplicate"):
+        resolve_final_snapshot_v3(duplicate, observation.task)
+    unknown = observation.run.model_copy(
+        update={"memory_snapshots": (MemorySnapshotV3(after_event_id="unknown", store_size=0),)}
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_final_snapshot_v3(unknown, observation.task)

@@ -238,11 +238,13 @@ def _identity(key):
     return object_identity(key)
 
 
-def _final_snapshot(run, task=None):
+def resolve_final_snapshot_v3(run, task=None):
     if not run.memory_snapshots:
         return None
     if task is None:
-        return run.memory_snapshots[-1]
+        if len(run.memory_snapshots) != 1 or run.memory_snapshots[0].after_event_id is not None:
+            raise ValueError("task chronology is required for anchored final snapshots")
+        return run.memory_snapshots[0]
     if len(run.memory_snapshots) == 1 and run.memory_snapshots[0].after_event_id is None:
         return run.memory_snapshots[0]
     if any(snapshot.after_event_id is None for snapshot in run.memory_snapshots):
@@ -255,6 +257,10 @@ def _final_snapshot(run, task=None):
     if unknown:
         raise ValueError(f"unknown memory snapshot anchor: {sorted(unknown)}")
     return max(run.memory_snapshots, key=lambda snapshot: positions[snapshot.after_event_id])
+
+
+def _final_snapshot(run, task=None):
+    return resolve_final_snapshot_v3(run, task)
 
 
 def _snapshot_state(run, task=None):
@@ -912,4 +918,4 @@ def score_task_v3(task: MemUpdateTaskV3, run: TaskRunRecordV3, context: Verified
     )
 
 
-__all__ = ["VerifiedScoringContextV3", "score_task_v3"]
+__all__ = ["VerifiedScoringContextV3", "resolve_final_snapshot_v3", "score_task_v3"]
