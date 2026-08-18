@@ -304,17 +304,21 @@ def _task_metadata_projection(task: Any, private: bool) -> dict[str, Any]:
     }
 
 
-def _private_source_projection(task: Any, private: bool) -> dict[str, Any]:
+def _source_projection(task: Any, private: bool) -> dict[str, Any]:
     source = task.source
+    if not private:
+        payload = _json(source)
+        payload["redacted"] = False
+        return payload
     return {
         "source_id": source.source_id,
         "source_type": source.source_type.value if hasattr(source.source_type, "value") else source.source_type,
-        "source_uri": None if private else source.source_uri,
+        "source_uri": None,
         "license_or_privacy": source.license_or_privacy,
         "raw_hash": source.raw_hash,
         "normalized_hash": source.normalized_hash,
         "normalization_version": source.normalization_version,
-        "redacted": private,
+        "redacted": True,
     }
 
 
@@ -358,8 +362,8 @@ def _project_task13_case_v1(
     runtime_row = observation.run
     score = observation.score
     category = classify_task13_case_v1(observation)
-    private = task.source.provenance.get("redistributable") is False
-    source_payload = _private_source_projection(task, private)
+    private = task.source.provenance.get("redistributable") is not True
+    source_payload = _source_projection(task, private)
     timeline = tuple(
         _private_timeline_item(event) if private else _json(event)
         for event in task.events

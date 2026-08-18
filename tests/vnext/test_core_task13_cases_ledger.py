@@ -189,6 +189,62 @@ def test_case_metrics_are_copied_not_recomputed(authenticated_case_matrix):
     ]
 
 
+def test_public_case_source_preserves_authenticated_source_fields(authenticated_case_matrix):
+    observation = authenticated_case_matrix.runs[0].observations[0]
+    case = _project_task13_case_v1(observation, authenticated_case_matrix)
+
+    expected_source = observation.task.source.model_dump(mode="json")
+    expected_source["redacted"] = False
+    assert case.task.source == expected_source
+    assert case.task.source["provenance"] == observation.task.source.provenance
+    assert case.task.source["generator"] == (
+        observation.task.source.generator.model_dump(mode="json")
+        if observation.task.source.generator is not None
+        else None
+    )
+    assert case.timeline.redacted is False
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    ({}, {"redistributable": "false"}),
+    ids=("missing-redistributable", "string-false-redistributable"),
+)
+def test_unknown_redistributability_defaults_to_private(authenticated_case_matrix, provenance):
+    matrix = authenticated_case_matrix
+    run = matrix.runs[0]
+    observation = run.observations[0]
+    private_source = observation.task.source.model_copy(update={"provenance": provenance})
+    private_task = observation.task.model_copy(update={"source": private_source})
+    private_observation = replace(
+        observation,
+        task=private_task,
+        evidence_sha256="",
+    )
+    private_observation = replace(
+        private_observation,
+        evidence_sha256=_task13_observation_evidence_sha256(private_observation),
+    )
+    task_hashes = dict(run.run_configuration.task_record_hashes)
+    task_hashes[private_task.task_id] = sha256_model(private_task)
+    private_config = run.run_configuration.model_copy(update={"task_record_hashes": task_hashes})
+    private_run = replace(
+        run,
+        observations=(private_observation, *run.observations[1:]),
+        run_configuration=private_config,
+    )
+    private_matrix = replace(matrix, runs=(private_run, *matrix.runs[1:]))
+
+    case = _project_task13_case_v1(private_observation, private_matrix)
+
+    assert case.timeline.redacted is True
+    assert case.task.source["source_uri"] is None
+    assert "provenance" not in case.task.source
+    assert "generator" not in case.task.source
+    assert all("raw_text" not in item for item in case.timeline.items)
+    assert all("normalized_text" not in item for item in case.timeline.items)
+
+
 def test_case_verifier_rejects_changed_score_or_trace(authenticated_case_matrix):
     result = build_task13_cases_v1(authenticated_case_matrix)
     verify_task13_cases_v1(result.cases, authenticated_case_matrix)

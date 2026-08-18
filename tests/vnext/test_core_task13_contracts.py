@@ -145,6 +145,14 @@ def _task_projection() -> Task13TaskProjectionV1:
             "raw_hash": SHA,
             "normalized_hash": SHA_B,
             "normalization_version": "norm-v1",
+            "provenance": {"redistributable": True, "source": "fixture"},
+            "generator": {
+                "generator_name": "fixture-generator",
+                "seed": 1,
+                "config_sha256": SHA,
+                "code_revision": "fixture-revision",
+                "compiler_version": "fixture-compiler",
+            },
             "redacted": False,
         },
         target_objects=({"object_id": "object-a"},),
@@ -154,7 +162,10 @@ def _task_projection() -> Task13TaskProjectionV1:
 
 
 def _timeline_projection() -> Task13TimelineProjectionV1:
-    return Task13TimelineProjectionV1(redacted=False, items=({"event": "update"},))
+    return Task13TimelineProjectionV1(
+        redacted=False,
+        items=({"event_id": "event-a", "sequence_index": 1},),
+    )
 
 
 def _run_projection() -> Task13RunProjectionV1:
@@ -871,6 +882,11 @@ def test_redacted_timeline_rejects_private_event_fields_recursively() -> None:
             redacted=True,
             items=({"event_id": "event-a", "nested": {"raw_text": "secret"}},),
         )
+    with pytest.raises((ValidationError, ValueError), match="redacted|allowlisted|nested"):
+        Task13TimelineProjectionV1(
+            redacted=True,
+            items=({"gold_action_ids": [[{"secret": "value"}]]},),
+        )
 
 
 def test_run_projection_final_state_must_match_a_snapshot() -> None:
@@ -911,6 +927,91 @@ def test_run_projection_final_state_must_match_a_snapshot() -> None:
     payload["artifacts"][0]["role"] = "wrong-role"
     with pytest.raises((ValidationError, ValueError)):
         Task13ArtifactIndexV1.model_validate(payload)
+
+
+def test_run_projection_rejects_bool_int_final_state_alias() -> None:
+    with pytest.raises((ValidationError, ValueError), match="final_state|snapshot"):
+        Task13RunProjectionV1(
+            run_id="run-a",
+            task_id="task-a",
+            semantic_core_id="core-a",
+            category="correct",
+            completion_status="complete",
+            parsed_actions=(),
+            memory_snapshots=({"state_by_object": {"object-a": 1}},),
+            final_state={"object-a": True},
+            system_events=(),
+            provenance={},
+            exceptions=(),
+        )
+
+
+def test_case_record_rejects_stale_early_final_state() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["timeline"] = {
+        "redacted": False,
+        "items": (
+            {"event_id": "event-early", "sequence_index": 1},
+            {"event_id": "event-late", "sequence_index": 2},
+        ),
+    }
+    payload["run"]["memory_snapshots"] = (
+        {
+            "after_event_id": "event-early",
+            "state_by_object": {"object-a": "early"},
+        },
+        {
+            "after_event_id": "event-late",
+            "state_by_object": {"object-a": "late"},
+        },
+    )
+    payload["run"]["final_state"] = {"object-a": "early"}
+    with pytest.raises((ValidationError, ValueError), match="chronology|final_state|snapshot"):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "snapshots",
+    (
+        (
+            {"state_by_object": {"object-a": "unanchored"}},
+            {
+                "after_event_id": "event-late",
+                "state_by_object": {"object-a": "late"},
+            },
+        ),
+        (
+            {
+                "after_event_id": "event-late",
+                "state_by_object": {"object-a": "first"},
+            },
+            {
+                "after_event_id": "event-late",
+                "state_by_object": {"object-a": "second"},
+            },
+        ),
+        (
+            {
+                "after_event_id": "event-unknown",
+                "state_by_object": {"object-a": "unknown"},
+            },
+        ),
+    ),
+    ids=("mixed-unanchored", "duplicate-anchor", "unknown-anchor"),
+)
+def test_case_record_rejects_invalid_snapshot_chronology(snapshots) -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["timeline"] = {
+        "redacted": False,
+        "items": (
+            {"event_id": "event-early", "sequence_index": 1},
+            {"event_id": "event-late", "sequence_index": 2},
+        ),
+    }
+    payload["run"]["memory_snapshots"] = snapshots
+    payload["run"]["final_state"] = snapshots[-1]["state_by_object"]
+    with pytest.raises((ValidationError, ValueError), match="chronology|anchor|snapshot"):
+        Task13CaseRecordV1.model_validate(payload)
 
 
 def test_statistics_receipt_requires_role_specific_artifact_ids_and_paths() -> None:

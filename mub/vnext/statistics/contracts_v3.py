@@ -15,9 +15,16 @@ from mub.vnext.contracts.common import (
     MetricFieldSupport,
     SHA256_PATTERN,
     StrictNonnegativeInt,
+    thaw_json,
 )
-from mub.vnext.contracts.v3.common import FrozenJsonObjectV3, StrictIdentifier, StrictPositiveInt
+from mub.vnext.contracts.v3.common import (
+    FrozenJsonObjectV3,
+    StrictIdentifier,
+    StrictPositiveInt,
+    typed_json_equal,
+)
 from mub.vnext.contracts.v3.score import CORE_METRIC_FIELD_PATHS
+from mub.vnext.contracts.v3.task import SourceRecordV3
 from mub.vnext.io import sha256_model
 
 
@@ -132,6 +139,7 @@ _TASK13_SAFE_SOURCE_FIELDS = frozenset({
     "normalization_version",
     "redacted",
 })
+_TASK13_PUBLIC_SOURCE_FIELDS = frozenset(SourceRecordV3.model_fields) | {"redacted"}
 _TASK13_REDACTED_TIMELINE_FIELDS = frozenset({
     "event_id",
     "sequence_index",
@@ -166,14 +174,29 @@ def _contains_forbidden_field(value: Any) -> str | None:
     return None
 
 
+def _is_json_scalar(value: Any) -> bool:
+    return value is None or type(value) in {bool, int, float, str}
+
+
+def _redacted_timeline_value_violation(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        return "nested mapping"
+    if isinstance(value, (tuple, list)):
+        if any(not _is_json_scalar(item) for item in value):
+            return "nested sequence"
+        return None
+    if not _is_json_scalar(value):
+        return "non-scalar value"
+    return None
+
+
 def _redacted_timeline_violation(value: Any) -> str | None:
     if isinstance(value, Mapping):
         for key, item in value.items():
             if key not in _TASK13_REDACTED_TIMELINE_FIELDS:
                 return str(key)
-            if isinstance(item, Mapping):
-                return str(key)
-            if isinstance(item, (tuple, list)) and any(isinstance(child, Mapping) for child in item):
+            violation = _redacted_timeline_value_violation(item)
+            if violation is not None:
                 return str(key)
     elif isinstance(value, (tuple, list)):
         for item in value:
@@ -190,6 +213,16 @@ def _source_nested_container(value: Any) -> str | None:
         if isinstance(item, (Mapping, tuple, list)):
             return str(key)
     return None
+
+
+def _validate_public_source_projection(source: Mapping[str, Any]) -> None:
+    payload = {key: value for key, value in source.items() if key != "redacted"}
+    try:
+        source_record = SourceRecordV3.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("public task source must match SourceRecordV3") from exc
+    if not typed_json_equal(source_record.model_dump(mode="json"), thaw_json(payload)):
+        raise ValueError("public task source must use canonical SourceRecordV3 content")
 
 
 def task13_case_id_v1(run_id: str, task_id: str, category: str) -> str:
@@ -522,9 +555,46 @@ class Task13RunProjectionV1(ImmutableContractModel):
         )
         if len(snapshot_states) != len(self.memory_snapshots):
             raise ValueError("memory snapshots must expose state_by_object")
-        if self.final_state not in snapshot_states:
+        if not any(typed_json_equal(self.final_state, state) for state in snapshot_states):
             raise ValueError("final_state must equal one authenticated snapshot state")
         return self
+
+
+def _validate_case_snapshot_chronology(
+    timeline: Task13TimelineProjectionV1,
+    run: Task13RunProjectionV1,
+) -> None:
+    if not run.memory_snapshots:
+        return
+    event_positions: dict[str, int] = {}
+    for item in timeline.items:
+        event_id = item.get("event_id")
+        sequence_index = item.get("sequence_index")
+        if type(event_id) is not str or type(sequence_index) is not int:
+            continue
+        if event_id in event_positions:
+            raise ValueError("case timeline contains duplicate event IDs")
+        event_positions[event_id] = sequence_index
+
+    anchors = tuple(snapshot.get("after_event_id") for snapshot in run.memory_snapshots)
+    if len(anchors) == 1 and anchors[0] is None:
+        selected_snapshot = run.memory_snapshots[0]
+    else:
+        if any(anchor is None for anchor in anchors):
+            raise ValueError("case snapshots must not mix anchored and unanchored snapshots")
+        if any(type(anchor) is not str for anchor in anchors):
+            raise ValueError("case snapshots contain unknown anchors")
+        if len(anchors) != len(set(anchors)):
+            raise ValueError("case snapshots contain duplicate anchors")
+        unknown = tuple(anchor for anchor in anchors if anchor not in event_positions)
+        if unknown:
+            raise ValueError("case snapshots contain unknown anchors")
+        selected_snapshot = max(
+            run.memory_snapshots,
+            key=lambda snapshot: event_positions[snapshot["after_event_id"]],
+        )
+    if not typed_json_equal(run.final_state, selected_snapshot["state_by_object"]):
+        raise ValueError("case final_state does not match chronology-resolved snapshot")
 
 
 class Task13ScoreProjectionV1(ImmutableContractModel):
@@ -589,18 +659,27 @@ class Task13CaseRecordV1(ImmutableContractModel):
         if self.task.semantic_core_id != self.semantic_core_id:
             raise ValueError("task projection semantic_core_id must match the case semantic_core_id")
         source = self.task.source
-        if set(source) != _TASK13_SAFE_SOURCE_FIELDS:
-            raise ValueError("task source projection must use the explicit safe-field allowlist")
+        expected_source_fields = (
+            _TASK13_SAFE_SOURCE_FIELDS
+            if self.timeline.redacted
+            else _TASK13_PUBLIC_SOURCE_FIELDS
+        )
+        if set(source) != expected_source_fields:
+            raise ValueError("task source projection must use its exact redaction field set")
         if source.get("redacted") is not self.timeline.redacted:
             raise ValueError("task source and timeline redaction flags must agree")
-        forbidden = _contains_forbidden_field(source)
-        if forbidden is not None:
-            raise ValueError(f"task source contains forbidden field: {forbidden}")
-        nested = _source_nested_container(source)
-        if nested is not None:
-            raise ValueError(f"task source safe fields must be scalar: {nested}")
-        if self.timeline.redacted and source.get("source_uri") is not None:
-            raise ValueError("redacted task source must not expose source_uri")
+        if self.timeline.redacted:
+            forbidden = _contains_forbidden_field(source)
+            if forbidden is not None:
+                raise ValueError(f"task source contains forbidden field: {forbidden}")
+            nested = _source_nested_container(source)
+            if nested is not None:
+                raise ValueError(f"task source safe fields must be scalar: {nested}")
+            if source.get("source_uri") is not None:
+                raise ValueError("redacted task source must not expose source_uri")
+        else:
+            _validate_public_source_projection(source)
+        _validate_case_snapshot_chronology(self.timeline, self.run)
         for projection in (self.run, self.score, self.retrieval, self.answer):
             if projection.run_id != self.run_id:
                 raise ValueError("projection run_id must match the case run_id")
