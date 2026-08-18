@@ -946,6 +946,96 @@ def test_run_projection_rejects_bool_int_final_state_alias() -> None:
         )
 
 
+def test_case_record_rejects_duplicate_event_id_when_later_item_lacks_sequence() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["timeline"] = {
+        "redacted": False,
+        "items": (
+            {"event_id": "event-a", "sequence_index": 1},
+            {"event_id": "event-a"},
+        ),
+    }
+    payload["run"]["memory_snapshots"] = (
+        {"after_event_id": "event-a", "state_by_object": {"object-a": "value-a"}},
+    )
+    payload["run"]["final_state"] = {"object-a": "value-a"}
+    with pytest.raises((ValidationError, ValueError), match="timeline|event|sequence"):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "snapshots",
+    (
+        (
+            {"after_event_id": "event-a", "state_by_object": {"object-a": "same"}},
+            {"after_event_id": "event-b", "state_by_object": {"object-a": "same"}},
+        ),
+        (
+            {"after_event_id": "event-b", "state_by_object": {"object-a": "same"}},
+            {"after_event_id": "event-a", "state_by_object": {"object-a": "same"}},
+        ),
+    ),
+    ids=("original-snapshot-order", "reversed-snapshot-order"),
+)
+def test_case_record_rejects_duplicate_sequence_indices_independent_of_snapshot_order(snapshots) -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["timeline"] = {
+        "redacted": False,
+        "items": (
+            {"event_id": "event-a", "sequence_index": 1},
+            {"event_id": "event-b", "sequence_index": 1},
+        ),
+    }
+    payload["run"]["memory_snapshots"] = snapshots
+    payload["run"]["final_state"] = snapshots[-1]["state_by_object"]
+    with pytest.raises((ValidationError, ValueError), match="timeline|sequence|chronology"):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+def test_case_record_accepts_no_snapshots_with_null_final_state() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["run"]["memory_snapshots"] = ()
+    payload["run"]["final_state"] = None
+    case = Task13CaseRecordV1.model_validate(payload)
+    assert case.run.memory_snapshots == ()
+    assert case.run.final_state is None
+
+
+def test_case_record_accepts_single_unanchored_typed_equal_snapshot() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["run"]["memory_snapshots"] = (
+        {"state_by_object": {"object-a": "value-a"}},
+    )
+    payload["run"]["final_state"] = {"object-a": "value-a"}
+    case = Task13CaseRecordV1.model_validate(payload)
+    assert case.run.memory_snapshots[0].get("after_event_id") is None
+    assert case.run.final_state == {"object-a": "value-a"}
+
+
+def test_case_record_accepts_normal_anchored_unique_chronology() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["timeline"] = {
+        "redacted": False,
+        "items": (
+            {"event_id": "event-early", "sequence_index": 1},
+            {"event_id": "event-late", "sequence_index": 2},
+        ),
+    }
+    payload["run"]["memory_snapshots"] = (
+        {
+            "after_event_id": "event-early",
+            "state_by_object": {"object-a": "early"},
+        },
+        {
+            "after_event_id": "event-late",
+            "state_by_object": {"object-a": "late"},
+        },
+    )
+    payload["run"]["final_state"] = {"object-a": "late"}
+    case = Task13CaseRecordV1.model_validate(payload)
+    assert case.run.final_state == {"object-a": "late"}
+
+
 def test_case_record_rejects_stale_early_final_state() -> None:
     payload = _case("case-a").model_dump(mode="python")
     payload["timeline"] = {

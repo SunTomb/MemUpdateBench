@@ -566,33 +566,44 @@ def _validate_case_snapshot_chronology(
 ) -> None:
     if not run.memory_snapshots:
         return
-    event_positions: dict[str, int] = {}
-    for item in timeline.items:
-        event_id = item.get("event_id")
-        sequence_index = item.get("sequence_index")
-        if type(event_id) is not str or type(sequence_index) is not int:
-            continue
-        if event_id in event_positions:
-            raise ValueError("case timeline contains duplicate event IDs")
-        event_positions[event_id] = sequence_index
 
     anchors = tuple(snapshot.get("after_event_id") for snapshot in run.memory_snapshots)
     if len(anchors) == 1 and anchors[0] is None:
         selected_snapshot = run.memory_snapshots[0]
-    else:
-        if any(anchor is None for anchor in anchors):
-            raise ValueError("case snapshots must not mix anchored and unanchored snapshots")
-        if any(type(anchor) is not str for anchor in anchors):
-            raise ValueError("case snapshots contain unknown anchors")
-        if len(anchors) != len(set(anchors)):
-            raise ValueError("case snapshots contain duplicate anchors")
-        unknown = tuple(anchor for anchor in anchors if anchor not in event_positions)
-        if unknown:
-            raise ValueError("case snapshots contain unknown anchors")
-        selected_snapshot = max(
-            run.memory_snapshots,
-            key=lambda snapshot: event_positions[snapshot["after_event_id"]],
-        )
+        if not typed_json_equal(run.final_state, selected_snapshot["state_by_object"]):
+            raise ValueError("case final_state does not match chronology-resolved snapshot")
+        return
+
+    if any(anchor is None for anchor in anchors):
+        raise ValueError("case snapshots must not mix anchored and unanchored snapshots")
+    if any(type(anchor) is not str for anchor in anchors):
+        raise ValueError("case snapshots contain unknown anchors")
+    if len(anchors) != len(set(anchors)):
+        raise ValueError("case snapshots contain duplicate anchors")
+
+    event_positions: dict[str, int] = {}
+    sequence_indices: set[int] = set()
+    for item in timeline.items:
+        event_id = item.get("event_id")
+        sequence_index = item.get("sequence_index")
+        if type(event_id) is not str or not event_id:
+            raise ValueError("anchored case timeline event_id must be a non-empty string")
+        if type(sequence_index) is not int:
+            raise ValueError("anchored case timeline sequence_index must be an integer")
+        if event_id in event_positions:
+            raise ValueError("case timeline contains duplicate event IDs")
+        if sequence_index in sequence_indices:
+            raise ValueError("case timeline contains duplicate sequence indices")
+        event_positions[event_id] = sequence_index
+        sequence_indices.add(sequence_index)
+
+    unknown = tuple(anchor for anchor in anchors if anchor not in event_positions)
+    if unknown:
+        raise ValueError("case snapshots contain unknown anchors")
+    selected_snapshot = max(
+        run.memory_snapshots,
+        key=lambda snapshot: event_positions[snapshot["after_event_id"]],
+    )
     if not typed_json_equal(run.final_state, selected_snapshot["state_by_object"]):
         raise ValueError("case final_state does not match chronology-resolved snapshot")
 
