@@ -23,6 +23,15 @@ from mub.vnext.statistics.input_v3 import (
     Task13IntegrityCountsV1,
     load_task13_authenticated_matrix_v1,
 )
+from mub.vnext.statistics.ledger_v3 import (
+    Task13LedgerResultV1,
+    build_task13_case_index_v1,
+    build_task13_claim_ledger_v1,
+    build_task13_ledger_v1,
+    build_task13_receipt_v1,
+    build_task13_statistics_receipt_v1,
+    verify_task13_claim_ledger_v1,
+)
 from mub.vnext.statistics.contracts_v3 import (
     CORE_TASK13_METRIC_PATHS,
     TASK13_ARTIFACT_PATHS,
@@ -118,4 +127,11 @@ __all__ = [
     "Task13TaskProjectionV1",
     "Task13TimelineProjectionV1",
     "canonical_decimal_string",
+    "Task13LedgerResultV1",
+    "build_task13_case_index_v1",
+    "build_task13_claim_ledger_v1",
+    "build_task13_ledger_v1",
+    "build_task13_receipt_v1",
+    "build_task13_statistics_receipt_v1",
+    "verify_task13_claim_ledger_v1",
 ]
