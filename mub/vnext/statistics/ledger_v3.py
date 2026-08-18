@@ -20,6 +20,8 @@ from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.contracts_v3 import (
     TASK13_CELL_STATISTICS_ARTIFACT_ID,
     TASK13_CELL_STATISTICS_ARTIFACT_PATH,
+    TASK13_CONTEXT_CONDITIONS,
+    TASK13_CONTRAST_PAIRS,
     TASK13_METRIC_PATHS,
     TASK13_PAIRED_CONTRASTS_ARTIFACT_ID,
     TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH,
@@ -104,6 +106,16 @@ def _metric_index(metric_path: str) -> int:
         raise ValueError(f"foreign Task 13 metric path: {metric_path!r}") from exc
 
 
+def canonical_jsonl_bytes_v1(rows: Sequence[BaseModel]) -> bytes:
+    """Serialize ordered records as the authenticated canonical JSONL bytes."""
+
+    return b"".join(canonical_json_bytes(row) + b"\n" for row in rows)
+
+
+def _canonical_jsonl_sha256_v1(rows: Sequence[BaseModel]) -> str:
+    return hashlib.sha256(canonical_jsonl_bytes_v1(rows)).hexdigest()
+
+
 def _validate_artifact(artifact: ArtifactRef, *, path: str, label: str) -> ArtifactRef:
     if not isinstance(artifact, ArtifactRef):
         raise TypeError(f"{label} must be an ArtifactRef")
@@ -122,6 +134,25 @@ def _validate_cells(
         raise TypeError("cell statistics must be Task13CellStatisticV1 records")
 
     coordinates = [(record.answer_model_slot, record.k, record.cell_id) for record in cells]
+    if len(set(coordinates)) != 18:
+        raise ValueError("cell statistics must have globally unique cell coordinates")
+    condition_keys = [
+        (record.answer_model_slot, record.k, record.context_order, record.context_annotation)
+        for record in cells
+    ]
+    if len(set(condition_keys)) != 18:
+        raise ValueError("cell statistics contain duplicate typed intervention coordinates")
+    for slot in _EXPECTED_SLOTS:
+        for k in _EXPECTED_K:
+            observed = {
+                (record.context_order, record.context_annotation)
+                for record in cells
+                if record.answer_model_slot == slot and record.k == k
+            }
+            if observed != set(TASK13_CONTEXT_CONDITIONS):
+                raise ValueError(
+                    "cell statistics must contain the frozen typed intervention conditions"
+                )
     metric_keys = [(coordinate, record.metric_path) for coordinate, record in zip(coordinates, cells)]
     if len(set(metric_keys)) != len(metric_keys):
         raise ValueError("cell statistics contain duplicate statistic rows")
@@ -158,6 +189,8 @@ def _validate_cells(
         }
         if len(source_tuples) != 1:
             raise ValueError("cell metrics do not share one exact run source")
+    if len({record.task_identity_sha256 for record in cells}) != 1:
+        raise ValueError("cell statistics do not share one task identity digest")
 
     return tuple(
         sorted(
@@ -226,6 +259,30 @@ def _validate_contrasts(
     )
     if len(slot_k_contrast_counts) != 6 or set(slot_k_contrast_counts.values()) != {2}:
         raise ValueError("paired contrasts must contain exactly two contrasts per slot and k")
+    for slot in _EXPECTED_SLOTS:
+        for k in _EXPECTED_K:
+            expected_pairs = set()
+            for left_condition, right_condition in TASK13_CONTRAST_PAIRS:
+                left = next(
+                    record for record in cells
+                    if record.answer_model_slot == slot
+                    and record.k == k
+                    and (record.context_order, record.context_annotation) == left_condition
+                )
+                right = next(
+                    record for record in cells
+                    if record.answer_model_slot == slot
+                    and record.k == k
+                    and (record.context_order, record.context_annotation) == right_condition
+                )
+                expected_pairs.add((left.cell_id, right.cell_id))
+            observed_pairs = {
+                (record.left_cell_id, record.right_cell_id)
+                for record in contrasts
+                if record.answer_model_slot == slot and record.k == k
+            }
+            if observed_pairs != expected_pairs:
+                raise ValueError("paired contrasts do not use the frozen typed intervention pairs")
     for coordinate, count in coordinate_counts.items():
         metric_paths = {
             record.metric_path
@@ -239,6 +296,9 @@ def _validate_contrasts(
         }
         if count != _EXPECTED_METRIC_COUNT or metric_paths != set(TASK13_METRIC_PATHS):
             raise ValueError("paired contrasts have missing or foreign metric rows")
+
+    if len({record.contrast_id for record in contrasts}) != len(contrasts):
+        raise ValueError("paired contrast IDs must be globally unique")
 
     for record in contrasts:
         expected_contrast_id = task13_contrast_id_v1(
@@ -260,6 +320,26 @@ def _validate_contrasts(
             raise ValueError("paired contrast left source does not match its cell statistic")
         if record.right_source != _cell_source(right_cell):
             raise ValueError("paired contrast right source does not match its cell statistic")
+        if record.task_identity_sha256 != left_cell.task_identity_sha256:
+            raise ValueError("paired contrast task identity does not match its left cell")
+        if left_cell.task_identity_sha256 != right_cell.task_identity_sha256:
+            raise ValueError("paired contrast cells have different task identities")
+        if record.core_ids_sha256 != left_cell.core_ids_sha256 or record.core_ids_sha256 != right_cell.core_ids_sha256:
+            raise ValueError("paired contrast core-ID hash does not match its cells")
+        if record.bootstrap_indices_sha256 != left_cell.bootstrap_indices_sha256 or record.bootstrap_indices_sha256 != right_cell.bootstrap_indices_sha256:
+            raise ValueError("paired contrast bootstrap hash does not match its cells")
+        left_interval = left_cell.interval
+        right_interval = right_cell.interval
+        if left_interval.status != right_interval.status or record.interval.status != left_interval.status:
+            raise ValueError("paired contrast has mixed support states")
+        if left_interval.status.value == "unsupported":
+            if (
+                left_interval.support != right_interval.support
+                or left_interval.support_sha256 != right_interval.support_sha256
+                or record.interval.support != left_interval.support
+                or record.interval.support_sha256 != left_interval.support_sha256
+            ):
+                raise ValueError("unsupported paired contrast support metadata must match both cells")
 
     return tuple(
         sorted(
@@ -281,13 +361,22 @@ def _resolve_hash(
     hashes: Mapping[str, str] | None,
     *keys: str,
 ) -> str:
+    """Resolve a hash while rejecting every recognized disagreement."""
+
+    candidates: list[tuple[str, str]] = []
     if explicit is not None:
-        return explicit
+        candidates.append(("explicit", explicit))
     if hashes is not None:
         for key in keys:
             if key in hashes:
-                return hashes[key]
-    raise TypeError(f"missing required hash; expected one of {keys!r}")
+                candidates.append((key, hashes[key]))
+    if not candidates:
+        raise TypeError(f"missing required hash; expected one of {keys!r}")
+    values = {value for _, value in candidates}
+    if len(values) != 1:
+        labels = ", ".join(label for label, _ in candidates)
+        raise ValueError(f"recognized hash aliases disagree: {labels}")
+    return candidates[0][1]
 
 
 def build_task13_statistics_receipt_v1(
@@ -326,16 +415,33 @@ def build_task13_statistics_receipt_v1(
         path=TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH,
         label="paired_contrasts_artifact",
     )
+    expected_cell_sha256 = _canonical_jsonl_sha256_v1(ordered_cells)
+    expected_contrast_sha256 = _canonical_jsonl_sha256_v1(ordered_contrasts)
+    if cell_artifact.sha256 != expected_cell_sha256:
+        raise ValueError("cell_statistics_artifact.sha256 does not match canonical cell JSONL")
+    if contrast_artifact.sha256 != expected_contrast_sha256:
+        raise ValueError("paired_contrasts_artifact.sha256 does not match canonical contrast JSONL")
     run_ids = {record.run_id for record in ordered_cells}
-    if len(run_ids) != _EXPECTED_RUN_COUNT:
-        raise ValueError("cell statistics must cover exactly 18 run sources")
-    for record in (*ordered_cells, *ordered_contrasts):
+    run_source_tuples = {
+        (record.run_id, record.run_manifest_sha256, record.score_artifact_sha256)
+        for record in ordered_cells
+    }
+    if len(run_source_tuples) != _EXPECTED_RUN_COUNT or len(run_ids) != _EXPECTED_RUN_COUNT:
+        raise ValueError("cell statistics must cover exactly 18 distinct run sources")
+    all_statistics = (*ordered_cells, *ordered_contrasts)
+    core_hashes = {record.core_ids_sha256 for record in all_statistics}
+    bootstrap_hashes = {record.bootstrap_indices_sha256 for record in all_statistics}
+    if len(core_hashes) != 1 or next(iter(core_hashes)) != core_ids_sha256:
+        raise ValueError("core_ids_sha256 must equal the unique source row hash")
+    if len(bootstrap_hashes) != 1 or next(iter(bootstrap_hashes)) != bootstrap_indices_sha256:
+        raise ValueError("bootstrap_indices_sha256 must equal the unique source row hash")
+    for record in all_statistics:
         if record.core_ids_sha256 != core_ids_sha256:
             raise ValueError("statistics use inconsistent core-ID hashes")
         if record.bootstrap_indices_sha256 != bootstrap_indices_sha256:
             raise ValueError("statistics use inconsistent bootstrap-index hashes")
     bootstrap_config_hashes = {
-        record.bootstrap_config_sha256 for record in (*ordered_cells, *ordered_contrasts)
+        record.bootstrap_config_sha256 for record in all_statistics
     }
     if len(bootstrap_config_hashes) != 1:
         raise ValueError("statistics use inconsistent bootstrap-config hashes")
@@ -394,17 +500,15 @@ def build_task13_statistics_receipt_v1(
     )
 
 
-def _binding_from_case(case: Task13CaseRecordV1 | Task13CaseBindingV1) -> Task13CaseBindingV1:
-    if isinstance(case, Task13CaseBindingV1):
-        return case
-    if isinstance(case, Task13CaseRecordV1):
-        return Task13CaseBindingV1(
-            case_id=case.case_id,
-            run_id=case.run_id,
-            task_id=case.task_id,
-            category=case.category,
-        )
-    raise TypeError("cases must be Task13CaseRecordV1 or Task13CaseBindingV1 records")
+def _binding_from_case(case: Task13CaseRecordV1) -> Task13CaseBindingV1:
+    if not isinstance(case, Task13CaseRecordV1):
+        raise TypeError("cases must be full Task13CaseRecordV1 records")
+    return Task13CaseBindingV1(
+        case_id=case.case_id,
+        run_id=case.run_id,
+        task_id=case.task_id,
+        category=case.category,
+    )
 
 
 def _canonical_case_bindings(
@@ -450,64 +554,54 @@ def _revalidate_case_index(index: Task13CaseIndexV1) -> Task13CaseIndexV1:
 
 
 def build_task13_case_index_v1(
-    cases: Sequence[Task13CaseRecordV1 | Task13CaseBindingV1] | None = None,
-    coverage: Sequence[Task13RunCaseCoverageV1] | None = None,
-    run_sources: Sequence[Task13RunSourceV1] | None = None,
-    cases_artifact: ArtifactRef | None = None,
+    cases: Sequence[Task13CaseRecordV1],
+    coverage: Sequence[Task13RunCaseCoverageV1],
+    run_sources: Sequence[Task13RunSourceV1],
+    cases_artifact: ArtifactRef,
     *,
-    case_bindings: Sequence[Task13CaseBindingV1] | None = None,
     source_bindings: Sequence[Task13ArtifactBindingV1] = (),
 ) -> Task13CaseIndexV1:
-    """Build a canonical case index from case bindings and exact run coverage."""
+    """Build a case index only from the complete authenticated case records."""
 
-    if case_bindings is not None and cases is not None:
-        raise TypeError("provide either cases or case_bindings, not both")
-    supplied_bindings = tuple(case_bindings) if case_bindings is not None else tuple(
-        _binding_from_case(case) for case in (cases or ())
-    )
-    supplied_coverage = tuple(coverage or ())
-    supplied_sources = tuple(run_sources or ())
-    if cases is not None and case_bindings is None:
-        source_by_id = {source.run_id: source for source in supplied_sources}
-        for case in cases:
-            if not isinstance(case, Task13CaseRecordV1):
-                continue
-            source = source_by_id.get(case.run_id)
-            if source is None:
-                raise ValueError("case record references a foreign run source")
-            if (
-                case.run_manifest_sha256 != source.run_manifest_sha256
-                or case.score_artifact_sha256 != source.score_artifact_sha256
-            ):
-                raise ValueError("case record source hashes do not match the run source")
+    supplied_cases = tuple(cases)
+    if not supplied_cases:
+        raise ValueError("case index requires non-empty full case records")
+    if any(not isinstance(case, Task13CaseRecordV1) for case in supplied_cases):
+        raise TypeError("cases must contain only Task13CaseRecordV1 records")
+    supplied_coverage = tuple(coverage)
+    supplied_sources = tuple(run_sources)
     if len(supplied_sources) != _EXPECTED_RUN_COUNT:
         raise ValueError("case index requires exactly 18 ordered run sources")
     if any(not isinstance(source, Task13RunSourceV1) for source in supplied_sources):
         raise TypeError("run_sources must be Task13RunSourceV1 records")
     if len({source.run_id for source in supplied_sources}) != _EXPECTED_RUN_COUNT:
         raise ValueError("case index run sources must have unique run IDs")
-    if len({binding.case_id for binding in supplied_bindings}) != len(supplied_bindings):
-        raise ValueError("case index case bindings must have unique case IDs")
-    source_order = {source.run_id: index for index, source in enumerate(supplied_sources)}
-    if any(binding.run_id not in source_order for binding in supplied_bindings):
-        raise ValueError("case binding references a foreign run source")
-    if not supplied_bindings:
-        raise ValueError("case index requires non-empty case bindings")
-    if any(not isinstance(row, Task13RunCaseCoverageV1) for row in supplied_coverage):
-        raise TypeError("coverage must be Task13RunCaseCoverageV1 records")
     if tuple(row.run_id for row in supplied_coverage) != tuple(source.run_id for source in supplied_sources):
         raise ValueError("coverage must use the exact ordered run-source IDs")
-
-    _validate_canonical_case_binding_order(supplied_bindings, supplied_sources)
-    ordered_bindings = supplied_bindings
+    if any(not isinstance(row, Task13RunCaseCoverageV1) for row in supplied_coverage):
+        raise TypeError("coverage must be Task13RunCaseCoverageV1 records")
+    source_by_id = {source.run_id: source for source in supplied_sources}
+    bindings = tuple(_binding_from_case(case) for case in supplied_cases)
+    for case in supplied_cases:
+        source = source_by_id.get(case.run_id)
+        if source is None:
+            raise ValueError("case record references a foreign run source")
+        if (
+            case.run_manifest_sha256 != source.run_manifest_sha256
+            or case.score_artifact_sha256 != source.score_artifact_sha256
+        ):
+            raise ValueError("case record source hashes do not match the run source")
+    if len({binding.case_id for binding in bindings}) != len(bindings):
+        raise ValueError("case index case IDs must be unique")
+    _validate_canonical_case_binding_order(bindings, supplied_sources)
+    expected_cases_sha256 = _canonical_jsonl_sha256_v1(supplied_cases)
+    artifact = _validate_artifact(cases_artifact, path="cases.jsonl", label="cases_artifact")
+    if artifact.sha256 != expected_cases_sha256:
+        raise ValueError("cases_artifact.sha256 does not match canonical supplied cases")
     index = Task13CaseIndexV1(
-        cases_artifact=_validate_artifact(
-            cases_artifact,
-            path="cases.jsonl",
-            label="cases_artifact",
-        ),
-        record_count=len(ordered_bindings),
-        case_bindings=ordered_bindings,
+        cases_artifact=artifact,
+        record_count=len(bindings),
+        case_bindings=bindings,
         coverage=supplied_coverage,
         run_sources=supplied_sources,
         source_bindings=tuple(source_bindings),
@@ -518,23 +612,33 @@ def build_task13_case_index_v1(
 def _case_ids_for_sources(
     case_index: Task13CaseIndexV1,
     sources: Sequence[Task13RunSourceV1],
+    *,
+    source_by_id: Mapping[str, Task13RunSourceV1] | None = None,
+    case_ids_by_run: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[str, ...]:
-    source_by_id = {source.run_id: source for source in case_index.run_sources}
+    source_map = source_by_id or {source.run_id: source for source in case_index.run_sources}
     for source in sources:
-        if source_by_id.get(source.run_id) != source:
+        if source_map.get(source.run_id) != source:
             raise ValueError("claim source does not exactly match the case-index run source")
-    source_ids = {source.run_id for source in sources}
+    if case_ids_by_run is None:
+        grouped: dict[str, list[str]] = {}
+        for binding in case_index.case_bindings:
+            grouped.setdefault(binding.run_id, []).append(binding.case_id)
+        case_ids_by_run = {run_id: tuple(ids) for run_id, ids in grouped.items()}
     relevant = tuple(
-        binding.case_id
-        for binding in case_index.case_bindings
-        if binding.run_id in source_ids
-    )
-    if not relevant or any(
-        not any(binding.run_id == source.run_id for binding in case_index.case_bindings)
+        case_id
         for source in sources
-    ):
+        for case_id in case_ids_by_run.get(source.run_id, ())
+    )
+    if not relevant or any(source.run_id not in case_ids_by_run for source in sources):
         raise ValueError("claim source has no case-index coverage")
     return relevant
+
+
+def _revalidate_receipt(receipt: Task13StatisticsReceiptV1) -> Task13StatisticsReceiptV1:
+    if not isinstance(receipt, Task13StatisticsReceiptV1):
+        raise TypeError("receipt must be Task13StatisticsReceiptV1")
+    return Task13StatisticsReceiptV1.model_validate(receipt.model_dump(mode="python"))
 
 
 def _claim_identity(
@@ -560,6 +664,9 @@ def _claim_from_cell(
     *,
     receipt_sha256: str,
     case_index: Task13CaseIndexV1,
+    case_index_sha256: str,
+    source_by_id: Mapping[str, Task13RunSourceV1],
+    case_ids_by_run: Mapping[str, tuple[str, ...]],
     denominator: Task13DenominatorV1,
 ) -> Task13ClaimLedgerRecordV1:
     source = _cell_source(record)
@@ -583,8 +690,13 @@ def _claim_from_cell(
         interval=record.interval,
         run_sources=(source,),
         statistics_receipt_sha256=receipt_sha256,
-        case_ids=_case_ids_for_sources(case_index, (source,)),
-        case_index_sha256=sha256_model(case_index),
+        case_ids=_case_ids_for_sources(
+            case_index,
+            (source,),
+            source_by_id=source_by_id,
+            case_ids_by_run=case_ids_by_run,
+        ),
+        case_index_sha256=case_index_sha256,
     )
 
 
@@ -593,6 +705,9 @@ def _claim_from_contrast(
     *,
     receipt_sha256: str,
     case_index: Task13CaseIndexV1,
+    case_index_sha256: str,
+    source_by_id: Mapping[str, Task13RunSourceV1],
+    case_ids_by_run: Mapping[str, tuple[str, ...]],
     denominator: Task13DenominatorV1,
 ) -> Task13ClaimLedgerRecordV1:
     sources = (record.left_source, record.right_source)
@@ -620,8 +735,13 @@ def _claim_from_contrast(
         interval=record.interval,
         run_sources=sources,
         statistics_receipt_sha256=receipt_sha256,
-        case_ids=_case_ids_for_sources(case_index, sources),
-        case_index_sha256=sha256_model(case_index),
+        case_ids=_case_ids_for_sources(
+            case_index,
+            sources,
+            source_by_id=source_by_id,
+            case_ids_by_run=case_ids_by_run,
+        ),
+        case_index_sha256=case_index_sha256,
     )
 
 
@@ -640,14 +760,33 @@ def build_task13_claim_ledger_v1(
     cells, contrasts = _coerce_statistics(cell_statistics, paired_contrasts)
     ordered_cells = _validate_cells(cells)
     ordered_contrasts = _validate_contrasts(contrasts, ordered_cells)
-    if not isinstance(receipt, Task13StatisticsReceiptV1):
-        raise TypeError("receipt must be Task13StatisticsReceiptV1")
-    if receipt.cell_statistic_count != len(ordered_cells) or receipt.paired_contrast_count != len(ordered_contrasts):
+    validated_receipt = _revalidate_receipt(receipt)
+    if validated_receipt.cell_statistic_count != len(ordered_cells) or validated_receipt.paired_contrast_count != len(ordered_contrasts):
         raise ValueError("statistics receipt counts do not match the supplied statistics")
-    if receipt.cell_statistic_count != _EXPECTED_CELL_COUNT or receipt.paired_contrast_count != _EXPECTED_CONTRAST_COUNT:
+    if validated_receipt.cell_statistic_count != _EXPECTED_CELL_COUNT or validated_receipt.paired_contrast_count != _EXPECTED_CONTRAST_COUNT:
         raise ValueError("statistics receipt does not contain the frozen Task 13 cardinalities")
+    all_statistics = (*ordered_cells, *ordered_contrasts)
+    if len({record.core_ids_sha256 for record in all_statistics}) != 1 or validated_receipt.core_ids_sha256 != ordered_cells[0].core_ids_sha256:
+        raise ValueError("statistics receipt core-ID hash does not match supplied rows")
+    if len({record.bootstrap_indices_sha256 for record in all_statistics}) != 1 or validated_receipt.bootstrap_indices_sha256 != ordered_cells[0].bootstrap_indices_sha256:
+        raise ValueError("statistics receipt bootstrap hash does not match supplied rows")
+    config_hashes = {record.bootstrap_config_sha256 for record in all_statistics}
+    if len(config_hashes) != 1 or validated_receipt.statistics_config_sha256 != next(iter(config_hashes)):
+        raise ValueError("statistics receipt config hash does not match supplied rows")
+    cell_sha256 = _canonical_jsonl_sha256_v1(ordered_cells)
+    contrast_sha256 = _canonical_jsonl_sha256_v1(ordered_contrasts)
+    if validated_receipt.cell_statistics_artifact.sha256 != cell_sha256:
+        raise ValueError("statistics receipt cell artifact is stale for supplied rows")
+    if validated_receipt.paired_contrasts_artifact.sha256 != contrast_sha256:
+        raise ValueError("statistics receipt contrast artifact is stale for supplied rows")
+    source_ids = {
+        (record.run_id, record.run_manifest_sha256, record.score_artifact_sha256)
+        for record in ordered_cells
+    }
+    if len(source_ids) != _EXPECTED_RUN_COUNT or len({record.run_id for record in ordered_cells}) != _EXPECTED_RUN_COUNT:
+        raise ValueError("supplied statistics must contain exactly 18 distinct run sources")
     canonical_case_index = _revalidate_case_index(case_index)
-    receipt_sha256 = sha256_model(receipt)
+    receipt_sha256 = sha256_model(validated_receipt)
     case_index_sha256 = sha256_model(canonical_case_index)
     if expected_statistics_receipt_sha256 is not None and receipt_sha256 != expected_statistics_receipt_sha256:
         raise ValueError("statistics receipt hash does not match the expected binding")
@@ -661,11 +800,19 @@ def build_task13_claim_ledger_v1(
     )
     if denominator != Task13DenominatorV1(task_count=80, semantic_core_count=20, tasks_per_core=4):
         raise ValueError("Task 13 claims require the frozen denominator")
+    source_by_id = {source.run_id: source for source in canonical_case_index.run_sources}
+    case_ids_by_run_mutable: dict[str, list[str]] = {}
+    for binding in canonical_case_index.case_bindings:
+        case_ids_by_run_mutable.setdefault(binding.run_id, []).append(binding.case_id)
+    case_ids_by_run = {run_id: tuple(ids) for run_id, ids in case_ids_by_run_mutable.items()}
     claims = tuple(
         _claim_from_cell(
             record,
             receipt_sha256=receipt_sha256,
             case_index=canonical_case_index,
+            case_index_sha256=case_index_sha256,
+            source_by_id=source_by_id,
+            case_ids_by_run=case_ids_by_run,
             denominator=denominator,
         )
         for record in ordered_cells
@@ -674,6 +821,9 @@ def build_task13_claim_ledger_v1(
             record,
             receipt_sha256=receipt_sha256,
             case_index=canonical_case_index,
+            case_index_sha256=case_index_sha256,
+            source_by_id=source_by_id,
+            case_ids_by_run=case_ids_by_run,
             denominator=denominator,
         )
         for record in ordered_contrasts
@@ -685,7 +835,7 @@ def build_task13_claim_ledger_v1(
     if any(claim.case_index_sha256 != case_index_sha256 for claim in claims):
         raise AssertionError("Task 13 claims do not share one case-index binding")
     return Task13LedgerResultV1(
-        receipt=receipt,
+        receipt=validated_receipt,
         case_index=canonical_case_index,
         claims=claims,
     )
@@ -727,5 +877,6 @@ __all__ = [
     "build_task13_ledger_v1",
     "build_task13_receipt_v1",
     "build_task13_statistics_receipt_v1",
+    "canonical_jsonl_bytes_v1",
     "verify_task13_claim_ledger_v1",
 ]

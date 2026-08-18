@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from types import SimpleNamespace
+import hashlib
 
 import pytest
 
@@ -25,6 +26,7 @@ from mub.vnext.statistics.contracts_v3 import (
 )
 from mub.vnext.statistics.ledger_v3 import (
     Task13LedgerResultV1,
+    _resolve_hash,
     build_task13_case_index_v1,
     build_task13_claim_ledger_v1,
     build_task13_statistics_receipt_v1,
@@ -668,6 +670,11 @@ def _ledger_statistics() -> tuple[tuple[Task13CellStatisticV1, ...], tuple[Task1
     cells = []
     cell_sources = {}
     cell_conditions = ("chronological-none", "reverse-none", "reverse-label")
+    condition_fields = {
+        "chronological-none": ("chronological", "none"),
+        "reverse-none": ("reverse_chronological", "none"),
+        "reverse-label": ("reverse_chronological", "latest_outdated_label"),
+    }
     run_index = 0
     for slot in ("answer_model_a", "answer_model_b"):
         for k in (4, 8, 16):
@@ -682,18 +689,20 @@ def _ledger_statistics() -> tuple[tuple[Task13CellStatisticV1, ...], tuple[Task1
                             cell_id=cell_id,
                             answer_model_slot=slot,
                             k=k,
+                            context_order=condition_fields[condition][0],
+                            context_annotation=condition_fields[condition][1],
                             metric_path=metric_path,
                             interval=_ledger_interval(
                                 unsupported=(
                                     slot == "answer_model_a"
                                     and k == 4
-                                    and condition == cell_conditions[0]
                                     and metric_index == 0
                                 )
                             ),
                             task_count=80,
                             core_count=20,
                             core_ids_sha256=_LEDGER_SHA[0],
+                            task_identity_sha256=_LEDGER_SHA[14],
                             run_id=source.run_id,
                             run_manifest_sha256=source.run_manifest_sha256,
                             score_artifact_sha256=source.score_artifact_sha256,
@@ -730,9 +739,16 @@ def _ledger_statistics() -> tuple[tuple[Task13CellStatisticV1, ...], tuple[Task1
                             answer_model_slot=slot,
                             k=k,
                             metric_path=metric_path,
-                            interval=_ledger_interval(),
+                            interval=_ledger_interval(
+                                unsupported=(
+                                    slot == "answer_model_a"
+                                    and k == 4
+                                    and metric_path == TASK13_METRIC_PATHS[0]
+                                )
+                            ),
                             core_count=20,
                             core_ids_sha256=_LEDGER_SHA[0],
+                            task_identity_sha256=_LEDGER_SHA[14],
                             left_source=left,
                             right_source=right,
                             bootstrap_config_sha256=_LEDGER_SHA[2],
@@ -748,7 +764,9 @@ def _ledger_case_index() -> Task13CaseIndexV1:
     sources = tuple(_ledger_source(index) for index in range(18))
     bindings = tuple(
         Task13CaseBindingV1(
-            case_id=f"case-ledger-{index:02d}",
+            case_id=__import__("mub.vnext.statistics.contracts_v3", fromlist=["task13_case_id_v1"]).task13_case_id_v1(
+                source.run_id, f"task-ledger-{index:02d}", "other_wrong"
+            ),
             run_id=source.run_id,
             task_id=f"task-ledger-{index:02d}",
             category="other_wrong",
@@ -762,15 +780,16 @@ def _ledger_case_index() -> Task13CaseIndexV1:
         )
         for source, binding in zip(sources, bindings)
     )
-    return build_task13_case_index_v1(
-        case_bindings=bindings,
-        coverage=coverage,
-        run_sources=sources,
+    return Task13CaseIndexV1(
         cases_artifact=ArtifactRef(
             path="cases.jsonl",
             sha256=_LEDGER_SHA[4],
             media_type="application/jsonl",
         ),
+        record_count=len(bindings),
+        case_bindings=bindings,
+        coverage=coverage,
+        run_sources=sources,
     )
 
 
@@ -780,6 +799,36 @@ def _ledger_receipt(
     *,
     statistics_config_sha256=_LEDGER_SHA[2],
 ) -> Task13StatisticsReceiptV1:
+    ordered_cells = tuple(
+        sorted(
+            cells,
+            key=lambda record: (
+                record.answer_model_slot.encode("utf-8"),
+                record.k,
+                record.cell_id.encode("utf-8"),
+                TASK13_METRIC_PATHS.index(record.metric_path),
+            ),
+        )
+    )
+    ordered_contrasts = tuple(
+        sorted(
+            contrasts,
+            key=lambda record: (
+                record.answer_model_slot.encode("utf-8"),
+                record.k,
+                record.left_cell_id.encode("utf-8"),
+                record.right_cell_id.encode("utf-8"),
+                record.contrast_id.encode("utf-8"),
+                TASK13_METRIC_PATHS.index(record.metric_path),
+            ),
+        )
+    )
+    cell_sha256 = hashlib.sha256(
+        b"".join(canonical_json_bytes(row) + b"\n" for row in ordered_cells)
+    ).hexdigest()
+    contrast_sha256 = hashlib.sha256(
+        b"".join(canonical_json_bytes(row) + b"\n" for row in ordered_contrasts)
+    ).hexdigest()
     return build_task13_statistics_receipt_v1(
         cells,
         contrasts,
@@ -795,12 +844,12 @@ def _ledger_receipt(
         bootstrap_indices_sha256=_LEDGER_SHA[3],
         cell_statistics_artifact=ArtifactRef(
             path="cell_statistics.jsonl",
-            sha256=_LEDGER_SHA[12],
+            sha256=cell_sha256,
             media_type="application/jsonl",
         ),
         paired_contrasts_artifact=ArtifactRef(
             path="paired_contrasts.jsonl",
-            sha256=_LEDGER_SHA[13],
+            sha256=contrast_sha256,
             media_type="application/jsonl",
         ),
     )
@@ -833,9 +882,9 @@ def test_ledger_has_one_row_per_statistic_and_contrast():
     assert receipt.semantic_core_count == 20
     assert receipt.run_count == 18
     assert receipt.cell_statistics_artifact.path == "cell_statistics.jsonl"
-    assert receipt.cell_statistics_artifact.sha256 == _LEDGER_SHA[12]
+    assert len(receipt.cell_statistics_artifact.sha256) == 64
     assert receipt.paired_contrasts_artifact.path == "paired_contrasts.jsonl"
-    assert receipt.paired_contrasts_artifact.sha256 == _LEDGER_SHA[13]
+    assert len(receipt.paired_contrasts_artifact.sha256) == 64
     assert case_index.record_count == 18
 
 
@@ -946,7 +995,7 @@ def test_receipt_rejects_statistics_config_different_from_bootstrap_config():
 def test_case_index_rejects_noncanonical_case_binding_order():
     index = _ledger_case_index()
 
-    with pytest.raises(ValueError, match="canonical|ordered"):
+    with pytest.raises(TypeError, match="case_bindings|unexpected keyword"):
         build_task13_case_index_v1(
             case_bindings=tuple(reversed(index.case_bindings)),
             coverage=index.coverage,
@@ -955,28 +1004,19 @@ def test_case_index_rejects_noncanonical_case_binding_order():
         )
 
 
-def test_case_index_joint_source_and_coverage_reorder_is_a_new_supplied_authority():
+def test_case_index_joint_source_and_coverage_reorder_is_not_binding_only_api():
     index = _ledger_case_index()
     sources = tuple(reversed(index.run_sources))
     coverage = tuple(reversed(index.coverage))
     bindings = tuple(reversed(index.case_bindings))
 
-    rebuilt = build_task13_case_index_v1(
-        case_bindings=bindings,
-        coverage=coverage,
-        run_sources=sources,
-        cases_artifact=index.cases_artifact,
-    )
-
-    assert tuple(source.run_id for source in rebuilt.run_sources) == tuple(
-        source.run_id for source in sources
-    )
-    assert tuple(row.run_id for row in rebuilt.coverage) == tuple(
-        row.run_id for row in coverage
-    )
-    assert tuple(binding.case_id for binding in rebuilt.case_bindings) == tuple(
-        binding.case_id for binding in bindings
-    )
+    with pytest.raises(TypeError, match="case_bindings|unexpected keyword"):
+        build_task13_case_index_v1(
+            case_bindings=bindings,
+            coverage=coverage,
+            run_sources=sources,
+            cases_artifact=index.cases_artifact,
+        )
 
 
 def test_ledger_rejects_changed_contrast_id():
@@ -1024,4 +1064,82 @@ def test_ledger_rejects_tampered_source_and_case_coverage():
             contrasts,
             receipt=receipt,
             case_index=missing_coverage,
+        )
+
+
+# Task 6 correctness-remediation RED regressions. These target provenance
+# closures that the original ledger implementation did not enforce.
+def test_task6_contrast_support_closure_rejects_unsupported_cell_reference():
+    cells, contrasts = _ledger_statistics()
+    support = MetricFieldSupport(
+        reason=SupportReason.NOT_SUPPORTED,
+        null_policy="emit_null",
+        detail="task6-red",
+    )
+    unsupported = Task13IntervalV1(
+        status=Task13StatisticStatus.UNSUPPORTED,
+        support=support,
+        support_sha256=sha256_model(support),
+    )
+    forged_cells = tuple(
+        record.model_copy(update={"interval": unsupported}) if index == 0 else record
+        for index, record in enumerate(cells)
+    )
+    with pytest.raises(ValueError, match="support|unsupported|mixed"):
+        build_task13_statistics_receipt_v1(
+            forged_cells,
+            contrasts,
+            task12_preparation_manifest_sha256=_LEDGER_SHA[5],
+            task12_plan_sha256=_LEDGER_SHA[6],
+            task12_matrix_manifest_sha256=_LEDGER_SHA[7],
+            task12_matrix_summary_sha256=_LEDGER_SHA[8],
+            task12_integrity_audit_sha256=_LEDGER_SHA[9],
+            statistics_config_sha256=_LEDGER_SHA[2],
+            task13_runtime_revision="a" * 40,
+            task13_runtime_tree_sha256=_LEDGER_SHA[11],
+            core_ids_sha256=_LEDGER_SHA[0],
+            bootstrap_indices_sha256=_LEDGER_SHA[3],
+            cell_statistics_artifact=ArtifactRef(
+                path="cell_statistics.jsonl", sha256=_LEDGER_SHA[12], media_type="application/jsonl"
+            ),
+            paired_contrasts_artifact=ArtifactRef(
+                path="paired_contrasts.jsonl", sha256=_LEDGER_SHA[13], media_type="application/jsonl"
+            ),
+        )
+
+
+def test_task6_resolve_hash_rejects_explicit_alias_disagreement():
+    with pytest.raises(ValueError, match="hash|disagree|alias"):
+        _resolve_hash("a" * 64, {"preparation_manifest": "b" * 64}, "preparation_manifest")
+    with pytest.raises(ValueError, match="hash|disagree|alias"):
+        _resolve_hash(
+            None,
+            {"preparation_manifest": "a" * 64, "task12_preparation_manifest_sha256": "b" * 64},
+            "task12_preparation_manifest_sha256",
+            "preparation_manifest",
+        )
+
+
+def test_task6_contrast_id_is_typed_hash_not_delimiter_concatenation():
+    left = "left-minus-right"
+    right = "left-minus-right-2"
+    payload = {
+        "slot": "answer_model_a",
+        "k": 4,
+        "left_cell_id": left,
+        "right_cell_id": right,
+        "metric_path": TASK13_METRIC_PATHS[0],
+    }
+    expected = "contrast-" + hashlib.sha256(
+        __import__("json").dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    assert task13_contrast_id_v1("answer_model_a", 4, left, right, TASK13_METRIC_PATHS[0]) == expected
+
+
+def test_task6_case_index_has_no_public_binding_only_escape_hatch():
+    with pytest.raises(TypeError, match="case_bindings"):
+        build_task13_case_index_v1(
+            case_bindings=(), coverage=(), run_sources=(), cases_artifact=ArtifactRef(
+                path="cases.jsonl", sha256=SHA_A, media_type="application/jsonl"
+            )
         )

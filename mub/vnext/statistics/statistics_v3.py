@@ -26,6 +26,8 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13PairedContrastV1,
     Task13RunSourceV1,
     Task13StatisticStatus,
+    task13_contrast_id_v1,
+    task13_task_identity_sha256_v1,
 )
 
 
@@ -225,10 +227,13 @@ def build_cell_statistic_v1(
         answer_model_slot=slot,
         k=k,
         metric_path=metric_path,
+        context_order=cell.context_intervention.context_order,
+        context_annotation=cell.context_intervention.context_annotation,
         interval=projection.interval,
         task_count=TASK13_TASK_COUNT,
         core_count=TASK13_SEMANTIC_CORE_COUNT,
         core_ids_sha256=matrix.core_ids_sha256,
+        task_identity_sha256=task13_task_identity_sha256_v1(projection.task_ids_by_core),
         run_id=source.run_id,
         run_manifest_sha256=source.run_manifest_sha256,
         score_artifact_sha256=source.score_artifact_sha256,
@@ -246,19 +251,6 @@ def _coordinate(run: Any) -> tuple[str, int, str, str]:
         cell.context_intervention.context_order,
         cell.context_intervention.context_annotation,
     )
-
-
-def task13_contrast_id_v1(
-    slot: str,
-    k: int,
-    left_cell_id: str,
-    right_cell_id: str,
-    metric: str,
-) -> str:
-    """Return the frozen deterministic ID for one directed metric contrast."""
-
-    metric_token = metric.replace(".", "-")
-    return f"contrast-{slot}-k{k:02d}-{left_cell_id}-minus-{right_cell_id}-{metric_token}"
 
 
 def compute_task13_statistics_v1(
@@ -338,6 +330,9 @@ def compute_task13_statistics_v1(
                             interval=interval,
                             core_count=TASK13_SEMANTIC_CORE_COUNT,
                             core_ids_sha256=bootstrap.core_ids_sha256,
+                            task_identity_sha256=task13_task_identity_sha256_v1(
+                                left_projection.task_ids_by_core
+                            ),
                             left_source=left_source,
                             right_source=right_source,
                             bootstrap_config_sha256=sha256_model(bootstrap.config),
@@ -357,4 +352,5 @@ __all__ = [
     "decimal_metric_v1",
     "project_metric_v1",
     "task13_contrast_id_v1",
+    "task13_task_identity_sha256_v1",
 ]

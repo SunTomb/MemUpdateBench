@@ -43,7 +43,18 @@ TASK13_METRIC_PATHS = (
     "retrieval_scores.stale_count_in_context",
     "retrieval_scores.stale_exposure_rate",
 )
+TASK13_CONTEXT_CONDITIONS = (
+    ("chronological", "none"),
+    ("reverse_chronological", "none"),
+    ("reverse_chronological", "latest_outdated_label"),
+)
+TASK13_CONTRAST_PAIRS = (
+    (("reverse_chronological", "none"), ("chronological", "none")),
+    (("reverse_chronological", "latest_outdated_label"), ("reverse_chronological", "none")),
+)
 TASK13_K = Literal[4, 8, 16]
+TASK13_CONTEXT_ORDER = Literal["chronological", "reverse_chronological"]
+TASK13_CONTEXT_ANNOTATION = Literal["none", "latest_outdated_label"]
 TASK13_TASK_COUNT = 80
 TASK13_SEMANTIC_CORE_COUNT = 20
 TASK13_TASKS_PER_CORE = 4
@@ -225,6 +236,53 @@ def _validate_public_source_projection(source: Mapping[str, Any]) -> None:
         raise ValueError("public task source must use canonical SourceRecordV3 content")
 
 
+class Task13TaskIdentityPayloadV1(ImmutableContractModel):
+    """Typed immutable payload for the canonical task-to-core assignment."""
+
+    task_ids_by_core: tuple[tuple[StrictIdentifier, tuple[StrictIdentifier, ...]], ...]
+
+
+class Task13ContrastIdentityPayloadV1(ImmutableContractModel):
+    """Typed immutable payload for a directed Task 13 contrast ID."""
+
+    slot: StrictIdentifier
+    k: TASK13_K
+    left_cell_id: StrictIdentifier
+    right_cell_id: StrictIdentifier
+    metric_path: StrictIdentifier
+
+    @field_validator("metric_path")
+    @classmethod
+    def _core_metric(cls, value: str) -> str:
+        if value not in TASK13_METRIC_PATHS:
+            raise ValueError("metric_path must belong to the frozen TASK13_METRIC_PATHS")
+        return value
+
+
+def task13_task_identity_sha256_v1(
+    task_ids_by_core: tuple[tuple[str, tuple[str, ...]], ...],
+) -> str:
+    payload = Task13TaskIdentityPayloadV1(task_ids_by_core=task_ids_by_core)
+    return sha256_model(payload)
+
+
+def task13_contrast_id_v1(
+    slot: str,
+    k: int,
+    left_cell_id: str,
+    right_cell_id: str,
+    metric_path: str,
+) -> str:
+    payload = Task13ContrastIdentityPayloadV1(
+        slot=slot,
+        k=k,
+        left_cell_id=left_cell_id,
+        right_cell_id=right_cell_id,
+        metric_path=metric_path,
+    )
+    return f"contrast-{sha256_model(payload)}"
+
+
 def task13_case_id_v1(run_id: str, task_id: str, category: str) -> str:
     raw = json.dumps(
         {"category": category, "run_id": run_id, "task_id": task_id},
@@ -325,11 +383,14 @@ class Task13CellStatisticV1(ImmutableContractModel):
     cell_id: StrictIdentifier
     answer_model_slot: StrictIdentifier
     k: TASK13_K
+    context_order: TASK13_CONTEXT_ORDER
+    context_annotation: TASK13_CONTEXT_ANNOTATION
     metric_path: StrictIdentifier
     interval: Task13IntervalV1
     task_count: Literal[80]
     core_count: Literal[20]
     core_ids_sha256: SHA256
+    task_identity_sha256: SHA256
     run_id: StrictIdentifier
     run_manifest_sha256: SHA256
     score_artifact_sha256: SHA256
@@ -356,6 +417,7 @@ class Task13PairedContrastV1(ImmutableContractModel):
     interval: Task13IntervalV1
     core_count: Literal[20]
     core_ids_sha256: SHA256
+    task_identity_sha256: SHA256
     left_source: Task13RunSourceV1
     right_source: Task13RunSourceV1
     bootstrap_config_sha256: SHA256
@@ -490,6 +552,12 @@ class Task13CaseBindingV1(ImmutableContractModel):
     run_id: StrictIdentifier
     task_id: StrictIdentifier
     category: CaseCategory
+
+    @model_validator(mode="after")
+    def _derived_case_id(self) -> Task13CaseBindingV1:
+        if self.case_id != task13_case_id_v1(self.run_id, self.task_id, self.category):
+            raise ValueError("case_id must equal the derived Task 13 case ID")
+        return self
 
 
 class Task13TaskProjectionV1(ImmutableContractModel):
@@ -866,6 +934,10 @@ def _validate_unique_bindings(bindings: tuple[Task13ArtifactBindingV1, ...]) -> 
 __all__ = [
     "CORE_TASK13_METRIC_PATHS",
     "TASK13_ARTIFACT_PATHS",
+    "TASK13_CONTEXT_ANNOTATION",
+    "TASK13_CONTEXT_CONDITIONS",
+    "TASK13_CONTEXT_ORDER",
+    "TASK13_CONTRAST_PAIRS",
     "TASK13_CELL_STATISTICS_ARTIFACT_ID",
     "TASK13_CELL_STATISTICS_ARTIFACT_PATH",
     "TASK13_K",
@@ -877,6 +949,8 @@ __all__ = [
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH",
     "Task13AnswerProjectionV1",
     "Task13ArtifactRole",
+    "Task13ContrastIdentityPayloadV1",
+    "Task13TaskIdentityPayloadV1",
     "CanonicalDecimal",
     "Task13ArtifactBindingV1",
     "Task13ArtifactIndexV1",
@@ -901,4 +975,6 @@ __all__ = [
     "Task13RetrievalProjectionV1",
     "canonical_decimal_string",
     "task13_case_id_v1",
+    "task13_contrast_id_v1",
+    "task13_task_identity_sha256_v1",
 ]

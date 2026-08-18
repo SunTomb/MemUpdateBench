@@ -88,6 +88,8 @@ def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: 
         cell_id="cell-a",
         answer_model_slot="qwen",
         k=k,
+        context_order="chronological",
+        context_annotation="none",
         metric_path=metric_path,
         interval=Task13IntervalV1(
             status=Task13StatisticStatus.NUMERIC,
@@ -98,6 +100,7 @@ def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: 
         task_count=task_count,
         core_count=20,
         core_ids_sha256=SHA,
+        task_identity_sha256=SHA,
         run_id="run-a",
         run_manifest_sha256=SHA,
         score_artifact_sha256=SHA_B,
@@ -123,6 +126,7 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
         ),
         core_count=20,
         core_ids_sha256=SHA,
+        task_identity_sha256=SHA,
         left_source=_source("run-left", SHA, SHA_B),
         right_source=_source("run-right", SHA_B, SHA_C),
         bootstrap_config_sha256=SHA,
@@ -245,7 +249,14 @@ def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
 
 
 def _case_index(case_ids: tuple[str, ...] | None = None) -> Task13CaseIndexV1:
-    case_ids = case_ids or tuple(f"case-{index:02d}" for index in range(18))
+    case_ids = case_ids or tuple(
+        task13_case_id_v1(
+            f"run-{index:02d}",
+            f"task-{index:02d}",
+            ("correct", "stale_copied", "answer_parse_invalid", "other_wrong")[index % 4],
+        )
+        for index in range(18)
+    )
     run_ids = tuple(f"run-{index:02d}" for index in range(18))
     categories = ("correct", "stale_copied", "answer_parse_invalid", "other_wrong")
     coverage = []
@@ -605,7 +616,7 @@ def test_case_index_requires_ordered_18_run_coverage_and_aligned_sources() -> No
         Task13CaseIndexV1.model_validate(payload)
     payload = index.model_dump(mode="python")
     payload["case_bindings"] = (*payload["case_bindings"], Task13CaseBindingV1(
-        case_id="uncovered-case", run_id="run-00", task_id="task-extra", category="correct"
+        case_id=task13_case_id_v1("run-00", "task-extra", "correct"), run_id="run-00", task_id="task-extra", category="correct"
     ))
     with pytest.raises((ValidationError, ValueError)):
         Task13CaseIndexV1.model_validate(payload)
