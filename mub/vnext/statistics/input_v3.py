@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field, replace
 import hashlib
 from pathlib import Path
 from types import MappingProxyType
@@ -50,6 +50,7 @@ from mub.vnext.statistics.contracts_v3 import (
 
 
 _SHA256_HEX = frozenset("0123456789abcdef")
+_TASK13_LOADER_TOKEN = object()
 
 
 class Task13IntegrityCountsV1(ImmutableContractModel):
@@ -69,8 +70,7 @@ class Task13IntegrityAuditV1(ImmutableContractModel):
     counts: Task13IntegrityCountsV1
 
 
-@dataclass(frozen=True)
-class Task13AuthenticatedObservationV1:
+class _Task13ObservationEvidencePayloadV1(ImmutableContractModel):
     cell_id: str
     slot: Literal["answer_model_a", "answer_model_b"]
     k: Literal[4, 8, 16]
@@ -83,6 +83,56 @@ class Task13AuthenticatedObservationV1:
     source: Task13RunSourceV1
 
 
+class _Task13ObservationRootPayloadV1(ImmutableContractModel):
+    evidence_sha256: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Task13AuthenticatedObservationV1:
+    cell_id: str
+    slot: Literal["answer_model_a", "answer_model_b"]
+    k: Literal[4, 8, 16]
+    context_order: Literal["chronological", "reverse_chronological"]
+    context_annotation: Literal["none", "latest_outdated_label"]
+    semantic_core_id: str
+    task: MemUpdateTaskV3
+    run: TaskRunRecordV3
+    score: ScoreRecordV3
+    source: Task13RunSourceV1
+    evidence_sha256: str = ""
+
+
+def _task13_observation_evidence_sha256(
+    observation: Task13AuthenticatedObservationV1,
+) -> str:
+    return sha256_model(
+        _Task13ObservationEvidencePayloadV1(
+            cell_id=observation.cell_id,
+            slot=observation.slot,
+            k=observation.k,
+            context_order=observation.context_order,
+            context_annotation=observation.context_annotation,
+            semantic_core_id=observation.semantic_core_id,
+            task=observation.task,
+            run=observation.run,
+            score=observation.score,
+            source=observation.source,
+        )
+    )
+
+
+def _task13_observation_membership_root_sha256(
+    observations: tuple[Task13AuthenticatedObservationV1, ...],
+) -> str:
+    return sha256_model(
+        _Task13ObservationRootPayloadV1(
+            evidence_sha256=tuple(
+                observation.evidence_sha256 for observation in observations
+            )
+        )
+    )
+
+
 @dataclass(frozen=True)
 class Task13AuthenticatedRunV1:
     cell: Task12InterventionCellV1
@@ -90,6 +140,7 @@ class Task13AuthenticatedRunV1:
     authorization: Task12ExecutionAuthorizationV1
     source: Task13RunSourceV1
     observations: tuple[Task13AuthenticatedObservationV1, ...]
+    observation_membership_root_sha256: str = ""
 
     @property
     def run_config(self) -> ExternalRunConfigV1:
@@ -111,6 +162,26 @@ class Task13AuthenticatedMatrixV1:
     runs: tuple[Task13AuthenticatedRunV1, ...]
     canonical_core_ids: tuple[str, ...]
     input_hashes: Mapping[str, str]
+    _loader_token: InitVar[object | None] = None
+    observation_membership_roots: Mapping[str, str] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _loader_seal_valid: bool = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self, _loader_token: object | None) -> None:
+        loader_seal_valid = _loader_token is _TASK13_LOADER_TOKEN
+        roots = (
+            {
+                run.source.run_id: run.observation_membership_root_sha256
+                for run in self.runs
+            }
+            if loader_seal_valid
+            else {}
+        )
+        object.__setattr__(self, "observation_membership_roots", MappingProxyType(roots))
+        object.__setattr__(self, "_loader_seal_valid", loader_seal_valid)
 
     @property
     def matrix_run_summary(self) -> Task12MatrixRunSummaryV1:
@@ -531,6 +602,13 @@ def load_task13_authenticated_matrix_v1(
             )
             for task in ordered_tasks
         )
+        observations = tuple(
+            replace(
+                observation,
+                evidence_sha256=_task13_observation_evidence_sha256(observation),
+            )
+            for observation in observations
+        )
         observation_identity = tuple(
             (obs.task.task_id, obs.semantic_core_id) for obs in observations
         )
@@ -555,6 +633,9 @@ def load_task13_authenticated_matrix_v1(
                 authorization=validated.authorization,
                 source=source,
                 observations=observations,
+                observation_membership_root_sha256=_task13_observation_membership_root_sha256(
+                    observations
+                ),
             )
         )
     if len(runs) != 18 or shared_task_identity is None:
@@ -585,6 +666,7 @@ def load_task13_authenticated_matrix_v1(
         runs=tuple(runs),
         canonical_core_ids=canonical_core_ids,
         input_hashes=input_hashes,
+        _loader_token=_TASK13_LOADER_TOKEN,
     )
 
 

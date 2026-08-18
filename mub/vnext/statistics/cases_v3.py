@@ -23,6 +23,8 @@ from mub.vnext.statistics.input_v3 import (
     Task13AuthenticatedMatrixV1,
     Task13AuthenticatedObservationV1,
     Task13AuthenticatedRunV1,
+    _task13_observation_evidence_sha256,
+    _task13_observation_membership_root_sha256,
 )
 
 
@@ -122,6 +124,7 @@ def _validate_authenticated_matrix(matrix: Any) -> Task13AuthenticatedMatrixV1:
     }
     canonical_identity: tuple[tuple[str, str], ...] | None = None
     canonical_core_ids: tuple[str, ...] | None = None
+    _derived_input_hashes(matrix)
     for run in runs:
         pair = (run.cell.cell_id, run.run_configuration.answer_model_slot)
         cell = cells.get(run.cell.cell_id)
@@ -137,6 +140,15 @@ def _validate_authenticated_matrix(matrix: Any) -> Task13AuthenticatedMatrixV1:
             raise ValueError("authenticated run cell differs from preparation matrix")
         if config.answer_model_slot != pair[1] or config.run_id != source.run_id:
             raise ValueError("authenticated run configuration coordinate mismatch")
+        run_config_digest = sha256_model(config)
+        if (
+            run_config_digest != authorization.run_config_sha256
+            or run_config_digest != ref.run_config_sha256
+        ):
+            raise ValueError("authenticated run configuration digest mismatch")
+        authorization_digest = sha256_model(authorization)
+        if authorization_digest != ref.authorization_sha256:
+            raise ValueError("authenticated authorization digest mismatch")
         if config.expected_task_ids != cell.task_ids:
             raise ValueError("authenticated run task scope differs from cell")
         if authorization.cell_id != pair[0] or authorization.answer_model_slot != pair[1]:
@@ -200,9 +212,17 @@ def _validate_authenticated_matrix(matrix: Any) -> Task13AuthenticatedMatrixV1:
                 cell=cell,
                 config=config,
             )
+        if (
+            run.observation_membership_root_sha256
+            != matrix.observation_membership_roots.get(run.source.run_id)
+            or run.observation_membership_root_sha256
+            != _task13_observation_membership_root_sha256(observations)
+        ):
+            raise ValueError("authenticated observation membership root mismatch")
+    if not matrix._loader_seal_valid:
+        raise ValueError("authenticated loader seal is invalid")
     if canonical_core_ids != matrix.canonical_core_ids:
         raise ValueError("authenticated canonical core IDs differ from run observations")
-    _derived_input_hashes(matrix)
     return matrix
 
 
@@ -241,6 +261,8 @@ def _validate_observation_linkage(
         raise ValueError("case adapter ID differs from authenticated run configuration")
     if score.task_family != task.task_family or score.difficulty != task.difficulty:
         raise ValueError("case task metadata differs from authenticated score")
+    if observation.evidence_sha256 != _task13_observation_evidence_sha256(observation):
+        raise ValueError("case observation evidence digest mismatch")
 
 
 def classify_task13_case_v1(observation: Any) -> CaseCategory:
@@ -252,6 +274,34 @@ def classify_task13_case_v1(observation: Any) -> CaseCategory:
     if any(not prediction.format_valid for prediction in observation.run.answer_predictions):
         return "answer_parse_invalid"
     return "other_wrong"
+
+
+_PRIVATE_METADATA_SPLIT_KEY_FIELDS = (
+    "semantic_core_id",
+    "source_group_id",
+    "trajectory_id",
+    "paraphrase_group_id",
+    "source_document_id",
+    "version_group_id",
+    "split_exception_id",
+    "split_policy_version",
+)
+
+
+def _task_metadata_projection(task: Any, private: bool) -> dict[str, Any]:
+    payload = _json(task.metadata)
+    if not private:
+        return payload
+    split_key = payload["split_key"]
+    return {
+        "split": payload["split"],
+        "split_key": {
+            field: split_key[field] for field in _PRIVATE_METADATA_SPLIT_KEY_FIELDS
+        },
+        "profile_name": payload["profile_name"],
+        "generation_config_hash": payload["generation_config_hash"],
+        "compiler_version": payload["compiler_version"],
+    }
 
 
 def _private_source_projection(task: Any, private: bool) -> dict[str, Any]:
@@ -345,7 +395,7 @@ def _project_task13_case_v1(
             semantic_core_id=observation.semantic_core_id,
             family=task.task_family,
             difficulty=task.difficulty.value,
-            metadata=_json(task.metadata),
+            metadata=_task_metadata_projection(task, private),
             source=source_payload,
             target_objects=tuple(_json(item) for item in task.target_objects),
             queries=tuple(_json(item) for item in task.queries),

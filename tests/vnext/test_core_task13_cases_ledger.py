@@ -9,7 +9,11 @@ from mub.vnext.contracts.v3.runtime import MemorySnapshotV3
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.contracts.v3.score import ScoreRecordV3
 from mub.vnext.statistics.contracts_v3 import Task13RunSourceV1
-from mub.vnext.statistics.input_v3 import Task13AuthenticatedObservationV1
+from mub.vnext.statistics.input_v3 import (
+    Task13AuthenticatedObservationV1,
+    _task13_observation_evidence_sha256,
+    _task13_observation_membership_root_sha256,
+)
 from mub.vnext.statistics.cases_v3 import (
     _project_task13_case_v1,
     _select_task13_cases_for_run_v1,
@@ -204,7 +208,7 @@ def test_case_verifier_rejects_changed_score_or_trace(authenticated_case_matrix)
     changed_observation = replace(first_run.observations[0], run=changed_row)
     changed_run = replace(first_run, observations=(changed_observation, *first_run.observations[1:]))
     changed_matrix = replace(authenticated_case_matrix, runs=(changed_run, *authenticated_case_matrix.runs[1:]))
-    with pytest.raises(ValueError, match="authenticated|source|linkage"):
+    with pytest.raises(ValueError, match="authenticated|source|linkage|digest"):
         verify_task13_cases_v1(result.cases, changed_matrix)
 
 
@@ -215,24 +219,138 @@ def test_case_build_and_verify_have_no_run_count_bypass(case_fixture):
         verify_task13_cases_v1((), case_fixture.matrix, require_18_runs=False)
 
 
-def test_private_source_text_is_redacted(authenticated_case_matrix):
+def test_case_build_rejects_rebound_run_configuration_digest(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    forged_config = run.run_configuration.model_copy(
+        update={"answer_parser_version": "forged-answer-parser-v999"}
+    )
+    forged_run = replace(run, run_configuration=forged_config)
+    forged_matrix = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    with pytest.raises(ValueError, match="run configuration digest"):
+        build_task13_cases_v1(forged_matrix)
+
+
+def test_case_build_rejects_rebound_authorization_digest(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    forged_authorization = run.authorization.model_copy(
+        update={"preparation_manifest_sha256": "0" * 64}
+    )
+    forged_run = replace(run, authorization=forged_authorization)
+    forged_matrix = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    with pytest.raises(ValueError, match="authorization digest"):
+        build_task13_cases_v1(forged_matrix)
+
+
+def test_case_build_rejects_rebound_observation_evidence(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    observation = run.observations[0]
+    support_path, support = next(iter(observation.score.supported_metric_fields.items()))
+    forged_support = dict(observation.score.supported_metric_fields)
+    forged_support[support_path] = support.model_copy(update={"detail": "forged-evidence"})
+    forged_score = observation.score.model_copy(
+        update={"supported_metric_fields": forged_support}
+    )
+    forged_observation = replace(observation, score=forged_score)
+    forged_run = replace(run, observations=(forged_observation, *run.observations[1:]))
+    forged_matrix = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    with pytest.raises(ValueError, match="observation evidence digest"):
+        build_task13_cases_v1(forged_matrix)
+
+
+def test_case_build_rejects_rehashed_rebound_observation_membership(authenticated_case_matrix):
+    run = authenticated_case_matrix.runs[0]
+    observation = run.observations[0]
+    support_path, support = next(iter(observation.score.supported_metric_fields.items()))
+    forged_support = dict(observation.score.supported_metric_fields)
+    forged_support[support_path] = support.model_copy(update={"detail": "forged-membership"})
+    forged_score = observation.score.model_copy(
+        update={"supported_metric_fields": forged_support}
+    )
+    forged_observation = replace(observation, score=forged_score, evidence_sha256="")
+    forged_observation = replace(
+        forged_observation,
+        evidence_sha256=_task13_observation_evidence_sha256(forged_observation),
+    )
+    forged_observations = (forged_observation, *run.observations[1:])
+    forged_run = replace(
+        run,
+        observations=forged_observations,
+        observation_membership_root_sha256=_task13_observation_membership_root_sha256(
+            forged_observations
+        ),
+    )
+    forged_matrix = replace(
+        authenticated_case_matrix,
+        runs=(forged_run, *authenticated_case_matrix.runs[1:]),
+    )
+    forged_root = _task13_observation_membership_root_sha256(forged_observations)
+    forged_roots = dict(authenticated_case_matrix.observation_membership_roots)
+    forged_roots[run.source.run_id] = forged_root
+    try:
+        rebound_matrix = replace(
+            forged_matrix,
+            observation_membership_roots=forged_roots,
+        )
+    except ValueError as exc:
+        assert "init=False" in str(exc)
+        rebound_matrix = forged_matrix
+    with pytest.raises(ValueError, match="membership root|loader seal"):
+        build_task13_cases_v1(rebound_matrix)
+
+
+def test_private_task_metadata_projection_excludes_free_text(authenticated_case_matrix):
     matrix = authenticated_case_matrix
     run = matrix.runs[0]
     observation = run.observations[0]
-    private_source = observation.task.source.model_copy(update={"provenance": {"redistributable": False}})
-    private_task = observation.task.model_copy(update={"source": private_source})
-    private_observation = replace(observation, task=private_task)
+    private_source = observation.task.source.model_copy(
+        update={"provenance": {"redistributable": False}}
+    )
+    private_metadata = observation.task.metadata.model_copy(
+        update={
+            "resolved_profile": {"sentinel": "DO_NOT_EXPORT_PROFILE"},
+            "extra": {"sentinel": "DO_NOT_EXPORT_EXTRA"},
+        }
+    )
+    private_task = observation.task.model_copy(
+        update={"source": private_source, "metadata": private_metadata}
+    )
+    private_observation = replace(
+        observation,
+        task=private_task,
+        evidence_sha256="",
+    )
+    private_observation = replace(
+        private_observation,
+        evidence_sha256=_task13_observation_evidence_sha256(private_observation),
+    )
     task_hashes = dict(run.run_configuration.task_record_hashes)
     task_hashes[private_task.task_id] = sha256_model(private_task)
     private_config = run.run_configuration.model_copy(update={"task_record_hashes": task_hashes})
-    private_run = replace(run, observations=(private_observation, *run.observations[1:]), run_configuration=private_config)
+    private_run = replace(
+        run,
+        observations=(private_observation, *run.observations[1:]),
+        run_configuration=private_config,
+    )
     private_matrix = replace(matrix, runs=(private_run, *matrix.runs[1:]))
 
     case = _project_task13_case_v1(private_observation, private_matrix)
-
+    serialized = canonical_json_bytes(case)
+    assert b"DO_NOT_EXPORT_PROFILE" not in serialized
+    assert b"DO_NOT_EXPORT_EXTRA" not in serialized
+    assert "resolved_profile" not in case.task.metadata
+    assert "legacy_provenance" not in case.task.metadata
+    assert "extra" not in case.task.metadata
     assert case.task.source["source_uri"] is None
     assert case.timeline.redacted is True
-    assert all("raw_text" not in event for event in case.timeline.items)
 
 
 @pytest.fixture(scope="module")
@@ -305,7 +423,7 @@ def test_case_build_rejects_cross_run_task_identity_mismatch(authenticated_case_
         authenticated_case_matrix,
         runs=(authenticated_case_matrix.runs[0], forged_run, *authenticated_case_matrix.runs[2:]),
     )
-    with pytest.raises(ValueError, match="semantic-core|canonical task identity|identity sequence"):
+    with pytest.raises(ValueError, match="semantic-core|canonical task identity|identity sequence|membership root"):
         build_task13_cases_v1(forged)
 
 
@@ -390,7 +508,15 @@ def test_case_projection_redacts_nested_private_fields(authenticated_case_matrix
         for event in observation.task.events
     )
     private_task = observation.task.model_copy(update={"source": private_source, "events": private_events})
-    private_observation = replace(observation, task=private_task)
+    private_observation = replace(
+        observation,
+        task=private_task,
+        evidence_sha256="",
+    )
+    private_observation = replace(
+        private_observation,
+        evidence_sha256=_task13_observation_evidence_sha256(private_observation),
+    )
     task_hashes = dict(run.run_configuration.task_record_hashes)
     task_hashes[private_task.task_id] = sha256_model(private_task)
     private_config = run.run_configuration.model_copy(update={"task_record_hashes": task_hashes})
