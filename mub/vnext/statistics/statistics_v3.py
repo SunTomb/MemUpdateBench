@@ -295,6 +295,10 @@ def compute_task13_statistics_v1(
                     right_projection = projections[(right_index, metric_path)]
                     if left_projection.status != right_projection.status:
                         raise ValueError("paired contrast has mixed support states")
+                    if left_projection.task_ids_by_core != right_projection.task_ids_by_core:
+                        raise ValueError(
+                            "paired contrast cells must share identical task IDs and core assignments"
+                        )
                     if left_projection.status is Task13StatisticStatus.NUMERIC:
                         assert left_projection.core_values is not None
                         assert right_projection.core_values is not None

@@ -261,6 +261,36 @@ def test_compute_cells_and_predeclared_contrasts_have_frozen_order():
     assert first.direction == "left_minus_right"
 
 
+def test_paired_contrast_rejects_shape_preserving_task_substitution():
+    runs = []
+    for slot in ("answer_model_a", "answer_model_b"):
+        for k in (4, 8, 16):
+            runs.extend(
+                [
+                    _make_run(f"c-{slot}-{k}", "chronological", "none", k, slot, 0),
+                    _make_run(f"r-{slot}-{k}", "reverse_chronological", "none", k, slot, 1),
+                    _make_run(f"l-{slot}-{k}", "reverse_chronological", "latest_outdated_label", k, slot, 2),
+                ]
+            )
+    target = runs[1]
+    observations = list(target.observations)
+    original = observations[0]
+    substituted_id = "task-00-substituted"
+    substituted_task = _copy_namespace(original.task, task_id=substituted_id)
+    observations[0] = _copy_namespace(
+        original,
+        task=substituted_task,
+        run=SimpleNamespace(task_id=substituted_id, run_id=target.run_configuration.run_id),
+        score=_score(substituted_id, target.run_configuration.run_id, 0.1),
+    )
+    runs[1] = _copy_namespace(target, observations=tuple(observations))
+    with pytest.raises(ValueError, match="identical task IDs"):
+        compute_task13_statistics_v1(
+            SimpleNamespace(runs=tuple(runs), canonical_core_ids=CORE_IDS),
+            BOOTSTRAP,
+        )
+
+
 def test_unknown_metric_is_rejected():
     with pytest.raises(ValueError, match="metric"):
         decimal_metric_v1(_score("task", "run", 1.0), "answer_scores.not_a_metric")
