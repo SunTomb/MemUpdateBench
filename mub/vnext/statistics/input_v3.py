@@ -32,7 +32,7 @@ from mub.vnext.runtime.task12_execution_v3 import (
     Task12ExecutionAuthorizationV1,
     Task12RuntimeCodeBindingV1,
     load_finalized_task12_run_v3,
-    load_task12_control_json_v3,
+    parse_task12_control_json_bytes_v3,
     read_task12_regular_file_v3,
     verify_task12_score_artifact_v3,
 )
@@ -141,9 +141,10 @@ def _load_hashed_control(
     allow_trailing_lf: bool = False,
 ):
     raw = _read_expected(path, expected_sha256, label=label)
-    model = load_task12_control_json_v3(
-        path,
+    model = parse_task12_control_json_bytes_v3(
+        raw,
         model_type,
+        source=path,
         allow_trailing_lf=allow_trailing_lf,
     )
     return model, raw
@@ -256,15 +257,32 @@ def _validate_canonical_task_identity(
     return identity
 
 
-def _validate_task_identity_matches(
+def _validate_task_identity_mapping(
     observed: tuple[tuple[str, str], ...],
     expected: tuple[tuple[str, str], ...],
 ) -> tuple[tuple[str, str], ...]:
-    observed = _validate_canonical_task_identity(observed)
-    expected = _validate_canonical_task_identity(expected)
-    if observed != expected:
+    if len(observed) != TASK13_TASK_COUNT:
+        raise ValueError(
+            f"each Task 12 run must contain exactly {TASK13_TASK_COUNT} task identities"
+        )
+    task_ids = tuple(task_id for task_id, _ in observed)
+    if len(set(task_ids)) != TASK13_TASK_COUNT:
+        raise ValueError("each Task 12 run must contain unique task IDs")
+    expected_sorted = tuple(
+        sorted(expected, key=lambda pair: (pair[1].encode("utf-8"), pair[0].encode("utf-8")))
+    )
+    observed_sorted = tuple(
+        sorted(observed, key=lambda pair: (pair[1].encode("utf-8"), pair[0].encode("utf-8")))
+    )
+    observed_counts = Counter(core_id for _, core_id in observed_sorted)
+    if len(observed_counts) != TASK13_SEMANTIC_CORE_COUNT or any(
+        count != TASK13_TASKS_PER_CORE for count in observed_counts.values()
+    ):
+        raise ValueError("each semantic core must have exactly four task IDs")
+    if observed_sorted != expected_sorted:
         raise ValueError("Task 12 task IDs or semantic-core assignments differ")
-    return observed
+    _validate_canonical_core_ids(tuple(core_id for _, core_id in observed_sorted))
+    return observed_sorted
 
 
 def _canonical_task_identity(
@@ -370,7 +388,7 @@ def load_task13_authenticated_matrix_v1(
     canonical_task_identity = _validate_canonical_task_identity(
         _canonical_task_identity(frozen_tasks)
     )
-    _validate_task_identity_matches(
+    _validate_task_identity_mapping(
         tuple(
             (task.task_id, task.metadata.split_key.semantic_core_id)
             for task in frozen_tasks
@@ -466,7 +484,7 @@ def load_task13_authenticated_matrix_v1(
             score_artifact_sha256=score_hash,
         )
         tasks = validated.tasks
-        observed_task_identity = _validate_task_identity_matches(
+        observed_task_identity = _validate_task_identity_mapping(
             tuple(
                 (task.task_id, task.metadata.split_key.semantic_core_id)
                 for task in tasks
@@ -474,7 +492,7 @@ def load_task13_authenticated_matrix_v1(
             canonical_task_identity,
         )
         if tuple(task_id for task_id, _ in observed_task_identity) != canonical_task_ids:
-            raise ValueError("Task 12 run task order differs from canonical task order")
+            raise ValueError("Task 12 run task identity differs from canonical task identity")
         if tuple(task.task_id for task in tasks) != validated.run_configuration.expected_task_ids:
             raise ValueError("Task 12 task order differs from run configuration")
         if tuple(row.task_id for row in rows) != tuple(task.task_id for task in tasks):

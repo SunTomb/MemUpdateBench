@@ -62,18 +62,32 @@ def read_task12_regular_file_v3(path: str | Path) -> bytes:
     return selected.read_bytes()
 
 
+def parse_task12_control_json_bytes_v3(
+    raw: bytes,
+    model_type,
+    *,
+    source: str | Path,
+    allow_trailing_lf: bool = False,
+):
+    model = model_type.model_validate_json(raw)
+    canonical = canonical_json_bytes(model)
+    if raw != canonical and not (allow_trailing_lf and raw == canonical + b"\n"):
+        raise ValueError(f"noncanonical artifact: {source}")
+    return model
+
+
 def load_task12_control_json_v3(
     path: str | Path,
     model_type,
     *,
     allow_trailing_lf: bool = False,
 ):
-    raw = read_task12_regular_file_v3(path)
-    model = model_type.model_validate_json(raw)
-    canonical = canonical_json_bytes(model)
-    if raw != canonical and not (allow_trailing_lf and raw == canonical + b"\n"):
-        raise ValueError(f"noncanonical artifact: {path}")
-    return model
+    return parse_task12_control_json_bytes_v3(
+        read_task12_regular_file_v3(path),
+        model_type,
+        source=path,
+        allow_trailing_lf=allow_trailing_lf,
+    )
 
 
 class Task12RuntimeCodeBindingV1(ImmutableContractModel):
