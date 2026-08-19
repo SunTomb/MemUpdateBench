@@ -95,6 +95,7 @@ class Task13PublicationV1:
     receipt: Task13StatisticsReceiptV1
     case_index: Task13CaseIndexV1
     claims: tuple[Task13ClaimLedgerRecordV1, ...]
+    artifact_index: Task13ArtifactIndexV1
     artifact_refs: Task13ArtifactRefsV1
     artifact_bytes: Mapping[str, bytes]
 
@@ -120,17 +121,29 @@ class Task13PublicationResultV1:
 class _SourceSnapshot:
     path: Path
     identity: tuple[int, int]
+    size: int
     sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RootMemberSnapshot:
+    root: Path
+    relative_path: str
+    kind: str
+    identity: tuple[int, int]
+    size: int | None = None
+    sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Task13SourceSnapshotV1:
     files: tuple[_SourceSnapshot, ...]
     roots: tuple[_DirectoryIdentity, ...]
+    root_members: tuple[_RootMemberSnapshot, ...]
 
     def __post_init__(self) -> None:
-        if not self.files or not self.roots:
-            raise ValueError("Task 13 source snapshot requires source files and roots")
+        if not self.files or not self.roots or not self.root_members:
+            raise ValueError("Task 13 source snapshot requires source files, roots, and membership")
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +307,7 @@ def build_task13_publication_v3(
         receipt=receipt,
         case_index=case_index,
         claims=ledger.claims,
+        artifact_index=artifact_index,
         artifact_refs=refs,
         artifact_bytes=payloads,
     )
@@ -409,9 +423,41 @@ def _snapshot_source_files(source_paths: Sequence[Path], source_roots: Sequence[
             raise ValueError(f"source input must be a regular single-link file: {checked}")
         candidates[checked] = None
     return tuple(
-        _SourceSnapshot(path, _identity(path), _sha256_file(path))
+        _SourceSnapshot(path, _identity(path), _lstat(path).st_size, _sha256_file(path))
         for path in sorted(candidates, key=lambda item: os.fsencode(str(item)))
     )
+
+
+def _snapshot_root_members_v3(root: Path) -> tuple[_RootMemberSnapshot, ...]:
+    members: list[_RootMemberSnapshot] = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        if _is_reparse(current_path) or not stat.S_ISDIR(_lstat(current_path).st_mode):
+            raise ValueError("source root contains an unsafe directory")
+        relative = current_path.relative_to(root).as_posix() or "."
+        members.append(_RootMemberSnapshot(root, relative, "directory", _identity(current_path)))
+        directories.sort(key=lambda name: os.fsencode(name))
+        files.sort(key=lambda name: os.fsencode(name))
+        for name in directories:
+            member = current_path / name
+            if _is_reparse(member) or not stat.S_ISDIR(_lstat(member).st_mode):
+                raise ValueError("source root contains a reparse-point or unknown directory")
+        for name in files:
+            member = current_path / name
+            if not _regular_single_link(member):
+                raise ValueError("source root contains a non-regular or linked file")
+            result = _lstat(member)
+            members.append(
+                _RootMemberSnapshot(
+                    root,
+                    member.relative_to(root).as_posix(),
+                    "file",
+                    _identity(member),
+                    result.st_size,
+                    _sha256_file(member),
+                )
+            )
+    return tuple(sorted(members, key=lambda item: (os.fsencode(str(item.root)), item.relative_path.encode("utf-8"), item.kind)))
 
 
 def capture_task13_source_snapshot_v3(
@@ -429,7 +475,20 @@ def capture_task13_source_snapshot_v3(
     return Task13SourceSnapshotV1(
         files=_snapshot_source_files(source_paths, tuple(root.path for root in roots)),
         roots=roots,
+        root_members=tuple(
+            member for root in roots for member in _snapshot_root_members_v3(root.path)
+        ),
     )
+
+
+def source_snapshot_sha256_v3(snapshot: Task13SourceSnapshotV1, path: Path) -> str:
+    if not isinstance(snapshot, Task13SourceSnapshotV1):
+        raise TypeError("snapshot must be Task13SourceSnapshotV1")
+    checked = _absolute_no_reparse(path, require_exists=True)
+    for member in snapshot.files:
+        if member.path == checked:
+            return member.sha256
+    raise ValueError(f"source path is not a member of the initial Task 13 snapshot: {checked}")
 
 
 def _revalidate_source_snapshot(snapshot: Task13SourceSnapshotV1) -> None:
@@ -441,12 +500,22 @@ def _revalidate_source_snapshot(snapshot: Task13SourceSnapshotV1) -> None:
             or _identity(root.path) != root.identity
         ):
             raise RuntimeError(f"Task 13 source root changed during publication: {root.path}")
+    observed_members = tuple(
+        member for root in snapshot.roots for member in _snapshot_root_members_v3(root.path)
+    )
+    if observed_members != snapshot.root_members:
+        raise RuntimeError("Task 13 source root membership changed during publication")
     _revalidate_sources(snapshot.files)
 
 
 def _revalidate_sources(snapshots: Sequence[_SourceSnapshot]) -> None:
     for snapshot in snapshots:
-        if not _regular_single_link(snapshot.path) or _identity(snapshot.path) != snapshot.identity or _sha256_file(snapshot.path) != snapshot.sha256:
+        if (
+            not _regular_single_link(snapshot.path)
+            or _identity(snapshot.path) != snapshot.identity
+            or _lstat(snapshot.path).st_size != snapshot.size
+            or _sha256_file(snapshot.path) != snapshot.sha256
+        ):
             raise RuntimeError(f"Task 13 source changed during publication: {snapshot.path}")
 
 
@@ -590,10 +659,26 @@ def verify_task13_artifact_root_v3(root: Path) -> Task13PublicationResultV1:
     )
 
 
-def validate_task13_staging_root_v3(staging_root: Path, expected: Task13PublicationV1) -> None:
+def validate_task13_staging_root_v3(
+    staging_root: Path,
+    expected: Task13PublicationV1,
+    matrix: Task13AuthenticatedMatrixV1,
+) -> None:
     result = verify_task13_artifact_root_v3(staging_root)
     if result.artifact_refs != expected.artifact_refs:
         raise ValueError("Task 13 staging artifacts differ from the computed publication")
+    cases = tuple(_jsonl_models(staging_root / "cases.jsonl", Task13CaseRecordV1))
+    case_index = _json_model_bytes(staging_root / "case_index.json", Task13CaseIndexV1)
+    verify_task13_cases_v1(cases, matrix)
+    rebuilt_index = build_task13_case_index_v1(
+        cases,
+        case_index.coverage,
+        case_index.run_sources,
+        case_index.cases_artifact,
+        source_bindings=case_index.source_bindings,
+    )
+    if canonical_json_bytes(rebuilt_index) != (staging_root / "case_index.json").read_bytes():
+        raise ValueError("Task 13 case index does not equal the authenticated cases closure")
 
 
 def _directory_commit_noreplace_v3(staging: Path, final_root: Path) -> None:
@@ -647,6 +732,7 @@ def _safe_cleanup_staging_v3(staging: Path, identity: _DirectoryIdentity, parent
 def publish_task13_artifacts_v3(
     publication: Task13PublicationV1,
     *,
+    matrix: Task13AuthenticatedMatrixV1,
     output_root: Path,
     source_snapshot: Task13SourceSnapshotV1,
     repository_root: Path,
@@ -654,6 +740,8 @@ def publish_task13_artifacts_v3(
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
     if not isinstance(publication, Task13PublicationV1):
         raise TypeError("publication must be Task13PublicationV1")
+    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
+        raise TypeError("matrix must be an authenticated Task13AuthenticatedMatrixV1")
     output_root = _absolute_no_reparse(output_root, require_exists=False)
     if _present(output_root):
         raise FileExistsError("Task 13 output root must not already exist")
@@ -690,7 +778,7 @@ def publish_task13_artifacts_v3(
                 source_paths=tuple(snapshot.path for snapshot in source_snapshot.files),
                 validators=validators,
             )
-            validate_task13_staging_root_v3(staging, publication)
+            validate_task13_staging_root_v3(staging, publication, matrix)
             _commit_staged_task13_root_v3(
                 staging=staging, final_root=output_root,
                 parent_identity=parent_identity, source_snapshot=source_snapshot,
@@ -698,13 +786,18 @@ def publish_task13_artifacts_v3(
             committed = True
         except OSError as exc:
             if exc.errno == errno.EXDEV or (os.name == "nt" and exc.errno == 17):
+                # A cross-device failure cannot have installed the final root; retain owned staging.
                 preserve_staging = True
                 raise OSError("Task 13 no-replace commit crossed devices; owned staging retained") from exc
             raise
         finally:
             if not committed and not preserve_staging:
                 _safe_cleanup_staging_v3(staging, staging_identity, parent_identity, TASK13_PUBLICATION_PATHS)
-    return verify_task13_artifact_root_v3(output_root)
+    return Task13PublicationResultV1(
+        output_root=output_root,
+        artifact_refs=publication.artifact_refs,
+        artifact_index=publication.artifact_index,
+    )
 
 
 def _validate_staged_member_v3(path: Path, name: str, publication: Task13PublicationV1) -> None:

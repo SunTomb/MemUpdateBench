@@ -95,7 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         source_snapshot = task13_publication.capture_task13_source_snapshot_v3(
             source_paths, source_roots
         )
-        hashes = {key: _sha256(path) for key, path in paths.items() if key not in {"core_root", "evidence_root", "matrix_root"}}
+        task13_publication._revalidate_source_snapshot(source_snapshot)
+        hashes = {
+            key: task13_publication.source_snapshot_sha256_v3(source_snapshot, path)
+            for key, path in paths.items()
+            if key not in {"core_root", "evidence_root", "matrix_root"}
+        }
         matrix = load_task13_authenticated_matrix_v1(
             preparation_manifest_path=paths["manifest"],
             plan_path=paths["plan"],
@@ -112,7 +117,9 @@ def main(argv: list[str] | None = None) -> int:
             expected_matrix_summary_sha256=hashes["matrix_summary"],
             expected_integrity_audit_sha256=hashes["integrity_audit"],
         )
+        task13_publication._revalidate_source_snapshot(source_snapshot)
         config = _load_config(paths["statistics_config"])
+        task13_publication._revalidate_source_snapshot(source_snapshot)
         runtime = task13_publication.current_clean_task13_runtime_v3(repository_root)
         publication = task13_publication.build_task13_publication_v3(
             matrix=matrix,
@@ -131,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = task13_publication.publish_task13_artifacts_v3(
             publication,
+            matrix=matrix,
             output_root=Path(args.output_root),
             source_snapshot=source_snapshot,
             repository_root=repository_root,

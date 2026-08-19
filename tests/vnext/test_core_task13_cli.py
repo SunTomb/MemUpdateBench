@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -216,3 +217,223 @@ def test_task13_refuses_when_no_safe_posix_noreplace_primitive_exists(monkeypatc
         publication._directory_commit_noreplace_v3(staging, final_root)
     assert staging.exists()
     assert not final_root.exists()
+
+
+# Task 7 remediation contracts: publication safety boundaries.
+def test_task13_success_does_not_call_postrename_verifier(
+    task13_arguments, fixed_runtime_binding, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    original = publication.verify_task13_artifact_root_v3
+    final_root = task13_arguments["output_root"]
+
+    def reject_only_final(root):
+        if Path(root) == final_root:
+            raise AssertionError("post-rename verifier was called")
+        return original(root)
+
+    monkeypatch.setattr(publication, "verify_task13_artifact_root_v3", reject_only_final)
+    assert main(_cli_args(task13_arguments)) == 0
+    assert final_root.is_dir()
+
+
+def test_task13_snapshot_rejects_recursive_membership_changes(tmp_path):
+    from mub.vnext.statistics.task13_v3 import (
+        _revalidate_source_snapshot,
+        capture_task13_source_snapshot_v3,
+    )
+
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "input.json"
+    source.write_bytes(b"{}")
+    snapshot = capture_task13_source_snapshot_v3((source,), (root,))
+    (root / "new-file").write_bytes(b"new")
+    with pytest.raises(RuntimeError, match="membership"):
+        _revalidate_source_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("mutation", ("delete", "rename", "directory"))
+def test_task13_snapshot_rejects_all_recursive_membership_changes(tmp_path, mutation):
+    from mub.vnext.statistics.task13_v3 import (
+        _revalidate_source_snapshot,
+        capture_task13_source_snapshot_v3,
+    )
+
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    source = nested / "input.json"
+    source.write_bytes(b"{}")
+    snapshot = capture_task13_source_snapshot_v3((source,), (root,))
+    if mutation == "delete":
+        source.unlink()
+    elif mutation == "rename":
+        source.rename(nested / "renamed.json")
+    else:
+        (root / "added-directory").mkdir()
+    with pytest.raises(RuntimeError, match="membership"):
+        _revalidate_source_snapshot(snapshot)
+
+
+def test_task13_snapshot_rejects_explicit_input_replacement(tmp_path):
+    from mub.vnext.statistics.task13_v3 import (
+        _revalidate_source_snapshot,
+        capture_task13_source_snapshot_v3,
+    )
+
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "input.json"
+    source.write_bytes(b'{"v":1}')
+    snapshot = capture_task13_source_snapshot_v3((source,), (root,))
+    source.write_bytes(b'{"v":2}')
+    with pytest.raises(RuntimeError, match="membership|source changed"):
+        _revalidate_source_snapshot(snapshot)
+
+
+def test_task13_cli_revalidates_snapshot_after_loader_before_compute(
+    monkeypatch, tmp_path, fixed_runtime_binding
+):
+    import scripts.vnext_run_core_task13 as command
+
+    roots = {name: tmp_path / name for name in ("core", "evidence", "matrix")}
+    for root in roots.values():
+        root.mkdir()
+        (root / "member").write_bytes(b"member")
+    files = {name: tmp_path / f"{name}.json" for name in (
+        "manifest", "plan", "matrix_manifest", "matrix_summary", "integrity_audit", "statistics_config"
+    )}
+    for path in files.values():
+        path.write_bytes(b"{}")
+    output = tmp_path / "output"
+
+    def mutate_loader(**kwargs):
+        files["manifest"].write_bytes(b'{"changed":true}')
+        return object()
+
+    called = False
+
+    def must_not_compute(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("compute reached after source mutation")
+
+    monkeypatch.setattr(command, "load_task13_authenticated_matrix_v1", mutate_loader)
+    monkeypatch.setattr(command.task13_publication, "build_task13_publication_v3", must_not_compute)
+    arguments = {
+        "manifest": files["manifest"], "plan": files["plan"],
+        "core_root": roots["core"], "evidence_root": roots["evidence"],
+        "matrix_root": roots["matrix"], "matrix_bundle_manifest": files["matrix_manifest"],
+        "matrix_summary": files["matrix_summary"], "matrix_integrity_audit": files["integrity_audit"],
+        "statistics_config": files["statistics_config"], "output_root": output,
+    }
+    assert command.main(_cli_args(arguments)) == 2
+    assert not called
+    assert not output.exists()
+
+
+def test_task13_commit_race_and_exdev_preserve_contract(tmp_path, monkeypatch):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    root = tmp_path / "sources"
+    root.mkdir()
+    source = root / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (root,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+    staging = parent / "stage"
+    staging.mkdir()
+    final_root = parent / "final"
+    final_root.mkdir()
+
+    with pytest.raises(FileExistsError):
+        publication._commit_staged_task13_root_v3(
+            staging=staging, final_root=final_root,
+            parent_identity=parent_identity, source_snapshot=snapshot,
+        )
+    assert final_root.is_dir()
+    assert staging.is_dir()
+
+    final_root.rmdir()
+    monkeypatch.setattr(
+        publication,
+        "_directory_commit_noreplace_v3",
+        lambda staging, final_root: (_ for _ in ()).throw(OSError(errno.EXDEV, "injected EXDEV")),
+    )
+    with pytest.raises(OSError, match="EXDEV"):
+        publication._commit_staged_task13_root_v3(
+            staging=staging, final_root=final_root,
+            parent_identity=parent_identity, source_snapshot=snapshot,
+        )
+    assert staging.is_dir()
+    assert not final_root.exists()
+
+
+def test_task13_precommit_validator_failure_leaves_no_final_root(
+    task13_arguments, fixed_runtime_binding, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    monkeypatch.setattr(
+        publication,
+        "validate_task13_staging_root_v3",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("injected precommit validation failure")),
+    )
+    assert main(_cli_args(task13_arguments)) == 2
+    assert not task13_arguments["output_root"].exists()
+
+
+def test_task13_publish_exdev_retains_owned_stage(
+    task13_arguments, fixed_runtime_binding, monkeypatch, tmp_path
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    monkeypatch.setattr(
+        publication,
+        "_directory_commit_noreplace_v3",
+        lambda staging, final_root: (_ for _ in ()).throw(OSError(errno.EXDEV, "injected EXDEV")),
+    )
+    assert main(_cli_args(task13_arguments)) == 2
+    assert not task13_arguments["output_root"].exists()
+    owned = tuple(path for path in tmp_path.glob(".mub-task13-stage-*") if path.is_dir())
+    assert len(owned) == 1
+    assert sorted(path.name for path in owned[0].iterdir()) == [
+        "bootstrap_indices.bin", "case_index.json", "cases.jsonl", "cell_statistics.jsonl",
+        "claim_ledger.jsonl", "paired_contrasts.jsonl", "statistics_receipt.json",
+        "task13_artifact_index.json",
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MoveFileExW no-replace behavior")
+def test_task13_windows_noreplace_collision_preserves_existing_final(tmp_path):
+    from mub.vnext.statistics.task13_v3 import _directory_commit_noreplace_v3
+
+    staging = tmp_path / "stage"
+    final_root = tmp_path / "final"
+    staging.mkdir()
+    final_root.mkdir()
+    with pytest.raises(FileExistsError):
+        _directory_commit_noreplace_v3(staging, final_root)
+    assert staging.is_dir()
+    assert final_root.is_dir()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX renameat2 no-replace behavior")
+def test_task13_posix_noreplace_collision_preserves_existing_final(tmp_path):
+    from mub.vnext.statistics.task13_v3 import _directory_commit_noreplace_v3
+
+    staging = tmp_path / "stage"
+    final_root = tmp_path / "final"
+    staging.mkdir()
+    final_root.mkdir()
+    with pytest.raises(FileExistsError):
+        _directory_commit_noreplace_v3(staging, final_root)
+    assert staging.is_dir()
+    assert final_root.is_dir()
