@@ -561,6 +561,7 @@ def test_task13_cli_rejects_postcommit_path_substitution_without_deleting_final(
     assert main(_cli_args(task13_arguments)) == 2
     final_root = task13_arguments["output_root"]
     assert final_root.is_dir()
+    assert (final_root / "foreign").read_bytes() == b"foreign"
 
 
 def test_task13_runtime_tree_is_bound_to_captured_revision_during_head_race(tmp_path, monkeypatch):
@@ -594,6 +595,44 @@ def test_task13_runtime_tree_is_bound_to_captured_revision_during_head_race(tmp_
     monkeypatch.setattr(publication.subprocess, "run", moving_run)
     binding = publication.current_clean_task13_runtime_v3(repository)
     assert binding.runtime_revision == first_revision
+    assert binding.runtime_tree_sha256 == hashlib.sha256(first_tree).hexdigest()
+
+
+def test_task13_precommit_ownership_recheck_rejects_changed_same_name(tmp_path):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    (staging / "one").write_bytes(b"one")
+    ownership = publication._capture_staging_ownership_v3(staging, ("one",))
+    (staging / "one").write_bytes(b"changed")
+    with pytest.raises(RuntimeError, match="ownership|hash"):
+        publication._validate_staging_ownership_v3(staging, ownership)
+    assert (staging / "one").read_bytes() == b"changed"
+
+
+def test_task13_directory_fsync_failure_preserves_committed_final(tmp_path, monkeypatch):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (sources,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+    monkeypatch.setattr(publication, "_fsync_parent_directory_v3", lambda parent: (_ for _ in ()).throw(OSError("fsync")))
+    with pytest.raises(OSError, match="fsync"):
+        publication._commit_staged_task13_root_v3(
+            staging=staging, final_root=parent / "final",
+            parent_identity=parent_identity, source_snapshot=snapshot,
+        )
+    assert (parent / "final").is_dir()
 
 
 def test_task13_direct_builder_rejects_valid_but_forged_source_hash_mapping(

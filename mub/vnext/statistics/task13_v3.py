@@ -384,7 +384,7 @@ def _absolute_no_reparse(path: Path, *, require_exists: bool) -> Path:
     value = Path(path)
     if not value.is_absolute():
         value = Path.cwd() / value
-    value = Path(os.path.abspath(value))
+    value = Path(os.path.abspath(value)).resolve(strict=False)
     anchor = Path(value.anchor)
     if not _present(anchor) or not stat.S_ISDIR(_lstat(anchor).st_mode):
         raise NotADirectoryError(f"path has no directory anchor: {value}")
@@ -718,6 +718,34 @@ def validate_task13_staging_root_v3(
         raise ValueError("Task 13 case index does not equal the authenticated cases closure")
 
 
+def _renameat2_noreplace_v3(staging: Path, final_root: Path) -> None:
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is not None:
+            renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+            renameat2.restype = ctypes.c_int
+            result = renameat2(-100, os.fsencode(staging), -100, os.fsencode(final_root), 1)
+        else:
+            syscall = getattr(libc, "syscall", None)
+            if syscall is None:
+                raise RuntimeError("no safe no-replace directory commit primitive is available")
+            number = {"x86_64": 316, "amd64": 316, "aarch64": 276, "arm64": 276}.get(__import__("platform").machine().lower())
+            if number is None:
+                raise RuntimeError("renameat2 syscall number is unavailable for this architecture")
+            syscall.restype = ctypes.c_long
+            result = syscall(number, -100, os.fsencode(staging), -100, os.fsencode(final_root), 1)
+    except (AttributeError, OSError, RuntimeError) as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError("no safe no-replace directory commit primitive is available") from exc
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise FileExistsError("Task 13 final root appeared during no-replace commit")
+        raise OSError(error, "renameat2 RENAME_NOREPLACE directory commit failed")
+
+
 def _directory_commit_noreplace_v3(staging: Path, final_root: Path) -> None:
     if os.name == "nt":
         move_file_ex = ctypes.windll.kernel32.MoveFileExW
@@ -729,21 +757,31 @@ def _directory_commit_noreplace_v3(staging: Path, final_root: Path) -> None:
                 raise FileExistsError("Task 13 final root appeared during no-replace commit")
             raise OSError(error, "MoveFileExW no-replace directory commit failed")
         return
+    _renameat2_noreplace_v3(staging, final_root)
+
+
+def _fsync_parent_directory_v3(parent: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = libc.renameat2
-    except (AttributeError, OSError) as exc:
-        raise RuntimeError("no safe no-replace directory commit primitive is available") from exc
-    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
-    renameat2.restype = ctypes.c_int
-    if renameat2(-100, os.fsencode(staging), -100, os.fsencode(final_root), 1) != 0:  # RENAME_NOREPLACE
-        error = ctypes.get_errno()
-        if error == 17:
-            raise FileExistsError("Task 13 final root appeared during no-replace commit")
-        raise OSError(error, "renameat2 RENAME_NOREPLACE directory commit failed")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
-def _commit_staged_task13_root_v3(*, staging: Path, final_root: Path, parent_identity: _DirectoryIdentity, source_snapshot: Task13SourceSnapshotV1) -> None:
+def _commit_staged_task13_root_v3(
+    *,
+    staging: Path,
+    final_root: Path,
+    parent_identity: _DirectoryIdentity,
+    source_snapshot: Task13SourceSnapshotV1,
+    ownership: tuple[_OwnedStagingMember, ...] = (),
+) -> None:
+    if not ownership and _present(staging) and tuple(staging.iterdir()):
+        raise RuntimeError("Task 13 staging ownership is required before commit")
+    if ownership:
+        _validate_staging_ownership_v3(staging, ownership)
     if _identity(parent_identity.path) != parent_identity.identity or _present(final_root):
         raise FileExistsError("Task 13 final root exists or parent changed before commit")
     _revalidate_source_snapshot(source_snapshot)
@@ -757,6 +795,7 @@ def _commit_staged_task13_root_v3(*, staging: Path, final_root: Path, parent_ide
             or (final_stat.st_dev, final_stat.st_ino) != staging_identity
         ):
             raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit")
+        _fsync_parent_directory_v3(parent_identity.path)
     except FileNotFoundError as exc:
         raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit") from exc
 
@@ -786,6 +825,18 @@ def _owned_staging_member_matches_v3(staging: Path, member: _OwnedStagingMember)
         and _lstat(path).st_size == member.size
         and _sha256_file(path) == member.sha256
     )
+
+
+def _validate_staging_ownership_v3(
+    staging: Path, ownership: tuple[_OwnedStagingMember, ...]
+) -> None:
+    expected = tuple(member.name for member in ownership)
+    observed = tuple(sorted(member.name for member in staging.iterdir()))
+    if observed != tuple(sorted(expected)):
+        raise RuntimeError("Task 13 staging ownership set changed before commit")
+    for member in ownership:
+        if not _owned_staging_member_matches_v3(staging, member):
+            raise RuntimeError("Task 13 staging ownership/hash changed before commit")
 
 
 def _safe_cleanup_staging_v3(
@@ -873,9 +924,11 @@ def publish_task13_artifacts_v3(
             )
             validate_task13_staging_root_v3(staging, publication, matrix)
             ownership = _capture_staging_ownership_v3(staging, TASK13_PUBLICATION_PATHS)
+            _validate_staging_ownership_v3(staging, ownership)
             _commit_staged_task13_root_v3(
                 staging=staging, final_root=output_root,
                 parent_identity=parent_identity, source_snapshot=source_snapshot,
+                ownership=ownership,
             )
             committed = True
         except OSError as exc:
