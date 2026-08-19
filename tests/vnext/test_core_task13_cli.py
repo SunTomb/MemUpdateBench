@@ -784,3 +784,36 @@ def test_task13_direct_builder_rejects_valid_but_forged_source_hash_mapping(
             runtime=Task13RuntimeBindingV1("a" * 40, "b" * 64),
             source_hashes=forged,
         )
+
+
+def test_task13_main_uses_real_runtime_in_clean_repository(tmp_path, monkeypatch):
+    import scripts.vnext_run_core_task13 as command
+    import mub.vnext.statistics.task13_v3 as publication
+
+    repository = tmp_path / "clean-repository"
+    repository.mkdir()
+    for args in (("init", "-q", str(repository)), ("-C", str(repository), "config", "user.email", "task13@example.test"), ("-C", str(repository), "config", "user.name", "Task 13")):
+        subprocess.run(("git", *args), check=True)
+    (repository / "tracked").write_bytes(b"tracked")
+    subprocess.run(("git", "-C", str(repository), "add", "tracked"), check=True)
+    subprocess.run(("git", "-C", str(repository), "commit", "-qm", "initial"), check=True)
+    expected = publication.current_clean_task13_runtime_v3(repository)
+    roots = [tmp_path / name for name in ("core", "evidence", "matrix")]
+    for root in roots:
+        root.mkdir(); (root / "member").write_bytes(b"member")
+    config = tmp_path / "config.json"
+    config.write_bytes(canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1))
+    files = [tmp_path / name for name in ("manifest", "plan", "matrix-manifest", "summary", "audit")]
+    for path in files: path.write_bytes(b"{}")
+    capture: dict[str, object] = {}
+    monkeypatch.setattr(command.task13_publication, "capture_task13_source_snapshot_v3", lambda *args: object())
+    monkeypatch.setattr(command.task13_publication, "_revalidate_source_snapshot", lambda snapshot: None)
+    monkeypatch.setattr(command.task13_publication, "source_snapshot_sha256_v3", lambda snapshot, path: "a" * 64)
+    matrix = type("Matrix", (), {"input_hashes": {"task12_preparation_manifest": "a" * 64, "task12_plan": "a" * 64, "task12_matrix_manifest": "a" * 64, "task12_matrix_summary": "a" * 64, "task12_integrity_audit": "a" * 64, "core_tasks": "a" * 64, "core_task_manifest": "a" * 64}})()
+    monkeypatch.setattr(command, "load_task13_authenticated_matrix_v1", lambda **kwargs: matrix)
+    monkeypatch.setattr(command.task13_publication, "build_task13_publication_v3", lambda **kwargs: capture.update(kwargs) or object())
+    result = type("Result", (), {"output_root": tmp_path / "output", "artifact_index_sha256": "b" * 64})()
+    monkeypatch.setattr(command.task13_publication, "publish_task13_artifacts_v3", lambda *args, **kwargs: result)
+    arguments = {"manifest": files[0], "plan": files[1], "core_root": roots[0], "evidence_root": roots[1], "matrix_root": roots[2], "matrix_bundle_manifest": files[2], "matrix_summary": files[3], "matrix_integrity_audit": files[4], "statistics_config": config, "output_root": tmp_path / "output"}
+    assert command.main(_cli_args(arguments), repository_root=repository) == 0
+    assert capture["runtime"] == expected
