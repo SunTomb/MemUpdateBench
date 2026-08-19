@@ -759,6 +759,14 @@ def build_task13_claim_ledger_v1(
         raise ValueError(
             "case index matrix summary hash does not match the statistics receipt"
         )
+    if canonical_case_index.task_artifact_sha256 != validated_receipt.core_tasks_sha256:
+        raise ValueError(
+            "case index task artifact hash does not match the receipt core tasks hash"
+        )
+    if canonical_case_index.task_manifest_sha256 != validated_receipt.core_task_manifest_sha256:
+        raise ValueError(
+            "case index task manifest hash does not match the receipt core task manifest hash"
+        )
     receipt_sha256 = sha256_model(validated_receipt)
     case_index_sha256 = sha256_model(canonical_case_index)
     if expected_statistics_receipt_sha256 is not None and receipt_sha256 != expected_statistics_receipt_sha256:

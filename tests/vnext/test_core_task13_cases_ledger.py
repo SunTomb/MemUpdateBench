@@ -829,8 +829,8 @@ def _ledger_case_index() -> Task13CaseIndexV1:
             media_type="application/jsonl",
         ),
         record_count=len(bindings),
-        task_artifact_sha256=_LEDGER_SHA[5],
-        task_manifest_sha256=_LEDGER_SHA[6],
+        task_artifact_sha256=_LEDGER_SHA[12],
+        task_manifest_sha256=_LEDGER_SHA[13],
         matrix_summary_sha256=_LEDGER_SHA[8],
         case_bindings=bindings,
         coverage=coverage,
@@ -1035,6 +1035,34 @@ def test_ledger_rejects_case_index_matrix_summary_mismatch():
     cells, contrasts, receipt, case_index, _ = _ledger_build()
     forged_case_index = case_index.model_copy(update={"matrix_summary_sha256": "0" * 64})
     with pytest.raises(ValueError, match="matrix summary|matrix_summary"):
+        build_task13_claim_ledger_v1(
+            cells,
+            contrasts,
+            receipt=receipt,
+            case_index=forged_case_index,
+        )
+
+
+def test_ledger_rejects_case_index_task_artifact_hash_mismatch():
+    cells, contrasts, receipt, case_index, _ = _ledger_build()
+    forged_case_index = case_index.model_copy(
+        update={"task_artifact_sha256": _LEDGER_SHA[14]}
+    )
+    with pytest.raises(ValueError, match="task artifact|core tasks|case index"):
+        build_task13_claim_ledger_v1(
+            cells,
+            contrasts,
+            receipt=receipt,
+            case_index=forged_case_index,
+        )
+
+
+def test_ledger_rejects_case_index_task_manifest_hash_mismatch():
+    cells, contrasts, receipt, case_index, _ = _ledger_build()
+    forged_case_index = case_index.model_copy(
+        update={"task_manifest_sha256": _LEDGER_SHA[15]}
+    )
+    with pytest.raises(ValueError, match="task manifest|core task manifest|case index"):
         build_task13_claim_ledger_v1(
             cells,
             contrasts,
