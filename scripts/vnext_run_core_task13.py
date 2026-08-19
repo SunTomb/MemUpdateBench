@@ -65,14 +65,18 @@ def _preflight_output_root(output_root: Path, protected_roots: tuple[Path, ...])
         raise ValueError("Task 13 output root overlaps an input root")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    repository_root: Path | None = None,
+) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
         if not args.execute:
             print("Task 13 publication requires explicit --execute", file=sys.stderr)
             return 2
-        repository_root = Path(__file__).resolve().parents[1]
+        repository_root = repository_root or Path(__file__).resolve().parents[1]
         paths = {
             "manifest": Path(args.manifest),
             "plan": Path(args.plan),

@@ -22,6 +22,8 @@ from mub.vnext.statistics.input_v3 import (
     Task13IntegrityAuditV1,
     Task13IntegrityCountsV1,
     load_task13_authenticated_matrix_v1,
+    require_loader_registered_task13_matrix_v1,
+    validate_task13_authenticated_matrix_v1,
 )
 from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.ledger_v3 import (
@@ -109,6 +111,8 @@ __all__ = [
     "Task13IntegrityAuditV1",
     "Task13IntegrityCountsV1",
     "load_task13_authenticated_matrix_v1",
+    "require_loader_registered_task13_matrix_v1",
+    "validate_task13_authenticated_matrix_v1",
     "CORE_TASK13_METRIC_PATHS",
     "TASK13_CASE_CATEGORIES",
     "TASK13_K_VALUES",

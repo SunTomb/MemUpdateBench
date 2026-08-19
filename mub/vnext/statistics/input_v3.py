@@ -6,6 +6,8 @@ from dataclasses import InitVar, dataclass, field, replace
 import hashlib
 from pathlib import Path
 from types import MappingProxyType
+import threading
+import weakref
 from typing import Any, Literal
 
 from mub.vnext.contracts.common import ImmutableContractModel
@@ -53,6 +55,8 @@ from mub.vnext.statistics.contracts_v3 import (
 
 _SHA256_HEX = frozenset("0123456789abcdef")
 _TASK13_LOADER_TOKEN = object()
+_TASK13_MATRIX_REGISTRY_LOCK = threading.RLock()
+_TASK13_MATRIX_REGISTRY: dict[int, weakref.ReferenceType[Task13AuthenticatedMatrixV1]] = {}
 
 
 class Task13IntegrityCountsV1(ImmutableContractModel):
@@ -188,6 +192,41 @@ class Task13AuthenticatedMatrixV1:
     @property
     def matrix_run_summary(self) -> Task12MatrixRunSummaryV1:
         return self.summary
+
+
+
+def _register_loader_task13_matrix_v1(matrix: Task13AuthenticatedMatrixV1) -> None:
+    identifier = id(matrix)
+
+    def cleanup(reference: weakref.ReferenceType[Task13AuthenticatedMatrixV1]) -> None:
+        with _TASK13_MATRIX_REGISTRY_LOCK:
+            if _TASK13_MATRIX_REGISTRY.get(identifier) is reference:
+                _TASK13_MATRIX_REGISTRY.pop(identifier, None)
+
+    reference = weakref.ref(matrix, cleanup)
+    with _TASK13_MATRIX_REGISTRY_LOCK:
+        _TASK13_MATRIX_REGISTRY[identifier] = reference
+
+
+def require_loader_registered_task13_matrix_v1(
+    matrix: Task13AuthenticatedMatrixV1,
+) -> Task13AuthenticatedMatrixV1:
+    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
+        raise ValueError("Task 13 matrix is not loader-registered")
+    with _TASK13_MATRIX_REGISTRY_LOCK:
+        reference = _TASK13_MATRIX_REGISTRY.get(id(matrix))
+        if reference is None or reference() is not matrix:
+            raise ValueError("Task 13 matrix is not loader-registered")
+    return matrix
+
+
+def validate_task13_authenticated_matrix_v1(
+    matrix: Task13AuthenticatedMatrixV1,
+) -> Task13AuthenticatedMatrixV1:
+    require_loader_registered_task13_matrix_v1(matrix)
+    from mub.vnext.statistics.cases_v3 import _validate_authenticated_matrix
+
+    return _validate_authenticated_matrix(matrix)
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -660,7 +699,7 @@ def load_task13_authenticated_matrix_v1(
             "core_tasks": _require_sha256(plan.core_tasks_sha256, "Core tasks"),
         }
     )
-    return Task13AuthenticatedMatrixV1(
+    matrix = Task13AuthenticatedMatrixV1(
         manifest=manifest,
         plan=plan,
         matrix_manifest=matrix_manifest,
@@ -672,6 +711,8 @@ def load_task13_authenticated_matrix_v1(
         input_hashes=input_hashes,
         _loader_token=_TASK13_LOADER_TOKEN,
     )
+    _register_loader_task13_matrix_v1(matrix)
+    return matrix
 
 
 __all__ = [
@@ -681,4 +722,6 @@ __all__ = [
     "Task13IntegrityAuditV1",
     "Task13IntegrityCountsV1",
     "load_task13_authenticated_matrix_v1",
+    "require_loader_registered_task13_matrix_v1",
+    "validate_task13_authenticated_matrix_v1",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+from dataclasses import replace
 import os
 import subprocess
 from pathlib import Path
@@ -684,6 +685,50 @@ def test_task13_short_path_alias_cannot_bypass_output_overlap(tmp_path):
     short_root = Path(buffer.value)
     with pytest.raises(ValueError, match="overlaps"):
         publication._assert_nonoverlap(short_root / "output", (protected,))
+
+
+def test_task13_builder_rejects_unregistered_clone_before_compute(
+    authenticated_fixture, monkeypatch
+):
+    from mub.vnext.statistics.input_v3 import load_task13_authenticated_matrix_v1
+    import mub.vnext.statistics.task13_v3 as publication
+
+    inputs = authenticated_fixture["inputs"]
+    paths = {
+        "manifest": authenticated_fixture["preparation_manifest_path"],
+        "plan": authenticated_fixture["plan_path"],
+        "matrix_manifest": authenticated_fixture["matrix_manifest_path"],
+        "matrix_summary": authenticated_fixture["summary_path"],
+        "integrity_audit": authenticated_fixture["audit_path"],
+    }
+    hashes = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in paths.items()}
+    genuine = load_task13_authenticated_matrix_v1(
+        preparation_manifest_path=paths["manifest"], plan_path=paths["plan"],
+        core_root=inputs["core_root"], evidence_root=inputs["evidence_root"],
+        matrix_root=authenticated_fixture["matrix"].matrix_root,
+        matrix_manifest_path=paths["matrix_manifest"], matrix_summary_path=paths["matrix_summary"],
+        integrity_audit_path=paths["integrity_audit"], repository_root=Path(__file__).resolve().parents[2],
+        expected_preparation_manifest_sha256=hashes["manifest"], expected_plan_sha256=hashes["plan"],
+        expected_matrix_manifest_sha256=hashes["matrix_manifest"], expected_matrix_summary_sha256=hashes["matrix_summary"],
+        expected_integrity_audit_sha256=hashes["integrity_audit"],
+    )
+    clone = replace(genuine, _loader_token=object())
+    monkeypatch.setattr(publication, "compute_task13_statistics_v1", lambda *args: (_ for _ in ()).throw(AssertionError("compute called")))
+    with pytest.raises(ValueError, match="loader-registered"):
+        publication.build_task13_publication_v3(
+            matrix=clone, bootstrap_config=DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1,
+            statistics_config_sha256=hashlib.sha256(canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1)).hexdigest(),
+            runtime=Task13RuntimeBindingV1("a" * 40, "b" * 64),
+            source_hashes={
+                "preparation_manifest": genuine.input_hashes["task12_preparation_manifest"],
+                "plan": genuine.input_hashes["task12_plan"],
+                "matrix_manifest": genuine.input_hashes["task12_matrix_manifest"],
+                "matrix_summary": genuine.input_hashes["task12_matrix_summary"],
+                "integrity_audit": genuine.input_hashes["task12_integrity_audit"],
+                "core_tasks": genuine.input_hashes["core_tasks"],
+                "core_task_manifest": genuine.input_hashes["core_task_manifest"],
+            },
+        )
 
 
 def test_task13_direct_builder_rejects_valid_but_forged_source_hash_mapping(

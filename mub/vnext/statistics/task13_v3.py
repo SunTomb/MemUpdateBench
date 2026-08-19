@@ -41,7 +41,11 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13RunSourceV1,
     Task13StatisticsReceiptV1,
 )
-from mub.vnext.statistics.input_v3 import Task13AuthenticatedMatrixV1
+from mub.vnext.statistics.input_v3 import (
+    Task13AuthenticatedMatrixV1,
+    require_loader_registered_task13_matrix_v1,
+    validate_task13_authenticated_matrix_v1,
+)
 from mub.vnext.statistics.ledger_v3 import (
     build_task13_case_index_v1,
     build_task13_claim_ledger_v1,
@@ -103,6 +107,7 @@ class Task13PublicationV1:
     artifact_index: Task13ArtifactIndexV1
     artifact_refs: Task13ArtifactRefsV1
     artifact_bytes: Mapping[str, bytes]
+    matrix_identity: int = 0
     publication_seal: object | None = None
 
     def __post_init__(self) -> None:
@@ -228,8 +233,10 @@ def build_task13_publication_v3(
     source_hashes: Mapping[str, str],
 ) -> Task13PublicationV1:
     """Build a complete immutable Task 13 publication without filesystem output."""
-    if not isinstance(matrix, Task13AuthenticatedMatrixV1) or not matrix._loader_seal_valid:
-        raise TypeError("matrix must be a sealed authenticated Task13AuthenticatedMatrixV1")
+    try:
+        validate_task13_authenticated_matrix_v1(matrix)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Task 13 matrix is not loader-registered") from exc
     if not isinstance(bootstrap_config, Task13BootstrapConfigV1):
         raise TypeError("bootstrap_config must be Task13BootstrapConfigV1")
     if statistics_config_sha256 != sha256_model(bootstrap_config):
@@ -340,6 +347,7 @@ def build_task13_publication_v3(
         claims=ledger.claims,
         artifact_index=artifact_index,
         artifact_refs=refs,
+        matrix_identity=id(matrix),
         publication_seal=_PUBLICATION_SEAL,
         artifact_bytes=payloads,
     )
@@ -930,10 +938,16 @@ def publish_task13_artifacts_v3(
     repository_root: Path,
 ) -> Task13PublicationResultV1:
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
-    if not isinstance(publication, Task13PublicationV1) or getattr(publication, "publication_seal", None) is not _PUBLICATION_SEAL:
+    if (
+        not isinstance(publication, Task13PublicationV1)
+        or getattr(publication, "publication_seal", None) is not _PUBLICATION_SEAL
+        or publication.matrix_identity != id(matrix)
+    ):
         raise TypeError("publication must carry the builder-issued Task 13 seal")
-    if not isinstance(matrix, Task13AuthenticatedMatrixV1) or not matrix._loader_seal_valid:
-        raise TypeError("matrix must be a sealed authenticated Task13AuthenticatedMatrixV1")
+    try:
+        require_loader_registered_task13_matrix_v1(matrix)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Task 13 matrix is not loader-registered") from exc
     output_root = _absolute_no_reparse(output_root, require_exists=False)
     if _present(output_root):
         raise FileExistsError("Task 13 output root must not already exist")
