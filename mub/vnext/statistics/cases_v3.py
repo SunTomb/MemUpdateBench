@@ -9,6 +9,7 @@ from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.scoring.scorer_v3 import resolve_final_snapshot_v3
 from mub.vnext.statistics.contracts_v3 import (
     CaseCategory,
+    TASK13_CASE_CATEGORIES,
     Task13AnswerProjectionV1,
     Task13CaseRecordV1,
     Task13RunCaseCoverageV1,
@@ -28,12 +29,6 @@ from mub.vnext.statistics.input_v3 import (
 )
 
 
-_CASE_CATEGORIES: tuple[CaseCategory, ...] = (
-    "correct",
-    "stale_copied",
-    "answer_parse_invalid",
-    "other_wrong",
-)
 _EXPECTED_RUN_COUNT = 18
 _EXPECTED_TASK_COUNT = 80
 _EXPECTED_CORE_COUNT = 20
@@ -475,7 +470,7 @@ def _select_task13_cases_for_run_v1(
     )
     selected: list[Task13CaseRecordV1] = []
     selected_tasks: set[str] = set()
-    for category in _CASE_CATEGORIES:
+    for category in TASK13_CASE_CATEGORIES:
         candidate = next(
             (
                 observation

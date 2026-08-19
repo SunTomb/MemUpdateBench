@@ -36,6 +36,9 @@ from mub.vnext.statistics.ledger_v3 import (
 )
 from mub.vnext.statistics.contracts_v3 import (
     CORE_TASK13_METRIC_PATHS,
+    TASK13_CASE_CATEGORIES,
+    TASK13_K_VALUES,
+    TASK13_SLOTS,
     TASK13_ARTIFACT_PATHS,
     TASK13_CELL_STATISTICS_ARTIFACT_ID,
     TASK13_CELL_STATISTICS_ARTIFACT_PATH,
@@ -61,6 +64,7 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13CaseRecordV1,
     Task13CaseSelectorV1,
     Task13CellStatisticV1,
+    Task13ClaimIdentityPayloadV1,
     Task13ClaimLedgerRecordV1,
     Task13ContrastIdentityPayloadV1,
     Task13DenominatorV1,
@@ -77,6 +81,8 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13TaskProjectionV1,
     Task13TimelineProjectionV1,
     canonical_decimal_string,
+    task13_case_category_order_v1,
+    task13_claim_id_v1,
     task13_task_identity_sha256_v1,
 )
 
@@ -102,6 +108,9 @@ __all__ = [
     "Task13IntegrityCountsV1",
     "load_task13_authenticated_matrix_v1",
     "CORE_TASK13_METRIC_PATHS",
+    "TASK13_CASE_CATEGORIES",
+    "TASK13_K_VALUES",
+    "TASK13_SLOTS",
     "TASK13_ARTIFACT_PATHS",
     "TASK13_CELL_STATISTICS_ARTIFACT_ID",
     "TASK13_CELL_STATISTICS_ARTIFACT_PATH",
@@ -127,6 +136,7 @@ __all__ = [
     "Task13CaseRecordV1",
     "Task13CaseSelectorV1",
     "Task13CellStatisticV1",
+    "Task13ClaimIdentityPayloadV1",
     "Task13ClaimLedgerRecordV1",
     "Task13ContrastIdentityPayloadV1",
     "Task13DenominatorV1",
@@ -143,6 +153,8 @@ __all__ = [
     "Task13TaskProjectionV1",
     "Task13TimelineProjectionV1",
     "canonical_decimal_string",
+    "task13_case_category_order_v1",
+    "task13_claim_id_v1",
     "task13_task_identity_sha256_v1",
     "Task13LedgerResultV1",
     "build_task13_case_index_v1",

@@ -52,6 +52,8 @@ TASK13_CONTRAST_PAIRS = (
     (("reverse_chronological", "none"), ("chronological", "none")),
     (("reverse_chronological", "latest_outdated_label"), ("reverse_chronological", "none")),
 )
+TASK13_K_VALUES = (4, 8, 16)
+TASK13_SLOTS = ("answer_model_a", "answer_model_b")
 TASK13_K = Literal[4, 8, 16]
 TASK13_CONTEXT_ORDER = Literal["chronological", "reverse_chronological"]
 TASK13_CONTEXT_ANNOTATION = Literal["none", "latest_outdated_label"]
@@ -283,6 +285,33 @@ def task13_contrast_id_v1(
     return f"contrast-{sha256_model(payload)}"
 
 
+class Task13ClaimIdentityPayloadV1(ImmutableContractModel):
+    """Typed immutable payload used for stable Task 13 claim IDs."""
+
+    kind: Literal["direct_cell", "paired_contrast"]
+    slot: StrictIdentifier
+    cell_or_contrast: StrictIdentifier
+    metric_path: StrictIdentifier
+    slice: FrozenJsonObjectV3
+
+
+def task13_claim_id_v1(
+    kind: Literal["direct_cell", "paired_contrast"],
+    slot: str,
+    cell_or_contrast: str,
+    metric_path: str,
+    slice_payload: Mapping[str, Any],
+) -> str:
+    payload = Task13ClaimIdentityPayloadV1(
+        kind=kind,
+        slot=slot,
+        cell_or_contrast=cell_or_contrast,
+        metric_path=metric_path,
+        slice=slice_payload,
+    )
+    return f"claim-{sha256_model(payload)}"
+
+
 def task13_case_id_v1(run_id: str, task_id: str, category: str) -> str:
     raw = json.dumps(
         {"category": category, "run_id": run_id, "task_id": task_id},
@@ -505,8 +534,20 @@ class Task13DenominatorV1(ImmutableContractModel):
         return self
 
 
-_CASE_CATEGORIES = ("correct", "stale_copied", "answer_parse_invalid", "other_wrong")
+TASK13_CASE_CATEGORIES = (
+    "correct",
+    "stale_copied",
+    "answer_parse_invalid",
+    "other_wrong",
+)
 CaseCategory = Literal["correct", "stale_copied", "answer_parse_invalid", "other_wrong"]
+
+
+def task13_case_category_order_v1(category: str) -> int:
+    try:
+        return TASK13_CASE_CATEGORIES.index(category)
+    except ValueError as exc:
+        raise ValueError(f"unknown Task 13 case category: {category!r}") from exc
 
 
 class Task13RunCaseCoverageV1(ImmutableContractModel):
@@ -552,6 +593,8 @@ class Task13CaseBindingV1(ImmutableContractModel):
     run_id: StrictIdentifier
     task_id: StrictIdentifier
     category: CaseCategory
+    answer_model_slot: StrictIdentifier
+    k: TASK13_K
 
     @model_validator(mode="after")
     def _derived_case_id(self) -> Task13CaseBindingV1:
@@ -775,6 +818,9 @@ class Task13CaseIndexV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     cases_artifact: ArtifactRef
     record_count: StrictPositiveInt
+    task_artifact_sha256: SHA256
+    task_manifest_sha256: SHA256
+    matrix_summary_sha256: SHA256
     case_bindings: tuple[Task13CaseBindingV1, ...]
     coverage: tuple[Task13RunCaseCoverageV1, ...]
     run_sources: tuple[Task13RunSourceV1, ...]
@@ -809,6 +855,10 @@ class Task13CaseIndexV1(ImmutableContractModel):
     def _validate_case_coverage(self) -> Task13CaseIndexV1:
         if self.record_count != len(self.case_bindings):
             raise ValueError("record_count must equal the number of case_bindings")
+        if any(binding.answer_model_slot not in TASK13_SLOTS for binding in self.case_bindings):
+            raise ValueError("case bindings must use a frozen Task 13 answer-model slot")
+        if any(binding.k not in TASK13_K_VALUES for binding in self.case_bindings):
+            raise ValueError("case bindings must use a frozen Task 13 retrieval k")
         run_task_keys = tuple((binding.run_id, binding.task_id) for binding in self.case_bindings)
         if len(run_task_keys) != len(set(run_task_keys)):
             raise ValueError("task_id must be unique within each run")
@@ -818,6 +868,25 @@ class Task13CaseIndexV1(ImmutableContractModel):
             raise ValueError("run_sources must contain unique run IDs")
         if run_ids != coverage_run_ids:
             raise ValueError("coverage and run_sources must use identical ordered run IDs")
+
+        source_order = {run_id: index for index, run_id in enumerate(run_ids)}
+        try:
+            expected_binding_order = tuple(
+                sorted(
+                    self.case_bindings,
+                    key=lambda binding: (
+                        source_order[binding.run_id],
+                        task13_case_category_order_v1(binding.category),
+                        binding.case_id.encode("utf-8"),
+                    ),
+                )
+            )
+        except KeyError as exc:
+            raise ValueError("case_bindings must reference a known run source") from exc
+        if self.case_bindings != expected_binding_order:
+            raise ValueError(
+                "case_bindings must use canonical run-source, category, and UTF-8 case-ID order"
+            )
 
         bindings = {binding.case_id: binding for binding in self.case_bindings}
         covered_case_ids: list[str] = []
@@ -898,6 +967,15 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
                 raise ValueError("paired_contrast sources must use different run IDs")
             if left == right:
                 raise ValueError("paired_contrast sources must be different complete records")
+        expected_claim_id = task13_claim_id_v1(
+            self.kind,
+            self.slot,
+            self.cell_or_contrast,
+            self.metric_path,
+            self.slice_payload,
+        )
+        if self.claim_id != expected_claim_id:
+            raise ValueError("claim_id must equal the derived Task 13 claim identity")
         return self
 
 
@@ -938,6 +1016,9 @@ __all__ = [
     "TASK13_CONTEXT_CONDITIONS",
     "TASK13_CONTEXT_ORDER",
     "TASK13_CONTRAST_PAIRS",
+    "TASK13_CASE_CATEGORIES",
+    "TASK13_K_VALUES",
+    "TASK13_SLOTS",
     "TASK13_CELL_STATISTICS_ARTIFACT_ID",
     "TASK13_CELL_STATISTICS_ARTIFACT_PATH",
     "TASK13_K",
@@ -952,6 +1033,7 @@ __all__ = [
     "Task13ContrastIdentityPayloadV1",
     "Task13TaskIdentityPayloadV1",
     "CanonicalDecimal",
+    "CaseCategory",
     "Task13ArtifactBindingV1",
     "Task13ArtifactIndexV1",
     "Task13BootstrapConfigV1",
@@ -960,6 +1042,7 @@ __all__ = [
     "Task13CaseRecordV1",
     "Task13CaseSelectorV1",
     "Task13CellStatisticV1",
+    "Task13ClaimIdentityPayloadV1",
     "Task13ClaimLedgerRecordV1",
     "Task13DenominatorV1",
     "Task13IntervalV1",
@@ -974,7 +1057,9 @@ __all__ = [
     "Task13TimelineProjectionV1",
     "Task13RetrievalProjectionV1",
     "canonical_decimal_string",
+    "task13_case_category_order_v1",
     "task13_case_id_v1",
+    "task13_claim_id_v1",
     "task13_contrast_id_v1",
     "task13_task_identity_sha256_v1",
 ]

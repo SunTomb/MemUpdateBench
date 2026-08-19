@@ -771,6 +771,8 @@ def _ledger_case_index() -> Task13CaseIndexV1:
             run_id=source.run_id,
             task_id=f"task-ledger-{index:02d}",
             category="other_wrong",
+            answer_model_slot="answer_model_a",
+            k=4,
         )
         for index, source in enumerate(sources)
     )
@@ -788,6 +790,9 @@ def _ledger_case_index() -> Task13CaseIndexV1:
             media_type="application/jsonl",
         ),
         record_count=len(bindings),
+        task_artifact_sha256=_LEDGER_SHA[5],
+        task_manifest_sha256=_LEDGER_SHA[6],
+        matrix_summary_sha256=_LEDGER_SHA[8],
         case_bindings=bindings,
         coverage=coverage,
         run_sources=sources,
@@ -979,6 +984,18 @@ def test_ledger_rejects_altered_receipt_and_case_hash_bindings():
             receipt=receipt,
             case_index=case_index,
             expected_case_index_sha256="0" * 64,
+        )
+
+
+def test_ledger_rejects_case_index_matrix_summary_mismatch():
+    cells, contrasts, receipt, case_index, _ = _ledger_build()
+    forged_case_index = case_index.model_copy(update={"matrix_summary_sha256": "0" * 64})
+    with pytest.raises(ValueError, match="matrix summary|matrix_summary"):
+        build_task13_claim_ledger_v1(
+            cells,
+            contrasts,
+            receipt=receipt,
+            case_index=forged_case_index,
         )
 
 

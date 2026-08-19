@@ -14,18 +14,19 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from mub.vnext.contracts.common import ArtifactRef, ImmutableContractModel
+from mub.vnext.contracts.common import ArtifactRef
 from mub.vnext.io import canonical_json_bytes, sha256_model
-from mub.vnext.statistics.statistics_v3 import task13_contrast_id_v1
 from mub.vnext.statistics.contracts_v3 import (
     TASK13_CELL_STATISTICS_ARTIFACT_ID,
     TASK13_CELL_STATISTICS_ARTIFACT_PATH,
     TASK13_CONTEXT_CONDITIONS,
     TASK13_CONTRAST_PAIRS,
+    TASK13_K_VALUES,
     TASK13_METRIC_PATHS,
     TASK13_PAIRED_CONTRASTS_ARTIFACT_ID,
     TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH,
     TASK13_SEMANTIC_CORE_COUNT,
+    TASK13_SLOTS,
     Task13ArtifactBindingV1,
     Task13CaseBindingV1,
     Task13CaseIndexV1,
@@ -37,6 +38,8 @@ from mub.vnext.statistics.contracts_v3 import (
     Task13RunSourceV1,
     Task13CellStatisticV1,
     Task13StatisticsReceiptV1,
+    task13_claim_id_v1,
+    task13_contrast_id_v1,
 )
 
 
@@ -44,14 +47,6 @@ _EXPECTED_CELL_COUNT = 126
 _EXPECTED_CONTRAST_COUNT = 84
 _EXPECTED_RUN_COUNT = 18
 _EXPECTED_METRIC_COUNT = len(TASK13_METRIC_PATHS)
-_EXPECTED_SLOTS = ("answer_model_a", "answer_model_b")
-_EXPECTED_K = (4, 8, 16)
-_CASE_CATEGORY_ORDER = {
-    "correct": 0,
-    "stale_copied": 1,
-    "answer_parse_invalid": 2,
-    "other_wrong": 3,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,21 +64,6 @@ class Task13LedgerResultV1:
     @property
     def claim_ledger(self) -> tuple[Task13ClaimLedgerRecordV1, ...]:
         return self.claims
-
-
-class _ClaimIdentityPayloadV1(ImmutableContractModel):
-    """Canonical JSON payload used for stable claim IDs."""
-
-    kind: str
-    slot: str
-    cell_or_contrast: str
-    metric_path: str
-    slice: dict[str, Any]
-
-
-# A BaseModel assertion here keeps accidental changes to the ID payload from
-# becoming an untyped dictionary hash.
-assert issubclass(_ClaimIdentityPayloadV1, BaseModel)
 
 
 def _coerce_statistics(
@@ -142,8 +122,8 @@ def _validate_cells(
     ]
     if len(set(condition_keys)) != 18:
         raise ValueError("cell statistics contain duplicate typed intervention coordinates")
-    for slot in _EXPECTED_SLOTS:
-        for k in _EXPECTED_K:
+    for slot in TASK13_SLOTS:
+        for k in TASK13_K_VALUES:
             observed = {
                 (record.context_order, record.context_annotation)
                 for record in cells
@@ -159,9 +139,9 @@ def _validate_cells(
     coordinate_counts = Counter(coordinates)
     if len(coordinate_counts) != 18 or set(coordinate_counts.values()) != {_EXPECTED_METRIC_COUNT}:
         raise ValueError("cell statistics must contain 18 complete cells with seven metrics")
-    if set(record.answer_model_slot for record in cells) != set(_EXPECTED_SLOTS):
+    if set(record.answer_model_slot for record in cells) != set(TASK13_SLOTS):
         raise ValueError("cell statistics contain a foreign answer-model slot")
-    if set(record.k for record in cells) != set(_EXPECTED_K):
+    if set(record.k for record in cells) != set(TASK13_K_VALUES):
         raise ValueError("cell statistics contain a foreign retrieval k")
     slot_k_counts = Counter((coordinate[0], coordinate[1]) for coordinate in coordinate_counts)
     if len(slot_k_counts) != 6 or set(slot_k_counts.values()) != {3}:
@@ -259,17 +239,17 @@ def _validate_contrasts(
     )
     if len(coordinate_counts) != 12 or set(coordinate_counts.values()) != {_EXPECTED_METRIC_COUNT}:
         raise ValueError("paired contrasts must contain 12 complete pairs with seven metrics")
-    if set(record.answer_model_slot for record in contrasts) != set(_EXPECTED_SLOTS):
+    if set(record.answer_model_slot for record in contrasts) != set(TASK13_SLOTS):
         raise ValueError("paired contrasts contain a foreign answer-model slot")
-    if set(record.k for record in contrasts) != set(_EXPECTED_K):
+    if set(record.k for record in contrasts) != set(TASK13_K_VALUES):
         raise ValueError("paired contrasts contain a foreign retrieval k")
     slot_k_contrast_counts = Counter(
         (coordinate[0], coordinate[1]) for coordinate in coordinate_counts
     )
     if len(slot_k_contrast_counts) != 6 or set(slot_k_contrast_counts.values()) != {2}:
         raise ValueError("paired contrasts must contain exactly two contrasts per slot and k")
-    for slot in _EXPECTED_SLOTS:
-        for k in _EXPECTED_K:
+    for slot in TASK13_SLOTS:
+        for k in TASK13_K_VALUES:
             expected_pairs = set()
             for left_condition, right_condition in TASK13_CONTRAST_PAIRS:
                 left = next(
@@ -517,49 +497,15 @@ def _binding_from_case(case: Task13CaseRecordV1) -> Task13CaseBindingV1:
         run_id=case.run_id,
         task_id=case.task_id,
         category=case.category,
+        answer_model_slot=case.answer_model_slot,
+        k=case.k,
     )
-
-
-def _canonical_case_bindings(
-    bindings: Sequence[Task13CaseBindingV1],
-    sources: Sequence[Task13RunSourceV1],
-) -> tuple[Task13CaseBindingV1, ...]:
-    source_order = {source.run_id: index for index, source in enumerate(sources)}
-    try:
-        return tuple(
-            sorted(
-                bindings,
-                key=lambda binding: (
-                    source_order[binding.run_id],
-                    _CASE_CATEGORY_ORDER[binding.category],
-                    binding.case_id.encode("utf-8"),
-                ),
-            )
-        )
-    except KeyError as exc:
-        raise ValueError("case binding uses an unknown category or run source") from exc
-
-
-def _validate_canonical_case_binding_order(
-    bindings: Sequence[Task13CaseBindingV1],
-    sources: Sequence[Task13RunSourceV1],
-) -> None:
-    expected = _canonical_case_bindings(bindings, sources)
-    if tuple(bindings) != expected:
-        raise ValueError(
-            "case bindings are not in canonical order for the supplied run sources"
-        )
 
 
 def _revalidate_case_index(index: Task13CaseIndexV1) -> Task13CaseIndexV1:
     if not isinstance(index, Task13CaseIndexV1):
         raise TypeError("case_index must be Task13CaseIndexV1")
-    validated = Task13CaseIndexV1.model_validate(index.model_dump(mode="python"))
-    _validate_canonical_case_binding_order(
-        validated.case_bindings,
-        validated.run_sources,
-    )
-    return validated
+    return Task13CaseIndexV1.model_validate(index.model_dump(mode="python"))
 
 
 def build_task13_case_index_v1(
@@ -602,7 +548,17 @@ def build_task13_case_index_v1(
             raise ValueError("case record source hashes do not match the run source")
     if len({binding.case_id for binding in bindings}) != len(bindings):
         raise ValueError("case index case IDs must be unique")
-    _validate_canonical_case_binding_order(bindings, supplied_sources)
+    provenance = {
+        (
+            case.task_artifact_sha256,
+            case.task_manifest_sha256,
+            case.matrix_summary_sha256,
+        )
+        for case in supplied_cases
+    }
+    if len(provenance) != 1:
+        raise ValueError("case records must share one Task 13 input provenance tuple")
+    task_artifact_sha256, task_manifest_sha256, matrix_summary_sha256 = next(iter(provenance))
     expected_cases_sha256 = _canonical_jsonl_sha256_v1(supplied_cases)
     artifact = _validate_artifact(cases_artifact, path="cases.jsonl", label="cases_artifact")
     if artifact.sha256 != expected_cases_sha256:
@@ -610,6 +566,9 @@ def build_task13_case_index_v1(
     index = Task13CaseIndexV1(
         cases_artifact=artifact,
         record_count=len(bindings),
+        task_artifact_sha256=task_artifact_sha256,
+        task_manifest_sha256=task_manifest_sha256,
+        matrix_summary_sha256=matrix_summary_sha256,
         case_bindings=bindings,
         coverage=supplied_coverage,
         run_sources=supplied_sources,
@@ -650,24 +609,6 @@ def _revalidate_receipt(receipt: Task13StatisticsReceiptV1) -> Task13StatisticsR
     return Task13StatisticsReceiptV1.model_validate(receipt.model_dump(mode="python"))
 
 
-def _claim_identity(
-    *,
-    kind: str,
-    slot: str,
-    cell_or_contrast: str,
-    metric_path: str,
-    slice_payload: dict[str, Any],
-) -> str:
-    payload = _ClaimIdentityPayloadV1(
-        kind=kind,
-        slot=slot,
-        cell_or_contrast=cell_or_contrast,
-        metric_path=metric_path,
-        slice=slice_payload,
-    )
-    return f"claim-{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
-
-
 def _claim_from_cell(
     record: Task13CellStatisticV1,
     *,
@@ -681,7 +622,7 @@ def _claim_from_cell(
     source = _cell_source(record)
     slice_payload = {"cell_id": record.cell_id, "k": record.k}
     return Task13ClaimLedgerRecordV1(
-        claim_id=_claim_identity(
+        claim_id=task13_claim_id_v1(
             kind="direct_cell",
             slot=record.answer_model_slot,
             cell_or_contrast=record.cell_id,
@@ -726,7 +667,7 @@ def _claim_from_contrast(
         "right_cell_id": record.right_cell_id,
     }
     return Task13ClaimLedgerRecordV1(
-        claim_id=_claim_identity(
+        claim_id=task13_claim_id_v1(
             kind="paired_contrast",
             slot=record.answer_model_slot,
             cell_or_contrast=record.contrast_id,
@@ -795,6 +736,13 @@ def build_task13_claim_ledger_v1(
     if len(source_ids) != _EXPECTED_RUN_COUNT or len({record.run_id for record in ordered_cells}) != _EXPECTED_RUN_COUNT:
         raise ValueError("supplied statistics must contain exactly 18 distinct run sources")
     canonical_case_index = _revalidate_case_index(case_index)
+    if (
+        canonical_case_index.matrix_summary_sha256
+        != validated_receipt.task12_matrix_summary_sha256
+    ):
+        raise ValueError(
+            "case index matrix summary hash does not match the statistics receipt"
+        )
     receipt_sha256 = sha256_model(validated_receipt)
     case_index_sha256 = sha256_model(canonical_case_index)
     if expected_statistics_receipt_sha256 is not None and receipt_sha256 != expected_statistics_receipt_sha256:

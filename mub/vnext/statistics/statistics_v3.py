@@ -17,8 +17,11 @@ from mub.vnext.statistics.bootstrap_v3 import (
     paired_percentile_interval_v1,
 )
 from mub.vnext.statistics.contracts_v3 import (
+    TASK13_CONTRAST_PAIRS,
+    TASK13_K_VALUES,
     TASK13_METRIC_PATHS,
     TASK13_SEMANTIC_CORE_COUNT,
+    TASK13_SLOTS,
     TASK13_TASK_COUNT,
     TASK13_TASKS_PER_CORE,
     Task13CellStatisticV1,
@@ -279,13 +282,9 @@ def compute_task13_statistics_v1(
             raise ValueError("Task 13 runs contain duplicate cell coordinates")
         by_coordinate[coordinate] = (index, run)
     contrasts: list[Task13PairedContrastV1] = []
-    for slot in ("answer_model_a", "answer_model_b"):
-        for k in (4, 8, 16):
-            pairs = (
-                (("reverse_chronological", "none"), ("chronological", "none")),
-                (("reverse_chronological", "latest_outdated_label"), ("reverse_chronological", "none")),
-            )
-            for (left_condition, right_condition) in pairs:
+    for slot in TASK13_SLOTS:
+        for k in TASK13_K_VALUES:
+            for (left_condition, right_condition) in TASK13_CONTRAST_PAIRS:
                 left_index, left_run = by_coordinate[(slot, k, *left_condition)]
                 right_index, right_run = by_coordinate[(slot, k, *right_condition)]
                 left_source = _run_source(left_run)
