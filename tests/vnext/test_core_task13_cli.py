@@ -642,11 +642,12 @@ def test_task13_directory_fsync_failure_preserves_committed_final(tmp_path, monk
     staging.mkdir()
     parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
     monkeypatch.setattr(publication, "_fsync_parent_directory_v3", lambda parent: (_ for _ in ()).throw(OSError("fsync")))
-    with pytest.raises(OSError, match="fsync"):
+    with pytest.raises(RuntimeError, match="committed|durability"):
         publication._commit_staged_task13_root_v3(
             staging=staging, final_root=parent / "final",
             parent_identity=parent_identity, source_snapshot=snapshot,
         )
+    assert (parent / "final").is_dir()
 
 
 def test_task13_renameat2_uses_syscall_fallback_when_symbol_missing(monkeypatch, tmp_path):
@@ -713,6 +714,16 @@ def test_loader_registry_rejects_same_object_content_mutation(authenticated_fixt
         expected_matrix_manifest_sha256=hashes["matrix_manifest"], expected_matrix_summary_sha256=hashes["matrix_summary"],
         expected_integrity_audit_sha256=hashes["integrity_audit"],
     )
+    capability = require_loader_registered_task13_matrix_v1(matrix)
+    assert capability.matrix_digest == capability.digest
+    assert set(capability.roots) == {"repository", "core", "evidence", "matrix"}
+    assert set(capability.controls) == {
+        "preparation_manifest", "plan", "matrix_manifest", "matrix_summary", "integrity_audit",
+    }
+    assert capability.repository_root == Path(__file__).resolve().parents[2]
+    assert capability.core_root == inputs["core_root"].resolve()
+    assert capability.matrix_root == authenticated_fixture["matrix"].matrix_root.resolve()
+    assert all(len(entry.sha256) == 64 for entry in capability.controls.values())
     object.__setattr__(matrix, "canonical_core_ids", tuple(reversed(matrix.canonical_core_ids)))
     with pytest.raises(ValueError, match="content changed"):
         require_loader_registered_task13_matrix_v1(matrix)
@@ -837,7 +848,7 @@ def test_task13_main_uses_real_runtime_in_clean_repository(tmp_path, monkeypatch
     files = [tmp_path / name for name in ("manifest", "plan", "matrix-manifest", "summary", "audit")]
     for path in files: path.write_bytes(b"{}")
     capture: dict[str, object] = {}
-    monkeypatch.setattr(command.task13_publication, "capture_task13_source_snapshot_v3", lambda *args: object())
+    monkeypatch.setattr(command.task13_publication, "capture_task13_source_snapshot_v3", lambda *args, **kwargs: object())
     monkeypatch.setattr(command.task13_publication, "_revalidate_source_snapshot", lambda snapshot: None)
     monkeypatch.setattr(command.task13_publication, "source_snapshot_sha256_v3", lambda snapshot, path: "a" * 64)
     matrix = type("Matrix", (), {"input_hashes": {"task12_preparation_manifest": "a" * 64, "task12_plan": "a" * 64, "task12_matrix_manifest": "a" * 64, "task12_matrix_summary": "a" * 64, "task12_integrity_audit": "a" * 64, "core_tasks": "a" * 64, "core_task_manifest": "a" * 64}})()
@@ -848,3 +859,152 @@ def test_task13_main_uses_real_runtime_in_clean_repository(tmp_path, monkeypatch
     arguments = {"manifest": files[0], "plan": files[1], "core_root": roots[0], "evidence_root": roots[1], "matrix_root": roots[2], "matrix_bundle_manifest": files[2], "matrix_summary": files[3], "matrix_integrity_audit": files[4], "statistics_config": config, "output_root": tmp_path / "output"}
     assert command.main(_cli_args(arguments), repository_root=repository) == 0
     assert capture["runtime"] == expected
+
+
+def test_task13_commit_rechecks_ownership_after_source_revalidation(tmp_path, monkeypatch):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (sources,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    (staging / "one").write_bytes(b"one")
+    ownership = publication._capture_staging_ownership_v3(staging, ("one",))
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+
+    original = publication._revalidate_source_snapshot
+
+    def mutate_stage(selected):
+        original(selected)
+        (staging / "one").write_bytes(b"rewritten")
+        (staging / "foreign").write_bytes(b"foreign")
+
+    monkeypatch.setattr(publication, "_revalidate_source_snapshot", mutate_stage)
+    with pytest.raises(RuntimeError, match="ownership|staging"):
+        publication._commit_staged_task13_root_v3(
+            staging=staging,
+            final_root=parent / "final",
+            parent_identity=parent_identity,
+            source_snapshot=snapshot,
+            ownership=ownership,
+        )
+    assert staging.is_dir()
+    assert (staging / "foreign").read_bytes() == b"foreign"
+    assert not (parent / "final").exists()
+
+
+def test_task13_absolute_path_rejects_existing_lexical_symlink(tmp_path):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    target = tmp_path / "safe-target"
+    target.mkdir()
+    link = tmp_path / "lexical-link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="reparse-point"):
+        publication._absolute_no_reparse(link / "missing", require_exists=False)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync semantics")
+def test_task13_parent_fsync_unsupported_is_safe_but_other_errors_report_commit(
+    tmp_path, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (sources,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+
+    def unsupported(_descriptor):
+        raise OSError(errno.EINVAL, "directory fsync unsupported")
+
+    monkeypatch.setattr(publication.os, "fsync", unsupported)
+    staging = parent / "stage-unsupported"
+    staging.mkdir()
+    publication._commit_staged_task13_root_v3(
+        staging=staging,
+        final_root=parent / "final-unsupported",
+        parent_identity=parent_identity,
+        source_snapshot=snapshot,
+    )
+    assert (parent / "final-unsupported").is_dir()
+
+    def io_error(_descriptor):
+        raise OSError(errno.EIO, "directory fsync failed")
+
+    monkeypatch.setattr(publication.os, "fsync", io_error)
+    staging = parent / "stage-error"
+    staging.mkdir()
+    with pytest.raises(RuntimeError, match="committed|durability"):
+        publication._commit_staged_task13_root_v3(
+            staging=staging,
+            final_root=parent / "final-error",
+            parent_identity=parent_identity,
+            source_snapshot=snapshot,
+        )
+    assert (parent / "final-error").is_dir()
+
+
+def test_task13_direct_publish_rejects_unrelated_or_omitted_registered_root_before_staging(
+    tmp_path, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from mub.vnext.statistics.input_v3 import (
+        Task13LoaderCapabilityV1,
+        Task13LoaderFileCapabilityV1,
+        Task13LoaderRootCapabilityV1,
+    )
+
+    repository = tmp_path / "repository"
+    core = tmp_path / "core"
+    evidence = tmp_path / "evidence"
+    matrix_root = tmp_path / "matrix"
+    other = tmp_path / "other"
+    for root in (repository, core, evidence, matrix_root, other):
+        root.mkdir()
+    controls = {}
+    for name in (
+        "preparation_manifest", "plan", "matrix_manifest", "matrix_summary", "integrity_audit"
+    ):
+        path = tmp_path / f"{name}.json"
+        path.write_bytes(name.encode("utf-8"))
+        result = path.stat()
+        controls[name] = Task13LoaderFileCapabilityV1(
+            name, path.resolve(), (result.st_dev, result.st_ino), hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+    roots = {
+        name: Task13LoaderRootCapabilityV1(name, path.resolve(), publication._identity(path))
+        for name, path in {
+            "repository": repository, "core": core, "evidence": evidence, "matrix": matrix_root,
+        }.items()
+    }
+    capability = Task13LoaderCapabilityV1("a" * 64, roots, controls)
+    monkeypatch.setattr(publication, "require_loader_registered_task13_matrix_v1", lambda matrix: capability)
+    monkeypatch.setattr(publication, "validate_task13_authenticated_matrix_v1", lambda matrix: matrix)
+    monkeypatch.setattr(publication, "require_builder_registered_task13_publication_v1", lambda *args: None)
+    source_paths = tuple(entry.path for entry in controls.values())
+    for label, source_roots in (
+        ("unrelated", (other, core, evidence, matrix_root)),
+        ("omitted", (repository, core, evidence)),
+    ):
+        snapshot = publication.capture_task13_source_snapshot_v3(source_paths, source_roots)
+        output = tmp_path / f"output-{label}"
+        with pytest.raises(ValueError, match="exact loader source roots"):
+            publication.publish_task13_artifacts_v3(
+                object(), matrix=object(), output_root=output,
+                source_snapshot=snapshot, repository_root=repository,
+            )
+        assert not output.exists()
+        assert not tuple(tmp_path.glob(".mub-task13-stage-*"))

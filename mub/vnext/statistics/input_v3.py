@@ -61,10 +61,87 @@ _TASK13_LOADER_TOKEN = object()
 _TASK13_MATRIX_REGISTRY_LOCK = threading.RLock()
 
 
+@dataclass(frozen=True, slots=True)
+class Task13LoaderRootCapabilityV1:
+    name: str
+    path: Path
+    identity: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class Task13LoaderFileCapabilityV1:
+    name: str
+    path: Path
+    identity: tuple[int, int]
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class Task13LoaderCapabilityV1:
+    matrix_digest: str
+    roots: Mapping[str, Task13LoaderRootCapabilityV1]
+    controls: Mapping[str, Task13LoaderFileCapabilityV1]
+
+    def __post_init__(self) -> None:
+        expected_roots = {"repository", "core", "evidence", "matrix"}
+        expected_controls = {
+            "preparation_manifest",
+            "plan",
+            "matrix_manifest",
+            "matrix_summary",
+            "integrity_audit",
+        }
+        if set(self.roots) != expected_roots:
+            raise ValueError("Task 13 loader capability must register all four source roots")
+        if set(self.controls) != expected_controls:
+            raise ValueError("Task 13 loader capability must register all five control files")
+        for digest, label in (
+            (self.matrix_digest, "matrix digest"),
+            *( (entry.sha256, f"{entry.name} hash") for entry in self.controls.values() ),
+        ):
+            if type(digest) is not str or len(digest) != 64 or any(
+                char not in _SHA256_HEX for char in digest
+            ):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        for entry in (*self.roots.values(), *self.controls.values()):
+            if (
+                type(entry.identity) is not tuple
+                or len(entry.identity) != 2
+                or any(type(value) is not int or value < 0 for value in entry.identity)
+            ):
+                raise ValueError(f"{entry.name} identity is invalid")
+        object.__setattr__(self, "roots", MappingProxyType(dict(self.roots)))
+        object.__setattr__(self, "controls", MappingProxyType(dict(self.controls)))
+
+    @property
+    def digest(self) -> str:
+        return self.matrix_digest
+
+    @property
+    def repository_root(self) -> Path:
+        return self.roots["repository"].path
+
+    @property
+    def core_root(self) -> Path:
+        return self.roots["core"].path
+
+    @property
+    def evidence_root(self) -> Path:
+        return self.roots["evidence"].path
+
+    @property
+    def matrix_root(self) -> Path:
+        return self.roots["matrix"].path
+
+    @property
+    def control_paths(self) -> Mapping[str, Path]:
+        return MappingProxyType({name: entry.path for name, entry in self.controls.items()})
+
+
 @dataclass(frozen=True)
 class _Task13MatrixRegistryEntry:
     reference: weakref.ReferenceType[Task13AuthenticatedMatrixV1]
-    digest: str
+    capability: Task13LoaderCapabilityV1
     nonce: object
     lock: threading.RLock
 
@@ -230,7 +307,10 @@ def _task13_matrix_digest(matrix: Task13AuthenticatedMatrixV1) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def _register_loader_task13_matrix_v1(matrix: Task13AuthenticatedMatrixV1) -> None:
+def _register_loader_task13_matrix_v1(
+    matrix: Task13AuthenticatedMatrixV1,
+    capability: Task13LoaderCapabilityV1,
+) -> None:
     identifier = id(matrix)
 
     def cleanup(reference: weakref.ReferenceType[Task13AuthenticatedMatrixV1]) -> None:
@@ -240,7 +320,12 @@ def _register_loader_task13_matrix_v1(matrix: Task13AuthenticatedMatrixV1) -> No
                 _TASK13_MATRIX_REGISTRY.pop(identifier, None)
 
     reference = weakref.ref(matrix, cleanup)
-    entry = _Task13MatrixRegistryEntry(reference, _task13_matrix_digest(matrix), object(), threading.RLock())
+    entry = _Task13MatrixRegistryEntry(
+        reference,
+        capability,
+        object(),
+        threading.RLock(),
+    )
     with _TASK13_MATRIX_REGISTRY_LOCK:
         _TASK13_MATRIX_REGISTRY[identifier] = entry
 
@@ -254,26 +339,26 @@ def _loader_registered_task13_matrix_entry(
         entry = _TASK13_MATRIX_REGISTRY.get(id(matrix))
     if entry is None or entry.reference() is not matrix:
         raise ValueError("Task 13 matrix is not loader-registered")
-    if _task13_matrix_digest(matrix) != entry.digest:
+    if _task13_matrix_digest(matrix) != entry.capability.matrix_digest:
         raise ValueError("Task 13 loader-registered matrix content changed")
     return entry
 
 
 def require_loader_registered_task13_matrix_v1(
     matrix: Task13AuthenticatedMatrixV1,
-) -> str:
-    return _loader_registered_task13_matrix_entry(matrix).digest
+) -> Task13LoaderCapabilityV1:
+    return _loader_registered_task13_matrix_entry(matrix).capability
 
 
 @contextmanager
 def loader_registered_task13_matrix_lease_v1(
     matrix: Task13AuthenticatedMatrixV1,
-) -> Iterator[str]:
+) -> Iterator[Task13LoaderCapabilityV1]:
     entry = _loader_registered_task13_matrix_entry(matrix)
     with entry.lock:
-        digest = require_loader_registered_task13_matrix_v1(matrix)
-        yield digest
-        if require_loader_registered_task13_matrix_v1(matrix) != digest:
+        capability = require_loader_registered_task13_matrix_v1(matrix)
+        yield capability
+        if require_loader_registered_task13_matrix_v1(matrix).matrix_digest != capability.matrix_digest:
             raise ValueError("Task 13 loader-registered matrix content changed")
 
 
@@ -290,6 +375,22 @@ def _require_sha256(value: object, label: str) -> str:
     if type(value) is not str or len(value) != 64 or any(c not in _SHA256_HEX for c in value):
         raise ValueError(f"{label} must be a lowercase SHA-256 digest")
     return value
+
+
+def _loader_file_capability(name: str, path: str | Path) -> Task13LoaderFileCapabilityV1:
+    checked = Path(path).resolve(strict=True)
+    result = checked.stat(follow_symlinks=False)
+    return Task13LoaderFileCapabilityV1(
+        name=name,
+        path=checked,
+        identity=(result.st_dev, result.st_ino),
+        sha256=hashlib.sha256(checked.read_bytes()).hexdigest(),
+    )
+
+
+def _identity(path: Path) -> tuple[int, int]:
+    result = path.stat(follow_symlinks=False)
+    return result.st_dev, result.st_ino
 
 
 def _read_expected(path: str | Path, expected_sha256: str, *, label: str) -> bytes:
@@ -505,7 +606,7 @@ def load_task13_authenticated_matrix_v1(
     core = Path(core_root).resolve(strict=True)
     evidence = Path(evidence_root).resolve(strict=True)
     repository = Path(repository_root).resolve(strict=True)
-    matrix = _validate_existing_bundle_root(
+    matrix_bundle_root = _validate_existing_bundle_root(
         bundle_root=matrix_root,
         core_root=core,
         evidence_root=evidence,
@@ -584,7 +685,7 @@ def load_task13_authenticated_matrix_v1(
         cell = cell_by_id.get(ref.cell_id)
         if cell is None:
             raise ValueError(f"matrix run references unknown cell: {ref.cell_id}")
-        bundle_root = _matrix_path(matrix, ref.bundle_leaf, "authorization.json").parent
+        bundle_root = _matrix_path(matrix_bundle_root, ref.bundle_leaf, "authorization.json").parent
         authorization_raw = read_task12_regular_file_v3(bundle_root / "authorization.json")
         if hashlib.sha256(authorization_raw).hexdigest() != ref.authorization_sha256:
             raise ValueError("Task 12 authorization hash differs from matrix manifest")
@@ -768,7 +869,33 @@ def load_task13_authenticated_matrix_v1(
         input_hashes=input_hashes,
         _loader_token=_TASK13_LOADER_TOKEN,
     )
-    _register_loader_task13_matrix_v1(matrix)
+    roots = {
+        "repository": Task13LoaderRootCapabilityV1(
+            "repository", repository, _identity(repository)
+        ),
+        "core": Task13LoaderRootCapabilityV1("core", core, _identity(core)),
+        "evidence": Task13LoaderRootCapabilityV1(
+            "evidence", evidence, _identity(evidence)
+        ),
+        "matrix": Task13LoaderRootCapabilityV1(
+            "matrix", matrix_bundle_root, _identity(matrix_bundle_root)
+        ),
+    }
+    controls = {
+        "preparation_manifest": _loader_file_capability(
+            "preparation_manifest", preparation_manifest_path
+        ),
+        "plan": _loader_file_capability("plan", plan_path),
+        "matrix_manifest": _loader_file_capability(
+            "matrix_manifest", matrix_manifest_path
+        ),
+        "matrix_summary": _loader_file_capability("matrix_summary", matrix_summary_path),
+        "integrity_audit": _loader_file_capability(
+            "integrity_audit", integrity_audit_path
+        ),
+    }
+    capability = Task13LoaderCapabilityV1(_task13_matrix_digest(matrix), roots, controls)
+    _register_loader_task13_matrix_v1(matrix, capability)
     return matrix
 
 
@@ -778,6 +905,9 @@ __all__ = [
     "Task13AuthenticatedRunV1",
     "Task13IntegrityAuditV1",
     "Task13IntegrityCountsV1",
+    "Task13LoaderCapabilityV1",
+    "Task13LoaderFileCapabilityV1",
+    "Task13LoaderRootCapabilityV1",
     "load_task13_authenticated_matrix_v1",
     "loader_registered_task13_matrix_lease_v1",
     "require_loader_registered_task13_matrix_v1",

@@ -45,6 +45,7 @@ from mub.vnext.statistics.contracts_v3 import (
 )
 from mub.vnext.statistics.input_v3 import (
     Task13AuthenticatedMatrixV1,
+    Task13LoaderCapabilityV1,
     require_loader_registered_task13_matrix_v1,
     validate_task13_authenticated_matrix_v1,
 )
@@ -179,6 +180,9 @@ def require_builder_registered_task13_publication_v1(
     ):
         raise ValueError("Task 13 publication is not builder-registered")
 
+
+@dataclass(frozen=True, slots=True)
+class Task13PublicationResultV1:
     output_root: Path
     artifact_refs: Task13ArtifactRefsV1
     artifact_index: Task13ArtifactIndexV1
@@ -290,7 +294,8 @@ def build_task13_publication_v3(
 ) -> Task13PublicationV1:
     """Build a complete immutable Task 13 publication without filesystem output."""
     try:
-        matrix_digest = require_loader_registered_task13_matrix_v1(matrix)
+        matrix_capability = require_loader_registered_task13_matrix_v1(matrix)
+        matrix_digest = matrix_capability.matrix_digest
         validate_task13_authenticated_matrix_v1(matrix)
     except (TypeError, ValueError) as exc:
         raise ValueError("Task 13 matrix is not loader-registered") from exc
@@ -395,7 +400,7 @@ def build_task13_publication_v3(
         *first_seven_refs,
         _artifact(TASK13_FINAL_INDEX_PATH, index_bytes, "application/json", 1),
     )
-    if require_loader_registered_task13_matrix_v1(matrix) != matrix_digest:
+    if require_loader_registered_task13_matrix_v1(matrix).matrix_digest != matrix_digest:
         raise ValueError("Task 13 loader-registered matrix content changed")
     publication = Task13PublicationV1(
         bootstrap=bootstrap,
@@ -452,10 +457,26 @@ def _sha256_file(path: Path) -> str:
 
 
 def _absolute_no_reparse(path: Path, *, require_exists: bool) -> Path:
-    value = Path(path)
-    if not value.is_absolute():
-        value = Path.cwd() / value
-    value = Path(os.path.abspath(value)).resolve(strict=False)
+    selected = Path(path)
+    if not selected.is_absolute():
+        selected = Path.cwd() / selected
+
+    # Inspect the caller's lexical path before canonicalization.  Resolving first
+    # would erase a symlink or junction component that must be rejected.
+    lexical_anchor = Path(selected.anchor)
+    if not _present(lexical_anchor) or not stat.S_ISDIR(_lstat(lexical_anchor).st_mode):
+        raise NotADirectoryError(f"path has no directory anchor: {selected}")
+    current = lexical_anchor
+    for part in selected.parts[1:]:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        if _present(current) and _is_reparse(current):
+            raise ValueError(f"path contains a reparse-point component: {current}")
+        if not _present(current):
+            break
+
+    value = selected.resolve(strict=False)
     if os.name == "nt":
         existing = value
         missing: list[str] = []
@@ -468,12 +489,15 @@ def _absolute_no_reparse(path: Path, *, require_exists: bool) -> Path:
             buffer = ctypes.create_unicode_buffer(length)
             if get_long(str(existing), buffer, length):
                 value = Path(buffer.value, *reversed(missing))
+
     anchor = Path(value.anchor)
     if not _present(anchor) or not stat.S_ISDIR(_lstat(anchor).st_mode):
         raise NotADirectoryError(f"path has no directory anchor: {value}")
     current = anchor
     existing_parent = anchor
     for part in value.parts[1:]:
+        if part in {"", "."}:
+            continue
         current = current / part
         if not _present(current):
             break
@@ -574,7 +598,10 @@ def _snapshot_root_members_v3(root: Path) -> tuple[_RootMemberSnapshot, ...]:
 
 
 def capture_task13_source_snapshot_v3(
-    source_paths: Sequence[Path], source_roots: Sequence[Path]
+    source_paths: Sequence[Path],
+    source_roots: Sequence[Path],
+    *,
+    shallow_roots: Sequence[Path] = (),
 ) -> Task13SourceSnapshotV1:
     roots = tuple(
         _DirectoryIdentity(
@@ -585,12 +612,31 @@ def capture_task13_source_snapshot_v3(
     )
     if any(not stat.S_ISDIR(_lstat(root.path).st_mode) for root in roots):
         raise NotADirectoryError("Task 13 source roots must be directories")
+    shallow_keys = {
+        os.path.normcase(os.path.abspath(os.fspath(_absolute_no_reparse(root, require_exists=True))))
+        for root in shallow_roots
+    }
+    root_keys = {os.path.normcase(os.path.abspath(os.fspath(root.path))) for root in roots}
+    if not shallow_keys <= root_keys:
+        raise ValueError("Task 13 shallow source roots must be registered source roots")
+    recursive_roots = tuple(
+        root.path
+        for root in roots
+        if os.path.normcase(os.path.abspath(os.fspath(root.path))) not in shallow_keys
+    )
+    root_members = tuple(
+        member
+        for root in roots
+        for member in (
+            (_RootMemberSnapshot(root.path, ".", "directory", root.identity),)
+            if os.path.normcase(os.path.abspath(os.fspath(root.path))) in shallow_keys
+            else _snapshot_root_members_v3(root.path)
+        )
+    )
     return Task13SourceSnapshotV1(
-        files=_snapshot_source_files(source_paths, tuple(root.path for root in roots)),
+        files=_snapshot_source_files(source_paths, recursive_roots),
         roots=roots,
-        root_members=tuple(
-            member for root in roots for member in _snapshot_root_members_v3(root.path)
-        ),
+        root_members=root_members,
     )
 
 
@@ -613,10 +659,18 @@ def _revalidate_source_snapshot(snapshot: Task13SourceSnapshotV1) -> None:
             or _identity(root.path) != root.identity
         ):
             raise RuntimeError(f"Task 13 source root changed during publication: {root.path}")
-    observed_members = tuple(
-        member for root in snapshot.roots for member in _snapshot_root_members_v3(root.path)
-    )
-    if observed_members != snapshot.root_members:
+    observed_members: list[_RootMemberSnapshot] = []
+    for root in snapshot.roots:
+        expected_members = tuple(
+            member for member in snapshot.root_members if member.root == root.path
+        )
+        if expected_members == (
+            _RootMemberSnapshot(root.path, ".", "directory", root.identity),
+        ):
+            observed_members.extend(expected_members)
+        else:
+            observed_members.extend(_snapshot_root_members_v3(root.path))
+    if tuple(observed_members) != snapshot.root_members:
         raise RuntimeError("Task 13 source root membership changed during publication")
     _revalidate_sources(snapshot.files)
 
@@ -630,6 +684,56 @@ def _revalidate_sources(snapshots: Sequence[_SourceSnapshot]) -> None:
             or _sha256_file(snapshot.path) != snapshot.sha256
         ):
             raise RuntimeError(f"Task 13 source changed during publication: {snapshot.path}")
+
+
+def _snapshot_path_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _validate_source_snapshot_against_loader_capability_v3(
+    snapshot: Task13SourceSnapshotV1,
+    capability: Task13LoaderCapabilityV1,
+    repository_root: Path,
+) -> None:
+    if not isinstance(capability, Task13LoaderCapabilityV1):
+        raise ValueError("Task 13 loader capability metadata is invalid")
+    observed_roots: dict[str, _DirectoryIdentity] = {}
+    for root in snapshot.roots:
+        key = _snapshot_path_key(root.path)
+        if key in observed_roots:
+            raise ValueError("Task 13 source snapshot contains duplicate roots")
+        observed_roots[key] = root
+    expected_roots = {
+        _snapshot_path_key(entry.path): entry
+        for entry in capability.roots.values()
+    }
+    if set(observed_roots) != set(expected_roots):
+        raise ValueError("Task 13 source snapshot does not contain the exact loader source roots")
+    for key, expected in expected_roots.items():
+        observed = observed_roots[key]
+        if observed.identity != expected.identity:
+            raise ValueError(f"Task 13 source root identity differs: {expected.name}")
+
+    observed_files: dict[str, _SourceSnapshot] = {}
+    for source in snapshot.files:
+        key = _snapshot_path_key(source.path)
+        if key in observed_files:
+            raise ValueError("Task 13 source snapshot contains duplicate files")
+        observed_files[key] = source
+    for expected in capability.controls.values():
+        observed = observed_files.get(_snapshot_path_key(expected.path))
+        if observed is None:
+            raise ValueError(f"Task 13 source snapshot omits registered control: {expected.name}")
+        if observed.path != expected.path or observed.identity != expected.identity or observed.sha256 != expected.sha256:
+            raise ValueError(f"Task 13 source snapshot differs for registered control: {expected.name}")
+
+    checked_repository = _absolute_no_reparse(repository_root, require_exists=True)
+    repository_capability = capability.roots["repository"]
+    if (
+        checked_repository != repository_capability.path
+        or _identity(checked_repository) != repository_capability.identity
+    ):
+        raise ValueError("Task 13 repository root differs from loader capability")
 
 
 @contextmanager
@@ -730,7 +834,11 @@ def _validate_frozen_bootstrap_bytes_v3(raw: bytes) -> None:
 
 
 def verify_task13_artifact_root_v3(root: Path) -> Task13PublicationResultV1:
-    """Validate bytes, canonical models, and every Task 13 cross-artifact binding."""
+    """Validate only internal Task 13 artifact self-consistency.
+
+    Matrix-aware staging validation is the authenticated release-validation
+    boundary; this standalone verifier intentionally has no source-matrix context.
+    """
     root = _absolute_no_reparse(root, require_exists=True)
     if _is_reparse(root) or not stat.S_ISDIR(_lstat(root).st_mode):
         raise ValueError("Task 13 artifact root must be a regular directory")
@@ -848,9 +956,18 @@ def _directory_commit_noreplace_v3(staging: Path, final_root: Path) -> None:
 def _fsync_parent_directory_v3(parent: Path) -> None:
     if os.name == "nt":
         return
+    unsupported = {
+        errno.EINVAL,
+        getattr(errno, "ENOTSUP", errno.EINVAL),
+        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+    }
     descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        os.fsync(descriptor)
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if exc.errno not in unsupported:
+                raise
     finally:
         os.close(descriptor)
 
@@ -869,8 +986,10 @@ def _commit_staged_task13_root_v3(
         _validate_staging_ownership_v3(staging, ownership)
     if _identity(parent_identity.path) != parent_identity.identity or _present(final_root):
         raise FileExistsError("Task 13 final root exists or parent changed before commit")
-    _revalidate_source_snapshot(source_snapshot)
     staging_identity = _identity(staging)
+    _revalidate_source_snapshot(source_snapshot)
+    if ownership:
+        _validate_staging_ownership_v3(staging, ownership)
     _directory_commit_noreplace_v3(staging, final_root)
     try:
         final_stat = _lstat(final_root)
@@ -880,9 +999,14 @@ def _commit_staged_task13_root_v3(
             or (final_stat.st_dev, final_stat.st_ino) != staging_identity
         ):
             raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit")
-        _fsync_parent_directory_v3(parent_identity.path)
     except FileNotFoundError as exc:
         raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit") from exc
+    try:
+        _fsync_parent_directory_v3(parent_identity.path)
+    except OSError as exc:
+        raise RuntimeError(
+            "Task 13 final root committed but parent-directory durability failed"
+        ) from exc
 
 
 def _capture_staging_ownership_v3(
@@ -999,23 +1123,27 @@ def publish_task13_artifacts_v3(
 ) -> Task13PublicationResultV1:
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
     try:
-        matrix_digest = require_loader_registered_task13_matrix_v1(matrix)
+        matrix_capability = require_loader_registered_task13_matrix_v1(matrix)
+        matrix_digest = matrix_capability.matrix_digest
         validate_task13_authenticated_matrix_v1(matrix)
         require_builder_registered_task13_publication_v1(publication, matrix, matrix_digest)
     except (TypeError, ValueError) as exc:
         raise ValueError("Task 13 matrix or publication capability is invalid") from exc
+    if not isinstance(source_snapshot, Task13SourceSnapshotV1):
+        raise TypeError("source_snapshot must be Task13SourceSnapshotV1")
+    _validate_source_snapshot_against_loader_capability_v3(
+        source_snapshot, matrix_capability, repository_root
+    )
     output_root = _absolute_no_reparse(output_root, require_exists=False)
     if _present(output_root):
         raise FileExistsError("Task 13 output root must not already exist")
     parent = _absolute_no_reparse(output_root.parent, require_exists=True)
     if output_root.name in {"", ".", ".."}:
         raise ValueError("Task 13 output root must be a named child directory")
-    if not isinstance(source_snapshot, Task13SourceSnapshotV1):
-        raise TypeError("source_snapshot must be Task13SourceSnapshotV1")
     protected = (
-        *(root.path for root in source_snapshot.roots),
+        *(entry.path for entry in matrix_capability.roots.values()),
+        *(entry.path for entry in matrix_capability.controls.values()),
         *(snapshot.path for snapshot in source_snapshot.files),
-        repository_root,
     )
     _assert_nonoverlap(output_root, protected)
     _revalidate_source_snapshot(source_snapshot)
@@ -1044,7 +1172,7 @@ def publish_task13_artifacts_v3(
             validate_task13_staging_root_v3(staging, publication, matrix)
             ownership = _capture_staging_ownership_v3(staging, TASK13_PUBLICATION_PATHS)
             _validate_staging_ownership_v3(staging, ownership)
-            if require_loader_registered_task13_matrix_v1(matrix) != matrix_digest:
+            if require_loader_registered_task13_matrix_v1(matrix).matrix_digest != matrix_digest:
                 raise ValueError("Task 13 loader-registered matrix content changed")
             require_builder_registered_task13_publication_v1(publication, matrix, matrix_digest)
             _commit_staged_task13_root_v3(
@@ -1061,7 +1189,13 @@ def publish_task13_artifacts_v3(
             raise
         finally:
             if not committed and not preserve_staging:
-                _safe_cleanup_staging_v3(staging, staging_identity, parent_identity, ownership)
+                if ownership is None and _present(staging) and tuple(staging.iterdir()):
+                    # Never destroy a populated staging directory whose ownership
+                    # was not authenticated; preserve it and retain the original
+                    # publication error rather than masking it during cleanup.
+                    preserve_staging = True
+                else:
+                    _safe_cleanup_staging_v3(staging, staging_identity, parent_identity, ownership)
     return Task13PublicationResultV1(
         output_root=output_root,
         artifact_refs=publication.artifact_refs,

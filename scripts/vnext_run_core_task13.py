@@ -96,9 +96,9 @@ def main(
             paths["manifest"], paths["plan"], paths["matrix_manifest"],
             paths["matrix_summary"], paths["integrity_audit"], paths["statistics_config"],
         )
-        source_roots = (paths["core_root"], paths["evidence_root"], paths["matrix_root"])
+        source_roots = (paths["core_root"], paths["evidence_root"], paths["matrix_root"], repository_root)
         source_snapshot = task13_publication.capture_task13_source_snapshot_v3(
-            source_paths, source_roots
+            source_paths, source_roots, shallow_roots=(repository_root,)
         )
         task13_publication._revalidate_source_snapshot(source_snapshot)
         hashes = {
