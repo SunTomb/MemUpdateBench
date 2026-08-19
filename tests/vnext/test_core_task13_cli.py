@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -437,3 +438,214 @@ def test_task13_posix_noreplace_collision_preserves_existing_final(tmp_path):
         _directory_commit_noreplace_v3(staging, final_root)
     assert staging.is_dir()
     assert final_root.is_dir()
+
+
+def test_task13_runtime_binding_hashes_raw_nul_tree_and_rejects_untracked(tmp_path):
+    from mub.vnext.statistics.task13_v3 import current_clean_task13_runtime_v3
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(("git", "init", "-q", str(repository)), check=True)
+    subprocess.run(("git", "-C", str(repository), "config", "user.email", "task13@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repository), "config", "user.name", "Task 13"), check=True)
+    (repository / "tracked.txt").write_bytes(b"tracked\n")
+    subprocess.run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(repository), "commit", "-qm", "initial"), check=True)
+
+    binding = current_clean_task13_runtime_v3(repository)
+    expected_revision = subprocess.run(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    raw_tree = subprocess.run(
+        ("git", "-C", str(repository), "ls-tree", "-r", "-z", "HEAD"),
+        check=True, capture_output=True,
+    ).stdout
+    assert binding.runtime_revision == expected_revision
+    assert binding.runtime_tree_sha256 == hashlib.sha256(raw_tree).hexdigest()
+
+    (repository / "untracked.py").write_bytes(b"print('untracked')\n")
+    with pytest.raises(RuntimeError, match="clean repository"):
+        current_clean_task13_runtime_v3(repository)
+
+
+def test_task13_parser_rejects_execute_abbreviation_without_output(tmp_path):
+    from scripts.vnext_run_core_task13 import build_parser
+
+    parser = build_parser()
+    required = [
+        "--manifest", "m", "--plan", "p", "--core-root", "c", "--evidence-root", "e",
+        "--matrix-root", "r", "--matrix-bundle-manifest", "bm", "--matrix-summary", "s",
+        "--matrix-integrity-audit", "a", "--statistics-config", "sc", "--output-root", str(tmp_path / "out"),
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args([*required, "--exec"])
+    assert not (tmp_path / "out").exists()
+
+
+def test_task13_cleanup_preserves_substituted_expected_stage_member(tmp_path):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    expected = ("one", "two")
+    for name in expected:
+        (staging / name).write_bytes(name.encode("utf-8"))
+    staging_identity = publication._DirectoryIdentity(staging, publication._identity(staging))
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+    ownership = publication._capture_staging_ownership_v3(staging, expected)
+
+    replaced = staging / "one"
+    replaced.unlink()
+    replaced.write_bytes(b"foreign replacement")
+    with pytest.raises(RuntimeError, match="owned staging|preserving"):
+        publication._safe_cleanup_staging_v3(
+            staging, staging_identity, parent_identity, ownership
+        )
+    assert staging.is_dir()
+
+
+def test_task13_bootstrap_verifier_rejects_forged_200000_byte_payload():
+    import mub.vnext.statistics.task13_v3 as publication
+
+    with pytest.raises(ValueError, match="frozen bootstrap"):
+        publication._validate_frozen_bootstrap_bytes_v3(b"x" * 200_000)
+
+
+def test_task13_commit_rejects_postrename_path_substitution(tmp_path, monkeypatch):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (sources,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    final_root = parent / "final"
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+
+    def install_then_substitute(stage, final):
+        stage.rename(final)
+        final.rmdir()
+        final.mkdir()
+
+    monkeypatch.setattr(publication, "_directory_commit_noreplace_v3", install_then_substitute)
+    with pytest.raises(RuntimeError, match="committed-path-substitution"):
+        publication._commit_staged_task13_root_v3(
+            staging=staging,
+            final_root=final_root,
+            parent_identity=parent_identity,
+            source_snapshot=snapshot,
+        )
+    assert final_root.is_dir()
+
+
+def test_task13_cli_rejects_postcommit_path_substitution_without_deleting_final(
+    task13_arguments, fixed_runtime_binding, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    def install_then_substitute(stage, final):
+        stage.rename(final)
+        final.rmdir()
+        final.mkdir()
+        (final / "foreign").write_bytes(b"foreign")
+
+    monkeypatch.setattr(publication, "_directory_commit_noreplace_v3", install_then_substitute)
+    assert main(_cli_args(task13_arguments)) == 2
+    final_root = task13_arguments["output_root"]
+    assert final_root.is_dir()
+
+
+def test_task13_runtime_tree_is_bound_to_captured_revision_during_head_race(tmp_path, monkeypatch):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(("git", "init", "-q", str(repository)), check=True)
+    subprocess.run(("git", "-C", str(repository), "config", "user.email", "task13@example.test"), check=True)
+    subprocess.run(("git", "-C", str(repository), "config", "user.name", "Task 13"), check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_bytes(b"first\n")
+    subprocess.run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(repository), "commit", "-qm", "first"), check=True)
+    first_revision = subprocess.run(("git", "-C", str(repository), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    first_tree = subprocess.run(("git", "-C", str(repository), "ls-tree", "-r", "-z", first_revision), check=True, capture_output=True).stdout
+
+    original_run = publication.subprocess.run
+    moved = False
+
+    def moving_run(args, *args_tail, **kwargs):
+        nonlocal moved
+        result = original_run(args, *args_tail, **kwargs)
+        if tuple(args[-2:]) == ("rev-parse", "HEAD") and not moved:
+            moved = True
+            tracked.write_bytes(b"second\n")
+            original_run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+            original_run(("git", "-C", str(repository), "commit", "-qm", "second"), check=True)
+        return result
+
+    monkeypatch.setattr(publication.subprocess, "run", moving_run)
+    binding = publication.current_clean_task13_runtime_v3(repository)
+    assert binding.runtime_revision == first_revision
+
+
+def test_task13_direct_builder_rejects_valid_but_forged_source_hash_mapping(
+    authenticated_fixture
+):
+    from mub.vnext.statistics.task13_v3 import (
+        Task13RuntimeBindingV1,
+        build_task13_publication_v3,
+    )
+    from mub.vnext.statistics.input_v3 import load_task13_authenticated_matrix_v1
+
+    inputs = authenticated_fixture["inputs"]
+    paths = {
+        "manifest": authenticated_fixture["preparation_manifest_path"],
+        "plan": authenticated_fixture["plan_path"],
+        "matrix_manifest": authenticated_fixture["matrix_manifest_path"],
+        "matrix_summary": authenticated_fixture["summary_path"],
+        "integrity_audit": authenticated_fixture["audit_path"],
+    }
+    hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()}
+    matrix = load_task13_authenticated_matrix_v1(
+        preparation_manifest_path=paths["manifest"],
+        plan_path=paths["plan"],
+        core_root=inputs["core_root"],
+        evidence_root=inputs["evidence_root"],
+        matrix_root=authenticated_fixture["matrix"].matrix_root,
+        matrix_manifest_path=paths["matrix_manifest"],
+        matrix_summary_path=paths["matrix_summary"],
+        integrity_audit_path=paths["integrity_audit"],
+        repository_root=Path(__file__).resolve().parents[2],
+        expected_preparation_manifest_sha256=hashes["manifest"],
+        expected_plan_sha256=hashes["plan"],
+        expected_matrix_manifest_sha256=hashes["matrix_manifest"],
+        expected_matrix_summary_sha256=hashes["matrix_summary"],
+        expected_integrity_audit_sha256=hashes["integrity_audit"],
+    )
+    forged = {
+        "preparation_manifest": "f" * 64,
+        "plan": "f" * 64,
+        "matrix_manifest": "f" * 64,
+        "matrix_summary": "f" * 64,
+        "integrity_audit": "f" * 64,
+        "core_tasks": "f" * 64,
+        "core_task_manifest": "f" * 64,
+    }
+    with pytest.raises(ValueError, match="source hashes"):
+        build_task13_publication_v3(
+            matrix=matrix,
+            bootstrap_config=DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1,
+            statistics_config_sha256=hashlib.sha256(
+                canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1)
+            ).hexdigest(),
+            runtime=Task13RuntimeBindingV1("a" * 40, "b" * 64),
+            source_hashes=forged,
+        )

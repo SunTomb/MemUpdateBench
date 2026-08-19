@@ -13,7 +13,8 @@ from mub.vnext.statistics import task13_v3 as task13_publication
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Publish authenticated Core Task 13 statistics artifacts."
+        description="Publish authenticated Core Task 13 statistics artifacts.",
+        allow_abbrev=False,
     )
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--plan", required=True)
@@ -143,8 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             source_snapshot=source_snapshot,
             repository_root=repository_root,
         )
-        index_path = result.output_root / "task13_artifact_index.json"
-        print(f"task13_artifact_index_sha256={_sha256(index_path)}")
+        print(f"task13_artifact_index_sha256={result.artifact_index_sha256}")
         print(f"output_root={result.output_root}")
         return 0
     except SystemExit:

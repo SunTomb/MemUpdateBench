@@ -17,7 +17,11 @@ from pydantic import BaseModel
 from mub.vnext.contracts.common import ArtifactRef
 from mub.vnext.io import canonical_json_bytes, sha256_model
 from mub.vnext.io.atomic import publish_files_atomically
-from mub.vnext.statistics.bootstrap_v3 import BootstrapIndicesV1, build_bootstrap_indices_v1
+from mub.vnext.statistics.bootstrap_v3 import (
+    BootstrapIndicesV1,
+    FROZEN_BOOTSTRAP_INDEX_SHA256,
+    build_bootstrap_indices_v1,
+)
 from mub.vnext.statistics.cases_v3 import (
     Task13CasesResultV1,
     build_task13_cases_v1,
@@ -116,6 +120,10 @@ class Task13PublicationResultV1:
     artifact_refs: Task13ArtifactRefsV1
     artifact_index: Task13ArtifactIndexV1
 
+    @property
+    def artifact_index_sha256(self) -> str:
+        return self.artifact_refs.task13_artifact_index.sha256
+
 
 @dataclass(frozen=True, slots=True)
 class _SourceSnapshot:
@@ -150,6 +158,14 @@ class Task13SourceSnapshotV1:
 class _DirectoryIdentity:
     path: Path
     identity: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedStagingMember:
+    name: str
+    identity: tuple[int, int]
+    size: int
+    sha256: str
 
 
 def _sha256_text(value: object) -> bool:
@@ -210,8 +226,8 @@ def build_task13_publication_v3(
     source_hashes: Mapping[str, str],
 ) -> Task13PublicationV1:
     """Build a complete immutable Task 13 publication without filesystem output."""
-    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
-        raise TypeError("matrix must be an authenticated Task13AuthenticatedMatrixV1")
+    if not isinstance(matrix, Task13AuthenticatedMatrixV1) or not matrix._loader_seal_valid:
+        raise TypeError("matrix must be a sealed authenticated Task13AuthenticatedMatrixV1")
     if not isinstance(bootstrap_config, Task13BootstrapConfigV1):
         raise TypeError("bootstrap_config must be Task13BootstrapConfigV1")
     if statistics_config_sha256 != sha256_model(bootstrap_config):
@@ -222,8 +238,21 @@ def build_task13_publication_v3(
         "preparation_manifest", "plan", "matrix_manifest", "matrix_summary",
         "integrity_audit", "core_tasks", "core_task_manifest",
     }
-    if set(source_hashes) != required_hashes or any(not _sha256_text(value) for value in source_hashes.values()):
-        raise ValueError("Task 13 source hashes must be the exact authenticated input set")
+    authenticated_hashes = {
+        "preparation_manifest": matrix.input_hashes["task12_preparation_manifest"],
+        "plan": matrix.input_hashes["task12_plan"],
+        "matrix_manifest": matrix.input_hashes["task12_matrix_manifest"],
+        "matrix_summary": matrix.input_hashes["task12_matrix_summary"],
+        "integrity_audit": matrix.input_hashes["task12_integrity_audit"],
+        "core_tasks": matrix.input_hashes["core_tasks"],
+        "core_task_manifest": matrix.input_hashes["core_task_manifest"],
+    }
+    if (
+        set(source_hashes) != required_hashes
+        or any(not _sha256_text(value) for value in source_hashes.values())
+        or dict(source_hashes) != authenticated_hashes
+    ):
+        raise ValueError("Task 13 source hashes must exactly equal authenticated matrix provenance")
 
     bootstrap = build_bootstrap_indices_v1(matrix.canonical_core_ids, bootstrap_config)
     statistics = _canonical_statistics_v3(
@@ -608,6 +637,13 @@ def _jsonl_models(path: Path, model_type: type[BaseModel]) -> tuple[BaseModel, .
     return tuple(rows)
 
 
+def _validate_frozen_bootstrap_bytes_v3(raw: bytes) -> None:
+    if len(raw) != 200_000:
+        raise ValueError("Task 13 frozen bootstrap must be exactly 200000 bytes")
+    if hashlib.sha256(raw).hexdigest() != FROZEN_BOOTSTRAP_INDEX_SHA256:
+        raise ValueError("Task 13 frozen bootstrap hash does not match the frozen bootstrap")
+
+
 def verify_task13_artifact_root_v3(root: Path) -> Task13PublicationResultV1:
     """Validate bytes, canonical models, and every Task 13 cross-artifact binding."""
     root = _absolute_no_reparse(root, require_exists=True)
@@ -621,6 +657,7 @@ def verify_task13_artifact_root_v3(root: Path) -> Task13PublicationResultV1:
             raise ValueError("Task 13 artifact root contains an unsafe or temporary artifact")
 
     bootstrap_path = root / "bootstrap_indices.bin"
+    _validate_frozen_bootstrap_bytes_v3(bootstrap_path.read_bytes())
     cells = tuple(_jsonl_models(root / "cell_statistics.jsonl", Task13CellStatisticV1))
     contrasts = tuple(_jsonl_models(root / "paired_contrasts.jsonl", Task13PairedContrastV1))
     receipt = _json_model_bytes(root / "statistics_receipt.json", Task13StatisticsReceiptV1)
@@ -710,22 +747,77 @@ def _commit_staged_task13_root_v3(*, staging: Path, final_root: Path, parent_ide
     if _identity(parent_identity.path) != parent_identity.identity or _present(final_root):
         raise FileExistsError("Task 13 final root exists or parent changed before commit")
     _revalidate_source_snapshot(source_snapshot)
+    staging_identity = _identity(staging)
     _directory_commit_noreplace_v3(staging, final_root)
+    try:
+        final_stat = _lstat(final_root)
+        if (
+            _is_reparse(final_root)
+            or not stat.S_ISDIR(final_stat.st_mode)
+            or (final_stat.st_dev, final_stat.st_ino) != staging_identity
+        ):
+            raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit")
+    except FileNotFoundError as exc:
+        raise RuntimeError("Task 13 committed-path-substitution detected after no-replace commit") from exc
 
 
-def _safe_cleanup_staging_v3(staging: Path, identity: _DirectoryIdentity, parent_identity: _DirectoryIdentity, expected_names: Sequence[str]) -> None:
+def _capture_staging_ownership_v3(
+    staging: Path, expected_names: Sequence[str]
+) -> tuple[_OwnedStagingMember, ...]:
+    expected = tuple(sorted(expected_names))
+    observed = tuple(sorted(member.name for member in staging.iterdir()))
+    if observed != expected:
+        raise RuntimeError("owned staging members are not the expected publication set")
+    ownership: list[_OwnedStagingMember] = []
+    for name in expected:
+        member = staging / name
+        if not _regular_single_link(member):
+            raise RuntimeError("owned staging member has unsafe type or link count")
+        result = _lstat(member)
+        ownership.append(_OwnedStagingMember(name, _identity(member), result.st_size, _sha256_file(member)))
+    return tuple(ownership)
+
+
+def _owned_staging_member_matches_v3(staging: Path, member: _OwnedStagingMember) -> bool:
+    path = staging / member.name
+    return (
+        _regular_single_link(path)
+        and _identity(path) == member.identity
+        and _lstat(path).st_size == member.size
+        and _sha256_file(path) == member.sha256
+    )
+
+
+def _safe_cleanup_staging_v3(
+    staging: Path,
+    identity: _DirectoryIdentity,
+    parent_identity: _DirectoryIdentity,
+    ownership: tuple[_OwnedStagingMember, ...] | None,
+) -> None:
     if not _present(staging):
         return
-    if _identity(parent_identity.path) != parent_identity.identity or _is_reparse(staging) or _identity(staging) != identity.identity:
+    if (
+        _identity(parent_identity.path) != parent_identity.identity
+        or _is_reparse(staging)
+        or _identity(staging) != identity.identity
+    ):
         raise RuntimeError("Task 13 staging identity changed; preserving staging directory")
     names = tuple(sorted(member.name for member in staging.iterdir()))
-    if names not in {(), tuple(sorted(expected_names))}:
-        raise RuntimeError("Task 13 staging contents changed; preserving staging directory")
-    for member in staging.iterdir():
-        if not _regular_single_link(member):
-            raise RuntimeError("Task 13 staging member changed; preserving staging directory")
-    for member in staging.iterdir():
-        member.unlink()
+    if ownership is None:
+        if names:
+            raise RuntimeError("Task 13 unowned staging contents preserved after failure")
+        staging.rmdir()
+        return
+    expected = tuple(member.name for member in ownership)
+    if names != expected:
+        raise RuntimeError("Task 13 owned staging contents changed; preserving staging directory")
+    if any(not _owned_staging_member_matches_v3(staging, member) for member in ownership):
+        raise RuntimeError("Task 13 owned staging member changed; preserving staging directory")
+    for member in ownership:
+        path = staging / member.name
+        if not _owned_staging_member_matches_v3(staging, member):
+            raise RuntimeError("Task 13 owned staging member changed during cleanup; preserving staging directory")
+        path.unlink()
     staging.rmdir()
 
 
@@ -740,8 +832,8 @@ def publish_task13_artifacts_v3(
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
     if not isinstance(publication, Task13PublicationV1):
         raise TypeError("publication must be Task13PublicationV1")
-    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
-        raise TypeError("matrix must be an authenticated Task13AuthenticatedMatrixV1")
+    if not isinstance(matrix, Task13AuthenticatedMatrixV1) or not matrix._loader_seal_valid:
+        raise TypeError("matrix must be a sealed authenticated Task13AuthenticatedMatrixV1")
     output_root = _absolute_no_reparse(output_root, require_exists=False)
     if _present(output_root):
         raise FileExistsError("Task 13 output root must not already exist")
@@ -771,6 +863,7 @@ def publish_task13_artifacts_v3(
         }
         committed = False
         preserve_staging = False
+        ownership: tuple[_OwnedStagingMember, ...] | None = None
         try:
             publish_files_atomically(
                 destinations,
@@ -779,6 +872,7 @@ def publish_task13_artifacts_v3(
                 validators=validators,
             )
             validate_task13_staging_root_v3(staging, publication, matrix)
+            ownership = _capture_staging_ownership_v3(staging, TASK13_PUBLICATION_PATHS)
             _commit_staged_task13_root_v3(
                 staging=staging, final_root=output_root,
                 parent_identity=parent_identity, source_snapshot=source_snapshot,
@@ -792,7 +886,7 @@ def publish_task13_artifacts_v3(
             raise
         finally:
             if not committed and not preserve_staging:
-                _safe_cleanup_staging_v3(staging, staging_identity, parent_identity, TASK13_PUBLICATION_PATHS)
+                _safe_cleanup_staging_v3(staging, staging_identity, parent_identity, ownership)
     return Task13PublicationResultV1(
         output_root=output_root,
         artifact_refs=publication.artifact_refs,
@@ -828,7 +922,7 @@ def current_clean_task13_runtime_v3(repository_root: Path) -> Task13RuntimeBindi
         raise RuntimeError("Task 13 runtime binding requires a clean repository")
     revision = git("rev-parse", "HEAD")
     tree_process = subprocess.run(
-        ("git", "-C", str(root), "ls-tree", "-r", "--full-tree", "HEAD"),
+        ("git", "-C", str(root), "ls-tree", "-r", "-z", revision),
         check=False,
         capture_output=True,
     )
