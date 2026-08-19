@@ -42,6 +42,7 @@ from mub.vnext.statistics.contracts_v3 import (
     task13_case_category_order_v1,
     task13_case_id_v1,
     task13_claim_id_v1,
+    task13_contrast_id_v1,
 )
 
 
@@ -318,6 +319,8 @@ def _receipt() -> Task13StatisticsReceiptV1:
         task12_matrix_manifest_sha256=SHA_C,
         task12_matrix_summary_sha256=SHA,
         task12_integrity_audit_sha256=SHA_B,
+        core_tasks_sha256=SHA_C,
+        core_task_manifest_sha256=SHA,
         statistics_config_sha256=SHA_C,
         task13_runtime_revision="rev-a",
         task13_runtime_tree_sha256=SHA,
@@ -460,23 +463,42 @@ def _claim(
     kind: str = "direct_cell",
     direction: str = "self",
 ) -> Task13ClaimLedgerRecordV1:
-    sources = (_source("run-a", SHA, SHA_B, "answer_model_a", 4),)
+    slot = "answer_model_a"
+    k = 4
+    metric_path = TASK13_METRIC_PATHS[0]
+    sources = (_source("run-a", SHA, SHA_B, slot, k),)
     if kind == "paired_contrast":
-        sources = (_source("run-a", SHA, SHA_B, "answer_model_a", 4), _source("run-b", SHA_B, SHA_C, "answer_model_a", 4))
+        left_cell_id = "cell-left"
+        right_cell_id = "cell-right"
+        cell_or_contrast = task13_contrast_id_v1(
+            slot, k, left_cell_id, right_cell_id, metric_path
+        )
+        slice_payload = {
+            "k": k,
+            "left_cell_id": left_cell_id,
+            "right_cell_id": right_cell_id,
+        }
+        sources = (
+            _source("run-a", SHA, SHA_B, slot, k),
+            _source("run-b", SHA_B, SHA_C, slot, k),
+        )
+    else:
+        cell_or_contrast = "cell-a"
+        slice_payload = {"cell_id": cell_or_contrast, "k": k}
     return Task13ClaimLedgerRecordV1(
         claim_id=task13_claim_id_v1(
             kind,
-            "answer_model_a",
-            "cell-a",
-            TASK13_METRIC_PATHS[0],
-            {},
+            slot,
+            cell_or_contrast,
+            metric_path,
+            slice_payload,
         ),
         kind=kind,
         direction=direction,
-        slot="answer_model_a",
-        cell_or_contrast="cell-a",
-        metric_path=TASK13_METRIC_PATHS[0],
-        slice_payload={},
+        slot=slot,
+        cell_or_contrast=cell_or_contrast,
+        metric_path=metric_path,
+        slice_payload=slice_payload,
         denominator=Task13DenominatorV1(
             task_count=80,
             semantic_core_count=20,
@@ -541,7 +563,8 @@ def test_case_and_claim_helpers_construct_complete_records() -> None:
     claim = _claim("claim-a")
     assert case.case_id == task13_case_id_v1("run-a", "task-a", "correct")
     assert claim.claim_id == task13_claim_id_v1(
-        "direct_cell", "answer_model_a", "cell-a", TASK13_METRIC_PATHS[0], {}
+        "direct_cell", "answer_model_a", "cell-a", TASK13_METRIC_PATHS[0],
+        {"cell_id": "cell-a", "k": 4},
     )
     assert claim.denominator.task_count == 80
     assert claim.denominator.semantic_core_count == 20
@@ -658,6 +681,16 @@ def test_task13_case_index_model_rejects_permuted_bindings() -> None:
         Task13CaseIndexV1.model_validate(payload)
 
 
+def test_task13_case_index_rejects_joint_reversed_sources_coverage_and_bindings() -> None:
+    index = _case_index()
+    payload = index.model_dump(mode="python")
+    payload["run_sources"] = tuple(reversed(payload["run_sources"]))
+    payload["coverage"] = tuple(reversed(payload["coverage"]))
+    payload["case_bindings"] = tuple(reversed(payload["case_bindings"]))
+    with pytest.raises((ValidationError, ValueError), match="canonical|run|order"):
+        Task13CaseIndexV1.model_validate(payload)
+
+
 def test_task13_claim_identity_payload_and_id_preserve_legacy_bytes() -> None:
     payload = Task13ClaimIdentityPayloadV1(
         kind="direct_cell",
@@ -680,6 +713,92 @@ def test_task13_claim_record_model_rejects_arbitrary_claim_id() -> None:
     payload = _claim("claim-a").model_dump(mode="python")
     payload["claim_id"] = "claim-arbitrary"
     with pytest.raises((ValidationError, ValueError), match="claim_id|derived|identity"):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("coordinate", "value"),
+    (("answer_model_slot", "answer_model_b"), ("k", 8)),
+)
+def test_task13_direct_claim_rejects_source_coordinate_mismatch(
+    coordinate: str, value: str | int
+) -> None:
+    payload = _claim("claim-a").model_dump(mode="python")
+    source = dict(payload["run_sources"][0])
+    source[coordinate] = value
+    payload["run_sources"] = (source,)
+    with pytest.raises((ValidationError, ValueError), match="source|coordinate|slot|k"):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("source_index", "coordinate", "value"),
+    (
+        (0, "answer_model_slot", "answer_model_b"),
+        (0, "k", 8),
+        (1, "answer_model_slot", "answer_model_b"),
+        (1, "k", 8),
+    ),
+)
+def test_task13_paired_claim_rejects_any_source_coordinate_mismatch(
+    source_index: int, coordinate: str, value: str | int
+) -> None:
+    payload = _claim(
+        "claim-paired", kind="paired_contrast", direction="left_minus_right"
+    ).model_dump(mode="python")
+    source = dict(payload["run_sources"][source_index])
+    source[coordinate] = value
+    sources = list(payload["run_sources"])
+    sources[source_index] = source
+    payload["run_sources"] = tuple(sources)
+    with pytest.raises((ValidationError, ValueError), match="source|coordinate|slot|k"):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "slice_payload",
+    (
+        {},
+        {"cell_id": "cell-a", "k": 4, "extra": "foreign"},
+        {"cell_id": "other-cell", "k": 4},
+        {"cell_id": "cell-a", "k": True},
+    ),
+)
+def test_task13_direct_claim_requires_production_slice_shape(slice_payload) -> None:
+    payload = _claim("claim-a").model_dump(mode="python")
+    payload["slice_payload"] = slice_payload
+    payload["claim_id"] = task13_claim_id_v1(
+        payload["kind"],
+        payload["slot"],
+        payload["cell_or_contrast"],
+        payload["metric_path"],
+        slice_payload,
+    )
+    with pytest.raises((ValidationError, ValueError), match="slice|cell|k|source"):
+        Task13ClaimLedgerRecordV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "slice_payload",
+    (
+        {"k": 4, "left_cell_id": "cell-left", "right_cell_id": "cell-right", "extra": "foreign"},
+        {"k": 4, "left_cell_id": "cell-other", "right_cell_id": "cell-right"},
+        {"k": True, "left_cell_id": "cell-left", "right_cell_id": "cell-right"},
+    ),
+)
+def test_task13_paired_claim_requires_production_slice_shape(slice_payload) -> None:
+    payload = _claim(
+        "claim-paired", kind="paired_contrast", direction="left_minus_right"
+    ).model_dump(mode="python")
+    payload["slice_payload"] = slice_payload
+    payload["claim_id"] = task13_claim_id_v1(
+        payload["kind"],
+        payload["slot"],
+        payload["cell_or_contrast"],
+        payload["metric_path"],
+        slice_payload,
+    )
+    with pytest.raises((ValidationError, ValueError), match="slice|cell|k|contrast"):
         Task13ClaimLedgerRecordV1.model_validate(payload)
 
 
@@ -818,6 +937,22 @@ def test_receipt_count_literals_and_artifact_id_path_collisions_are_rejected() -
         Task13StatisticsReceiptV1.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("source_field", "coordinate", "value"),
+    (
+        ("left_source", "answer_model_slot", "answer_model_b"),
+        ("left_source", "k", 8),
+        ("right_source", "answer_model_slot", "answer_model_b"),
+        ("right_source", "k", 8),
+    ),
+)
+def test_task13_paired_contrast_rejects_source_coordinate_mismatch(
+    source_field: str, coordinate: str, value: str | int
+) -> None:
+    payload = _contrast().model_dump(mode="python")
+    payload[source_field][coordinate] = value
+    with pytest.raises((ValidationError, ValueError), match="source|coordinate|slot|k"):
+        Task13PairedContrastV1.model_validate(payload)
 def test_paired_sources_reject_same_run_and_duplicate_hash_pair() -> None:
     payload = _contrast().model_dump(mode="python")
     payload["right_source"]["run_id"] = payload["left_source"]["run_id"]

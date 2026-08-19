@@ -474,6 +474,14 @@ class Task13PairedContrastV1(ImmutableContractModel):
             and self.left_source.score_artifact_sha256 == self.right_source.score_artifact_sha256
         ):
             raise ValueError("paired contrast sources must not duplicate both source hashes")
+        for label, source in (("left", self.left_source), ("right", self.right_source)):
+            if (
+                source.answer_model_slot != self.answer_model_slot
+                or source.k != self.k
+            ):
+                raise ValueError(
+                    f"paired contrast {label} source coordinates must match the contrast slot/k"
+                )
         return self
 
 
@@ -485,6 +493,8 @@ class Task13StatisticsReceiptV1(ImmutableContractModel):
     task12_matrix_manifest_sha256: SHA256
     task12_matrix_summary_sha256: SHA256
     task12_integrity_audit_sha256: SHA256
+    core_tasks_sha256: SHA256
+    core_task_manifest_sha256: SHA256
     statistics_config_sha256: SHA256
     task13_runtime_revision: StrictIdentifier
     task13_runtime_tree_sha256: SHA256
@@ -872,6 +882,8 @@ class Task13CaseIndexV1(ImmutableContractModel):
             raise ValueError("run_sources must contain unique run IDs")
         if run_ids != coverage_run_ids:
             raise ValueError("coverage and run_sources must use identical ordered run IDs")
+        if run_ids != tuple(sorted(run_ids, key=lambda run_id: run_id.encode("utf-8"))):
+            raise ValueError("run_sources must use canonical UTF-8 run-ID order")
 
         source_by_id = {source.run_id: source for source in self.run_sources}
         for binding in self.case_bindings:
@@ -978,6 +990,51 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
             raise ValueError(
                 f"{self.kind} claims must bind exactly {expected_sources} typed run sources"
             )
+
+        slice_payload = dict(self.slice_payload)
+        if self.kind == "direct_cell":
+            if set(slice_payload) != {"cell_id", "k"}:
+                raise ValueError("direct_cell claim slice must contain exactly cell_id and k")
+            cell_id = slice_payload.get("cell_id")
+            slice_k = slice_payload.get("k")
+            if type(cell_id) is not str or not cell_id.strip():
+                raise ValueError("direct_cell claim slice cell_id must be a nonblank string")
+            if cell_id != self.cell_or_contrast:
+                raise ValueError("direct_cell claim slice cell_id must match cell_or_contrast")
+        else:
+            if set(slice_payload) != {"k", "left_cell_id", "right_cell_id"}:
+                raise ValueError(
+                    "paired_contrast claim slice must contain exactly k, left_cell_id, and right_cell_id"
+                )
+            left_cell_id = slice_payload.get("left_cell_id")
+            right_cell_id = slice_payload.get("right_cell_id")
+            slice_k = slice_payload.get("k")
+            if (
+                type(left_cell_id) is not str
+                or not left_cell_id.strip()
+                or type(right_cell_id) is not str
+                or not right_cell_id.strip()
+            ):
+                raise ValueError("paired_contrast claim slice cell IDs must be nonblank strings")
+            if left_cell_id == right_cell_id:
+                raise ValueError("paired_contrast claim slice cell IDs must differ")
+            expected_contrast_id = task13_contrast_id_v1(
+                self.slot,
+                slice_k,
+                left_cell_id,
+                right_cell_id,
+                self.metric_path,
+            ) if type(slice_k) is int and slice_k in TASK13_K_VALUES else None
+            if self.cell_or_contrast != expected_contrast_id:
+                raise ValueError(
+                    "paired_contrast claim slice cells must reconstruct cell_or_contrast"
+                )
+        if type(slice_k) is not int or slice_k not in TASK13_K_VALUES:
+            raise ValueError("claim slice k must be a strict frozen Task 13 retrieval k")
+
+        for source in self.run_sources:
+            if source.answer_model_slot != self.slot or source.k != slice_k:
+                raise ValueError("claim run-source coordinates must match claim slot and slice k")
         if self.kind == "paired_contrast":
             left, right = self.run_sources
             if left.run_id == right.run_id:

@@ -511,11 +511,40 @@ def test_case_build_rejects_cross_run_task_identity_mismatch(authenticated_case_
         build_task13_cases_v1(forged)
 
 
+def test_case_export_orders_authenticated_runs_by_run_id(authenticated_case_matrix):
+    result = build_task13_cases_v1(authenticated_case_matrix)
+    observed = tuple(case.run_id for case in result.cases)
+    assert observed == tuple(sorted(observed, key=lambda run_id: run_id.encode("utf-8")))
+
+
+def test_case_selection_stays_stable_when_local_observations_are_shuffled(authenticated_case_matrix):
+    forward = build_task13_cases_v1(authenticated_case_matrix)
+    shuffled_runs = tuple(
+        replace(run, observations=tuple(reversed(run.observations)))
+        for run in authenticated_case_matrix.runs
+    )
+    shuffled_run = replace(authenticated_case_matrix.runs[0], observations=tuple(reversed(authenticated_case_matrix.runs[0].observations)))
+    assert tuple(
+        case.case_id for case in _select_task13_cases_for_run_v1(
+            shuffled_run, authenticated_case_matrix
+        )
+    ) == tuple(
+        case.case_id for case in _select_task13_cases_for_run_v1(
+            authenticated_case_matrix.runs[0], authenticated_case_matrix
+        )
+    )
+    # The authenticated matrix validator still owns global observation ordering;
+    # this assertion only covers the case-selection output layer.
+    assert shuffled_runs[0].source == authenticated_case_matrix.runs[0].source
+    assert forward.cases
+
+
 def test_case_build_rejects_noncanonical_run_order(authenticated_case_matrix):
     with pytest.raises(ValueError, match="run order|canonical"):
         build_task13_cases_v1(
             replace(authenticated_case_matrix, runs=tuple(reversed(authenticated_case_matrix.runs)))
         )
+
 
 
 @pytest.mark.parametrize(
@@ -814,6 +843,7 @@ def _ledger_receipt(
     contrasts,
     *,
     statistics_config_sha256=_LEDGER_SHA[2],
+    task12_hashes=None,
 ) -> Task13StatisticsReceiptV1:
     ordered_cells = tuple(
         sorted(
@@ -853,6 +883,10 @@ def _ledger_receipt(
         task12_matrix_manifest_sha256=_LEDGER_SHA[7],
         task12_matrix_summary_sha256=_LEDGER_SHA[8],
         task12_integrity_audit_sha256=_LEDGER_SHA[9],
+        task12_hashes=task12_hashes or {
+            "core_tasks": _LEDGER_SHA[12],
+            "core_task_manifest": _LEDGER_SHA[13],
+        },
         statistics_config_sha256=statistics_config_sha256,
         task13_runtime_revision="a" * 40,
         task13_runtime_tree_sha256=_LEDGER_SHA[11],
@@ -1017,6 +1051,31 @@ def test_receipt_rejects_statistics_config_different_from_bootstrap_config():
             cells,
             contrasts,
             statistics_config_sha256=_LEDGER_SHA[10],
+        )
+
+
+def test_receipt_resolves_core_input_hash_aliases_and_rejects_conflicts():
+    cells, contrasts = _ledger_statistics()
+    receipt = _ledger_receipt(
+        cells,
+        contrasts,
+        task12_hashes={
+            "core_tasks": _LEDGER_SHA[12],
+            "core_task_manifest": _LEDGER_SHA[13],
+        },
+    )
+    assert receipt.core_tasks_sha256 == _LEDGER_SHA[12]
+    assert receipt.core_task_manifest_sha256 == _LEDGER_SHA[13]
+
+    with pytest.raises(ValueError, match="hash|disagree|alias"):
+        _ledger_receipt(
+            cells,
+            contrasts,
+            task12_hashes={
+                "core_tasks": _LEDGER_SHA[12],
+                "core_tasks_sha256": _LEDGER_SHA[14],
+                "core_task_manifest": _LEDGER_SHA[13],
+            },
         )
 
 

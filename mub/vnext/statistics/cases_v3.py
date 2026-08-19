@@ -505,7 +505,10 @@ def build_task13_cases_v1(matrix_input: Task13AuthenticatedMatrixV1) -> Task13Ca
     matrix = _validate_authenticated_matrix(matrix_input)
     cases: list[Task13CaseRecordV1] = []
     coverage: list[Task13RunCaseCoverageV1] = []
-    for run in matrix.runs:
+    ordered_runs = tuple(
+        sorted(matrix.runs, key=lambda run: run.source.run_id.encode("utf-8"))
+    )
+    for run in ordered_runs:
         run_cases = _select_task13_cases_for_run_v1(run, matrix)
         cases.extend(run_cases)
         coverage.append(_coverage(run.source.run_id, run_cases))
