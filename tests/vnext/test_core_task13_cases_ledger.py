@@ -1138,7 +1138,12 @@ def test_ledger_rejects_changed_contrast_id():
     cells, contrasts = _ledger_statistics()
     target_id = contrasts[0].contrast_id
     forged_contrasts = tuple(
-        record.model_copy(update={"contrast_id": "forged-contrast-id"})
+        Task13PairedContrastV1.model_construct(
+            **{
+                **record.model_dump(mode="python"),
+                "contrast_id": "forged-contrast-id",
+            }
+        )
         if record.contrast_id == target_id
         else record
         for record in contrasts

@@ -126,7 +126,9 @@ def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: 
 
 def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task13PairedContrastV1:
     return Task13PairedContrastV1(
-        contrast_id="contrast-a",
+        contrast_id=task13_contrast_id_v1(
+            "answer_model_a", k, "cell-left", "cell-right", metric_path
+        ),
         left_cell_id="cell-left",
         right_cell_id="cell-right",
         direction="left_minus_right",
@@ -142,8 +144,8 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
         core_count=20,
         core_ids_sha256=SHA,
         task_identity_sha256=SHA,
-        left_source=_source("run-left", SHA, SHA_B, "answer_model_a", 4),
-        right_source=_source("run-right", SHA_B, SHA_C, "answer_model_a", 4),
+        left_source=_source("run-left", SHA, SHA_B, "answer_model_a", k),
+        right_source=_source("run-right", SHA_B, SHA_C, "answer_model_a", k),
         bootstrap_config_sha256=SHA,
         bootstrap_indices_sha256=SHA_B,
     )
@@ -953,6 +955,21 @@ def test_task13_paired_contrast_rejects_source_coordinate_mismatch(
     payload[source_field][coordinate] = value
     with pytest.raises((ValidationError, ValueError), match="source|coordinate|slot|k"):
         Task13PairedContrastV1.model_validate(payload)
+
+
+def test_task13_paired_contrast_rejects_forged_derived_contrast_id() -> None:
+    payload = _contrast().model_dump(mode="python")
+    payload["contrast_id"] = task13_contrast_id_v1(
+        payload["answer_model_slot"],
+        payload["k"],
+        "cell-forged-left",
+        payload["right_cell_id"],
+        payload["metric_path"],
+    )
+    with pytest.raises((ValidationError, ValueError), match="contrast_id|derived|deterministic"):
+        Task13PairedContrastV1.model_validate(payload)
+
+
 def test_paired_sources_reject_same_run_and_duplicate_hash_pair() -> None:
     payload = _contrast().model_dump(mode="python")
     payload["right_source"]["run_id"] = payload["left_source"]["run_id"]

@@ -467,6 +467,15 @@ class Task13PairedContrastV1(ImmutableContractModel):
     def _distinct_cells_and_sources(self) -> Task13PairedContrastV1:
         if self.left_cell_id == self.right_cell_id:
             raise ValueError("paired contrast left and right cells must differ")
+        expected_contrast_id = task13_contrast_id_v1(
+            self.answer_model_slot,
+            self.k,
+            self.left_cell_id,
+            self.right_cell_id,
+            self.metric_path,
+        )
+        if self.contrast_id != expected_contrast_id:
+            raise ValueError("contrast_id must equal the derived Task 13 contrast ID")
         if self.left_source.run_id == self.right_source.run_id:
             raise ValueError("paired contrast sources must use different run IDs")
         if (
