@@ -22,6 +22,7 @@ from mub.vnext.statistics.input_v3 import (
     Task13IntegrityAuditV1,
     Task13IntegrityCountsV1,
     load_task13_authenticated_matrix_v1,
+    loader_registered_task13_matrix_lease_v1,
     require_loader_registered_task13_matrix_v1,
     validate_task13_authenticated_matrix_v1,
 )

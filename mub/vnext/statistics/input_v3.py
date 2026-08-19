@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import InitVar, dataclass, field, replace
+from collections.abc import Mapping, Iterator
+from contextlib import contextmanager
+from dataclasses import InitVar, dataclass, field, fields, is_dataclass, replace
 import hashlib
 from pathlib import Path
 from types import MappingProxyType
 import threading
 import weakref
 from typing import Any, Literal
+
+from pydantic import BaseModel
 
 from mub.vnext.contracts.common import ImmutableContractModel
 from mub.vnext.contracts.v3.manifest import TaskManifestV3
@@ -56,7 +59,17 @@ from mub.vnext.statistics.contracts_v3 import (
 _SHA256_HEX = frozenset("0123456789abcdef")
 _TASK13_LOADER_TOKEN = object()
 _TASK13_MATRIX_REGISTRY_LOCK = threading.RLock()
-_TASK13_MATRIX_REGISTRY: dict[int, weakref.ReferenceType[Task13AuthenticatedMatrixV1]] = {}
+
+
+@dataclass(frozen=True)
+class _Task13MatrixRegistryEntry:
+    reference: weakref.ReferenceType[Task13AuthenticatedMatrixV1]
+    digest: str
+    nonce: object
+    lock: threading.RLock
+
+
+_TASK13_MATRIX_REGISTRY: dict[int, _Task13MatrixRegistryEntry] = {}
 
 
 class Task13IntegrityCountsV1(ImmutableContractModel):
@@ -195,29 +208,73 @@ class Task13AuthenticatedMatrixV1:
 
 
 
+class _Task13DigestPayloadV1(ImmutableContractModel):
+    payload: Any
+
+
+def _task13_matrix_digest(matrix: Task13AuthenticatedMatrixV1) -> str:
+    def normalize(value: Any) -> Any:
+        if isinstance(value, BaseModel):
+            return normalize(value.model_dump(mode="json", exclude_none=False, exclude_computed_fields=True))
+        if is_dataclass(value) and not isinstance(value, type):
+            return {item.name: normalize(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, Mapping):
+            return {str(key): normalize(item) for key, item in value.items()}
+        if isinstance(value, tuple | list):
+            return [normalize(item) for item in value]
+        if type(value) in {str, int, float, bool} or value is None:
+            return value
+        raise TypeError(f"Task 13 matrix digest cannot serialize {type(value).__name__}")
+
+    payload = _Task13DigestPayloadV1(payload=normalize(matrix))
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
 def _register_loader_task13_matrix_v1(matrix: Task13AuthenticatedMatrixV1) -> None:
     identifier = id(matrix)
 
     def cleanup(reference: weakref.ReferenceType[Task13AuthenticatedMatrixV1]) -> None:
         with _TASK13_MATRIX_REGISTRY_LOCK:
-            if _TASK13_MATRIX_REGISTRY.get(identifier) is reference:
+            entry = _TASK13_MATRIX_REGISTRY.get(identifier)
+            if entry is not None and entry.reference is reference:
                 _TASK13_MATRIX_REGISTRY.pop(identifier, None)
 
     reference = weakref.ref(matrix, cleanup)
+    entry = _Task13MatrixRegistryEntry(reference, _task13_matrix_digest(matrix), object(), threading.RLock())
     with _TASK13_MATRIX_REGISTRY_LOCK:
-        _TASK13_MATRIX_REGISTRY[identifier] = reference
+        _TASK13_MATRIX_REGISTRY[identifier] = entry
+
+
+def _loader_registered_task13_matrix_entry(
+    matrix: Task13AuthenticatedMatrixV1,
+) -> _Task13MatrixRegistryEntry:
+    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
+        raise ValueError("Task 13 matrix is not loader-registered")
+    with _TASK13_MATRIX_REGISTRY_LOCK:
+        entry = _TASK13_MATRIX_REGISTRY.get(id(matrix))
+    if entry is None or entry.reference() is not matrix:
+        raise ValueError("Task 13 matrix is not loader-registered")
+    if _task13_matrix_digest(matrix) != entry.digest:
+        raise ValueError("Task 13 loader-registered matrix content changed")
+    return entry
 
 
 def require_loader_registered_task13_matrix_v1(
     matrix: Task13AuthenticatedMatrixV1,
-) -> Task13AuthenticatedMatrixV1:
-    if not isinstance(matrix, Task13AuthenticatedMatrixV1):
-        raise ValueError("Task 13 matrix is not loader-registered")
-    with _TASK13_MATRIX_REGISTRY_LOCK:
-        reference = _TASK13_MATRIX_REGISTRY.get(id(matrix))
-        if reference is None or reference() is not matrix:
-            raise ValueError("Task 13 matrix is not loader-registered")
-    return matrix
+) -> str:
+    return _loader_registered_task13_matrix_entry(matrix).digest
+
+
+@contextmanager
+def loader_registered_task13_matrix_lease_v1(
+    matrix: Task13AuthenticatedMatrixV1,
+) -> Iterator[str]:
+    entry = _loader_registered_task13_matrix_entry(matrix)
+    with entry.lock:
+        digest = require_loader_registered_task13_matrix_v1(matrix)
+        yield digest
+        if require_loader_registered_task13_matrix_v1(matrix) != digest:
+            raise ValueError("Task 13 loader-registered matrix content changed")
 
 
 def validate_task13_authenticated_matrix_v1(
@@ -722,6 +779,7 @@ __all__ = [
     "Task13IntegrityAuditV1",
     "Task13IntegrityCountsV1",
     "load_task13_authenticated_matrix_v1",
+    "loader_registered_task13_matrix_lease_v1",
     "require_loader_registered_task13_matrix_v1",
     "validate_task13_authenticated_matrix_v1",
 ]

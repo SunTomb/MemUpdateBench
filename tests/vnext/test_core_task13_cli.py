@@ -687,6 +687,37 @@ def test_task13_short_path_alias_cannot_bypass_output_overlap(tmp_path):
         publication._assert_nonoverlap(short_root / "output", (protected,))
 
 
+
+def test_loader_registry_rejects_same_object_content_mutation(authenticated_fixture):
+    from mub.vnext.statistics.input_v3 import (
+        load_task13_authenticated_matrix_v1,
+        require_loader_registered_task13_matrix_v1,
+    )
+
+    inputs = authenticated_fixture["inputs"]
+    paths = {
+        "manifest": authenticated_fixture["preparation_manifest_path"],
+        "plan": authenticated_fixture["plan_path"],
+        "matrix_manifest": authenticated_fixture["matrix_manifest_path"],
+        "matrix_summary": authenticated_fixture["summary_path"],
+        "integrity_audit": authenticated_fixture["audit_path"],
+    }
+    hashes = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in paths.items()}
+    matrix = load_task13_authenticated_matrix_v1(
+        preparation_manifest_path=paths["manifest"], plan_path=paths["plan"],
+        core_root=inputs["core_root"], evidence_root=inputs["evidence_root"],
+        matrix_root=authenticated_fixture["matrix"].matrix_root,
+        matrix_manifest_path=paths["matrix_manifest"], matrix_summary_path=paths["matrix_summary"],
+        integrity_audit_path=paths["integrity_audit"], repository_root=Path(__file__).resolve().parents[2],
+        expected_preparation_manifest_sha256=hashes["manifest"], expected_plan_sha256=hashes["plan"],
+        expected_matrix_manifest_sha256=hashes["matrix_manifest"], expected_matrix_summary_sha256=hashes["matrix_summary"],
+        expected_integrity_audit_sha256=hashes["integrity_audit"],
+    )
+    object.__setattr__(matrix, "canonical_core_ids", tuple(reversed(matrix.canonical_core_ids)))
+    with pytest.raises(ValueError, match="content changed"):
+        require_loader_registered_task13_matrix_v1(matrix)
+
+
 def test_task13_builder_rejects_unregistered_clone_before_compute(
     authenticated_fixture, monkeypatch
 ):

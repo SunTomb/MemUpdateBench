@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import threading
 import uuid
+import weakref
 
 from pydantic import BaseModel
 
@@ -62,7 +64,18 @@ from mub.vnext.statistics.statistics_v3 import (
 TASK13_FINAL_INDEX_PATH = "task13_artifact_index.json"
 TASK13_PUBLICATION_PATHS = (*TASK13_ARTIFACT_PATHS, TASK13_FINAL_INDEX_PATH)
 _STAGE_PREFIX = ".mub-task13-stage-"
-_PUBLICATION_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _Task13PublicationRegistryEntry:
+    publication: weakref.ReferenceType[Task13PublicationV1]
+    matrix: weakref.ReferenceType[Task13AuthenticatedMatrixV1]
+    matrix_digest: str
+    publication_digest: str
+
+
+_PUBLICATION_REGISTRY_LOCK = threading.RLock()
+_PUBLICATION_REGISTRY: dict[int, _Task13PublicationRegistryEntry] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +109,7 @@ class Task13ArtifactRefsV1:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Task13PublicationV1:
     bootstrap: BootstrapIndicesV1
     statistics: Task13StatisticsResultV1
@@ -121,8 +134,51 @@ class Task13PublicationV1:
                 raise ValueError(f"Task 13 artifact ref disagrees with final bytes: {ref.path}")
 
 
-@dataclass(frozen=True, slots=True)
-class Task13PublicationResultV1:
+def _task13_publication_digest(publication: Task13PublicationV1) -> str:
+    digest = hashlib.sha256()
+    for path in TASK13_PUBLICATION_PATHS:
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(publication.artifact_bytes[path])
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _register_builder_task13_publication_v1(
+    publication: Task13PublicationV1,
+    matrix: Task13AuthenticatedMatrixV1,
+    matrix_digest: str,
+) -> None:
+    identifier = id(publication)
+
+    def cleanup(reference: weakref.ReferenceType[Task13PublicationV1]) -> None:
+        with _PUBLICATION_REGISTRY_LOCK:
+            entry = _PUBLICATION_REGISTRY.get(identifier)
+            if entry is not None and entry.publication is reference:
+                _PUBLICATION_REGISTRY.pop(identifier, None)
+
+    reference = weakref.ref(publication, cleanup)
+    entry = _Task13PublicationRegistryEntry(reference, weakref.ref(matrix), matrix_digest, _task13_publication_digest(publication))
+    with _PUBLICATION_REGISTRY_LOCK:
+        _PUBLICATION_REGISTRY[identifier] = entry
+
+
+def require_builder_registered_task13_publication_v1(
+    publication: Task13PublicationV1,
+    matrix: Task13AuthenticatedMatrixV1,
+    matrix_digest: str,
+) -> None:
+    with _PUBLICATION_REGISTRY_LOCK:
+        entry = _PUBLICATION_REGISTRY.get(id(publication))
+    if (
+        entry is None
+        or entry.publication() is not publication
+        or entry.matrix() is not matrix
+        or entry.matrix_digest != matrix_digest
+        or _task13_publication_digest(publication) != entry.publication_digest
+    ):
+        raise ValueError("Task 13 publication is not builder-registered")
+
     output_root: Path
     artifact_refs: Task13ArtifactRefsV1
     artifact_index: Task13ArtifactIndexV1
@@ -234,6 +290,7 @@ def build_task13_publication_v3(
 ) -> Task13PublicationV1:
     """Build a complete immutable Task 13 publication without filesystem output."""
     try:
+        matrix_digest = require_loader_registered_task13_matrix_v1(matrix)
         validate_task13_authenticated_matrix_v1(matrix)
     except (TypeError, ValueError) as exc:
         raise ValueError("Task 13 matrix is not loader-registered") from exc
@@ -338,7 +395,9 @@ def build_task13_publication_v3(
         *first_seven_refs,
         _artifact(TASK13_FINAL_INDEX_PATH, index_bytes, "application/json", 1),
     )
-    return Task13PublicationV1(
+    if require_loader_registered_task13_matrix_v1(matrix) != matrix_digest:
+        raise ValueError("Task 13 loader-registered matrix content changed")
+    publication = Task13PublicationV1(
         bootstrap=bootstrap,
         statistics=statistics,
         cases_result=cases_result,
@@ -348,9 +407,10 @@ def build_task13_publication_v3(
         artifact_index=artifact_index,
         artifact_refs=refs,
         matrix_identity=id(matrix),
-        publication_seal=_PUBLICATION_SEAL,
         artifact_bytes=payloads,
     )
+    _register_builder_task13_publication_v1(publication, matrix, matrix_digest)
+    return publication
 
 
 def _lstat(path: Path) -> os.stat_result:
@@ -938,16 +998,12 @@ def publish_task13_artifacts_v3(
     repository_root: Path,
 ) -> Task13PublicationResultV1:
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
-    if (
-        not isinstance(publication, Task13PublicationV1)
-        or getattr(publication, "publication_seal", None) is not _PUBLICATION_SEAL
-        or publication.matrix_identity != id(matrix)
-    ):
-        raise TypeError("publication must carry the builder-issued Task 13 seal")
     try:
-        require_loader_registered_task13_matrix_v1(matrix)
+        matrix_digest = require_loader_registered_task13_matrix_v1(matrix)
+        validate_task13_authenticated_matrix_v1(matrix)
+        require_builder_registered_task13_publication_v1(publication, matrix, matrix_digest)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Task 13 matrix is not loader-registered") from exc
+        raise ValueError("Task 13 matrix or publication capability is invalid") from exc
     output_root = _absolute_no_reparse(output_root, require_exists=False)
     if _present(output_root):
         raise FileExistsError("Task 13 output root must not already exist")
@@ -988,6 +1044,9 @@ def publish_task13_artifacts_v3(
             validate_task13_staging_root_v3(staging, publication, matrix)
             ownership = _capture_staging_ownership_v3(staging, TASK13_PUBLICATION_PATHS)
             _validate_staging_ownership_v3(staging, ownership)
+            if require_loader_registered_task13_matrix_v1(matrix) != matrix_digest:
+                raise ValueError("Task 13 loader-registered matrix content changed")
+            require_builder_registered_task13_publication_v1(publication, matrix, matrix_digest)
             _commit_staged_task13_root_v3(
                 staging=staging, final_root=output_root,
                 parent_identity=parent_identity, source_snapshot=source_snapshot,
