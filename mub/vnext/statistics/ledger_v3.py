@@ -167,11 +167,20 @@ def _validate_cells(
     if len(slot_k_counts) != 6 or set(slot_k_counts.values()) != {3}:
         raise ValueError("cell statistics must contain exactly three cells per slot and k")
     for coordinate, count in coordinate_counts.items():
-        metrics = {
-            record.metric_path
+        group_rows = [
+            record
             for record in cells
             if (record.answer_model_slot, record.k, record.cell_id) == coordinate
+        ]
+        conditions = {
+            (record.context_order, record.context_annotation)
+            for record in group_rows
         }
+        if len(conditions) != 1:
+            raise ValueError(
+                "each cell coordinate group must use one typed intervention condition"
+            )
+        metrics = {record.metric_path for record in group_rows}
         if count != _EXPECTED_METRIC_COUNT or metrics != set(TASK13_METRIC_PATHS):
             raise ValueError("cell statistics have missing or foreign metric rows")
 

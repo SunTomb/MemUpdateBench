@@ -27,6 +27,7 @@ from mub.vnext.statistics.contracts_v3 import (
 from mub.vnext.statistics.ledger_v3 import (
     Task13LedgerResultV1,
     _resolve_hash,
+    _validate_cells,
     build_task13_case_index_v1,
     build_task13_claim_ledger_v1,
     build_task13_statistics_receipt_v1,
@@ -1134,6 +1135,39 @@ def test_task6_contrast_id_is_typed_hash_not_delimiter_concatenation():
         __import__("json").dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     ).hexdigest()
     assert task13_contrast_id_v1("answer_model_a", 4, left, right, TASK13_METRIC_PATHS[0]) == expected
+
+
+def test_task6_cell_group_rejects_mixed_typed_intervention_rows():
+    cells, contrasts = _ledger_statistics()
+    token_rows = [
+        index
+        for index, record in enumerate(cells)
+        if record.answer_model_slot == "answer_model_a"
+        and record.k == 4
+        and record.metric_path == "answer_scores.token_f1"
+    ]
+    assert len(token_rows) == 3
+    first_index, second_index = token_rows[:2]
+    first = cells[first_index]
+    second = cells[second_index]
+    swapped = list(cells)
+    swapped[first_index] = first.model_copy(
+        update={
+            "context_order": second.context_order,
+            "context_annotation": second.context_annotation,
+        }
+    )
+    swapped[second_index] = second.model_copy(
+        update={
+            "context_order": first.context_order,
+            "context_annotation": first.context_annotation,
+        }
+    )
+
+    with pytest.raises(ValueError, match="context|intervention|group"):
+        _validate_cells(tuple(swapped))
+    with pytest.raises(ValueError, match="cell coordinate group"):
+        _ledger_receipt(tuple(swapped), contrasts)
 
 
 def test_task6_case_index_has_no_public_binding_only_escape_hatch():
