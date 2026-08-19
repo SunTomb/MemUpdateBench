@@ -94,6 +94,8 @@ def case_fixture():
     config = _run_config()
     source = Task13RunSourceV1(
         run_id=config.run_id,
+        answer_model_slot="answer_model_a",
+        k=4,
         run_manifest_sha256=SHA_A,
         score_artifact_sha256=SHA_B,
     )
@@ -154,6 +156,8 @@ def case_fixture():
         run_id = f"run-case-{index:02d}"
         cloned_source = Task13RunSourceV1(
             run_id=run_id,
+            answer_model_slot="answer_model_a",
+            k=4,
             run_manifest_sha256=SHA_A,
             score_artifact_sha256=SHA_B,
         )
@@ -551,6 +555,8 @@ def test_case_build_rejects_spoofed_source_hash(authenticated_case_matrix):
         observation,
         source=Task13RunSourceV1(
             run_id=observation.source.run_id,
+            answer_model_slot="answer_model_a",
+            k=4,
             run_manifest_sha256="f" * 64,
             score_artifact_sha256=observation.source.score_artifact_sha256,
         ),
@@ -640,8 +646,12 @@ _LEDGER_SHA = tuple(f"{index:064x}" for index in range(1, 128))
 
 
 def _ledger_source(index: int) -> Task13RunSourceV1:
+    slot = ("answer_model_a", "answer_model_b")[index // 9]
+    k = (4, 8, 16)[(index % 9) // 3]
     return Task13RunSourceV1(
         run_id=f"run-ledger-{index:02d}",
+        answer_model_slot=slot,
+        k=k,
         run_manifest_sha256=_LEDGER_SHA[index],
         score_artifact_sha256=_LEDGER_SHA[index + 1],
     )
@@ -771,8 +781,8 @@ def _ledger_case_index() -> Task13CaseIndexV1:
             run_id=source.run_id,
             task_id=f"task-ledger-{index:02d}",
             category="other_wrong",
-            answer_model_slot="answer_model_a",
-            k=4,
+            answer_model_slot=source.answer_model_slot,
+            k=source.k,
         )
         for index, source in enumerate(sources)
     )

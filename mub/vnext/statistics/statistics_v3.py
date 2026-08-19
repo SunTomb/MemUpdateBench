@@ -209,6 +209,8 @@ def _run_source(run: Any) -> Task13RunSourceV1:
     source = run.source
     return Task13RunSourceV1(
         run_id=source.run_id,
+        answer_model_slot=run.run_configuration.answer_model_slot,
+        k=run.cell.retrieval.configuration.retrieval_k,
         run_manifest_sha256=source.run_manifest_sha256,
         score_artifact_sha256=source.score_artifact_sha256,
     )

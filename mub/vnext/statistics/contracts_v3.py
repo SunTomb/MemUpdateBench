@@ -54,7 +54,9 @@ TASK13_CONTRAST_PAIRS = (
 )
 TASK13_K_VALUES = (4, 8, 16)
 TASK13_SLOTS = ("answer_model_a", "answer_model_b")
-TASK13_K = Literal[4, 8, 16]
+Task13AnswerModelSlot = Literal["answer_model_a", "answer_model_b"]
+Task13RetrievalK = Literal[4, 8, 16]
+TASK13_K = Task13RetrievalK
 TASK13_CONTEXT_ORDER = Literal["chronological", "reverse_chronological"]
 TASK13_CONTEXT_ANNOTATION = Literal["none", "latest_outdated_label"]
 TASK13_TASK_COUNT = 80
@@ -247,8 +249,8 @@ class Task13TaskIdentityPayloadV1(ImmutableContractModel):
 class Task13ContrastIdentityPayloadV1(ImmutableContractModel):
     """Typed immutable payload for a directed Task 13 contrast ID."""
 
-    slot: StrictIdentifier
-    k: TASK13_K
+    slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     left_cell_id: StrictIdentifier
     right_cell_id: StrictIdentifier
     metric_path: StrictIdentifier
@@ -269,8 +271,8 @@ def task13_task_identity_sha256_v1(
 
 
 def task13_contrast_id_v1(
-    slot: str,
-    k: int,
+    slot: Task13AnswerModelSlot,
+    k: Task13RetrievalK,
     left_cell_id: str,
     right_cell_id: str,
     metric_path: str,
@@ -289,7 +291,7 @@ class Task13ClaimIdentityPayloadV1(ImmutableContractModel):
     """Typed immutable payload used for stable Task 13 claim IDs."""
 
     kind: Literal["direct_cell", "paired_contrast"]
-    slot: StrictIdentifier
+    slot: Task13AnswerModelSlot
     cell_or_contrast: StrictIdentifier
     metric_path: StrictIdentifier
     slice: FrozenJsonObjectV3
@@ -297,7 +299,7 @@ class Task13ClaimIdentityPayloadV1(ImmutableContractModel):
 
 def task13_claim_id_v1(
     kind: Literal["direct_cell", "paired_contrast"],
-    slot: str,
+    slot: Task13AnswerModelSlot,
     cell_or_contrast: str,
     metric_path: str,
     slice_payload: Mapping[str, Any],
@@ -370,6 +372,8 @@ class Task13ArtifactBindingV1(ImmutableContractModel):
 class Task13RunSourceV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     run_id: StrictIdentifier
+    answer_model_slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     run_manifest_sha256: SHA256
     score_artifact_sha256: SHA256
 
@@ -410,8 +414,8 @@ class Task13IntervalV1(ImmutableContractModel):
 class Task13CellStatisticV1(ImmutableContractModel):
     schema_version: Literal[TASK13_CONTRACT_SCHEMA_VERSION] = TASK13_CONTRACT_SCHEMA_VERSION
     cell_id: StrictIdentifier
-    answer_model_slot: StrictIdentifier
-    k: TASK13_K
+    answer_model_slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     context_order: TASK13_CONTEXT_ORDER
     context_annotation: TASK13_CONTEXT_ANNOTATION
     metric_path: StrictIdentifier
@@ -440,8 +444,8 @@ class Task13PairedContrastV1(ImmutableContractModel):
     left_cell_id: StrictIdentifier
     right_cell_id: StrictIdentifier
     direction: Literal["left_minus_right"]
-    answer_model_slot: StrictIdentifier
-    k: TASK13_K
+    answer_model_slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     metric_path: StrictIdentifier
     interval: Task13IntervalV1
     core_count: Literal[20]
@@ -593,8 +597,8 @@ class Task13CaseBindingV1(ImmutableContractModel):
     run_id: StrictIdentifier
     task_id: StrictIdentifier
     category: CaseCategory
-    answer_model_slot: StrictIdentifier
-    k: TASK13_K
+    answer_model_slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
 
     @model_validator(mode="after")
     def _derived_case_id(self) -> Task13CaseBindingV1:
@@ -758,8 +762,8 @@ class Task13CaseRecordV1(ImmutableContractModel):
     run_id: StrictIdentifier
     task_id: StrictIdentifier
     semantic_core_id: StrictIdentifier
-    answer_model_slot: StrictIdentifier
-    k: TASK13_K
+    answer_model_slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     task_artifact_sha256: SHA256
     task_manifest_sha256: SHA256
     run_manifest_sha256: SHA256
@@ -869,6 +873,19 @@ class Task13CaseIndexV1(ImmutableContractModel):
         if run_ids != coverage_run_ids:
             raise ValueError("coverage and run_sources must use identical ordered run IDs")
 
+        source_by_id = {source.run_id: source for source in self.run_sources}
+        for binding in self.case_bindings:
+            source = source_by_id.get(binding.run_id)
+            if source is None:
+                raise ValueError("case_bindings must reference a known run source")
+            if (
+                binding.answer_model_slot != source.answer_model_slot
+                or binding.k != source.k
+            ):
+                raise ValueError(
+                    "case binding slot/k must match its run-source coordinates"
+                )
+
         source_order = {run_id: index for index, run_id in enumerate(run_ids)}
         try:
             expected_binding_order = tuple(
@@ -920,7 +937,7 @@ class Task13ClaimLedgerRecordV1(ImmutableContractModel):
     claim_id: StrictIdentifier
     kind: Literal["direct_cell", "paired_contrast"]
     direction: Literal["self", "left_minus_right"]
-    slot: StrictIdentifier
+    slot: Task13AnswerModelSlot
     cell_or_contrast: StrictIdentifier
     metric_path: StrictIdentifier
     slice_payload: FrozenJsonObjectV3
@@ -1028,6 +1045,8 @@ __all__ = [
     "TASK13_METRIC_PATHS",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_ID",
     "TASK13_PAIRED_CONTRASTS_ARTIFACT_PATH",
+    "Task13AnswerModelSlot",
+    "Task13RetrievalK",
     "Task13AnswerProjectionV1",
     "Task13ArtifactRole",
     "Task13ContrastIdentityPayloadV1",

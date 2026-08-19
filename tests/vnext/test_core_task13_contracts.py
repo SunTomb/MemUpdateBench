@@ -81,9 +81,17 @@ def _binding(
     )
 
 
-def _source(run_id: str, manifest: str = SHA, score: str = SHA_B) -> Task13RunSourceV1:
+def _source(
+    run_id: str,
+    manifest: str,
+    score: str,
+    answer_model_slot: str,
+    k: int,
+) -> Task13RunSourceV1:
     return Task13RunSourceV1(
         run_id=run_id,
+        answer_model_slot=answer_model_slot,
+        k=k,
         run_manifest_sha256=manifest,
         score_artifact_sha256=score,
     )
@@ -92,7 +100,7 @@ def _source(run_id: str, manifest: str = SHA, score: str = SHA_B) -> Task13RunSo
 def _cell(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4, task_count: int = 80) -> Task13CellStatisticV1:
     return Task13CellStatisticV1(
         cell_id="cell-a",
-        answer_model_slot="qwen",
+        answer_model_slot="answer_model_a",
         k=k,
         context_order="chronological",
         context_annotation="none",
@@ -121,7 +129,7 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
         left_cell_id="cell-left",
         right_cell_id="cell-right",
         direction="left_minus_right",
-        answer_model_slot="qwen",
+        answer_model_slot="answer_model_a",
         k=k,
         metric_path=metric_path,
         interval=Task13IntervalV1(
@@ -133,8 +141,8 @@ def _contrast(metric_path: str = TASK13_METRIC_PATHS[0], *, k: int = 4) -> Task1
         core_count=20,
         core_ids_sha256=SHA,
         task_identity_sha256=SHA,
-        left_source=_source("run-left", SHA, SHA_B),
-        right_source=_source("run-right", SHA_B, SHA_C),
+        left_source=_source("run-left", SHA, SHA_B, "answer_model_a", 4),
+        right_source=_source("run-right", SHA_B, SHA_C, "answer_model_a", 4),
         bootstrap_config_sha256=SHA,
         bootstrap_indices_sha256=SHA_B,
     )
@@ -238,7 +246,7 @@ def _case(case_id: str, category: str = "correct") -> Task13CaseRecordV1:
         run_id="run-a",
         task_id="task-a",
         semantic_core_id="core-a",
-        answer_model_slot="qwen",
+        answer_model_slot="answer_model_a",
         k=4,
         task_artifact_sha256=SHA,
         task_manifest_sha256=SHA,
@@ -297,7 +305,7 @@ def _case_index(case_ids: tuple[str, ...] | None = None) -> Task13CaseIndexV1:
         matrix_summary_sha256=SHA_C,
         case_bindings=tuple(bindings),
         coverage=tuple(coverage),
-        run_sources=tuple(_source(run_id, SHA, SHA_B) for run_id in run_ids),
+        run_sources=tuple(_source(run_id, SHA, SHA_B, "answer_model_a", 4) for run_id in run_ids),
         source_bindings=(_binding("run-a", "run.json"),),
     )
 
@@ -452,20 +460,20 @@ def _claim(
     kind: str = "direct_cell",
     direction: str = "self",
 ) -> Task13ClaimLedgerRecordV1:
-    sources = (_source("run-a", SHA, SHA_B),)
+    sources = (_source("run-a", SHA, SHA_B, "answer_model_a", 4),)
     if kind == "paired_contrast":
-        sources = (_source("run-a", SHA, SHA_B), _source("run-b", SHA_B, SHA_C))
+        sources = (_source("run-a", SHA, SHA_B, "answer_model_a", 4), _source("run-b", SHA_B, SHA_C, "answer_model_a", 4))
     return Task13ClaimLedgerRecordV1(
         claim_id=task13_claim_id_v1(
             kind,
-            "qwen",
+            "answer_model_a",
             "cell-a",
             TASK13_METRIC_PATHS[0],
             {},
         ),
         kind=kind,
         direction=direction,
-        slot="qwen",
+        slot="answer_model_a",
         cell_or_contrast="cell-a",
         metric_path=TASK13_METRIC_PATHS[0],
         slice_payload={},
@@ -533,7 +541,7 @@ def test_case_and_claim_helpers_construct_complete_records() -> None:
     claim = _claim("claim-a")
     assert case.case_id == task13_case_id_v1("run-a", "task-a", "correct")
     assert claim.claim_id == task13_claim_id_v1(
-        "direct_cell", "qwen", "cell-a", TASK13_METRIC_PATHS[0], {}
+        "direct_cell", "answer_model_a", "cell-a", TASK13_METRIC_PATHS[0], {}
     )
     assert claim.denominator.task_count == 80
     assert claim.denominator.semantic_core_count == 20
@@ -609,6 +617,23 @@ def test_case_record_requires_complete_typed_projections() -> None:
         items=(),
     )
     assert Task13CaseRecordV1.model_validate(payload).answer.available is False
+
+
+def test_task13_case_record_rejects_foreign_answer_model_slot() -> None:
+    payload = _case("case-a").model_dump(mode="python")
+    payload["answer_model_slot"] = "foreign-slot"
+    with pytest.raises((ValidationError, ValueError), match="slot|answer.model|foreign"):
+        Task13CaseRecordV1.model_validate(payload)
+
+
+def test_task13_case_index_rejects_binding_coordinate_mismatch_with_run_source() -> None:
+    payload = _case_index().model_dump(mode="python")
+    forged_binding = dict(payload["case_bindings"][0])
+    forged_binding["answer_model_slot"] = "answer_model_b"
+    forged_binding["k"] = 8
+    payload["case_bindings"] = (forged_binding, *payload["case_bindings"][1:])
+    with pytest.raises((ValidationError, ValueError), match="source|coordinate|slot|k"):
+        Task13CaseIndexV1.model_validate(payload)
 
 
 def test_task13_canonical_runtime_constants_and_case_category_order_are_public() -> None:
@@ -690,6 +715,7 @@ def test_task13_case_index_requires_binding_coordinates_and_provenance_hashes() 
         Task13CaseIndexV1.model_validate(base)
 
 
+def test_case_index_requires_ordered_18_run_coverage_and_aligned_sources() -> None:
     index = _case_index()
     assert len(index.run_sources) == 18
     assert tuple(row.run_id for row in index.coverage) == tuple(
@@ -731,7 +757,7 @@ def test_claim_ledger_requires_canonical_direction_and_typed_source_cardinality(
     with pytest.raises((ValidationError, ValueError)):
         _claim("claim-bad-direction", direction="left_minus_right")
     payload = _claim("claim-direct-extra").model_dump(mode="python")
-    payload["run_sources"] = (*payload["run_sources"], _source("run-b"))
+    payload["run_sources"] = (*payload["run_sources"], _source("run-b", SHA_B, SHA_C, "answer_model_a", 4))
     with pytest.raises((ValidationError, ValueError)):
         Task13ClaimLedgerRecordV1.model_validate(payload)
     paired = _claim("claim-paired", kind="paired_contrast", direction="left_minus_right")

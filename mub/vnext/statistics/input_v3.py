@@ -45,6 +45,8 @@ from mub.vnext.statistics.contracts_v3 import (
     TASK13_SEMANTIC_CORE_COUNT,
     TASK13_TASK_COUNT,
     TASK13_TASKS_PER_CORE,
+    Task13AnswerModelSlot,
+    Task13RetrievalK,
     Task13RunSourceV1,
 )
 
@@ -72,8 +74,8 @@ class Task13IntegrityAuditV1(ImmutableContractModel):
 
 class _Task13ObservationEvidencePayloadV1(ImmutableContractModel):
     cell_id: str
-    slot: Literal["answer_model_a", "answer_model_b"]
-    k: Literal[4, 8, 16]
+    slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     context_order: Literal["chronological", "reverse_chronological"]
     context_annotation: Literal["none", "latest_outdated_label"]
     semantic_core_id: str
@@ -90,8 +92,8 @@ class _Task13ObservationRootPayloadV1(ImmutableContractModel):
 @dataclass(frozen=True)
 class Task13AuthenticatedObservationV1:
     cell_id: str
-    slot: Literal["answer_model_a", "answer_model_b"]
-    k: Literal[4, 8, 16]
+    slot: Task13AnswerModelSlot
+    k: Task13RetrievalK
     context_order: Literal["chronological", "reverse_chronological"]
     context_annotation: Literal["none", "latest_outdated_label"]
     semantic_core_id: str
@@ -551,6 +553,8 @@ def load_task13_authenticated_matrix_v1(
             raise ValueError("Task 12 matrix score contains failed or partial rows")
         source = Task13RunSourceV1(
             run_id=validated.run_configuration.run_id,
+            answer_model_slot=validated.run_configuration.answer_model_slot,
+            k=cell.retrieval.configuration.retrieval_k,
             run_manifest_sha256=run_manifest_sha256,
             score_artifact_sha256=score_hash,
         )

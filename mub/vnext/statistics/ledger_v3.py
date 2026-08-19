@@ -197,6 +197,8 @@ def _validate_cells(
 def _cell_source(record: Task13CellStatisticV1) -> Task13RunSourceV1:
     return Task13RunSourceV1(
         run_id=record.run_id,
+        answer_model_slot=record.answer_model_slot,
+        k=record.k,
         run_manifest_sha256=record.run_manifest_sha256,
         score_artifact_sha256=record.score_artifact_sha256,
     )
