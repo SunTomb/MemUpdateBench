@@ -58,6 +58,7 @@ from mub.vnext.statistics.statistics_v3 import (
 TASK13_FINAL_INDEX_PATH = "task13_artifact_index.json"
 TASK13_PUBLICATION_PATHS = (*TASK13_ARTIFACT_PATHS, TASK13_FINAL_INDEX_PATH)
 _STAGE_PREFIX = ".mub-task13-stage-"
+_PUBLICATION_SEAL = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +103,7 @@ class Task13PublicationV1:
     artifact_index: Task13ArtifactIndexV1
     artifact_refs: Task13ArtifactRefsV1
     artifact_bytes: Mapping[str, bytes]
+    publication_seal: object | None = None
 
     def __post_init__(self) -> None:
         if tuple(self.artifact_bytes) != TASK13_PUBLICATION_PATHS:
@@ -338,6 +340,7 @@ def build_task13_publication_v3(
         claims=ledger.claims,
         artifact_index=artifact_index,
         artifact_refs=refs,
+        publication_seal=_PUBLICATION_SEAL,
         artifact_bytes=payloads,
     )
 
@@ -385,6 +388,18 @@ def _absolute_no_reparse(path: Path, *, require_exists: bool) -> Path:
     if not value.is_absolute():
         value = Path.cwd() / value
     value = Path(os.path.abspath(value)).resolve(strict=False)
+    if os.name == "nt":
+        existing = value
+        missing: list[str] = []
+        while not _present(existing) and existing != existing.parent:
+            missing.append(existing.name)
+            existing = existing.parent
+        get_long = ctypes.windll.kernel32.GetLongPathNameW
+        length = get_long(str(existing), None, 0)
+        if length:
+            buffer = ctypes.create_unicode_buffer(length)
+            if get_long(str(existing), buffer, length):
+                value = Path(buffer.value, *reversed(missing))
     anchor = Path(value.anchor)
     if not _present(anchor) or not stat.S_ISDIR(_lstat(anchor).st_mode):
         raise NotADirectoryError(f"path has no directory anchor: {value}")
@@ -416,6 +431,7 @@ def _contains(parent: Path, child: Path) -> bool:
 
 
 def _assert_nonoverlap(final_root: Path, protected: Sequence[Path]) -> None:
+    final_root = _absolute_no_reparse(final_root, require_exists=False)
     for protected_path in protected:
         checked = _absolute_no_reparse(protected_path, require_exists=True)
         if _contains(checked, final_root) or _contains(final_root, checked):
@@ -551,7 +567,8 @@ def _revalidate_sources(snapshots: Sequence[_SourceSnapshot]) -> None:
 @contextmanager
 def _task13_parent_lock_v3(parent: Path) -> Iterator[None]:
     identity = _identity(parent)
-    key = hashlib.sha256(os.fsencode(str(parent))).hexdigest()
+    canonical_parent = os.path.normcase(str(parent.resolve(strict=True)))
+    key = hashlib.sha256(f"{canonical_parent}\0{identity[0]}:{identity[1]}".encode("utf-8")).hexdigest()
     lock = parent / f".mub-task13-publish-{key}.lock"
     if _is_reparse(lock):
         raise ValueError("Task 13 parent lock may not be a reparse point")
@@ -839,6 +856,38 @@ def _validate_staging_ownership_v3(
             raise RuntimeError("Task 13 staging ownership/hash changed before commit")
 
 
+def _unlink_owned_member_v3(staging: Path, member: _OwnedStagingMember) -> None:
+    path = staging / member.name
+    if os.name != "nt":
+        raise RuntimeError("identity-safe staging unlink is unavailable; preserving staging directory")
+    if not _owned_staging_member_matches_v3(staging, member):
+        raise RuntimeError("Task 13 owned staging member changed; preserving staging directory")
+    kernel = ctypes.windll.kernel32
+    kernel.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    handle = kernel.CreateFileW(
+        str(path), 0x00010000 | 0x0080, 0x00000007, None, 3, 0x00200000, None
+    )
+    if handle in {None, ctypes.c_void_p(-1).value}:
+        raise RuntimeError("identity-safe staging handle open failed; preserving staging directory")
+    try:
+        class _FileInfo(ctypes.Structure):
+            _fields_ = [("dwFileAttributes", ctypes.c_uint32), ("ftCreationTime", ctypes.c_ulonglong), ("ftLastAccessTime", ctypes.c_ulonglong), ("ftLastWriteTime", ctypes.c_ulonglong), ("dwVolumeSerialNumber", ctypes.c_uint32), ("nFileSizeHigh", ctypes.c_uint32), ("nFileSizeLow", ctypes.c_uint32), ("nNumberOfLinks", ctypes.c_uint32), ("nFileIndexHigh", ctypes.c_uint32), ("nFileIndexLow", ctypes.c_uint32)]
+        info = _FileInfo()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise RuntimeError("identity-safe staging identity read failed; preserving staging directory")
+        current_identity = (int(info.dwVolumeSerialNumber), (int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow))
+        if current_identity != member.identity:
+            raise RuntimeError("Task 13 owned staging member identity changed; preserving staging directory")
+        class _Disposition(ctypes.Structure):
+            _fields_ = [("DeleteFile", ctypes.c_uint8)]
+        disposition = _Disposition(1)
+        if not kernel.SetFileInformationByHandle(handle, 4, ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            raise RuntimeError("identity-safe staging unlink failed; preserving staging directory")
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _safe_cleanup_staging_v3(
     staging: Path,
     identity: _DirectoryIdentity,
@@ -868,7 +917,7 @@ def _safe_cleanup_staging_v3(
         path = staging / member.name
         if not _owned_staging_member_matches_v3(staging, member):
             raise RuntimeError("Task 13 owned staging member changed during cleanup; preserving staging directory")
-        path.unlink()
+        _unlink_owned_member_v3(staging, member)
     staging.rmdir()
 
 
@@ -881,8 +930,8 @@ def publish_task13_artifacts_v3(
     repository_root: Path,
 ) -> Task13PublicationResultV1:
     """Publish a validated Task 13 result via owned sibling staging and no-replace commit."""
-    if not isinstance(publication, Task13PublicationV1):
-        raise TypeError("publication must be Task13PublicationV1")
+    if not isinstance(publication, Task13PublicationV1) or getattr(publication, "publication_seal", None) is not _PUBLICATION_SEAL:
+        raise TypeError("publication must carry the builder-issued Task 13 seal")
     if not isinstance(matrix, Task13AuthenticatedMatrixV1) or not matrix._loader_seal_valid:
         raise TypeError("matrix must be a sealed authenticated Task13AuthenticatedMatrixV1")
     output_root = _absolute_no_reparse(output_root, require_exists=False)

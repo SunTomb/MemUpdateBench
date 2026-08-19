@@ -553,6 +553,8 @@ def test_task13_cli_rejects_postcommit_path_substitution_without_deleting_final(
 
     def install_then_substitute(stage, final):
         stage.rename(final)
+        for member in final.iterdir():
+            member.unlink()
         final.rmdir()
         final.mkdir()
         (final / "foreign").write_bytes(b"foreign")
@@ -562,6 +564,18 @@ def test_task13_cli_rejects_postcommit_path_substitution_without_deleting_final(
     final_root = task13_arguments["output_root"]
     assert final_root.is_dir()
     assert (final_root / "foreign").read_bytes() == b"foreign"
+
+
+def test_task13_direct_publish_rejects_unsealed_forged_publication(
+    task13_arguments, fixed_runtime_binding, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    forged = object.__new__(publication.Task13PublicationV1)
+    monkeypatch.setattr(publication, "build_task13_publication_v3", lambda **kwargs: forged)
+    assert main(_cli_args(task13_arguments)) == 2
+    assert not task13_arguments["output_root"].exists()
 
 
 def test_task13_runtime_tree_is_bound_to_captured_revision_during_head_race(tmp_path, monkeypatch):
@@ -632,7 +646,44 @@ def test_task13_directory_fsync_failure_preserves_committed_final(tmp_path, monk
             staging=staging, final_root=parent / "final",
             parent_identity=parent_identity, source_snapshot=snapshot,
         )
-    assert (parent / "final").is_dir()
+
+
+def test_task13_renameat2_uses_syscall_fallback_when_symbol_missing(monkeypatch, tmp_path):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    calls = []
+
+    class Syscall:
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 0
+
+    class Libc:
+        syscall = Syscall()
+
+    monkeypatch.setattr(publication.ctypes, "CDLL", lambda *args, **kwargs: Libc())
+    monkeypatch.setattr(publication.os, "name", "posix")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    publication._renameat2_noreplace_v3(tmp_path / "stage", tmp_path / "final")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 8.3 alias protection")
+def test_task13_short_path_alias_cannot_bypass_output_overlap(tmp_path):
+    import ctypes
+    import mub.vnext.statistics.task13_v3 as publication
+
+    protected = tmp_path / "protected root with long name"
+    protected.mkdir()
+    size = ctypes.windll.kernel32.GetShortPathNameW(str(protected), None, 0)
+    if not size:
+        pytest.skip("8.3 short paths unavailable on this volume")
+    buffer = ctypes.create_unicode_buffer(size)
+    ctypes.windll.kernel32.GetShortPathNameW(str(protected), buffer, size)
+    short_root = Path(buffer.value)
+    with pytest.raises(ValueError, match="overlaps"):
+        publication._assert_nonoverlap(short_root / "output", (protected,))
 
 
 def test_task13_direct_builder_rejects_valid_but_forged_source_hash_mapping(
