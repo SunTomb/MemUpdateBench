@@ -2542,3 +2542,122 @@ Each value is left minus right over the same 20 semantic cores.
 The core-clustered evidence confirms the Task 12 boundary result rather than the earlier P8.3 order surface: in this frozen Core construction, reverse/no-label is consistently better than chronological/no-label, with all six paired intervals excluding zero. Explicit latest/outdated labels add a positive high-k benefit in both slots; the k=16 label contrasts are +0.1375 [0.0625, 0.2375] for Qwen and +0.0750 [0.0125, 0.1500] for Mistral. At smaller k the label effect is model-sensitive and some intervals include zero. This supports the narrow claim that version arbitration is order- and metadata-sensitive; it does not support a universal claim that reverse order is best or that stale same-slot conflict is always the strongest distractor. Answer-format invalidity remains a separate mechanism, represented by 16 verified parse-invalid cases.
 
 Task 13 is complete; Task 14 and overall Core `FINAL_APPROVED` remain not started.
+
+## vNext Core Task 14 final release review
+
+### Motivation and fixed boundary
+
+Task 14 is the only gate permitted to decide the bounded overall Core release. It does not regenerate the immutable Core task release, rerun a manager or answer model, create a new statistic, expand a claim, or convert engineering/admission evidence into scientific accuracy. It freshly authenticates the immutable task release and Tasks 9–13 as separate evidence classes, constructs an acyclic evidence graph, publishes a five-file final-review root, and reopens that root against the current source snapshots and clean runtime before returning a verified release object.
+
+The final review preserves the evidence boundaries established earlier:
+
+- Pilot `slot_direct` and Task 9 built-ins/controls are deterministic engineering evidence.
+- Task 10 Mem0 is a genuine external-system admission/capability result; its 128 canary rows remain explicit `NOT_SUPPORTED` and are not accuracy scores.
+- Task 11 is model provenance and qualification evidence.
+- Task 12 is the real 18-run offline prompted-answer matrix; fake-offline results are excluded.
+- Task 13 is semantic-core clustered statistics, claims, and verified cases over Task 12; three retrieval/answer diagnostic metrics remain typed unsupported/null.
+- The Task 13 `/NAS/.../.mub-task13-stage-*` root is verified remote NFS staging evidence only, not a published remote final root.
+
+No file beneath `data/vnext/core/v3` or any existing Task 9–13 artifact root was modified.
+
+### Design, implementation, and checks
+
+Task 14 was first frozen in:
+
+```text
+docs/superpowers/specs/2026-08-20-memupdatebench-vnext-core-task14-design.md
+docs/superpowers/plans/2026-08-20-memupdatebench-vnext-core-task14.md
+```
+
+The implementation adds strict contracts, source inventory/current-root snapshots, evidence-graph and review construction, atomic publication/reopen verification, and a no-model production CLI:
+
+```text
+mub/vnext/release/task14_contracts.py
+mub/vnext/release/task14_sources.py
+mub/vnext/release/task14_review.py
+mub/vnext/release/task14_publish.py
+scripts/vnext_review_core_task14.py
+```
+
+The final upstream graph contains 22 exact nodes and 22 exact edges. It binds the Core candidate receipt/root, human-audit attestation, Task 9 implementation/provenance, Task 10 report/decision, Task 11 model qualification/provenance, Task 12 manifest/summary/audit, and separate Task 13 statistic/contrast/case/ledger/audit roots. Task 14 output objects are not graph nodes, avoiding a self-hash cycle; they are bound in the acyclic order report/graph → attestation → manifest → non-self-hashing index.
+
+The persisted structural report can only say `READY_FOR_VERIFICATION` or `NOT_APPROVED`. It cannot persist `FINAL_APPROVED`. Only the source-bound reopen verifier can construct the immutable verified wrapper whose attestation records approval at verification time.
+
+Focused final gate:
+
+```text
+Task 14 contracts/sources/graph/approval/atomic/CLI: 36 passed, 2 skipped
+py_compile:                                             passed
+git diff --check:                                       passed
+specification review:                                   SPEC_COMPLIANT
+code-quality review:                                    APPROVED
+```
+
+The two skips are Windows symlink-construction cases (`WinError 1314`); lexical component and reparse checks remain active. They are not counted as passes.
+
+Review findings closed before the final execution included incomplete evidence topology, missing Task 10/11/12/13 semantic bindings, caller-controlled runtime labels, source aliases, unbound NFS staging paths, source/runtime frontier revalidation, final-root link acceptance, minimal self-consistent report forgery, mutable loaded payload/snapshot splices, index metadata closure, parent/staging/final identity checks, parent-directory fsync, unsafe cleanup, CLI exit-code drift, and direct verified-wrapper construction.
+
+### Real final review execution
+
+The authoritative execution used a clean detached worktree at:
+
+```text
+runtime revision:
+  84beabb62f5cd2cee97b294022db25c8261ab698
+runtime tree SHA-256:
+  6ab74200f2748a65ee29e8aedf17b4f19dd30e5f1cf856f282764fd3f6bf5133
+```
+
+Because the repository itself and its ignored evidence roots are protected inputs, the published output is deliberately outside the repository:
+
+```text
+D:/USTC/2026Winter/MemUpdateBench_releases/core_task14_84beabb_v1
+```
+
+The CLI performed no model, provider, API, token, GPU, fake, metric override, or approval override operation. The terminal decision was:
+
+```text
+decision=FINAL_APPROVED
+core_final_root_index_sha256=2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035
+core_final_attestation_sha256=a63008b5b5a60507fcb7c2f99b05373f6f10e7a366383a8d2cde20818208d005
+```
+
+The structural report contains 13 required passing checks, zero findings, six explicit exclusions, 22 evidence nodes, and 22 evidence edges. Its status is `READY_FOR_VERIFICATION`; overall approval comes from the separately persisted historical attestation and current-root verified wrapper.
+
+### Final artifact closure
+
+```text
+core_final_review_report.json
+  ec79c9b32b53016b5247f49eb82e90d6e0200214a196c190b62c68aae3f381ef
+core_final_evidence_graph.json
+  3a0d4d334c2dcf02ed1c5ddf713ca57402cf5adf97b60803a2fa9f1bc27c6417
+core_final_verification_attestation.json
+  21b995b946d33e4906e59f862f2f92324e9a2c83d9ebe34f67a6850c52e8db30
+core_final_root_manifest.json
+  a44464122414182e17af00e189f001ef6d69360c867f6d63bd4a6a68f5e2debb
+core_final_root_index.json
+  2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035
+```
+
+Attestation bindings:
+
+```text
+attestation self-hash:
+  a63008b5b5a60507fcb7c2f99b05373f6f10e7a366383a8d2cde20818208d005
+source snapshot SHA-256:
+  f8605da478214d0ad717125cb57b3855a3d38539a5a5d6c55b478dc1b53ca068
+final approval at verification:
+  true
+```
+
+A second fresh detached worktree independently loaded every current Core/Task 9–13 source, rederived the exact report/graph, reopened all five final files, verified the complete artifact-ref metadata/hash chain, compared the source snapshot and runtime revision/tree, and returned `FINAL_APPROVED`. Its Git status remained clean after verification.
+
+Earlier Task 14 roots at revisions `03256f9`, `c4fbb63`, and `ee8a3e6` are superseded diagnostics and are not authoritative release roots.
+
+### Final conclusion and next phase
+
+The bounded MemUpdateBench vNext Core release is `FINAL_APPROVED`.
+
+This approval means that the immutable Core task release, deterministic engineering gates, genuine Mem0 admission boundary, offline answer-model provenance, real Task 12 prompted-answer matrix, and Task 13 statistics/claims/cases are mutually authenticated and correctly scoped. It does not turn Mem0 admission into accuracy, broaden the two-model Raw-append Family-A matrix into a universal external-memory benchmark, or support universal reverse-order/strongest-distractor claims.
+
+The next project phase is separate from this frozen release: design the main-track external-validity expansion with genuine external-memory prompted-answer results, more independent semantic cores and domains/languages, and a layered reproducible-open/frontier-closed answer-model panel. Do not modify or rebind the `FINAL_APPROVED` Core release while designing that expansion.
