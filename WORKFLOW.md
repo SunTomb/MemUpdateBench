@@ -2593,7 +2593,7 @@ specification review:                                   SPEC_COMPLIANT
 code-quality review:                                    APPROVED
 ```
 
-The two skips are Windows symlink-construction cases (`WinError 1314`); lexical component and reparse checks remain active. They are not counted as passes.
+The two skips are Windows symlink-construction cases (`WinError 1314`); lexical component and reparse checks remain active. They are not counted as passes. A later combined Core-audit/atomic/Task12/Task13 compatibility command was stopped after remaining at 56% without a terminal result; it is not passing evidence. The prior separate Task 12 and Task 13 compatibility gates remain the authoritative completed evidence, and Task 14 changed none of those modules.
 
 Review findings closed before the final execution included incomplete evidence topology, missing Task 10/11/12/13 semantic bindings, caller-controlled runtime labels, source aliases, unbound NFS staging paths, source/runtime frontier revalidation, final-root link acceptance, minimal self-consistent report forgery, mutable loaded payload/snapshot splices, index metadata closure, parent/staging/final identity checks, parent-directory fsync, unsafe cleanup, CLI exit-code drift, and direct verified-wrapper construction.
 
