@@ -898,7 +898,8 @@ def test_task13_main_uses_real_runtime_in_clean_repository(tmp_path, monkeypatch
     for root in roots:
         root.mkdir(); (root / "member").write_bytes(b"member")
     config = tmp_path / "config.json"
-    config.write_bytes(canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1))
+    canonical_config = canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1)
+    config.write_bytes(canonical_config + b"\n")
     files = [tmp_path / name for name in ("manifest", "plan", "matrix-manifest", "summary", "audit")]
     for path in files: path.write_bytes(b"{}")
     capture: dict[str, object] = {}
@@ -913,6 +914,7 @@ def test_task13_main_uses_real_runtime_in_clean_repository(tmp_path, monkeypatch
     arguments = {"manifest": files[0], "plan": files[1], "core_root": roots[0], "evidence_root": roots[1], "matrix_root": roots[2], "matrix_bundle_manifest": files[2], "matrix_summary": files[3], "matrix_integrity_audit": files[4], "statistics_config": config, "output_root": tmp_path / "output"}
     assert command.main(_cli_args(arguments), repository_root=repository) == 0
     assert capture["runtime"] == expected
+    assert capture["statistics_config_sha256"] == hashlib.sha256(canonical_config).hexdigest()
 
 
 def test_task13_commit_rechecks_ownership_after_source_revalidation(tmp_path, monkeypatch):

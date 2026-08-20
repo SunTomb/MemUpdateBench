@@ -130,7 +130,7 @@ def main(
         publication = task13_publication.build_task13_publication_v3(
             matrix=matrix,
             bootstrap_config=config,
-            statistics_config_sha256=hashes["statistics_config"],
+            statistics_config_sha256=hashlib.sha256(canonical_json_bytes(config)).hexdigest(),
             runtime=runtime,
             source_hashes={
                 "preparation_manifest": matrix.input_hashes["task12_preparation_manifest"],
