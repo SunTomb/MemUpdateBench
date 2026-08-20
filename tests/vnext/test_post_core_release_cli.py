@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from mub.vnext.post_core.release_v1 import (
     EXIT_PUBLICATION,
     EXIT_STALE_SOURCE,
     CommittedPostCoreReleaseError,
+    PostCoreReleaseConfigV1,
     PostCoreReleaseError,
     build_post_core_release_v1,
     load_post_core_config_v1,
@@ -253,6 +255,74 @@ def test_provided_provenance_must_equal_pending_intent_derivation(
         build_post_core_release_v1(
             config, core, task14, provenance_path=provenance_path
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("schema_version", "evil.post-core.schema.v1"),
+        ("release_id", "evil.post-core.release.v1"),
+        ("phase", 1),
+        ("network_allowed", True),
+        ("registry_keys", EXPECTED_KEYS[:-1] + ("evil_registry_key",)),
+    ),
+)
+def test_public_config_instance_revalidates_canonical_payload(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    loaded = load_post_core_config_v1(config_path)
+    malicious = PostCoreReleaseConfigV1(
+        schema_version=value if field == "schema_version" else loaded.schema_version,
+        release_id=value if field == "release_id" else loaded.release_id,
+        phase=value if field == "phase" else loaded.phase,
+        network_allowed=value if field == "network_allowed" else loaded.network_allowed,
+        core_manifest_sha256=loaded.core_manifest_sha256,
+        core_task14_index_sha256=loaded.core_task14_index_sha256,
+        registry_keys=value if field == "registry_keys" else loaded.registry_keys,
+        config_sha256=loaded.config_sha256,
+        config_raw=loaded.config_raw,
+        config_path=loaded.config_path,
+        source_snapshot=loaded.source_snapshot,
+    )
+    assert malicious.core_manifest_sha256 == loaded.core_manifest_sha256
+    assert malicious.core_task14_index_sha256 == loaded.core_task14_index_sha256
+    assert malicious.config_raw == loaded.config_raw
+    assert malicious.config_sha256 == loaded.config_sha256
+
+    with pytest.raises(ValueError, match=rf"config field '{field}'"):
+        build_post_core_release_v1(malicious, core, task14)
+    with pytest.raises(ValueError, match=rf"config field '{field}'"):
+        publish_post_core_release_v1(malicious, core, task14, tmp_path / "output")
+
+
+def test_loaded_file_config_instance_retains_source_snapshot_and_works(
+    tmp_path: Path,
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    config = load_post_core_config_v1(config_path)
+    assert config.config_path == config_path.resolve()
+    assert config.source_snapshot is not None
+
+    built = build_post_core_release_v1(config, core, task14)
+    published = publish_post_core_release_v1(config, core, task14, tmp_path / "output")
+    assert published.artifact_bytes == built.artifact_bytes
+
+
+def test_file_backed_config_without_original_snapshot_is_rejected(
+    tmp_path: Path,
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    loaded = load_post_core_config_v1(config_path)
+    forged = replace(loaded, source_snapshot=None)
+
+    with pytest.raises(ValueError, match="source snapshot"):
+        build_post_core_release_v1(forged, core, task14)
+    with pytest.raises(ValueError, match="source snapshot"):
+        publish_post_core_release_v1(forged, core, task14, tmp_path / "output")
 
 
 def test_config_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:

@@ -391,10 +391,8 @@ def load_post_core_config_v1(path: Path) -> PostCoreReleaseConfigV1:
 
 def _coerce_config(config: PostCoreReleaseConfigV1 | Path | Mapping[str, Any]) -> PostCoreReleaseConfigV1:
     if isinstance(config, PostCoreReleaseConfigV1):
-        if config.core_manifest_sha256 != EXPECTED_CORE_MANIFEST_SHA256 or config.core_task14_index_sha256 != EXPECTED_TASK14_INDEX_SHA256:
-            raise ValueError("post-Core config source hashes are not frozen")
-        if canonical_bytes(json.loads(config.config_raw)) != config.config_raw or _sha256(config.config_raw) != config.config_sha256:
-            raise ValueError("post-Core config bytes are not canonical or hash-bound")
+        if config.config_path is not None and config.source_snapshot is None:
+            raise ValueError("post-Core file-backed config must retain its source snapshot")
         if config.source_snapshot is not None and (
             config.source_snapshot.path != config.config_path
             or config.source_snapshot.raw != config.config_raw
@@ -402,7 +400,27 @@ def _coerce_config(config: PostCoreReleaseConfigV1 | Path | Mapping[str, Any]) -
             or config.source_snapshot.byte_count != len(config.config_raw)
         ):
             raise ValueError("post-Core config source snapshot does not match config bytes")
-        return config
+        parsed = _load_config_payload(
+            config.config_raw,
+            config.source_snapshot.path if config.source_snapshot is not None else Path("<mapping>"),
+            source_snapshot=config.source_snapshot,
+        )
+        for field in (
+            "schema_version",
+            "release_id",
+            "phase",
+            "network_allowed",
+            "core_manifest_sha256",
+            "core_task14_index_sha256",
+            "registry_keys",
+            "config_sha256",
+            "config_raw",
+            "config_path",
+            "source_snapshot",
+        ):
+            if getattr(config, field) != getattr(parsed, field):
+                raise ValueError(f"post-Core config field '{field}' does not match canonical payload")
+        return parsed
     if isinstance(config, (str, Path)):
         return load_post_core_config_v1(Path(config))
     raw = _canonical_mapping_bytes(config)
