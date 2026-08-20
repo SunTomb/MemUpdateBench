@@ -5,6 +5,7 @@ from collections.abc import Mapping, Iterator
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field, fields, is_dataclass, replace
 import hashlib
+import json
 from pathlib import Path
 from types import MappingProxyType
 import threading
@@ -164,6 +165,26 @@ class Task13IntegrityAuditV1(ImmutableContractModel):
     matrix_bundle_manifest_sha256: SHA256
     matrix_summary_sha256: SHA256
     counts: Task13IntegrityCountsV1
+
+
+class _Task12MatrixIntegrityAuditLegacyV1(BaseModel):
+    schema_version: Literal["memupdatebench.core-task12-matrix-integrity-audit.v1"]
+    status: Literal["verified"]
+    runtime_revision: str
+    runtime_tree_sha256: str
+    preparation_manifest_sha256: str
+    plan_fingerprint_sha256: str
+    matrix_bundle_manifest_sha256: str
+    matrix_run_summary_sha256: str
+    run_count: Literal[18]
+    total_task_rows: Literal[1440]
+    total_score_rows: Literal[1440]
+    failed_or_partial_rows: Literal[0]
+    retrieval_multiset_mismatches: Literal[0]
+    retrieval_incomplete_groups: int
+    retrieval_multiset_group_count: int
+    snapshot_path_hits: int
+    runs: tuple[dict[str, Any], ...]
 
 
 class _Task13ObservationEvidencePayloadV1(ImmutableContractModel):
@@ -430,10 +451,40 @@ def _load_integrity_audit(
     raw = _read_expected(path, expected_sha256, label="Task 12 integrity audit")
     try:
         audit = Task13IntegrityAuditV1.model_validate_json(raw)
-    except ValueError as exc:
-        raise ValueError("integrity audit is invalid") from exc
-    if canonical_json_bytes(audit) != raw:
-        raise ValueError("integrity audit is not canonical JSON")
+        if canonical_json_bytes(audit) != raw:
+            raise ValueError("integrity audit is not canonical JSON")
+    except ValueError:
+        try:
+            legacy = _Task12MatrixIntegrityAuditLegacyV1.model_validate_json(raw)
+            if canonical_json_bytes(legacy) != raw or len(legacy.runs) != 18:
+                raise ValueError("legacy integrity audit is not canonical or complete")
+            if any(
+                run.get("task_rows") != 80 or run.get("score_rows") != 80
+                or type(run.get("run_manifest_sha256")) is not str
+                or type(run.get("score_artifact_sha256")) is not str
+                for run in legacy.runs
+            ):
+                raise ValueError("legacy integrity audit run rows are incomplete")
+            runtime = Task12RuntimeCodeBindingV1(
+                code_revision=legacy.runtime_revision,
+                code_tree_sha256=legacy.runtime_tree_sha256,
+            )
+            audit = Task13IntegrityAuditV1(
+                status="verified",
+                runtime_code_binding=runtime,
+                matrix_bundle_manifest_sha256=legacy.matrix_bundle_manifest_sha256,
+                matrix_summary_sha256=legacy.matrix_run_summary_sha256,
+                counts=Task13IntegrityCountsV1(
+                    run_count=18,
+                    total_task_rows=1440,
+                    total_score_rows=1440,
+                    failed=0,
+                    partial=0,
+                    semantic_multiset_mismatches=0,
+                ),
+            )
+        except Exception as exc:
+            raise ValueError("integrity audit is invalid") from exc
     if audit.matrix_bundle_manifest_sha256 != matrix_manifest_sha256:
         raise ValueError("integrity audit matrix hash mismatch")
     if audit.matrix_summary_sha256 != summary_sha256:
