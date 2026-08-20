@@ -152,10 +152,17 @@ _FORBIDDEN_COMMAND_FLAG = re.compile(
     r"^(?:-H|--header|--(?:api[-_]?key|authorization|password|secret|private[-_]?key|bearer|token))(?:=.*)?$",
     re.IGNORECASE,
 )
+_ATTACHED_CREDENTIAL_HEADER = re.compile(
+    r"^-H(?:" + "|".join(_CREDENTIAL_HEADER_NAMES) + r")\s*:",
+    re.IGNORECASE,
+)
 
 
 def redacted_command(argv: list[str]) -> tuple[str, ...]:
-    if any(_FORBIDDEN_COMMAND_FLAG.fullmatch(part) for part in argv):
+    if any(
+        _FORBIDDEN_COMMAND_FLAG.fullmatch(part) or _ATTACHED_CREDENTIAL_HEADER.match(part)
+        for part in argv
+    ):
         raise ValueError("commands may not contain credential flags")
     validate_secret_free(argv)
     return tuple(argv)

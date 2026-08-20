@@ -66,6 +66,8 @@ def test_model_identity_tokenizer_metadata_is_not_secret_like() -> None:
 def test_credential_headers_are_rejected_without_relying_on_token_shape() -> None:
     commands = (
         ["curl", "-H", "X-Api-Key: opaque"],
+        ["curl", "-HX-Api-Key: opaque"],
+        ["curl", "-HAuthorization: opaque"],
         ["curl", "--header", "Api-Key: opaque"],
         ["curl", "--header=proxy-authorization: opaque"],
         ["curl", "X-Access-Token: opaque"],
