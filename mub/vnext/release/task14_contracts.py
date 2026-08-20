@@ -282,6 +282,10 @@ def task14_attestation_hash_v1(value: Any) -> str:
     return _hash_payload(payload, exclude={"attestation_sha256"})
 
 
+def task14_attestation_file_hash_v1(value: "Task14AttestationV1") -> str:
+    return _hash_payload(value)
+
+
 def task14_manifest_hash_v1(value: Task14RootManifestV1) -> str:
     return _hash_payload(value)
 
@@ -338,7 +342,7 @@ def verify_task14_release_v1(
     expected_manifest = (
         task14_report_hash_v1(report),
         task14_graph_hash_v1(report.graph),
-        attestation.attestation_sha256,
+        task14_attestation_file_hash_v1(attestation),
     )
     if tuple(item.sha256 for item in manifest.artifacts) != expected_manifest:
         raise ValueError("Task 14 manifest hash chain mismatch")
@@ -387,6 +391,7 @@ __all__ = [
     "Task14RootSnapshotV1",
     "Task14StructuralReportV1",
     "VerifiedCoreFinalRelease",
+    "task14_attestation_file_hash_v1",
     "task14_attestation_hash_v1",
     "task14_graph_hash_v1",
     "task14_index_hash_v1",

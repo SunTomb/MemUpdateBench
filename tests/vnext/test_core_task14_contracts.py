@@ -17,6 +17,7 @@ from mub.vnext.release.task14_contracts import (
     Task14RootSnapshotV1,
     Task14StructuralReportV1,
     VerifiedCoreFinalRelease,
+    task14_attestation_file_hash_v1,
     task14_attestation_hash_v1,
     task14_graph_hash_v1,
     task14_index_hash_v1,
@@ -93,7 +94,7 @@ def manifest_for(
         artifacts=(
             ref(TASK14_ARTIFACT_PATHS[0], task14_report_hash_v1(value)),
             ref(TASK14_ARTIFACT_PATHS[1], task14_graph_hash_v1(value.graph)),
-            ref(TASK14_ARTIFACT_PATHS[2], attestation.attestation_sha256),
+            ref(TASK14_ARTIFACT_PATHS[2], task14_attestation_file_hash_v1(attestation)),
         ),
     )
 
