@@ -44,7 +44,8 @@ def _load_config(path: Path) -> Task13BootstrapConfigV1:
         config = Task13BootstrapConfigV1.model_validate_json(raw)
     except Exception as exc:
         raise ValueError("statistics config is not a valid typed Task 13 config") from exc
-    if canonical_json_bytes(config) != raw:
+    canonical = canonical_json_bytes(config)
+    if raw not in {canonical, canonical + b"\n"}:
         raise ValueError("statistics config is not canonical JSON")
     return config
 

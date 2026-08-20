@@ -89,7 +89,18 @@ def _cli_args(arguments: dict[str, Path], *, execute: bool = True) -> list[str]:
     return args
 
 
-def test_task13_cli_parser_is_execute_gated_and_has_exact_safe_flags():
+def test_task13_statistics_config_accepts_one_trailing_lf_and_rejects_two(tmp_path):
+    from scripts.vnext_run_core_task13 import _load_config
+
+    canonical = canonical_json_bytes(DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1)
+    path = tmp_path / "statistics-config.json"
+    path.write_bytes(canonical + b"\n")
+    assert _load_config(path) == DEFAULT_TASK13_BOOTSTRAP_CONFIG_V1
+    path.write_bytes(canonical + b"\n\n")
+    with pytest.raises(ValueError, match="canonical JSON"):
+        _load_config(path)
+
+
     from scripts.vnext_run_core_task13 import build_parser
 
     parser = build_parser()
