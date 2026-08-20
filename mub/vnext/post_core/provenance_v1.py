@@ -12,9 +12,68 @@ from mub.vnext.contracts.common import ImmutableContractModel
 from mub.vnext.post_core.contracts_v1 import ALLOWED_CREDENTIAL_ENV_NAMES, canonical_hash
 
 
-_SECRET_KEYS = re.compile(r"(?:api[_-]?key|authorization|bearer|secret|password|private[_-]?key|token)", re.I)
+_CREDENTIAL_KEY_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "x_api_key",
+        "authorization",
+        "proxy_authorization",
+        "bearer",
+        "password",
+        "secret",
+        "private_key",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "x_auth_token",
+        "x_access_token",
+        "access_token",
+        "x_api_token",
+        "x_goog_api_key",
+        "x_amz_security_token",
+        "www_authenticate",
+        "proxy_authenticate",
+        "cookie",
+        "set_cookie",
+        "token",
+        "openai_api_key",
+        "anthropic_api_key",
+        "gemini_api_key",
+        "google_api_key",
+        "xai_api_key",
+    }
+)
+_CREDENTIAL_HEADER_NAMES = (
+    "x-api-key",
+    "api-key",
+    "apikey",
+    "authorization",
+    "proxy-authorization",
+    "x-auth-token",
+    "x-access-token",
+    "x-api-token",
+    "x-goog-api-key",
+    "x-amz-security-token",
+    "access-token",
+    "www-authenticate",
+    "proxy-authenticate",
+    "cookie",
+    "set-cookie",
+)
+_CREDENTIAL_HEADER = re.compile(
+    r"(?:^|[=;\s])(?:" + "|".join(_CREDENTIAL_HEADER_NAMES) + r")\s*:",
+    re.IGNORECASE,
+)
 _SECRET_VALUES = re.compile(r"(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+|-----BEGIN [A-Z ]+PRIVATE KEY-----)", re.I)
-_AUTHORIZATION_HEADER = re.compile(r"(?:^|[\s,;=])authorization\s*:", re.I)
+
+
+def _normalized_key(value: str) -> str:
+    return re.sub(r"[-\s]+", "_", value.strip()).lower()
+
+
+def _is_credential_key(value: str) -> bool:
+    return _normalized_key(value) in _CREDENTIAL_KEY_NAMES
 
 
 class ProvenanceRecordV1(ImmutableContractModel):
@@ -61,9 +120,11 @@ def _scan(value: Any, path: str = "$") -> None:
         for key, item in value.items():
             key_text = str(key)
             if key_text == "credential_env_var" and item is not None and item not in ALLOWED_CREDENTIAL_ENV_NAMES:
-                raise ValueError(f"credential environment variable name is not allowlisted at {path}.{key_text}")
-            if _SECRET_KEYS.search(key_text) and key_text not in {"credential_env_var", "prompt_token_cap", "output_token_cap"}:
-                raise ValueError(f"secret-like key rejected at {path}.{key_text}")
+                raise ValueError("credential environment variable name is not allowlisted")
+            if _CREDENTIAL_HEADER.search(key_text):
+                raise ValueError("credential header rejected")
+            if _is_credential_key(key_text) and key_text != "credential_env_var":
+                raise ValueError("secret-like key rejected: credential header/key")
             _scan(item, f"{path}.{key_text}")
         return
     if isinstance(value, (list, tuple)):
@@ -71,14 +132,14 @@ def _scan(value: Any, path: str = "$") -> None:
             _scan(item, f"{path}[{index}]")
         return
     if isinstance(value, str):
-        if _AUTHORIZATION_HEADER.search(value):
-            raise ValueError(f"authorization header rejected at {path}")
+        if _CREDENTIAL_HEADER.search(value):
+            raise ValueError("credential header rejected")
         if "=" in value:
             assignment_key = value.split("=", 1)[0].strip()
-            if _SECRET_KEYS.search(assignment_key):
-                raise ValueError(f"credential assignment rejected at {path}")
+            if _is_credential_key(assignment_key):
+                raise ValueError("credential assignment rejected")
         if _SECRET_VALUES.search(value):
-            raise ValueError(f"secret-like value rejected at {path}")
+            raise ValueError("secret-like value rejected")
 
 
 def validate_secret_free(value: Any, *, read_environment: bool = False) -> None:
@@ -88,7 +149,7 @@ def validate_secret_free(value: Any, *, read_environment: bool = False) -> None:
 
 
 _FORBIDDEN_COMMAND_FLAG = re.compile(
-    r"^--(?:api[-_]?key|token|authorization|password|secret|private[-_]?key|bearer)(?:=.*)?$",
+    r"^(?:-H|--header|--(?:api[-_]?key|authorization|password|secret|private[-_]?key|bearer|token))(?:=.*)?$",
     re.IGNORECASE,
 )
 

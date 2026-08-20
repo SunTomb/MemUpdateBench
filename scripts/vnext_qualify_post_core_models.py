@@ -76,17 +76,17 @@ def main(argv: list[str] | None = None) -> int:
             "network_calls": probes.network_calls,
             "executable_call_count": publication.executable_call_count,
         }
-    except (ValueError, UnsafePathError) as exc:
-        print(f"post-Core qualification contract/usage rejected: {exc}", file=sys.stderr)
+    except (ValueError, UnsafePathError):
+        print("post-Core qualification contract/usage rejected: invalid untrusted contract input", file=sys.stderr)
         return EXIT_USAGE
-    except StaleSourceError as exc:
-        print(f"post-Core qualification rejected stale source: {exc}", file=sys.stderr)
+    except StaleSourceError:
+        print("post-Core qualification rejected stale source: authenticated source mismatch", file=sys.stderr)
         return EXIT_STALE_SOURCE
-    except PostCoreReleaseError as exc:
-        print(f"post-Core qualification failed: {exc}", file=sys.stderr)
+    except PostCoreReleaseError:
+        print("post-Core qualification failed: publication invariant rejected", file=sys.stderr)
         return EXIT_PUBLICATION
-    except OSError as exc:
-        print(f"post-Core qualification failed: {exc}", file=sys.stderr)
+    except OSError:
+        print("post-Core qualification failed: filesystem operation rejected", file=sys.stderr)
         return EXIT_PUBLICATION
     except Exception as exc:
         print(f"post-Core qualification rejected untrusted runtime: {type(exc).__name__}", file=sys.stderr)

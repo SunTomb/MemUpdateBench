@@ -268,34 +268,53 @@ def _validate_core_manifest(raw: bytes) -> None:
         raise StaleSourceError("Core source manifest schema or release identity is invalid") from exc
 
 
-def _validate_task14_index_and_siblings(index_path: Path, raw: bytes) -> None:
+def _validate_task14_index_and_siblings(
+    index_snapshot: _SourceSnapshot,
+    siblings: Sequence[_SourceSnapshot],
+) -> None:
+    raw = index_snapshot.raw
     if _sha256(raw) != EXPECTED_TASK14_INDEX_SHA256:
         raise StaleSourceError("Task 14 index hash is not the immutable approved release")
+    expected = TASK14_ARTIFACT_PATHS[:4]
+    sibling_by_name = {snapshot.path.name: snapshot for snapshot in siblings}
+    if (
+        len(sibling_by_name) != len(siblings)
+        or tuple(snapshot.path.name for snapshot in siblings) != expected
+        or set(sibling_by_name) != set(expected)
+    ):
+        raise StaleSourceError("Task 14 sibling set is not the exact approved release")
     try:
         index = Task14RootIndexV1.model_validate_json(raw)
         if task14_canonical_bytes_v1(index) != raw:
             raise ValueError("Task 14 index is not canonical")
-        root = index_path.parent
         refs = {item.path: item for item in index.artifacts}
-        expected = TASK14_ARTIFACT_PATHS[:4]
         if tuple(refs) != expected:
             raise ValueError("Task 14 index artifact order is not exact")
-        report_payload = json.loads((root / expected[0]).read_bytes())
+        report_snapshot = sibling_by_name[expected[0]]
+        report_raw = report_snapshot.raw
+        report_payload = json.loads(report_raw)
         persisted_status = report_payload.pop("status", None)
         report = Task14StructuralReportV1.model_validate(report_payload)
-        if persisted_status != report.status or task14_canonical_bytes_v1(report) != (root / expected[0]).read_bytes():
+        if persisted_status != report.status or task14_canonical_bytes_v1(report) != report_raw:
             raise ValueError("Task 14 review report is not canonical")
-        graph = Task14EvidenceGraphV1.model_validate_json((root / expected[1]).read_bytes())
-        attestation = Task14AttestationV1.model_validate_json((root / expected[2]).read_bytes())
-        manifest = Task14RootManifestV1.model_validate_json((root / expected[3]).read_bytes())
+        graph_snapshot = sibling_by_name[expected[1]]
+        attestation_snapshot = sibling_by_name[expected[2]]
+        manifest_snapshot = sibling_by_name[expected[3]]
+        graph = Task14EvidenceGraphV1.model_validate_json(graph_snapshot.raw)
+        attestation = Task14AttestationV1.model_validate_json(attestation_snapshot.raw)
+        manifest = Task14RootManifestV1.model_validate_json(manifest_snapshot.raw)
         models = (report, graph, attestation, manifest)
-        for model, name in zip(models, expected, strict=True):
-            if task14_canonical_bytes_v1(model) != (root / name).read_bytes():
-                raise ValueError(f"Task 14 sibling is not canonical: {name}")
+        snapshots = (report_snapshot, graph_snapshot, attestation_snapshot, manifest_snapshot)
+        for model, snapshot in zip(models, snapshots):
+            if task14_canonical_bytes_v1(model) != snapshot.raw:
+                raise ValueError(f"Task 14 sibling is not canonical: {snapshot.path.name}")
         _verify_task14_release_current_v1(report, attestation, manifest, index)
         for item in index.artifacts:
-            sibling = root / item.path
-            if not _regular_single_link(sibling) or item.byte_count != sibling.stat().st_size or item.sha256 != _sha256(sibling.read_bytes()):
+            sibling = sibling_by_name[item.path]
+            if (
+                item.byte_count != sibling.byte_count
+                or item.sha256 != sibling.sha256
+            ):
                 raise ValueError(f"Task 14 sibling hash binding is invalid: {item.path}")
     except Exception as exc:
         if isinstance(exc, StaleSourceError):
@@ -317,9 +336,14 @@ def _source_pair(core_manifest_path: Path, task14_index_path: Path, expected_cor
     task14 = _read_source(task14_index_path, "Task 14 index")
     if core.identity == task14.identity:
         raise UnsafePathError("Core source manifest and Task 14 index alias each other")
+    siblings = _capture_task14_siblings(task14.path)
+    task14 = replace(task14, siblings=siblings)
     _validate_core_manifest(core.raw)
-    _validate_task14_index_and_siblings(task14.path, task14.raw)
-    task14 = replace(task14, siblings=_capture_task14_siblings(task14.path))
+    _validate_task14_index_and_siblings(task14, siblings)
+    # Validation above intentionally consumed only captured bytes.  Revalidate
+    # those exact identities and digests before exposing the source pair.
+    _revalidate_source(core, "Core source manifest")
+    _revalidate_source(task14, "Task 14 index")
     return core, task14
 
 
@@ -335,6 +359,9 @@ def _load_config_payload(
         raise ValueError(f"invalid post-Core config JSON: {path}") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("post-Core config must be a JSON object")
+    # Scan untrusted structure before canonical or typed validation so a
+    # credential-shaped value cannot be interpolated into a Pydantic error.
+    validate_secret_free(payload, read_environment=False)
     if canonical_bytes(payload) != raw:
         raise ValueError("post-Core config must use canonical JSON bytes")
     required = {
@@ -431,7 +458,11 @@ def load_post_core_registry_v1(path: Path, config: PostCoreReleaseConfigV1 | Non
     source = _read_source(Path(path), "model registry input")
     try:
         payload = json.loads(source.raw)
-        if not isinstance(payload, Mapping) or canonical_bytes(payload) != source.raw:
+        if not isinstance(payload, Mapping):
+            raise ValueError("model registry input must be a JSON object")
+        # This must precede every candidate model validation.
+        validate_secret_free(payload, read_environment=False)
+        if canonical_bytes(payload) != source.raw:
             raise ValueError("model registry input is not canonical")
         if set(payload) != {"schema_version", "release_id", "registry_keys", "candidates"}:
             raise ValueError("model registry input has unexpected or missing fields")
@@ -453,8 +484,8 @@ def load_post_core_registry_v1(path: Path, config: PostCoreReleaseConfigV1 | Non
         return _RegistryInput(registry, source)
     except Exception as exc:
         if isinstance(exc, ValueError):
-            raise
-        raise ValueError("invalid model registry input") from exc
+            raise ValueError("invalid model registry input") from None
+        raise ValueError("invalid model registry input") from None
 
 
 def _registry_payload(config: PostCoreReleaseConfigV1, registry: Mapping[str, ModelCandidateV1]) -> dict[str, Any]:
@@ -536,7 +567,12 @@ def _validate_provenance_bytes(raw: bytes, registry: Mapping[str, ModelCandidate
     for line in raw[:-1].split(b"\n"):
         if not line:
             raise ValueError("provenance JSONL contains an empty row")
-        row = ProvenanceRecordV1.model_validate_json(line)
+        try:
+            payload = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("provenance JSONL contains invalid JSON") from exc
+        validate_secret_free(payload, read_environment=False)
+        row = ProvenanceRecordV1.model_validate(payload)
         if canonical_bytes(row) != line:
             raise ValueError("provenance JSONL is not canonical")
         validate_secret_free(row.model_dump(mode="json"), read_environment=False)
@@ -695,20 +731,51 @@ def _directory_commit_noreplace(staging: Path, final_root: Path) -> None:
             error = kernel.GetLastError()
             if error in {80, 183}:
                 raise FileExistsError("post-Core output root appeared during commit")
-            raise OSError(error, "post-Core no-replace directory commit failed")
+            raise PostCoreReleaseError("post-Core no-replace directory commit failed")
         return
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise RuntimeError("no safe no-replace directory commit primitive is available")
-    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
-    renameat2.restype = ctypes.c_int
-    result = renameat2(-100, os.fsencode(staging), -100, os.fsencode(final_root), 1)
-    if result:
+
+    # Linux libc does not expose renameat2 on every supported platform.  The
+    # syscall fallback is still no-replace; copy/replace fallbacks are unsafe.
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except (AttributeError, OSError, RuntimeError) as exc:
+        raise PostCoreReleaseError("safe no-replace directory commit primitive is unavailable") from exc
+    try:
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is not None:
+            renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+            renameat2.restype = ctypes.c_int
+            result = renameat2(-100, os.fsencode(staging), -100, os.fsencode(final_root), 1)
+        else:
+            syscall = getattr(libc, "syscall", None)
+            if syscall is None:
+                raise PostCoreReleaseError("safe no-replace directory commit primitive is unavailable")
+            number = {
+                "x86_64": 316,
+                "amd64": 316,
+                "aarch64": 276,
+                "arm64": 276,
+            }.get(__import__("platform").machine().lower())
+            if number is None:
+                raise PostCoreReleaseError("safe no-replace directory commit primitive is unavailable")
+            syscall.restype = ctypes.c_long
+            result = syscall(number, -100, os.fsencode(staging), -100, os.fsencode(final_root), 1)
+    except PostCoreReleaseError:
+        raise
+    except (AttributeError, OSError, TypeError, RuntimeError) as exc:
+        raise PostCoreReleaseError("safe no-replace directory commit primitive failed") from exc
+    if result != 0:
         error = ctypes.get_errno()
         if error == errno.EEXIST:
             raise FileExistsError("post-Core output root appeared during commit")
-        raise OSError(error, "post-Core no-replace directory commit failed")
+        if error in {
+            errno.ENOSYS,
+            errno.EINVAL,
+            getattr(errno, "ENOTSUP", errno.EINVAL),
+            getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+        }:
+            raise PostCoreReleaseError("safe no-replace directory commit primitive is unavailable")
+        raise PostCoreReleaseError("safe no-replace directory commit primitive failed")
 
 
 def _capture_owned_members(staging: Path) -> tuple[_OwnedMember, ...]:
@@ -731,6 +798,18 @@ def _owned_matches(staging: Path, member: _OwnedMember) -> bool:
         return False
     metadata = item.stat()
     return (metadata.st_dev, metadata.st_ino) == member.identity and metadata.st_size == member.byte_count and sha256_file(item) == member.sha256
+
+
+def _validate_staging_ownership(staging: Path, ownership: tuple[_OwnedMember, ...]) -> None:
+    try:
+        observed = tuple(sorted(item.name for item in staging.iterdir()))
+    except OSError as exc:
+        raise PostCoreReleaseError("staging ownership set cannot be read") from exc
+    expected = tuple(sorted(member.name for member in ownership))
+    if observed != expected:
+        raise PostCoreReleaseError("staging ownership set changed before commit")
+    if any(not _owned_matches(staging, member) for member in ownership):
+        raise PostCoreReleaseError("staging ownership or artifact hash changed before commit")
 
 
 def _cleanup_owned_staging(staging: Path, identity: tuple[int, int], ownership: tuple[_OwnedMember, ...] | None) -> None:
@@ -793,7 +872,13 @@ def verify_post_core_release_v1(
     if any(not _regular_single_link(item) for item in entries):
         raise UnsafePathError("post-Core output contains an unsafe artifact")
     core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_manifest_sha256, config.core_task14_index_sha256)
-    actual = MappingProxyType({name: (checked / name).read_bytes() for name in POST_CORE_ARTIFACTS})
+    artifact_snapshots = tuple(
+        _read_source(checked / name, f"post-Core output artifact {name}")
+        for name in POST_CORE_ARTIFACTS
+    )
+    actual = MappingProxyType(
+        {snapshot.path.name: snapshot.raw for snapshot in artifact_snapshots}
+    )
     try:
         manifest = ReleaseManifestV1.model_validate_json(actual[POST_CORE_ARTIFACT_ORDER[0]])
         if canonical_bytes(manifest) != actual[POST_CORE_ARTIFACT_ORDER[0]]:
@@ -807,7 +892,10 @@ def verify_post_core_release_v1(
         }:
             raise StaleSourceError("release manifest source binding differs")
         registry_payload = json.loads(actual["model_registry.json"])
-        if not isinstance(registry_payload, Mapping) or canonical_bytes(registry_payload) != actual["model_registry.json"]:
+        if not isinstance(registry_payload, Mapping):
+            raise PostCoreReleaseError("model registry is not a JSON object")
+        validate_secret_free(registry_payload, read_environment=False)
+        if canonical_bytes(registry_payload) != actual["model_registry.json"]:
             raise PostCoreReleaseError("model registry is not canonical")
         if tuple(registry_payload.get("registry_keys", ())) != config.registry_keys:
             raise PostCoreReleaseError("model registry key order differs")
@@ -851,7 +939,10 @@ def verify_post_core_release_v1(
     _revalidate_source(task14, "Task 14 index")
     _revalidate_optional(registry_snapshot, "model registry input")
     _revalidate_optional(provenance_snapshot, "provenance input")
-    return _publication_from_artifacts(config, actual, checked)
+    publication = _publication_from_artifacts(config, actual, checked)
+    for snapshot in artifact_snapshots:
+        _revalidate_source(snapshot, f"post-Core output artifact {snapshot.path.name}")
+    return publication
 
 
 def publish_post_core_release_v1(
@@ -913,6 +1004,9 @@ def publish_post_core_release_v1(
             raise PostCoreReleaseError("output parent identity changed before commit")
         if _is_reparse(staging) or (staging.stat().st_dev, staging.stat().st_ino) != staging_identity:
             raise PostCoreReleaseError("staging identity changed before commit")
+        # This is the final ownership boundary: no-replace rename is reached
+        # only while every captured member still has its exact identity/bytes.
+        _validate_staging_ownership(staging, ownership)
         _directory_commit_noreplace(staging, output)
         committed = True
         final_metadata = output.stat()

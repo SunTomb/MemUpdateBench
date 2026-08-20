@@ -32,10 +32,9 @@ CONFIG = Path(__file__).parents[2] / "configs" / "vnext" / "post_core" / "releas
 ROOT = Path(__file__).parents[2]
 CORE_SOURCE_ROOT_CANDIDATES = (
     ROOT / "data" / "vnext" / "core" / "v3",
-    ROOT.parent / "vnext-phase0" / "data" / "vnext" / "core" / "v3",
 )
 TASK14_SOURCE_ROOT_CANDIDATES = (
-    Path("D:/USTC/2026Winter/MemUpdateBench_releases/core_task14_84beabb_v1"),
+    ROOT / "tests" / "vnext" / "fixtures" / "post_core" / "task14_84beabb_v1",
 )
 TASK14_SHA = "2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035"
 EXPECTED_KEYS = (
@@ -54,7 +53,7 @@ def _source_root(candidates: tuple[Path, ...], marker: str) -> Path:
     for candidate in candidates:
         if (candidate / marker).is_file():
             return candidate
-    pytest.skip(f"authenticated post-Core source is unavailable: {marker}")
+    raise AssertionError(f"authenticated post-Core fixture is missing or corrupt: {marker}")
 
 
 def _sources(tmp_path: Path) -> tuple[Path, Path]:
@@ -153,6 +152,85 @@ def test_task14_sibling_mutation_is_rejected_before_commit(tmp_path: Path) -> No
         )
     assert not (tmp_path / "output").exists()
     assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_task14_sibling_snapshot_is_revalidated_after_snapshot_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    sibling = task14.parent / "core_final_review_report.json"
+    original = release_v1._validate_task14_index_and_siblings
+
+    def validate_then_mutate(index, siblings):
+        original(index, siblings)
+        sibling.write_bytes(sibling.read_bytes() + b"x")
+
+    monkeypatch.setattr(release_v1, "_validate_task14_index_and_siblings", validate_then_mutate)
+    with pytest.raises(PostCoreReleaseError, match="Task 14|sibling|bytes changed"):
+        build_post_core_release_v1(config, core, task14)
+
+
+def test_staging_member_race_rejects_before_no_replace_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    output = tmp_path / "output"
+
+    def mutate_staging() -> None:
+        stages = tuple(tmp_path.glob(".mub-post-core-stage-*"))
+        assert len(stages) == 1
+        artifact = stages[0] / "model_registry.json"
+        artifact.write_bytes(artifact.read_bytes() + b"x")
+
+    with pytest.raises(PostCoreReleaseError, match="staging|ownership|artifact"):
+        publish_post_core_release_v1(
+            config, core, task14, output, before_commit=mutate_staging
+        )
+    assert not output.exists()
+    # The ownership guard refuses to delete a tampered stage, preserving it for quarantine.
+    assert tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_output_snapshot_race_rejects_and_publication_wraps_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    output = tmp_path / "output"
+    original_build = release_v1._build_artifacts
+    calls = 0
+
+    def build_then_mutate(*args, **kwargs):
+        nonlocal calls
+        result = original_build(*args, **kwargs)
+        calls += 1
+        if output.is_dir() and calls >= 3:
+            artifact = output / "model_registry.json"
+            artifact.write_bytes(artifact.read_bytes() + b"x")
+        return result
+
+    monkeypatch.setattr(release_v1, "_build_artifacts", build_then_mutate)
+    with pytest.raises(CommittedPostCoreReleaseError, match="committed root|artifact|bytes"):
+        publish_post_core_release_v1(config, core, task14, output)
+    assert output.is_dir()
+
+
+def test_missing_posix_no_replace_primitive_is_typed_publication_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    final = tmp_path / "final"
+    monkeypatch.setattr(release_v1.os, "name", "posix")
+
+    class NoRenameLibrary:
+        pass
+
+    monkeypatch.setattr(release_v1.ctypes, "CDLL", lambda *args, **kwargs: NoRenameLibrary())
+    with pytest.raises(PostCoreReleaseError, match="no-replace|primitive|available"):
+        release_v1._directory_commit_noreplace(staging, final)
 
 
 def test_registry_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:
@@ -545,7 +623,34 @@ def test_phase0_paths_contain_no_forbidden_runtime_imports_or_calls() -> None:
         assert not any(token in source for token in forbidden), path
 
 
-def test_cli_stale_source_exit_code(tmp_path: Path) -> None:
+def test_malformed_secret_registry_is_redacted_by_both_clis(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = _config(tmp_path, task14)
+    loaded = load_post_core_config_v1(config)
+    baseline = build_post_core_release_v1(loaded, core, task14)
+    payload = json.loads(baseline.artifact_bytes["model_registry.json"])
+    payload["candidates"][0]["credential_env_var"] = "sk-abcdefghijklmnop"
+    registry = tmp_path / "malformed_registry.json"
+    registry.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    common = [
+        "--config", str(config), "--registry", str(registry),
+        "--core-manifest", str(core), "--task14-index", str(task14), "--execute",
+    ]
+    for script in ("scripts/vnext_prepare_post_core_release.py", "scripts/vnext_qualify_post_core_models.py"):
+        run = subprocess.run([sys.executable, script, *common, *( ["--output-root", str(tmp_path / "out")] if "prepare" in script else [])], capture_output=True, text=True)
+        assert run.returncode == 11
+        assert "sk-abcdefghijklmnop" not in run.stdout + run.stderr
+        assert "path" not in run.stderr.lower() or "invalid" in run.stderr.lower()
+
+
+def test_malformed_secret_config_is_rejected_without_secret_in_exception(tmp_path: Path) -> None:
+    payload = json.loads(CONFIG.read_text(encoding="utf-8"))
+    payload["release_id"] = "sk-abcdefghijklmnop"
+    malformed = tmp_path / "malformed_config.json"
+    malformed.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(ValueError) as failure:
+        load_post_core_config_v1(malformed)
+    assert "sk-abcdefghijklmnop" not in str(failure.value)
     core, task14 = _sources(tmp_path)
     config = _config(tmp_path, task14)
     task14.write_bytes(task14.read_bytes() + b"x")
@@ -582,7 +687,19 @@ def test_qualification_cli_stale_source_exit_code(tmp_path: Path) -> None:
     assert "secret" not in (run.stdout + run.stderr).lower()
 
 
-def test_tracked_config_is_canonical_and_pins_both_immutable_sources() -> None:
+def test_repository_fixture_has_authenticated_task14_index_and_sibling_hashes() -> None:
+    fixture = TASK14_SOURCE_ROOT_CANDIDATES[0]
+    index_raw = (fixture / "core_final_root_index.json").read_bytes()
+    assert release_v1._sha256(index_raw) == TASK14_SHA
+    index = json.loads(index_raw)
+    assert tuple(item["path"] for item in index["artifacts"]) == (
+        "core_final_review_report.json",
+        "core_final_evidence_graph.json",
+        "core_final_verification_attestation.json",
+        "core_final_root_manifest.json",
+    )
+    for item in index["artifacts"]:
+        assert release_v1._sha256((fixture / item["path"]).read_bytes()) == item["sha256"]
     raw = CONFIG.read_bytes()
     assert raw == json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")).encode()
     config = load_post_core_config_v1(CONFIG)

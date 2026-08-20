@@ -53,23 +53,34 @@ def test_command_rejects_separated_and_inline_credential_flags() -> None:
     )
 
 
-def test_command_rejects_opaque_authorization_headers_and_inline_assignments() -> None:
+def test_model_identity_tokenizer_metadata_is_not_secret_like() -> None:
+    validate_secret_free(
+        {
+            "tokenizer_identity": "tokenizer@revision",
+            "prompt_token_cap": 128,
+            "output_token_cap": 32,
+        }
+    )
+
+
+def test_credential_headers_are_rejected_without_relying_on_token_shape() -> None:
     commands = (
-        ["curl", "-H", "Authorization: opaque"],
-        ["curl", "--header=Authorization: opaque"],
-        ["curl", "AUTHORIZATION=opaque"],
-        ["curl", "OPENAI_API_KEY=opaque"],
+        ["curl", "-H", "X-Api-Key: opaque"],
+        ["curl", "--header", "Api-Key: opaque"],
+        ["curl", "--header=proxy-authorization: opaque"],
+        ["curl", "X-Access-Token: opaque"],
     )
     for command in commands:
-        with pytest.raises(ValueError, match="credential|secret|authorization"):
+        with pytest.raises(ValueError, match="credential|header|authorization"):
             redacted_command(command)
 
-    header_values = (
-        {"headers": {"Authorization": "opaque"}},
-        {"header": "Authorization: opaque"},
-        {"headers": "Authorization: opaque"},
-        "Authorization: opaque",
+    values = (
+        {"X-Api-Key": "opaque"},
+        {"headers": {"Api-Key": "opaque"}},
+        {"proxy-authorization": "opaque"},
+        "X-Api-Key: opaque",
+        "Authorization=opaque",
     )
-    for value in header_values:
-        with pytest.raises(ValueError, match="credential|secret|authorization"):
+    for value in values:
+        with pytest.raises(ValueError, match="credential|header|authorization"):
             validate_secret_free(value)

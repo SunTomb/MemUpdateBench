@@ -74,23 +74,23 @@ def main(argv: list[str] | None = None) -> int:
             registry=registry,
             provenance_path=Path(args.provenance) if args.provenance else None,
         )
-    except StaleSourceError as exc:
-        print(f"post-Core stale source rejected: {exc}", file=sys.stderr)
+    except StaleSourceError:
+        print("post-Core stale source rejected: authenticated source mismatch", file=sys.stderr)
         return EXIT_STALE_SOURCE
-    except FileExistsError as exc:
-        print(f"post-Core publication rejected: {exc}", file=sys.stderr)
+    except FileExistsError:
+        print("post-Core publication rejected: output root is unavailable", file=sys.stderr)
         return EXIT_PUBLICATION
-    except UnsafePathError as exc:
-        print(f"post-Core publication rejected unsafe path: {exc}", file=sys.stderr)
+    except UnsafePathError:
+        print("post-Core publication rejected: unsafe path", file=sys.stderr)
         return EXIT_PUBLICATION
-    except ValueError as exc:
-        print(f"post-Core contract/usage rejected: {exc}", file=sys.stderr)
+    except ValueError:
+        print("post-Core contract/usage rejected: invalid untrusted contract input", file=sys.stderr)
         return EXIT_USAGE
-    except PostCoreReleaseError as exc:
-        print(f"post-Core publication failed: {exc}", file=sys.stderr)
+    except PostCoreReleaseError:
+        print("post-Core publication failed: publication invariant rejected", file=sys.stderr)
         return EXIT_PUBLICATION
-    except OSError as exc:
-        print(f"post-Core publication failed: {exc}", file=sys.stderr)
+    except OSError:
+        print("post-Core publication failed: filesystem operation rejected", file=sys.stderr)
         return EXIT_PUBLICATION
     except Exception as exc:
         # Do not expose arbitrary runtime details as a success or as a secret-bearing summary.
