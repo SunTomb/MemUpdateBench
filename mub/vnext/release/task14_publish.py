@@ -370,17 +370,6 @@ def _owned_member_matches(staging: Path, member: _OwnedTask14Member) -> bool:
         return False
 
 
-def _validate_owned_members(
-    staging: Path, ownership: tuple[_OwnedTask14Member, ...]
-) -> None:
-    observed = tuple(sorted(item.name for item in staging.iterdir()))
-    expected = tuple(sorted(member.name for member in ownership))
-    if observed != expected:
-        raise RuntimeError("Task 14 staged ownership set changed before commit")
-    if any(not _owned_member_matches(staging, member) for member in ownership):
-        raise RuntimeError("Task 14 staged ownership or bytes changed before commit")
-
-
 def _cleanup_owned_staging(
     staging: Path,
     staging_identity: tuple[int, int],
@@ -474,7 +463,6 @@ def publish_task14_review_v1(
                 or staging.is_symlink()
             ):
                 raise RuntimeError("Task 14 parent or staging identity changed before commit")
-            _validate_owned_members(staging, ownership)
             _directory_commit_noreplace_v3(staging, output)
         committed = True
         final_metadata = output.stat()
