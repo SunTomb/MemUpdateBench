@@ -47,8 +47,8 @@ def main(
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
-    except SystemExit:
-        return EXIT_USAGE
+    except SystemExit as exc:
+        return EXIT_APPROVED if exc.code == 0 else EXIT_USAGE
     if not args.execute:
         print("Task 14 final review requires explicit --execute", file=sys.stderr)
         return EXIT_USAGE

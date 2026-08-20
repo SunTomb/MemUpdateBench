@@ -50,6 +50,18 @@ def test_revalidation_rejects_mutated_loaded_payloads() -> None:
     assert not revalidate_task14_sources_v1(loaded)
 
 
+def test_revalidation_rejects_forged_cached_root_snapshots() -> None:
+    from dataclasses import replace
+
+    loaded = load_task14_sources_v1(paths())
+    forged_snapshot = loaded.root_snapshots[0].validated_replace(tree_sha256="f" * 64)
+    forged = replace(
+        loaded,
+        root_snapshots=(forged_snapshot, *loaded.root_snapshots[1:]),
+    )
+    assert not revalidate_task14_sources_v1(forged)
+
+
 def test_source_inventory_rejects_hash_tamper(tmp_path: Path) -> None:
     copied = tmp_path / "evidence"
     shutil.copytree(EVIDENCE, copied)

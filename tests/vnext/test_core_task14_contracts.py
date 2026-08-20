@@ -265,7 +265,11 @@ def test_manifest_and_index_have_exact_acyclic_order() -> None:
     assert tuple(item.path for item in manifest.artifacts) == TASK14_ARTIFACT_PATHS[:3]
     index = index_for(value, attestation)
     assert tuple(item.path for item in index.artifacts) == TASK14_ARTIFACT_PATHS[:4]
-    assert task14_index_hash_v1(index) == task14_index_hash_v1(index)
+    changed_ref = index.artifacts[3].validated_replace(sha256=H4)
+    changed_index = index.validated_replace(
+        artifacts=(*index.artifacts[:3], changed_ref)
+    )
+    assert task14_index_hash_v1(index) != task14_index_hash_v1(changed_index)
 
     with pytest.raises(ValidationError):
         Task14RootManifestV1(artifacts=manifest.artifacts[:2])

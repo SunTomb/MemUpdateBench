@@ -25,6 +25,13 @@ TASK14_EXPECTED_TASK13_INDEX_SHA256 = (
 TASK14_EXPECTED_CORE_RELEASE_MANIFEST_SHA256 = (
     "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
 )
+TASK14_EXPECTED_ROOT_TREE_SHA256 = MappingProxyType(
+    {
+        "immutable_core": "89beac92d1b2bc48d9d3dfd2ebfcb377e72780042f0d5ae898314fdc4f5208cd",
+        "task9_task12_evidence": "fa424b9c468e2569faf37a619a1e80210501cfa6cc2dbe2fc787e8bdf4b23947",
+        "task13_local_final": "97f75c89b9f9429503c686fa9472baeadb95b06be60855c6e17a31a4a33ef70a",
+    }
+)
 TASK14_EXPECTED_FILE_HASHES: Mapping[str, str] = MappingProxyType(
     {
         "core/task_release_manifest.json": TASK14_EXPECTED_CORE_RELEASE_MANIFEST_SHA256,
@@ -268,8 +275,6 @@ def _validate_anchor_semantics(json_payloads: Mapping[str, object]) -> None:
         raise ValueError("Task 14 Mem0 canary terminal-row cardinality mismatch")
     if any(item.get("completion_status") != "not_supported" for item in terminal_rows):
         raise ValueError("Task 14 Mem0 canary contains non-NOT_SUPPORTED rows")
-    if any(item.get("completion_status") in {"failed", "partial"} for item in terminal_rows):
-        raise ValueError("Task 14 Mem0 canary contains FAILED/PARTIAL rows")
 
     qualification = json_payloads["task11/qualification_report.json"]
     if not isinstance(qualification, dict) or qualification.get("status") != "qualified":
@@ -449,6 +454,11 @@ def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
     )
     if snapshots != initial_snapshots:
         raise RuntimeError("Task 14 source roots changed during validation")
+    if any(
+        snapshot.tree_sha256 != TASK14_EXPECTED_ROOT_TREE_SHA256.get(snapshot.root_id)
+        for snapshot in snapshots
+    ):
+        raise ValueError("Task 14 source root inventory differs from the frozen release")
     return Task14LoadedSourcesV1(
         paths=paths,
         artifacts=MappingProxyType(artifacts),
@@ -469,6 +479,7 @@ def revalidate_task14_sources_v1(loaded: Task14LoadedSourcesV1) -> bool:
             and dict(refreshed.artifacts) == dict(loaded.artifacts)
             and dict(refreshed.payloads) == dict(loaded.payloads)
             and dict(refreshed.json_payloads) == dict(loaded.json_payloads)
+            and refreshed.root_snapshots == loaded.root_snapshots
         )
     except Exception:
         return False

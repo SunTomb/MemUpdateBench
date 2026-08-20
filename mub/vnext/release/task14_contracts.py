@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, computed_field, field_validator, model_validator
 
 from mub.vnext.contracts.common import ImmutableContractModel
-from mub.vnext.io import canonical_json_bytes, sha256_model
 
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -56,7 +56,7 @@ class Task14ArtifactRefV1(ImmutableContractModel):
     @classmethod
     def _relative_safe_path(cls, value: str) -> str:
         normalized = value.replace("\\", "/")
-        if normalized.startswith("/") or normalized in {".", ".."} or ".." in normalized.split("/"):
+        if Path(normalized).drive or normalized.startswith("/") or normalized in {".", ".."} or ".." in normalized.split("/"):
             raise ValueError("artifact path must be a safe relative path")
         return normalized
 
@@ -70,7 +70,7 @@ class Task14RootEntryV1(ImmutableContractModel):
     @classmethod
     def _safe_relative(cls, value: str) -> str:
         normalized = value.replace("\\", "/")
-        if normalized.startswith("/") or normalized in {".", ".."} or ".." in normalized.split("/"):
+        if Path(normalized).drive or normalized.startswith("/") or normalized in {".", ".."} or ".." in normalized.split("/"):
             raise ValueError("root entry path must be safe and relative")
         return normalized
 
@@ -345,6 +345,8 @@ def verify_task14_release_v1(
     attestation: Task14AttestationV1,
     manifest: Task14RootManifestV1,
     index: Task14RootIndexV1,
+    *,
+    _current_source_token: object | None = None,
 ) -> VerifiedCoreFinalRelease:
     if not all(
         type(value) is expected
@@ -365,8 +367,17 @@ def verify_task14_release_v1(
 
     if {item.check_id for item in report.checks} != TASK14_REQUIRED_CHECK_IDS:
         raise ValueError("Task 14 report lacks required checks")
-    if not all(item.passed for item in report.checks) or report.findings:
-        raise ValueError("Task 14 report is not structurally ready")
+    failed_checks = {item.check_id for item in report.checks if not item.passed}
+    finding_checks = {
+        item.finding_id.removeprefix("failed:")
+        for item in report.findings
+        if item.finding_id.startswith("failed:")
+    }
+    if report.status == "READY_FOR_VERIFICATION":
+        if failed_checks or report.findings:
+            raise ValueError("Task 14 ready report contains failed checks or findings")
+    elif not failed_checks or finding_checks != failed_checks:
+        raise ValueError("Task 14 NOT_APPROVED report does not bind every failed check")
     if {item.node_id for item in report.graph.nodes} != TASK14_REQUIRED_NODE_IDS:
         raise ValueError("Task 14 graph lacks required evidence nodes")
     if {
@@ -398,12 +409,29 @@ def verify_task14_release_v1(
         raise ValueError("Task 14 index does not bind the manifest artifacts")
     if index.artifacts[3].sha256 != task14_manifest_hash_v1(manifest):
         raise ValueError("Task 14 index manifest hash mismatch")
+    if _current_source_token is not _VERIFIED_RELEASE_TOKEN:
+        raise TypeError("Task 14 verified release requires current-source verification")
     return VerifiedCoreFinalRelease(
         report=report,
         attestation=attestation,
         manifest=manifest,
         index=index,
         _token=_VERIFIED_RELEASE_TOKEN,
+    )
+
+
+def _verify_task14_release_current_v1(
+    report: Task14StructuralReportV1,
+    attestation: Task14AttestationV1,
+    manifest: Task14RootManifestV1,
+    index: Task14RootIndexV1,
+) -> VerifiedCoreFinalRelease:
+    return verify_task14_release_v1(
+        report,
+        attestation,
+        manifest,
+        index,
+        _current_source_token=_VERIFIED_RELEASE_TOKEN,
     )
 
 
@@ -446,5 +474,4 @@ __all__ = [
     "task14_index_hash_v1",
     "task14_manifest_hash_v1",
     "task14_report_hash_v1",
-    "verify_task14_release_v1",
 ]

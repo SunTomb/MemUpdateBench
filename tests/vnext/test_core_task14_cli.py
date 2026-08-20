@@ -65,6 +65,11 @@ def test_parser_has_exact_safe_surface() -> None:
         parser.parse_args(["--exec"])
 
 
+def test_help_returns_zero(capsys) -> None:
+    assert command.main(["--help"]) == command.EXIT_APPROVED
+    assert "Core Task 14" in capsys.readouterr().out
+
+
 def test_execute_gate_returns_usage(tmp_path: Path, capsys) -> None:
     assert command.main(args(tmp_path, execute=False), repository_root=tmp_path) == command.EXIT_USAGE
     assert "--execute" in capsys.readouterr().err
