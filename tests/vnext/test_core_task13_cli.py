@@ -68,6 +68,7 @@ def fixed_runtime_binding(monkeypatch):
         if expected == binding
         else (_ for _ in ()).throw(RuntimeError("runtime changed")),
     )
+    return binding
 
 
 def _cli_args(arguments: dict[str, Path], *, execute: bool = True) -> list[str]:
@@ -304,6 +305,21 @@ def test_task13_snapshot_rejects_explicit_input_replacement(tmp_path):
         _revalidate_source_snapshot(snapshot)
 
 
+def test_task13_empty_root_cannot_relabel_shallow_snapshot_as_recursive(tmp_path):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    root = tmp_path / "empty-root"
+    root.mkdir()
+    source = tmp_path / "control.json"
+    source.write_bytes(b"{}")
+    shallow = publication.capture_task13_source_snapshot_v3(
+        (source,), (root,), shallow_roots=(root,)
+    )
+    forged = replace(shallow, shallow_roots=())
+    with pytest.raises(RuntimeError, match="membership"):
+        publication._revalidate_source_snapshot(forged)
+
+
 def test_task13_cli_revalidates_snapshot_after_loader_before_compute(
     monkeypatch, tmp_path, fixed_runtime_binding
 ):
@@ -449,7 +465,7 @@ def test_task13_posix_noreplace_collision_preserves_existing_final(tmp_path):
     assert final_root.is_dir()
 
 
-def test_task13_runtime_binding_hashes_raw_nul_tree_and_rejects_untracked(tmp_path):
+def test_task13_runtime_binding_hashes_raw_tree_and_rejects_hidden_worktree_state(tmp_path):
     from mub.vnext.statistics.task13_v3 import current_clean_task13_runtime_v3
 
     repository = tmp_path / "repository"
@@ -458,7 +474,8 @@ def test_task13_runtime_binding_hashes_raw_nul_tree_and_rejects_untracked(tmp_pa
     subprocess.run(("git", "-C", str(repository), "config", "user.email", "task13@example.test"), check=True)
     subprocess.run(("git", "-C", str(repository), "config", "user.name", "Task 13"), check=True)
     (repository / "tracked.txt").write_bytes(b"tracked\n")
-    subprocess.run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+    (repository / ".gitignore").write_bytes(b"ignored.py\n")
+    subprocess.run(("git", "-C", str(repository), "add", "tracked.txt", ".gitignore"), check=True)
     subprocess.run(("git", "-C", str(repository), "commit", "-qm", "initial"), check=True)
 
     binding = current_clean_task13_runtime_v3(repository)
@@ -473,8 +490,26 @@ def test_task13_runtime_binding_hashes_raw_nul_tree_and_rejects_untracked(tmp_pa
     assert binding.runtime_revision == expected_revision
     assert binding.runtime_tree_sha256 == hashlib.sha256(raw_tree).hexdigest()
 
+    subprocess.run(
+        ("git", "-C", str(repository), "config", "status.showUntrackedFiles", "no"),
+        check=True,
+    )
     (repository / "untracked.py").write_bytes(b"print('untracked')\n")
     with pytest.raises(RuntimeError, match="clean repository"):
+        current_clean_task13_runtime_v3(repository)
+
+    (repository / "untracked.py").unlink()
+    (repository / "ignored.py").write_bytes(b"print('ignored runtime')\n")
+    with pytest.raises(RuntimeError, match="clean repository"):
+        current_clean_task13_runtime_v3(repository)
+
+    (repository / "ignored.py").unlink()
+    subprocess.run(
+        ("git", "-C", str(repository), "update-index", "--assume-unchanged", "tracked.txt"),
+        check=True,
+    )
+    (repository / "tracked.txt").write_bytes(b"hidden tracked edit\n")
+    with pytest.raises(RuntimeError, match="index flags|clean repository"):
         current_clean_task13_runtime_v3(repository)
 
 
@@ -1030,7 +1065,7 @@ def test_task13_direct_publish_enforces_loader_roots_and_repository_only_shallow
 
     forged_declaration = replace(weakened, shallow_roots=(repository.resolve(),))
     forged_output = tmp_path / "output-forged-shallow-declaration"
-    with pytest.raises(RuntimeError, match="membership|malformed"):
+    with pytest.raises(ValueError, match="capture-registered"):
         publication.publish_task13_artifacts_v3(
             object(), matrix=object(), output_root=forged_output,
             source_snapshot=forged_declaration, repository_root=repository,
@@ -1045,6 +1080,13 @@ def test_task13_direct_publish_enforces_loader_roots_and_repository_only_shallow
         repository_only, capability, repository
     )
 
+    tampered = publication.capture_task13_source_snapshot_v3(
+        source_paths, all_roots, shallow_roots=(repository,)
+    )
+    object.__setattr__(tampered, "shallow_roots", all_roots)
+    with pytest.raises(ValueError, match="capture-registered"):
+        publication.require_capture_registered_task13_source_snapshot_v3(tampered)
+
 
 def test_task13_publish_runtime_is_bound_to_registered_receipt_bytes(
     task13_arguments, fixed_runtime_binding, monkeypatch
@@ -1053,9 +1095,21 @@ def test_task13_publish_runtime_is_bound_to_registered_receipt_bytes(
     from scripts.vnext_run_core_task13 import main
 
     original = publication.build_task13_publication_v3
+    runtime_checks: list[tuple[Path, Task13RuntimeBindingV1]] = []
+
+    def revalidate_runtime(repository_root, expected):
+        runtime_checks.append((Path(repository_root), expected))
+        if expected != fixed_runtime_binding:
+            raise RuntimeError("runtime changed")
+
+    monkeypatch.setattr(
+        publication, "_revalidate_clean_task13_runtime_v3", revalidate_runtime
+    )
 
     def mutate_receipt_field(**kwargs):
         built = original(**kwargs)
+        with pytest.raises(TypeError):
+            built.artifact_bytes["statistics_receipt.json"] = b"mutated"
         forged = built.receipt.model_copy(
             update={
                 "task13_runtime_revision": "c" * 40,
@@ -1068,6 +1122,9 @@ def test_task13_publish_runtime_is_bound_to_registered_receipt_bytes(
     monkeypatch.setattr(publication, "build_task13_publication_v3", mutate_receipt_field)
     assert main(_cli_args(task13_arguments)) == 0
     assert task13_arguments["output_root"].is_dir()
+    assert runtime_checks == [
+        (Path(__file__).resolve().parents[2], fixed_runtime_binding)
+    ]
 
 
 @pytest.mark.parametrize("mutation", ("unchanged", "tracked_edit", "head_change"))

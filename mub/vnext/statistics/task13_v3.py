@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 import subprocess
 import threading
+from types import MappingProxyType
 import uuid
 import weakref
 
@@ -210,7 +211,7 @@ class _RootMemberSnapshot:
     sha256: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Task13SourceSnapshotV1:
     files: tuple[_SourceSnapshot, ...]
     roots: tuple[_DirectoryIdentity, ...]
@@ -224,6 +225,68 @@ class Task13SourceSnapshotV1:
         shallow_keys = tuple(_snapshot_path_key(root) for root in self.shallow_roots)
         if len(set(shallow_keys)) != len(shallow_keys) or not set(shallow_keys) <= root_keys:
             raise ValueError("Task 13 shallow roots must be unique registered roots")
+
+
+@dataclass(frozen=True, slots=True)
+class _Task13SourceSnapshotRegistryEntry:
+    snapshot: weakref.ReferenceType[Task13SourceSnapshotV1]
+    digest: str
+
+
+_SOURCE_SNAPSHOT_REGISTRY_LOCK = threading.RLock()
+_SOURCE_SNAPSHOT_REGISTRY: dict[int, _Task13SourceSnapshotRegistryEntry] = {}
+
+
+def _task13_source_snapshot_digest_v3(snapshot: Task13SourceSnapshotV1) -> str:
+    digest = hashlib.sha256()
+
+    def add(*values: object) -> None:
+        for value in values:
+            digest.update(os.fsencode(value) if isinstance(value, Path) else str(value).encode("utf-8"))
+            digest.update(b"\0")
+
+    for source in snapshot.files:
+        add("file", source.path, *source.identity, source.size, source.sha256)
+    for root in snapshot.roots:
+        add("root", root.path, *root.identity)
+    for member in snapshot.root_members:
+        add(
+            "member", member.root, member.relative_path, member.kind,
+            *member.identity, member.size, member.sha256,
+        )
+    for root in snapshot.shallow_roots:
+        add("shallow", root)
+    return digest.hexdigest()
+
+
+def _register_task13_source_snapshot_v3(snapshot: Task13SourceSnapshotV1) -> None:
+    identifier = id(snapshot)
+
+    def cleanup(reference: weakref.ReferenceType[Task13SourceSnapshotV1]) -> None:
+        with _SOURCE_SNAPSHOT_REGISTRY_LOCK:
+            entry = _SOURCE_SNAPSHOT_REGISTRY.get(identifier)
+            if entry is not None and entry.snapshot is reference:
+                _SOURCE_SNAPSHOT_REGISTRY.pop(identifier, None)
+
+    reference = weakref.ref(snapshot, cleanup)
+    entry = _Task13SourceSnapshotRegistryEntry(
+        reference, _task13_source_snapshot_digest_v3(snapshot)
+    )
+    with _SOURCE_SNAPSHOT_REGISTRY_LOCK:
+        _SOURCE_SNAPSHOT_REGISTRY[identifier] = entry
+
+
+def require_capture_registered_task13_source_snapshot_v3(
+    snapshot: Task13SourceSnapshotV1,
+) -> None:
+    with _SOURCE_SNAPSHOT_REGISTRY_LOCK:
+        entry = _SOURCE_SNAPSHOT_REGISTRY.get(id(snapshot))
+    if (
+        entry is None
+        or entry.snapshot() is not snapshot
+        or entry.digest != _task13_source_snapshot_digest_v3(snapshot)
+    ):
+        raise ValueError("Task 13 source snapshot is not capture-registered")
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,7 +480,7 @@ def build_task13_publication_v3(
         artifact_index=artifact_index,
         artifact_refs=refs,
         matrix_identity=id(matrix),
-        artifact_bytes=payloads,
+        artifact_bytes=MappingProxyType(payloads),
     )
     _register_builder_task13_publication_v1(publication, matrix, matrix_digest)
     return publication
@@ -620,11 +683,8 @@ def capture_task13_source_snapshot_v3(
     normalized_shallow_roots = tuple(
         _absolute_no_reparse(root, require_exists=True) for root in shallow_roots
     )
-    shallow_keys = {
-        os.path.normcase(os.path.abspath(os.fspath(root)))
-        for root in normalized_shallow_roots
-    }
-    root_keys = {os.path.normcase(os.path.abspath(os.fspath(root.path))) for root in roots}
+    shallow_keys = {_snapshot_path_key(root) for root in normalized_shallow_roots}
+    root_keys = {_snapshot_path_key(root.path) for root in roots}
     if not shallow_keys <= root_keys:
         raise ValueError("Task 13 shallow source roots must be registered source roots")
     recursive_roots = tuple(
@@ -636,17 +696,19 @@ def capture_task13_source_snapshot_v3(
         member
         for root in roots
         for member in (
-            (_RootMemberSnapshot(root.path, ".", "directory", root.identity),)
+            (_RootMemberSnapshot(root.path, ".", "shallow_directory", root.identity),)
             if os.path.normcase(os.path.abspath(os.fspath(root.path))) in shallow_keys
             else _snapshot_root_members_v3(root.path)
         )
     )
-    return Task13SourceSnapshotV1(
+    snapshot = Task13SourceSnapshotV1(
         files=_snapshot_source_files(source_paths, recursive_roots),
         roots=roots,
         root_members=root_members,
         shallow_roots=normalized_shallow_roots,
     )
+    _register_task13_source_snapshot_v3(snapshot)
+    return snapshot
 
 
 def source_snapshot_sha256_v3(snapshot: Task13SourceSnapshotV1, path: Path) -> str:
@@ -675,7 +737,7 @@ def _revalidate_source_snapshot(snapshot: Task13SourceSnapshotV1) -> None:
             member for member in snapshot.root_members if member.root == root.path
         )
         if _snapshot_path_key(root.path) in shallow_keys:
-            marker = (_RootMemberSnapshot(root.path, ".", "directory", root.identity),)
+            marker = (_RootMemberSnapshot(root.path, ".", "shallow_directory", root.identity),)
             if expected_members != marker:
                 raise RuntimeError("Task 13 shallow source root snapshot is malformed")
             observed_members.extend(marker)
@@ -1168,6 +1230,7 @@ def publish_task13_artifacts_v3(
         raise ValueError("Task 13 matrix or publication capability is invalid") from exc
     if not isinstance(source_snapshot, Task13SourceSnapshotV1):
         raise TypeError("source_snapshot must be Task13SourceSnapshotV1")
+    require_capture_registered_task13_source_snapshot_v3(source_snapshot)
     _validate_source_snapshot_against_loader_capability_v3(
         source_snapshot, matrix_capability, repository_root
     )
@@ -1228,7 +1291,11 @@ def publish_task13_artifacts_v3(
             raise
         finally:
             if not committed and not preserve_staging:
-                if ownership is None and _present(staging) and tuple(staging.iterdir()):
+                if ownership is not None and os.name != "nt":
+                    # POSIX has no identity-bound unlink primitive here; retain the
+                    # authenticated stage without replacing the publication error.
+                    preserve_staging = True
+                elif ownership is None and _present(staging) and tuple(staging.iterdir()):
                     # Never destroy a populated staging directory whose ownership
                     # was not authenticated; preserve it and retain the original
                     # publication error rather than masking it during cleanup.
@@ -1253,6 +1320,17 @@ def _validate_staged_member_v3(path: Path, name: str, publication: Task13Publica
         raise ValueError("Task 13 staged artifact hash changed")
 
 
+def _validate_task13_runtime_index_flags_v3(root: Path) -> None:
+    process = subprocess.run(
+        ("git", "-C", str(root), "ls-files", "-v", "-z"),
+        check=False,
+        capture_output=True,
+    )
+    records = tuple(record for record in process.stdout.split(b"\0") if record)
+    if process.returncode != 0 or any(not record.startswith(b"H ") for record in records):
+        raise RuntimeError("Task 13 runtime binding rejects nonstandard Git index flags")
+
+
 def _revalidate_clean_task13_runtime_v3(
     repository_root: Path,
     expected: Task13RuntimeBindingV1,
@@ -1261,10 +1339,11 @@ def _revalidate_clean_task13_runtime_v3(
         raise TypeError("expected runtime must be Task13RuntimeBindingV1")
     root = _absolute_no_reparse(repository_root, require_exists=True)
     observed = current_clean_task13_runtime_v3(root)
+    _validate_task13_runtime_index_flags_v3(root)
     if observed != expected:
         raise RuntimeError("Task 13 repository runtime changed before commit")
     status = subprocess.run(
-        ("git", "-C", str(root), "status", "--porcelain"),
+        ("git", "-C", str(root), "status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"),
         check=False,
         capture_output=True,
         text=True,
@@ -1291,14 +1370,18 @@ def current_clean_task13_runtime_v3(repository_root: Path) -> Task13RuntimeBindi
         if process.returncode != 0:
             raise RuntimeError("could not calculate Task 13 runtime binding from repository")
         return process.stdout.strip()
+    top_level = _absolute_no_reparse(Path(git("rev-parse", "--show-toplevel")), require_exists=True)
+    if top_level != root or _identity(top_level) != _identity(root):
+        raise RuntimeError("Task 13 runtime binding requires the Git worktree root")
     status = subprocess.run(
-        ("git", "-C", str(root), "status", "--porcelain"),
+        ("git", "-C", str(root), "status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"),
         check=False,
         capture_output=True,
         text=True,
     )
     if status.returncode != 0 or status.stdout:
         raise RuntimeError("Task 13 runtime binding requires a clean repository")
+    _validate_task13_runtime_index_flags_v3(root)
     revision = git("rev-parse", "HEAD")
     tree_process = subprocess.run(
         ("git", "-C", str(root), "ls-tree", "-r", "-z", revision),
@@ -1316,6 +1399,7 @@ __all__ = [
     "Task13PublicationResultV1", "Task13PublicationV1", "Task13RuntimeBindingV1",
     "Task13SourceSnapshotV1", "build_task13_publication_v3",
     "capture_task13_source_snapshot_v3", "current_clean_task13_runtime_v3",
+    "require_capture_registered_task13_source_snapshot_v3",
     "publish_task13_artifacts_v3", "validate_task13_staging_root_v3",
     "verify_task13_artifact_root_v3",
 ]
