@@ -111,7 +111,7 @@ class Task13ArtifactRefsV1:
         )
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
+@dataclass(frozen=True)
 class Task13PublicationV1:
     bootstrap: BootstrapIndicesV1
     statistics: Task13StatisticsResultV1
@@ -211,7 +211,7 @@ class _RootMemberSnapshot:
     sha256: str | None = None
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
+@dataclass(frozen=True)
 class Task13SourceSnapshotV1:
     files: tuple[_SourceSnapshot, ...]
     roots: tuple[_DirectoryIdentity, ...]
