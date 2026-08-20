@@ -32,8 +32,8 @@ def loaded_sources():
 def test_real_evidence_graph_is_closed_and_scope_safe() -> None:
     loaded = loaded_sources()
     graph = build_task14_evidence_graph_v1(loaded)
-    assert len(graph.nodes) == 15
-    assert len(graph.edges) == 15
+    assert len(graph.nodes) == 22
+    assert len(graph.edges) == 22
     by_kind = {item.evidence_kind: item for item in graph.nodes}
     assert by_kind["mem0_admission"].accuracy_evidence is False
     assert by_kind["prompted_answer_matrix"].accuracy_evidence is True
@@ -45,6 +45,7 @@ def test_real_structural_report_is_ready_with_explicit_exclusions() -> None:
         loaded_sources(),
         review_id="core-task14-test",
         trusted_source_revision="test-revision",
+        trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "READY_FOR_VERIFICATION"
     assert all(item.passed for item in report.checks)
@@ -85,6 +86,7 @@ def test_task13_unsupported_policy_tamper_derives_not_approved() -> None:
         forged,
         review_id="tampered",
         trusted_source_revision="test-revision",
+        trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "NOT_APPROVED"
     assert "task13_unsupported_policy" in {
@@ -103,6 +105,7 @@ def test_task12_incomplete_matrix_derives_not_approved() -> None:
         forged,
         review_id="tampered",
         trusted_source_revision="test-revision",
+        trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "NOT_APPROVED"
     assert any(item.finding_id == "failed:task12_real_matrix_complete" for item in report.findings)

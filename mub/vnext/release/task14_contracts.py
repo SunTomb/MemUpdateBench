@@ -167,6 +167,7 @@ class Task14StructuralReportV1(ImmutableContractModel):
     report_id: StrictStr = Field(min_length=1)
     review_id: StrictStr = Field(min_length=1)
     trusted_source_revision: StrictStr = Field(min_length=1)
+    trusted_source_tree_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     graph: Task14EvidenceGraphV1
     checks: tuple[Task14CheckV1, ...]
     findings: tuple[Task14FindingV1, ...]
@@ -204,6 +205,7 @@ class Task14AttestationV1(ImmutableContractModel):
     report_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     graph_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     trusted_source_revision: StrictStr = Field(min_length=1)
+    trusted_source_tree_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     source_snapshot_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     final_approval_at_verification: StrictBool
     attestation_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
@@ -339,6 +341,8 @@ def verify_task14_release_v1(
         raise ValueError("Task 14 attestation graph hash mismatch")
     if attestation.trusted_source_revision != report.trusted_source_revision:
         raise ValueError("Task 14 trusted revision mismatch")
+    if attestation.trusted_source_tree_sha256 != report.trusted_source_tree_sha256:
+        raise ValueError("Task 14 trusted source tree mismatch")
     expected_approval = report.status == "READY_FOR_VERIFICATION"
     if attestation.final_approval_at_verification != expected_approval:
         raise ValueError("Task 14 approval attestation mismatch")

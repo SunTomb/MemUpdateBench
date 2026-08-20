@@ -65,6 +65,7 @@ def report(*, passed: bool = True) -> Task14StructuralReportV1:
         report_id="review-1",
         review_id="review-1",
         trusted_source_revision="rev-1",
+        trusted_source_tree_sha256=H,
         graph=g,
         checks=(check(passed=passed),),
         findings=(),
@@ -77,6 +78,7 @@ def attestation_for(value: Task14StructuralReportV1) -> Task14AttestationV1:
         "report_sha256": task14_report_hash_v1(value),
         "graph_sha256": task14_graph_hash_v1(value.graph),
         "trusted_source_revision": value.trusted_source_revision,
+        "trusted_source_tree_sha256": value.trusted_source_tree_sha256,
         "source_snapshot_sha256": H2,
         "final_approval_at_verification": value.status == "READY_FOR_VERIFICATION",
     }

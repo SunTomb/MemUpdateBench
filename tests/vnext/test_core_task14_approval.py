@@ -31,6 +31,7 @@ def report_for(loaded, review_id="approval-test"):
         loaded,
         review_id=review_id,
         trusted_source_revision="test-revision",
+        trusted_source_tree_sha256="a" * 64,
     )
 
 

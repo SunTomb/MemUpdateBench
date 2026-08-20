@@ -68,6 +68,48 @@ def test_root_snapshot_changes_on_same_size_replacement(tmp_path: Path) -> None:
     assert before.tree_sha256 != after.tree_sha256
 
 
+def test_frozen_semantic_anchors_reject_cross_layer_rebinding() -> None:
+    from mub.vnext.release.task14_sources import _validate_anchor_semantics
+
+    loaded = load_task14_sources_v1(paths())
+
+    task10 = dict(loaded.json_payloads)
+    report = dict(task10["task10/external_admission_report.json"])
+    gates = [dict(item) for item in report["gates"]]
+    gates[0]["status"] = "fail"
+    report["gates"] = gates
+    task10["task10/external_admission_report.json"] = report
+    with pytest.raises(ValueError, match="14/14"):
+        _validate_anchor_semantics(task10)
+
+    task11 = dict(loaded.json_payloads)
+    qualification = dict(task11["task11/qualification_report.json"])
+    slots = [dict(item) for item in qualification["slots"]]
+    slots[1]["revision"] = "0" * 40
+    qualification["slots"] = slots
+    task11["task11/qualification_report.json"] = qualification
+    with pytest.raises(ValueError, match="slots"):
+        _validate_anchor_semantics(task11)
+
+    task12 = dict(loaded.json_payloads)
+    manifest = dict(task12["task12/matrix_bundle_manifest.json"])
+    bundles = [dict(item) for item in manifest["run_bundles"]]
+    bundles[0]["bundle_leaf"] = "fake-offline"
+    manifest["run_bundles"] = bundles
+    task12["task12/matrix_bundle_manifest.json"] = manifest
+    with pytest.raises(ValueError, match="prompted-answer"):
+        _validate_anchor_semantics(task12)
+
+    task13 = dict(loaded.json_payloads)
+    audit = dict(task13["task13_audit/core_task13_bc82566_v1_audit.json"])
+    rejoin = dict(audit["matrix_case_rejoin"])
+    rejoin["observations"] = 1439
+    audit["matrix_case_rejoin"] = rejoin
+    task13["task13_audit/core_task13_bc82566_v1_audit.json"] = audit
+    with pytest.raises(ValueError, match="rejoin"):
+        _validate_anchor_semantics(task13)
+
+
 def test_root_snapshot_rejects_symlink_member(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

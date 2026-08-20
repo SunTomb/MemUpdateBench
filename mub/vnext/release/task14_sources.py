@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -16,6 +17,7 @@ from mub.vnext.release.task14_contracts import (
 )
 
 
+TASK14_TASK9_IMPLEMENTATION_REVISION = "9118d491fb3f13a2b4278f131fd2520f9c4fe809"
 TASK14_EXPECTED_TASK13_INDEX_SHA256 = (
     "da02787276dd171cce716258ec071947ae99fb047a607df983f52125a20937aa"
 )
@@ -180,6 +182,29 @@ def task14_source_snapshot_hash_v1(
     return hashlib.sha256(_canonical_plain_bytes(payload)).hexdigest()
 
 
+def _verify_repository_history(repository_root: Path) -> Path:
+    root = _checked_root(repository_root)
+    top = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--show-toplevel"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve(strict=True) != root:
+        raise ValueError("Task 14 repository root is not the Git worktree root")
+    ancestor = subprocess.run(
+        (
+            "git", "-C", str(root), "merge-base", "--is-ancestor",
+            TASK14_TASK9_IMPLEMENTATION_REVISION, "HEAD",
+        ),
+        check=False,
+        capture_output=True,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError("Task 14 source history omits the frozen Task 9 implementation")
+    return root
+
+
 def _source_locations(paths: Task14SourcePathsV1) -> dict[str, Path]:
     core = _checked_root(paths.core_root)
     evidence = _checked_root(paths.evidence_root)
@@ -232,17 +257,74 @@ def _validate_anchor_semantics(json_payloads: Mapping[str, object]) -> None:
         raise ValueError("Task 14 Mem0 admission decision is not admitted")
     if not isinstance(report, dict) or report.get("outcome") != "pass":
         raise ValueError("Task 14 Mem0 admission report is not PASS")
+    gates = report.get("gates", ())
+    if len(gates) != 14 or any(item.get("status") != "pass" for item in gates):
+        raise ValueError("Task 14 Mem0 admission gates are not 14/14 PASS")
+    if decision.get("reasons") != ["admitted_mem0_primary"] or len(decision.get("reports", ())) != 1:
+        raise ValueError("Task 14 Mem0 fallback/admission boundary mismatch")
     terminal_rows = rows.get("terminal_rows", ()) if isinstance(rows, dict) else ()
     if not isinstance(rows, dict) or rows.get("expected_rows") != 128 or len(terminal_rows) != 128:
         raise ValueError("Task 14 Mem0 canary terminal-row cardinality mismatch")
     if any(item.get("completion_status") != "not_supported" for item in terminal_rows):
         raise ValueError("Task 14 Mem0 canary contains non-NOT_SUPPORTED rows")
+    if any(item.get("completion_status") in {"failed", "partial"} for item in terminal_rows):
+        raise ValueError("Task 14 Mem0 canary contains FAILED/PARTIAL rows")
+
+    qualification = json_payloads["task11/qualification_report.json"]
+    if not isinstance(qualification, dict) or qualification.get("status") != "qualified":
+        raise ValueError("Task 14 Task 11 qualification is not qualified")
+    slots = qualification.get("slots", ())
+    expected_slots = {
+        "answer_model_a": (
+            "Qwen/Qwen2.5-7B-Instruct",
+            "a09a35458c702b33eeacc393d103063234e8bc28",
+            "5c5fc08ade3cfa718521bbb2206deb1f0249527b8f210c95a4db9140460154ca",
+        ),
+        "answer_model_b": (
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            "c170c708c41dac9275d15a8fff4eca08d52bab71",
+            "31a92a122692365f74cc64939cc948fb21f1efa1d500afd3d92332ad319db015",
+        ),
+    }
+    observed_slots = {
+        item.get("slot_id"): (
+            item.get("model_id"), item.get("revision"), item.get("tree_manifest_sha256")
+        )
+        for item in slots
+    }
+    if observed_slots != expected_slots:
+        raise ValueError("Task 14 Task 11 frozen answer-model slots mismatch")
 
     summary = json_payloads["task12/matrix_run_summary.json"]
     audit = json_payloads["task12/matrix_integrity_audit.json"]
     manifest = json_payloads["task12/matrix_bundle_manifest.json"]
     if not all(isinstance(item, dict) for item in (summary, audit, manifest)):
         raise ValueError("Task 14 Task 12 controls must be JSON objects")
+    bundles = manifest.get("run_bundles", ())
+    completed = summary.get("completed_runs", ())
+    expected_pairs = {
+        (f"raw-add-{condition}-k{k:02d}", slot)
+        for condition in (
+            "chronological-none",
+            "reverse-none",
+            "reverse-version-labeled",
+        )
+        for k in (4, 8, 16)
+        for slot in ("answer_model_a", "answer_model_b")
+    }
+    bundle_pairs = {(item.get("cell_id"), item.get("answer_model_slot")) for item in bundles}
+    completed_pairs = {(item.get("cell_id"), item.get("answer_model_slot")) for item in completed}
+    if (
+        manifest.get("bundle_count") != 18
+        or len(bundles) != 18
+        or bundle_pairs != expected_pairs
+        or len(completed) != 18
+        or completed_pairs != expected_pairs
+        or any(not str(item.get("bundle_leaf", "")).startswith("raw-add-") for item in bundles)
+        or any(item.get("output_leaf") != "run" for item in bundles)
+        or any(item.get("task_count") != 80 or item.get("score_count") != 80 for item in completed)
+    ):
+        raise ValueError("Task 14 Task 12 real prompted-answer run scope mismatch")
     if (
         summary.get("total_task_rows") != 1440
         or summary.get("total_score_rows") != 1440
@@ -271,6 +353,16 @@ def _validate_anchor_semantics(json_payloads: Mapping[str, object]) -> None:
     }
     if any(counts.get(key) != value for key, value in expected_counts.items()):
         raise ValueError("Task 14 Task 13 audit counts mismatch")
+    rejoin = task13_audit.get("matrix_case_rejoin", {})
+    if rejoin != {
+        "status": "verified",
+        "runs": 18,
+        "cases": 57,
+        "observations": 1440,
+    }:
+        raise ValueError("Task 14 Task 13 matrix/case rejoin mismatch")
+    if task13_audit.get("artifact_sha256", {}).get("bootstrap_indices.bin") != TASK14_EXPECTED_FILE_HASHES["task13/bootstrap_indices.bin"]:
+        raise ValueError("Task 14 Task 13 frozen bootstrap binding mismatch")
     unsupported = task13_audit.get("metric_status", {}).get("unsupported", {})
     if set(unsupported) != {
         "answer_scores.gold_retrieved_wrong_answer",
@@ -283,6 +375,7 @@ def _validate_anchor_semantics(json_payloads: Mapping[str, object]) -> None:
 def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
     if type(paths) is not Task14SourcePathsV1:
         raise TypeError("Task 14 paths must be Task14SourcePathsV1")
+    _verify_repository_history(paths.repository_root)
     if not paths.remote_task13_staging_path.startswith("/NAS/") or ".mub-task13-stage-" not in paths.remote_task13_staging_path:
         raise ValueError("Task 14 remote Task 13 path must remain NFS staging evidence")
     locations = _source_locations(paths)
@@ -355,6 +448,7 @@ def revalidate_task14_sources_v1(loaded: Task14LoadedSourcesV1) -> bool:
 
 
 __all__ = [
+    "TASK14_TASK9_IMPLEMENTATION_REVISION",
     "TASK14_EXPECTED_CORE_RELEASE_MANIFEST_SHA256",
     "TASK14_EXPECTED_FILE_HASHES",
     "TASK14_EXPECTED_TASK13_INDEX_SHA256",

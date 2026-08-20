@@ -33,7 +33,10 @@ from mub.vnext.release.task14_sources import (
     Task14LoadedSourcesV1,
     revalidate_task14_sources_v1,
 )
-from mub.vnext.statistics.task13_v3 import _directory_commit_noreplace_v3
+from mub.vnext.statistics.task13_v3 import (
+    _directory_commit_noreplace_v3,
+    current_clean_task13_runtime_v3,
+)
 
 
 @dataclass(frozen=True)
@@ -74,19 +77,28 @@ def build_task14_publication_v1(
     *,
     review_id: str,
     trusted_source_revision: str,
+    trusted_source_tree_sha256: str,
 ) -> Task14PublicationV1:
     if not revalidate_task14_sources_v1(loaded):
         raise RuntimeError("Task 14 source snapshot changed before attestation")
+    runtime = current_clean_task13_runtime_v3(loaded.paths.repository_root)
+    if (
+        runtime.runtime_revision != trusted_source_revision
+        or runtime.runtime_tree_sha256 != trusted_source_tree_sha256
+    ):
+        raise RuntimeError("Task 14 trusted runtime binding mismatch")
     report = build_task14_structural_report_v1(
         loaded,
         review_id=review_id,
         trusted_source_revision=trusted_source_revision,
+        trusted_source_tree_sha256=trusted_source_tree_sha256,
     )
     graph = report.graph
     attestation_payload = {
         "report_sha256": task14_report_hash_v1(report),
         "graph_sha256": task14_graph_hash_v1(graph),
         "trusted_source_revision": trusted_source_revision,
+        "trusted_source_tree_sha256": trusted_source_tree_sha256,
         "source_snapshot_sha256": loaded.aggregate_snapshot_sha256,
         "final_approval_at_verification": report.status == "READY_FOR_VERIFICATION",
     }
@@ -216,6 +228,7 @@ def publish_task14_review_v1(
     *,
     review_id: str,
     trusted_source_revision: str,
+    trusted_source_tree_sha256: str,
     output_root: Path,
 ) -> Task14PublicationResultV1:
     output, parent = _assert_output_safe(output_root, loaded)
@@ -223,6 +236,7 @@ def publish_task14_review_v1(
         loaded,
         review_id=review_id,
         trusted_source_revision=trusted_source_revision,
+        trusted_source_tree_sha256=trusted_source_tree_sha256,
     )
     staging = parent / f".mub-task14-stage-{uuid.uuid4().hex}"
     staging.mkdir(mode=0o700)

@@ -79,6 +79,7 @@ def main(
             loaded,
             review_id=args.review_id,
             trusted_source_revision=runtime.runtime_revision,
+            trusted_source_tree_sha256=runtime.runtime_tree_sha256,
             output_root=Path(args.output_root),
         )
     except FileExistsError as exc:

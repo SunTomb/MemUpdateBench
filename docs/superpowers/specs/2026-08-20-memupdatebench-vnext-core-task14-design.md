@@ -81,7 +81,9 @@ Required nodes:
 5. Task 11 qualification and Mistral snapshot provenance;
 6. Task 12 matrix manifest, summary, integrity audit, and real-run completeness;
 7. Task 13 local final index, receipt, statistics, contrasts, cases, case index, ledger, independent audit, and NFS-staging exclusion;
-8. Task 14 report, graph, attestation, manifest, and index.
+8. remote Task 13 NFS staging as an explicit excluded upstream node.
+
+The evidence graph contains upstream source evidence only. Task 14 report, graph, attestation, manifest, and index cannot be graph nodes without creating a self-hash cycle; their relationships are instead represented by the acyclic attestation → manifest → index chain and verified after final-root reopen.
 
 Allowed edge types:
 
