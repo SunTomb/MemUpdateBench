@@ -17,6 +17,7 @@ from mub.vnext.release.task14_contracts import (
 )
 
 
+TASK14_REMOTE_TASK13_STAGING_PATH = "/NAS/yesh/MemUpdateBench/results/vnext/.mub-task13-stage-1a791f4cbfdd471aa6a8bd45ab6432d4"
 TASK14_TASK9_IMPLEMENTATION_REVISION = "9118d491fb3f13a2b4278f131fd2520f9c4fe809"
 TASK14_EXPECTED_TASK13_INDEX_SHA256 = (
     "da02787276dd171cce716258ec071947ae99fb047a607df983f52125a20937aa"
@@ -385,8 +386,8 @@ def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
     audit_path = _checked_file(paths.task13_audit_path)
     if any(audit_path == root or root in audit_path.parents for root in canonical_roots):
         raise ValueError("Task 14 audit path overlaps a source root")
-    if not paths.remote_task13_staging_path.startswith("/NAS/") or ".mub-task13-stage-" not in paths.remote_task13_staging_path:
-        raise ValueError("Task 14 remote Task 13 path must remain NFS staging evidence")
+    if paths.remote_task13_staging_path != TASK14_REMOTE_TASK13_STAGING_PATH:
+        raise ValueError("Task 14 remote Task 13 path must equal the frozen NFS staging evidence")
     locations = _source_locations(paths)
     if set(locations) != set(TASK14_EXPECTED_FILE_HASHES):
         raise AssertionError("Task 14 source location inventory is incomplete")
@@ -398,6 +399,11 @@ def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
     )
     if len(set(identities)) != len(identities):
         raise ValueError("Task 14 source artifacts contain filesystem aliases")
+    initial_snapshots = (
+        snapshot_task14_root_v1(paths.core_root, "immutable_core"),
+        snapshot_task14_root_v1(paths.evidence_root, "task9_task12_evidence"),
+        snapshot_task14_root_v1(paths.task13_root, "task13_local_final"),
+    )
     artifacts: dict[str, Task14ArtifactRefV1] = {}
     payloads: dict[str, bytes] = {}
     json_payloads: dict[str, object] = {}
@@ -441,6 +447,8 @@ def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
         snapshot_task14_root_v1(paths.evidence_root, "task9_task12_evidence"),
         snapshot_task14_root_v1(paths.task13_root, "task13_local_final"),
     )
+    if snapshots != initial_snapshots:
+        raise RuntimeError("Task 14 source roots changed during validation")
     return Task14LoadedSourcesV1(
         paths=paths,
         artifacts=MappingProxyType(artifacts),
@@ -459,6 +467,8 @@ def revalidate_task14_sources_v1(loaded: Task14LoadedSourcesV1) -> bool:
         return bool(
             refreshed.aggregate_snapshot_sha256 == loaded.aggregate_snapshot_sha256
             and dict(refreshed.artifacts) == dict(loaded.artifacts)
+            and dict(refreshed.payloads) == dict(loaded.payloads)
+            and dict(refreshed.json_payloads) == dict(loaded.json_payloads)
         )
     except Exception:
         return False

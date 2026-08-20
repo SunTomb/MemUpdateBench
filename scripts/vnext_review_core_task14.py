@@ -48,7 +48,7 @@ def main(
     try:
         args = parser.parse_args(argv)
     except SystemExit:
-        raise
+        return EXIT_USAGE
     if not args.execute:
         print("Task 14 final review requires explicit --execute", file=sys.stderr)
         return EXIT_USAGE
@@ -64,6 +64,7 @@ def main(
     if runtime.runtime_revision != args.source_revision:
         print("Task 14 rejected untrusted runtime: source revision mismatch", file=sys.stderr)
         return EXIT_UNTRUSTED_RUNTIME
+    publication_started = False
     try:
         loaded = load_task14_sources_v1(
             Task14SourcePathsV1(
@@ -75,6 +76,7 @@ def main(
                 remote_task13_staging_path=args.remote_task13_staging,
             )
         )
+        publication_started = True
         result = publish_task14_review_v1(
             loaded,
             review_id=args.review_id,
@@ -86,15 +88,25 @@ def main(
         print(f"Task 14 publication rejected: {exc}", file=sys.stderr)
         return EXIT_PUBLICATION
     except RuntimeError as exc:
-        if "source" in str(exc).lower() or "snapshot" in str(exc).lower():
+        message = str(exc).lower()
+        if "runtime" in message:
+            print(f"Task 14 rejected untrusted runtime: {exc}", file=sys.stderr)
+            return EXIT_UNTRUSTED_RUNTIME
+        if "source" in message or "snapshot" in message or "current roots" in message:
             print(f"Task 14 stale source rejected: {exc}", file=sys.stderr)
             return EXIT_STALE_SOURCE
         print(f"Task 14 review rejected: {exc}", file=sys.stderr)
-        return EXIT_USAGE
+        return EXIT_PUBLICATION if publication_started else EXIT_USAGE
     except OSError as exc:
-        print(f"Task 14 publication failed: {exc}", file=sys.stderr)
-        return EXIT_PUBLICATION
+        if publication_started:
+            print(f"Task 14 publication failed: {exc}", file=sys.stderr)
+            return EXIT_PUBLICATION
+        print(f"Task 14 review rejected: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     except (TypeError, ValueError) as exc:
+        if publication_started:
+            print(f"Task 14 publication failed: {exc}", file=sys.stderr)
+            return EXIT_PUBLICATION
         print(f"Task 14 review rejected: {exc}", file=sys.stderr)
         return EXIT_USAGE
 

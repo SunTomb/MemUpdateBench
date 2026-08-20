@@ -127,9 +127,13 @@ class Task14EvidenceGraphV1(ImmutableContractModel):
                 raise ValueError(f"{item.evidence_kind} cannot be accuracy evidence")
             by_id[item.node_id] = item
         edge_keys: set[tuple[str, str, str]] = set()
+        adjacency: dict[str, set[str]] = {node_id: set() for node_id in by_id}
         for edge in self.edges:
             if edge.source_node_id not in by_id or edge.target_node_id not in by_id:
                 raise ValueError("evidence graph edge references a foreign node")
+            if edge.source_node_id == edge.target_node_id:
+                raise ValueError("evidence graph cannot contain self-cycles")
+            adjacency[edge.source_node_id].add(edge.target_node_id)
             key = (edge.source_node_id, edge.target_node_id, edge.edge_type)
             if key in edge_keys:
                 raise ValueError("evidence graph contains duplicate edges")
@@ -138,6 +142,22 @@ class Task14EvidenceGraphV1(ImmutableContractModel):
                 raise ValueError("evidence edge source hash mismatch")
             if edge.target_sha256 != by_id[edge.target_node_id].artifact.sha256:
                 raise ValueError("evidence edge target hash mismatch")
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node_id: str) -> None:
+            if node_id in visiting:
+                raise ValueError("evidence graph must be acyclic")
+            if node_id in visited:
+                return
+            visiting.add(node_id)
+            for target in adjacency[node_id]:
+                visit(target)
+            visiting.remove(node_id)
+            visited.add(node_id)
+
+        for node_id in adjacency:
+            visit(node_id)
         return self
 
 
@@ -167,7 +187,7 @@ class Task14StructuralReportV1(ImmutableContractModel):
     )
     report_id: StrictStr = Field(min_length=1)
     review_id: StrictStr = Field(min_length=1)
-    trusted_source_revision: StrictStr = Field(min_length=1)
+    trusted_source_revision: StrictStr = Field(pattern=r"^[0-9a-f]{40}$")
     trusted_source_tree_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     graph: Task14EvidenceGraphV1
     checks: tuple[Task14CheckV1, ...]
@@ -205,7 +225,7 @@ class Task14AttestationV1(ImmutableContractModel):
     )
     report_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     graph_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
-    trusted_source_revision: StrictStr = Field(min_length=1)
+    trusted_source_revision: StrictStr = Field(pattern=r"^[0-9a-f]{40}$")
     trusted_source_tree_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     source_snapshot_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     final_approval_at_verification: StrictBool
@@ -336,6 +356,26 @@ def verify_task14_release_v1(
         )
     ):
         raise TypeError("Task 14 release verification requires exact contract types")
+    from mub.vnext.release.task14_review import (
+        TASK14_REQUIRED_CHECK_IDS,
+        TASK14_REQUIRED_EDGE_TRIPLES,
+        TASK14_REQUIRED_EXCLUSIONS,
+        TASK14_REQUIRED_NODE_IDS,
+    )
+
+    if {item.check_id for item in report.checks} != TASK14_REQUIRED_CHECK_IDS:
+        raise ValueError("Task 14 report lacks required checks")
+    if not all(item.passed for item in report.checks) or report.findings:
+        raise ValueError("Task 14 report is not structurally ready")
+    if {item.node_id for item in report.graph.nodes} != TASK14_REQUIRED_NODE_IDS:
+        raise ValueError("Task 14 graph lacks required evidence nodes")
+    if {
+        (item.source_node_id, item.target_node_id, item.edge_type)
+        for item in report.graph.edges
+    } != TASK14_REQUIRED_EDGE_TRIPLES:
+        raise ValueError("Task 14 graph lacks required evidence edges")
+    if report.exclusions != TASK14_REQUIRED_EXCLUSIONS:
+        raise ValueError("Task 14 report lacks required exclusions")
     if attestation.report_sha256 != task14_report_hash_v1(report):
         raise ValueError("Task 14 attestation report hash mismatch")
     if attestation.graph_sha256 != task14_graph_hash_v1(report.graph):

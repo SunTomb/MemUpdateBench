@@ -71,7 +71,7 @@ def test_atomic_publication_reopens_exact_five_file_final(loaded_sources, tmp_pa
     assert result.final_approved
     assert result.output_root == output.resolve()
     assert sorted(item.name for item in output.iterdir()) == sorted(TASK14_ARTIFACT_PATHS)
-    reopened = verify_task14_root_v1(output)
+    reopened = verify_task14_root_v1(output, loaded_sources=loaded_sources)
     assert reopened.final_approved
     assert result.index_sha256 == hashlib.sha256((output / TASK14_ARTIFACT_PATHS[4]).read_bytes()).hexdigest()
 
@@ -85,7 +85,7 @@ def test_existing_output_root_is_never_overwritten(loaded_sources, tmp_path: Pat
             loaded_sources,
             review_id="existing",
             trusted_source_revision="e" * 40,
-        trusted_source_tree_sha256="a" * 64,
+            trusted_source_tree_sha256="a" * 64,
             output_root=output,
         )
     assert (output / "foreign").read_text(encoding="utf-8") == "keep"
@@ -110,11 +110,45 @@ def test_source_change_in_pre_publish_leaves_no_final(
             loaded_sources,
             review_id="source-race",
             trusted_source_revision="e" * 40,
-        trusted_source_tree_sha256="a" * 64,
+            trusted_source_tree_sha256="a" * 64,
             output_root=output,
         )
     assert not output.exists()
     assert not tuple(tmp_path.glob(".mub-task14-stage-*"))
+
+
+def test_output_root_symlink_is_rejected(loaded_sources, tmp_path: Path) -> None:
+    target = tmp_path / "target" / "final"
+    output = tmp_path / "linked-output"
+    try:
+        output.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="link|reparse"):
+        publish_task14_review_v1(
+            loaded_sources,
+            review_id="linked",
+            trusted_source_revision="e" * 40,
+            trusted_source_tree_sha256="a" * 64,
+            output_root=output,
+        )
+    assert not target.exists()
+
+
+def test_cleanup_preserves_foreign_same_name_member(tmp_path: Path) -> None:
+    import mub.vnext.release.task14_publish as module
+
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    member = staging / TASK14_ARTIFACT_PATHS[0]
+    member.write_bytes(b"foreign")
+    metadata = staging.stat()
+    module._cleanup_owned_staging(
+        staging,
+        (metadata.st_dev, metadata.st_ino),
+        {TASK14_ARTIFACT_PATHS[0]: b"expected"},
+    )
+    assert member.read_bytes() == b"foreign"
 
 
 def test_reopen_rejects_index_tamper(loaded_sources, tmp_path: Path) -> None:
@@ -130,4 +164,4 @@ def test_reopen_rejects_index_tamper(loaded_sources, tmp_path: Path) -> None:
     raw = index.read_bytes()
     index.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
     with pytest.raises(Exception):
-        verify_task14_root_v1(output)
+        verify_task14_root_v1(output, loaded_sources=loaded_sources)

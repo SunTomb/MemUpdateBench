@@ -42,6 +42,14 @@ def test_real_task14_source_inventory_closes_all_frozen_hashes() -> None:
     assert revalidate_task14_sources_v1(loaded)
 
 
+def test_revalidation_rejects_mutated_loaded_payloads() -> None:
+    loaded = load_task14_sources_v1(paths())
+    loaded.json_payloads["task13_audit/core_task13_bc82566_v1_audit.json"][
+        "status"
+    ] = "forged"
+    assert not revalidate_task14_sources_v1(loaded)
+
+
 def test_source_inventory_rejects_hash_tamper(tmp_path: Path) -> None:
     copied = tmp_path / "evidence"
     shutil.copytree(EVIDENCE, copied)

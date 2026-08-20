@@ -64,7 +64,7 @@ def report(*, passed: bool = True) -> Task14StructuralReportV1:
     return Task14StructuralReportV1(
         report_id="review-1",
         review_id="review-1",
-        trusted_source_revision="rev-1",
+        trusted_source_revision="e" * 40,
         trusted_source_tree_sha256=H,
         graph=g,
         checks=(check(passed=passed),),
@@ -189,6 +189,21 @@ def test_graph_rejects_duplicate_foreign_invalid_edges_and_forbidden_accuracy() 
             ),
         )
 
+    with pytest.raises(ValidationError, match="acyclic"):
+        Task14EvidenceGraphV1(
+            nodes=(left, right),
+            edges=(
+                edge,
+                Task14EvidenceEdgeV1(
+                    source_node_id="right",
+                    target_node_id="left",
+                    edge_type="depends_on",
+                    source_sha256=H2,
+                    target_sha256=H,
+                ),
+            ),
+        )
+
     forbidden = Task14EvidenceNodeV1(
         node_id="mem0",
         evidence_kind="mem0_admission",
@@ -224,7 +239,7 @@ def test_report_status_is_derived_and_cannot_be_caller_falsified() -> None:
         Task14StructuralReportV1(
             report_id="review-1",
             review_id="review-1",
-            trusted_source_revision="rev-1",
+            trusted_source_revision="e" * 40,
             graph=ready.graph,
             checks=(check(),),
             findings=(),
@@ -260,17 +275,10 @@ def test_manifest_and_index_have_exact_acyclic_order() -> None:
         Task14RootIndexV1(artifacts=(index.artifacts[1], *index.artifacts[1:]))
 
 
-def test_verified_wrapper_requires_matching_non_self_hash_chain_and_is_immutable() -> None:
+def test_verified_wrapper_rejects_hash_valid_but_semantically_incomplete_release() -> None:
     value = report()
     attestation = attestation_for(value)
     manifest = manifest_for(value, attestation)
     index = index_for(value, attestation)
-    verified = verify_task14_release_v1(value, attestation, manifest, index)
-    assert isinstance(verified, VerifiedCoreFinalRelease)
-    assert verified.index == index
-    with pytest.raises(AttributeError):
-        verified.report = value
-    with pytest.raises(ValueError):
-        verify_task14_release_v1(value, attestation, manifest, index.model_copy(
-            update={"artifacts": (index.artifacts[0], index.artifacts[1], index.artifacts[2], ref(TASK14_ARTIFACT_PATHS[3], H4))}
-        ))
+    with pytest.raises(ValueError, match="required checks"):
+        verify_task14_release_v1(value, attestation, manifest, index)

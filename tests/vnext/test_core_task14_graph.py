@@ -47,7 +47,7 @@ def test_real_structural_report_is_ready_with_explicit_exclusions() -> None:
     report = build_task14_structural_report_v1(
         loaded_sources(),
         review_id="core-task14-test",
-        trusted_source_revision="test-revision",
+        trusted_source_revision="e" * 40,
         trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "READY_FOR_VERIFICATION"
@@ -88,7 +88,7 @@ def test_task13_unsupported_policy_tamper_derives_not_approved() -> None:
     report = build_task14_structural_report_v1(
         forged,
         review_id="tampered",
-        trusted_source_revision="test-revision",
+        trusted_source_revision="e" * 40,
         trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "NOT_APPROVED"
@@ -107,7 +107,7 @@ def test_task12_incomplete_matrix_derives_not_approved() -> None:
     report = build_task14_structural_report_v1(
         forged,
         review_id="tampered",
-        trusted_source_revision="test-revision",
+        trusted_source_revision="e" * 40,
         trusted_source_tree_sha256="a" * 64,
     )
     assert report.status == "NOT_APPROVED"

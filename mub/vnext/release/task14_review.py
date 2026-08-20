@@ -13,6 +13,7 @@ from mub.vnext.audit.core_review import (
     verify_core_audit_verification_attestation,
 )
 from mub.vnext.release.task14_contracts import (
+    Task14ArtifactRefV1,
     Task14CheckV1,
     Task14EvidenceEdgeV1,
     Task14EvidenceGraphV1,
@@ -60,6 +61,25 @@ TASK14_REQUIRED_EXCLUSIONS = (
         reason="The verified remote Task 13 staging root is not a published final root.",
     ),
 )
+TASK14_REQUIRED_CHECK_IDS = frozenset(
+    {
+        "core_release_final",
+        "core_human_audit_verified",
+        "task9_implementation_bound",
+        "task9_engineering_bound",
+        "task10_mem0_admitted",
+        "task10_canaries_explicit_unsupported",
+        "task11_models_qualified",
+        "task12_real_matrix_complete",
+        "task13_artifacts_closed",
+        "task13_unsupported_policy",
+        "task13_matrix_case_rejoin",
+        "task13_local_remote_boundary",
+        "evidence_graph_closed",
+    }
+)
+
+
 TASK14_REQUIRED_NODE_IDS = frozenset(
     {
         "core_release", "core_candidate", "core_candidate_root", "core_audit",
@@ -68,6 +88,34 @@ TASK14_REQUIRED_NODE_IDS = frozenset(
         "task12_audit", "task13_index", "task13_receipt", "task13_statistics",
         "task13_contrasts", "task13_case_records", "task13_cases", "task13_claims",
         "task13_audit", "task13_nfs_staging",
+    }
+)
+
+
+TASK14_REQUIRED_EDGE_TRIPLES = frozenset(
+    {
+        ("core_candidate", "core_release", "depends_on"),
+        ("core_candidate_root", "core_candidate", "authenticates"),
+        ("core_audit", "core_candidate", "authenticates"),
+        ("task9_implementation", "core_release", "depends_on"),
+        ("task9_provenance", "task9_implementation", "authenticates"),
+        ("task10_report", "task9_provenance", "depends_on"),
+        ("task10_decision", "task10_report", "authenticates"),
+        ("task11_provenance", "task11_qualification", "authenticates"),
+        ("task12_manifest", "core_release", "depends_on"),
+        ("task12_manifest", "task10_decision", "depends_on"),
+        ("task12_manifest", "task11_provenance", "depends_on"),
+        ("task12_summary", "task12_manifest", "derived_from"),
+        ("task12_audit", "task12_summary", "authenticates"),
+        ("task13_index", "task12_audit", "derived_from"),
+        ("task13_receipt", "task13_index", "authenticates"),
+        ("task13_statistics", "task13_receipt", "derived_from"),
+        ("task13_contrasts", "task13_receipt", "derived_from"),
+        ("task13_case_records", "task13_receipt", "derived_from"),
+        ("task13_cases", "task13_case_records", "authenticates"),
+        ("task13_claims", "task13_receipt", "derived_from"),
+        ("task13_audit", "task13_index", "authenticates"),
+        ("task13_nfs_staging", "task13_index", "excludes"),
     }
 )
 
@@ -113,7 +161,20 @@ def build_task14_evidence_graph_v1(
         _node(loaded, node_id="core_candidate", role="core/audit/gate_report.json", evidence_kind="core_candidate_receipt"),
         _node(loaded, node_id="core_candidate_root", role="core/task_release_manifest.json", evidence_kind="core_candidate_root_digest"),
         _node(loaded, node_id="core_audit", role="core/audit/gate_verification_attestation.json", evidence_kind="core_human_audit"),
-        _node(loaded, node_id="task9_implementation", role="task9/model_provenance.json", evidence_kind="task9_implementation", scope=f"revision:{TASK14_TASK9_IMPLEMENTATION_REVISION}"),
+        Task14EvidenceNodeV1(
+            node_id="task9_implementation",
+            evidence_kind="task9_implementation",
+            artifact=Task14ArtifactRefV1(
+                artifact_id="task9-implementation-revision",
+                path="task9/implementation_revision",
+                sha256=hashlib.sha256(TASK14_TASK9_IMPLEMENTATION_REVISION.encode("ascii")).hexdigest(),
+                media_type="application/vnd.git.commit",
+                root_kind="immutable_local",
+                source_location=f"git:{TASK14_TASK9_IMPLEMENTATION_REVISION}",
+            ),
+            accuracy_evidence=False,
+            scope=f"revision:{TASK14_TASK9_IMPLEMENTATION_REVISION}",
+        ),
         _node(loaded, node_id="task9_provenance", role="task9/model_provenance.json", evidence_kind="task9_engineering"),
         _node(loaded, node_id="task10_report", role="task10/external_admission_report.json", evidence_kind="mem0_admission"),
         _node(loaded, node_id="task10_decision", role="task10/admission_decision.json", evidence_kind="mem0_admission"),
@@ -269,7 +330,7 @@ def build_task14_structural_report_v1(
         _check("task13_unsupported_policy", _task13_policy_ready(loaded), "Task 13 unsupported/null metrics remain typed and nonnumeric.", "task13_audit"),
         _check("task13_matrix_case_rejoin", isinstance(task13_audit, dict) and task13_audit.get("matrix_case_rejoin") == {"status": "verified", "runs": 18, "cases": 57, "observations": 1440}, "Task 13 cases rejoin 18 Task 12 runs and 1,440 observations.", "task13_case_records", "task13_cases", "task13_audit"),
         _check("task13_local_remote_boundary", isinstance(task13_audit, dict) and task13_audit.get("remote_final_root_absent") is True and task13_audit.get("local_output_root") == "results/vnext/core_task13_bc82566_v1" and ".mub-task13-stage-" in loaded.paths.remote_task13_staging_path, "Local published final and remote NFS staging evidence remain distinct.", "task13_audit", "task13_nfs_staging"),
-        _check("evidence_graph_closed", {item.node_id for item in graph.nodes} == TASK14_REQUIRED_NODE_IDS and len(graph.edges) == 22, "All required upstream evidence nodes and edges are closed; Task 14 output bindings are carried by manifest/index to avoid self-hash cycles.", *(item.node_id for item in graph.nodes)),
+        _check("evidence_graph_closed", {item.node_id for item in graph.nodes} == TASK14_REQUIRED_NODE_IDS and {(item.source_node_id, item.target_node_id, item.edge_type) for item in graph.edges} == TASK14_REQUIRED_EDGE_TRIPLES, "All required upstream evidence nodes and edges are closed; Task 14 output bindings are carried by manifest/index to avoid self-hash cycles.", *(item.node_id for item in graph.nodes)),
     )
     findings: tuple[Task14FindingV1, ...] = ()
     if not all(item.passed for item in checks):
@@ -296,7 +357,10 @@ def build_task14_structural_report_v1(
 
 
 __all__ = [
+    "TASK14_REQUIRED_CHECK_IDS",
+    "TASK14_REQUIRED_EDGE_TRIPLES",
     "TASK14_REQUIRED_EXCLUSIONS",
+    "TASK14_REQUIRED_NODE_IDS",
     "build_task14_evidence_graph_v1",
     "build_task14_structural_report_v1",
 ]

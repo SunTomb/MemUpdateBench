@@ -111,3 +111,15 @@ def test_stale_source_and_existing_output_have_distinct_codes(
         lambda *args, **kwargs: (_ for _ in ()).throw(FileExistsError("exists")),
     )
     assert command.main(args(tmp_path), repository_root=tmp_path) == command.EXIT_PUBLICATION
+    monkeypatch.setattr(
+        command,
+        "publish_task14_review_v1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("reopened final root differs")),
+    )
+    assert command.main(args(tmp_path), repository_root=tmp_path) == command.EXIT_PUBLICATION
+    monkeypatch.setattr(
+        command,
+        "publish_task14_review_v1",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("runtime changed during publication")),
+    )
+    assert command.main(args(tmp_path), repository_root=tmp_path) == command.EXIT_UNTRUSTED_RUNTIME
