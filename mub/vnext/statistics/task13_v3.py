@@ -215,10 +215,15 @@ class Task13SourceSnapshotV1:
     files: tuple[_SourceSnapshot, ...]
     roots: tuple[_DirectoryIdentity, ...]
     root_members: tuple[_RootMemberSnapshot, ...]
+    shallow_roots: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.files or not self.roots or not self.root_members:
             raise ValueError("Task 13 source snapshot requires source files, roots, and membership")
+        root_keys = {_snapshot_path_key(root.path) for root in self.roots}
+        shallow_keys = tuple(_snapshot_path_key(root) for root in self.shallow_roots)
+        if len(set(shallow_keys)) != len(shallow_keys) or not set(shallow_keys) <= root_keys:
+            raise ValueError("Task 13 shallow roots must be unique registered roots")
 
 
 @dataclass(frozen=True, slots=True)
@@ -612,9 +617,12 @@ def capture_task13_source_snapshot_v3(
     )
     if any(not stat.S_ISDIR(_lstat(root.path).st_mode) for root in roots):
         raise NotADirectoryError("Task 13 source roots must be directories")
+    normalized_shallow_roots = tuple(
+        _absolute_no_reparse(root, require_exists=True) for root in shallow_roots
+    )
     shallow_keys = {
-        os.path.normcase(os.path.abspath(os.fspath(_absolute_no_reparse(root, require_exists=True))))
-        for root in shallow_roots
+        os.path.normcase(os.path.abspath(os.fspath(root)))
+        for root in normalized_shallow_roots
     }
     root_keys = {os.path.normcase(os.path.abspath(os.fspath(root.path))) for root in roots}
     if not shallow_keys <= root_keys:
@@ -637,6 +645,7 @@ def capture_task13_source_snapshot_v3(
         files=_snapshot_source_files(source_paths, recursive_roots),
         roots=roots,
         root_members=root_members,
+        shallow_roots=normalized_shallow_roots,
     )
 
 
@@ -660,14 +669,16 @@ def _revalidate_source_snapshot(snapshot: Task13SourceSnapshotV1) -> None:
         ):
             raise RuntimeError(f"Task 13 source root changed during publication: {root.path}")
     observed_members: list[_RootMemberSnapshot] = []
+    shallow_keys = {_snapshot_path_key(path) for path in snapshot.shallow_roots}
     for root in snapshot.roots:
         expected_members = tuple(
             member for member in snapshot.root_members if member.root == root.path
         )
-        if expected_members == (
-            _RootMemberSnapshot(root.path, ".", "directory", root.identity),
-        ):
-            observed_members.extend(expected_members)
+        if _snapshot_path_key(root.path) in shallow_keys:
+            marker = (_RootMemberSnapshot(root.path, ".", "directory", root.identity),)
+            if expected_members != marker:
+                raise RuntimeError("Task 13 shallow source root snapshot is malformed")
+            observed_members.extend(marker)
         else:
             observed_members.extend(_snapshot_root_members_v3(root.path))
     if tuple(observed_members) != snapshot.root_members:
@@ -727,8 +738,12 @@ def _validate_source_snapshot_against_loader_capability_v3(
         if observed.path != expected.path or observed.identity != expected.identity or observed.sha256 != expected.sha256:
             raise ValueError(f"Task 13 source snapshot differs for registered control: {expected.name}")
 
-    checked_repository = _absolute_no_reparse(repository_root, require_exists=True)
     repository_capability = capability.roots["repository"]
+    expected_shallow = (_snapshot_path_key(repository_capability.path),)
+    observed_shallow = tuple(_snapshot_path_key(path) for path in snapshot.shallow_roots)
+    if observed_shallow != expected_shallow:
+        raise ValueError("Task 13 source snapshot must shallow-snapshot only the loader repository root")
+    checked_repository = _absolute_no_reparse(repository_root, require_exists=True)
     if (
         checked_repository != repository_capability.path
         or _identity(checked_repository) != repository_capability.identity
@@ -979,6 +994,8 @@ def _commit_staged_task13_root_v3(
     parent_identity: _DirectoryIdentity,
     source_snapshot: Task13SourceSnapshotV1,
     ownership: tuple[_OwnedStagingMember, ...] = (),
+    repository_root: Path | None = None,
+    expected_runtime: Task13RuntimeBindingV1 | None = None,
 ) -> None:
     if not ownership and _present(staging) and tuple(staging.iterdir()):
         raise RuntimeError("Task 13 staging ownership is required before commit")
@@ -988,6 +1005,10 @@ def _commit_staged_task13_root_v3(
         raise FileExistsError("Task 13 final root exists or parent changed before commit")
     staging_identity = _identity(staging)
     _revalidate_source_snapshot(source_snapshot)
+    if (repository_root is None) != (expected_runtime is None):
+        raise ValueError("Task 13 commit runtime binding arguments must be supplied together")
+    if repository_root is not None and expected_runtime is not None:
+        _revalidate_clean_task13_runtime_v3(repository_root, expected_runtime)
     if ownership:
         _validate_staging_ownership_v3(staging, ownership)
     _directory_commit_noreplace_v3(staging, final_root)
@@ -1113,6 +1134,22 @@ def _safe_cleanup_staging_v3(
     staging.rmdir()
 
 
+def _publication_runtime_binding_v3(
+    publication: Task13PublicationV1,
+) -> Task13RuntimeBindingV1:
+    raw = publication.artifact_bytes["statistics_receipt.json"]
+    try:
+        receipt = Task13StatisticsReceiptV1.model_validate_json(raw)
+    except Exception as exc:
+        raise ValueError("Task 13 publication receipt bytes are invalid") from exc
+    if canonical_json_bytes(receipt) != raw:
+        raise ValueError("Task 13 publication receipt bytes are not canonical")
+    return Task13RuntimeBindingV1(
+        receipt.task13_runtime_revision,
+        receipt.task13_runtime_tree_sha256,
+    )
+
+
 def publish_task13_artifacts_v3(
     publication: Task13PublicationV1,
     *,
@@ -1179,6 +1216,8 @@ def publish_task13_artifacts_v3(
                 staging=staging, final_root=output_root,
                 parent_identity=parent_identity, source_snapshot=source_snapshot,
                 ownership=ownership,
+                repository_root=repository_root,
+                expected_runtime=_publication_runtime_binding_v3(publication),
             )
             committed = True
         except OSError as exc:
@@ -1212,6 +1251,37 @@ def _validate_staged_member_v3(path: Path, name: str, publication: Task13Publica
     ref = next(ref for ref in publication.artifact_refs.ordered() if ref.path == name)
     if hashlib.sha256(content).hexdigest() != ref.sha256:
         raise ValueError("Task 13 staged artifact hash changed")
+
+
+def _revalidate_clean_task13_runtime_v3(
+    repository_root: Path,
+    expected: Task13RuntimeBindingV1,
+) -> None:
+    if not isinstance(expected, Task13RuntimeBindingV1):
+        raise TypeError("expected runtime must be Task13RuntimeBindingV1")
+    root = _absolute_no_reparse(repository_root, require_exists=True)
+    observed = current_clean_task13_runtime_v3(root)
+    if observed != expected:
+        raise RuntimeError("Task 13 repository runtime changed before commit")
+    status = subprocess.run(
+        ("git", "-C", str(root), "status", "--porcelain"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    revision = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "HEAD"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if (
+        status.returncode != 0
+        or status.stdout
+        or revision.returncode != 0
+        or revision.stdout.strip() != expected.runtime_revision
+    ):
+        raise RuntimeError("Task 13 repository runtime changed before commit")
 
 
 def current_clean_task13_runtime_v3(repository_root: Path) -> Task13RuntimeBindingV1:

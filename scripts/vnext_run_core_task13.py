@@ -92,6 +92,7 @@ def main(
             Path(args.output_root),
             (paths["core_root"], paths["evidence_root"], paths["matrix_root"], repository_root),
         )
+        runtime = task13_publication.current_clean_task13_runtime_v3(repository_root)
         source_paths = (
             paths["manifest"], paths["plan"], paths["matrix_manifest"],
             paths["matrix_summary"], paths["integrity_audit"], paths["statistics_config"],
@@ -125,7 +126,6 @@ def main(
         task13_publication._revalidate_source_snapshot(source_snapshot)
         config = _load_config(paths["statistics_config"])
         task13_publication._revalidate_source_snapshot(source_snapshot)
-        runtime = task13_publication.current_clean_task13_runtime_v3(repository_root)
         publication = task13_publication.build_task13_publication_v3(
             matrix=matrix,
             bootstrap_config=config,

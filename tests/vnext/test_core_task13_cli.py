@@ -55,10 +55,18 @@ def task13_arguments(tmp_path, authenticated_fixture):
 def fixed_runtime_binding(monkeypatch):
     import scripts.vnext_run_core_task13 as command
 
+    binding = Task13RuntimeBindingV1("a" * 40, "b" * 64)
     monkeypatch.setattr(
         command.task13_publication,
         "current_clean_task13_runtime_v3",
-        lambda repository_root: Task13RuntimeBindingV1("a" * 40, "b" * 64),
+        lambda repository_root: binding,
+    )
+    monkeypatch.setattr(
+        command.task13_publication,
+        "_revalidate_clean_task13_runtime_v3",
+        lambda repository_root, expected: None
+        if expected == binding
+        else (_ for _ in ()).throw(RuntimeError("runtime changed")),
     )
 
 
@@ -957,7 +965,7 @@ def test_task13_parent_fsync_unsupported_is_safe_but_other_errors_report_commit(
     assert (parent / "final-error").is_dir()
 
 
-def test_task13_direct_publish_rejects_unrelated_or_omitted_registered_root_before_staging(
+def test_task13_direct_publish_enforces_loader_roots_and_repository_only_shallow_before_staging(
     tmp_path, monkeypatch
 ):
     import mub.vnext.statistics.task13_v3 as publication
@@ -974,6 +982,8 @@ def test_task13_direct_publish_rejects_unrelated_or_omitted_registered_root_befo
     other = tmp_path / "other"
     for root in (repository, core, evidence, matrix_root, other):
         root.mkdir()
+    for root in (core, evidence, matrix_root):
+        (root / "member").write_bytes(root.name.encode("utf-8"))
     controls = {}
     for name in (
         "preparation_manifest", "plan", "matrix_manifest", "matrix_summary", "integrity_audit"
@@ -1008,3 +1018,124 @@ def test_task13_direct_publish_rejects_unrelated_or_omitted_registered_root_befo
             )
         assert not output.exists()
         assert not tuple(tmp_path.glob(".mub-task13-stage-*"))
+
+    all_roots = (repository, core, evidence, matrix_root)
+    weakened = publication.capture_task13_source_snapshot_v3(
+        source_paths, all_roots, shallow_roots=all_roots
+    )
+    with pytest.raises(ValueError, match="shallow-snapshot only"):
+        publication._validate_source_snapshot_against_loader_capability_v3(
+            weakened, capability, repository
+        )
+
+    forged_declaration = replace(weakened, shallow_roots=(repository.resolve(),))
+    forged_output = tmp_path / "output-forged-shallow-declaration"
+    with pytest.raises(RuntimeError, match="membership|malformed"):
+        publication.publish_task13_artifacts_v3(
+            object(), matrix=object(), output_root=forged_output,
+            source_snapshot=forged_declaration, repository_root=repository,
+        )
+    assert not forged_output.exists()
+    assert not tuple(tmp_path.glob(".mub-task13-stage-*"))
+
+    repository_only = publication.capture_task13_source_snapshot_v3(
+        source_paths, all_roots, shallow_roots=(repository,)
+    )
+    publication._validate_source_snapshot_against_loader_capability_v3(
+        repository_only, capability, repository
+    )
+
+
+def test_task13_publish_runtime_is_bound_to_registered_receipt_bytes(
+    task13_arguments, fixed_runtime_binding, monkeypatch
+):
+    import mub.vnext.statistics.task13_v3 as publication
+    from scripts.vnext_run_core_task13 import main
+
+    original = publication.build_task13_publication_v3
+
+    def mutate_receipt_field(**kwargs):
+        built = original(**kwargs)
+        forged = built.receipt.model_copy(
+            update={
+                "task13_runtime_revision": "c" * 40,
+                "task13_runtime_tree_sha256": "d" * 64,
+            }
+        )
+        object.__setattr__(built, "receipt", forged)
+        return built
+
+    monkeypatch.setattr(publication, "build_task13_publication_v3", mutate_receipt_field)
+    assert main(_cli_args(task13_arguments)) == 0
+    assert task13_arguments["output_root"].is_dir()
+
+
+@pytest.mark.parametrize("mutation", ("unchanged", "tracked_edit", "head_change"))
+def test_task13_commit_revalidates_repository_runtime_before_rename(
+    tmp_path, monkeypatch, mutation
+):
+    import mub.vnext.statistics.task13_v3 as publication
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(("git", "init", "-q", str(repository)), check=True)
+    subprocess.run(
+        ("git", "-C", str(repository), "config", "user.email", "task13@example.test"),
+        check=True,
+    )
+    subprocess.run(
+        ("git", "-C", str(repository), "config", "user.name", "Task 13"),
+        check=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_bytes(b"first\n")
+    subprocess.run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+    subprocess.run(("git", "-C", str(repository), "commit", "-qm", "first"), check=True)
+    expected_runtime = publication.current_clean_task13_runtime_v3(repository)
+
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "source"
+    source.write_bytes(b"source")
+    snapshot = publication.capture_task13_source_snapshot_v3((source,), (sources,))
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / "staging"
+    staging.mkdir()
+    parent_identity = publication._DirectoryIdentity(parent, publication._identity(parent))
+
+    if mutation == "tracked_edit":
+        tracked.write_bytes(b"dirty\n")
+    elif mutation == "head_change":
+        tracked.write_bytes(b"second\n")
+        subprocess.run(("git", "-C", str(repository), "add", "tracked.txt"), check=True)
+        subprocess.run(("git", "-C", str(repository), "commit", "-qm", "second"), check=True)
+
+    renamed = False
+
+    def rename(stage, final):
+        nonlocal renamed
+        renamed = True
+        stage.rename(final)
+
+    monkeypatch.setattr(publication, "_directory_commit_noreplace_v3", rename)
+
+    def commit():
+        return publication._commit_staged_task13_root_v3(
+            staging=staging,
+            final_root=parent / "final",
+            parent_identity=parent_identity,
+            source_snapshot=snapshot,
+            repository_root=repository,
+            expected_runtime=expected_runtime,
+        )
+
+    if mutation == "unchanged":
+        commit()
+        assert renamed
+        assert (parent / "final").is_dir()
+    else:
+        with pytest.raises(RuntimeError, match="clean repository|runtime changed"):
+            commit()
+        assert not renamed
+        assert not (parent / "final").exists()
