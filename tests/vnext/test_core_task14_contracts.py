@@ -23,7 +23,6 @@ from mub.vnext.release.task14_contracts import (
     task14_index_hash_v1,
     task14_manifest_hash_v1,
     task14_report_hash_v1,
-    verify_task14_release_v1,
 )
 
 
@@ -279,10 +278,10 @@ def test_manifest_and_index_have_exact_acyclic_order() -> None:
         Task14RootIndexV1(artifacts=(index.artifacts[1], *index.artifacts[1:]))
 
 
-def test_verified_wrapper_rejects_hash_valid_but_semantically_incomplete_release() -> None:
+def test_verified_wrapper_cannot_be_constructed_or_minted_without_current_sources() -> None:
     value = report()
     attestation = attestation_for(value)
     manifest = manifest_for(value, attestation)
     index = index_for(value, attestation)
-    with pytest.raises(ValueError, match="required checks"):
-        verify_task14_release_v1(value, attestation, manifest, index)
+    with pytest.raises(TypeError, match="current-source"):
+        VerifiedCoreFinalRelease(value, attestation, manifest, index)

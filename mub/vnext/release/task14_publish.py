@@ -33,8 +33,17 @@ from mub.vnext.release.task14_sources import (
 from mub.vnext.statistics.task13_v3 import (
     _directory_commit_noreplace_v3,
     _fsync_parent_directory_v3,
+    _task13_parent_lock_v3,
     current_clean_task13_runtime_v3,
 )
+
+
+@dataclass(frozen=True)
+class _OwnedTask14Member:
+    name: str
+    identity: tuple[int, int]
+    byte_count: int
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -325,10 +334,46 @@ def _assert_output_safe(
     return output, parent, (parent_metadata.st_dev, parent_metadata.st_ino)
 
 
+def _capture_owned_members(staging: Path) -> tuple[_OwnedTask14Member, ...]:
+    members: list[_OwnedTask14Member] = []
+    for name in TASK14_ARTIFACT_PATHS:
+        path = staging / name
+        if not _regular_single_link(path):
+            raise RuntimeError("Task 14 staged artifact has unsafe type")
+        metadata = path.stat()
+        members.append(
+            _OwnedTask14Member(
+                name=name,
+                identity=(metadata.st_dev, metadata.st_ino),
+                byte_count=metadata.st_size,
+                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        )
+    if tuple(sorted(item.name for item in staging.iterdir())) != tuple(
+        sorted(TASK14_ARTIFACT_PATHS)
+    ):
+        raise RuntimeError("Task 14 staged ownership set is incomplete")
+    return tuple(members)
+
+
+def _owned_member_matches(staging: Path, member: _OwnedTask14Member) -> bool:
+    path = staging / member.name
+    try:
+        metadata = path.stat()
+        return bool(
+            _regular_single_link(path)
+            and (metadata.st_dev, metadata.st_ino) == member.identity
+            and metadata.st_size == member.byte_count
+            and hashlib.sha256(path.read_bytes()).hexdigest() == member.sha256
+        )
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def _cleanup_owned_staging(
     staging: Path,
     staging_identity: tuple[int, int],
-    expected: Mapping[str, bytes],
+    ownership: tuple[_OwnedTask14Member, ...] | None,
 ) -> None:
     if not staging.exists():
         return
@@ -336,16 +381,21 @@ def _cleanup_owned_staging(
     if (metadata.st_dev, metadata.st_ino) != staging_identity or staging.is_symlink():
         return
     entries = tuple(staging.iterdir())
-    for entry in entries:
-        expected_bytes = expected.get(entry.name)
-        if (
-            expected_bytes is None
-            or not _regular_single_link(entry)
-            or entry.read_bytes() != expected_bytes
-        ):
+    if ownership is None:
+        if entries:
             return
-    for entry in entries:
-        entry.unlink()
+        staging.rmdir()
+        return
+    if tuple(sorted(entry.name for entry in entries)) != tuple(
+        sorted(member.name for member in ownership)
+    ):
+        return
+    if any(not _owned_member_matches(staging, member) for member in ownership):
+        return
+    for member in ownership:
+        if not _owned_member_matches(staging, member):
+            return
+        (staging / member.name).unlink()
     staging.rmdir()
 
 
@@ -368,6 +418,7 @@ def publish_task14_review_v1(
     staging.mkdir(mode=0o700)
     staging_identity = staging.stat().st_dev, staging.stat().st_ino
     committed = False
+    ownership: tuple[_OwnedTask14Member, ...] | None = None
     try:
         destinations = {
             staging / name: raw for name, raw in publication.artifact_bytes.items()
@@ -392,19 +443,27 @@ def publish_task14_review_v1(
             validators=validators,
             pre_publish=pre_publish,
         )
+        ownership = _capture_owned_members(staging)
         staged = verify_task14_root_v1(staging, loaded_sources=loaded)
         if staged.index != publication.index:
             raise ValueError("Task 14 staged publication differs from computed index")
-        current_parent = parent.stat()
-        current_staging = staging.stat()
-        if (
-            (current_parent.st_dev, current_parent.st_ino) != parent_identity
-            or (current_staging.st_dev, current_staging.st_ino) != staging_identity
-            or parent.is_symlink()
-            or staging.is_symlink()
+        if not revalidate_task14_sources_v1(loaded):
+            raise RuntimeError("Task 14 source changed before directory commit")
+        if not _runtime_matches(
+            loaded, trusted_source_revision, trusted_source_tree_sha256
         ):
-            raise RuntimeError("Task 14 parent or staging identity changed before commit")
-        _directory_commit_noreplace_v3(staging, output)
+            raise RuntimeError("Task 14 runtime changed before directory commit")
+        with _task13_parent_lock_v3(parent):
+            current_parent = parent.stat()
+            current_staging = staging.stat()
+            if (
+                (current_parent.st_dev, current_parent.st_ino) != parent_identity
+                or (current_staging.st_dev, current_staging.st_ino) != staging_identity
+                or parent.is_symlink()
+                or staging.is_symlink()
+            ):
+                raise RuntimeError("Task 14 parent or staging identity changed before commit")
+            _directory_commit_noreplace_v3(staging, output)
         committed = True
         final_metadata = output.stat()
         if (final_metadata.st_dev, final_metadata.st_ino) != staging_identity:
@@ -428,9 +487,7 @@ def publish_task14_review_v1(
         )
     finally:
         if not committed:
-            _cleanup_owned_staging(
-                staging, staging_identity, publication.artifact_bytes
-            )
+            _cleanup_owned_staging(staging, staging_identity, ownership)
 
 
 __all__ = [

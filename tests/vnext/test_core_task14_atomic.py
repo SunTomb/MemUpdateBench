@@ -146,7 +146,7 @@ def test_cleanup_preserves_foreign_same_name_member(tmp_path: Path) -> None:
     module._cleanup_owned_staging(
         staging,
         (metadata.st_dev, metadata.st_ino),
-        {TASK14_ARTIFACT_PATHS[0]: b"expected"},
+        None,
     )
     assert member.read_bytes() == b"foreign"
 

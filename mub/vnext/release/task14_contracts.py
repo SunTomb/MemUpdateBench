@@ -33,7 +33,6 @@ _FORBIDDEN_ACCURACY_KINDS = {
     "pilot_deterministic",
     "api_probe",
 }
-_VERIFIED_RELEASE_TOKEN = object()
 
 
 class Task14ArtifactRefV1(ImmutableContractModel):
@@ -320,17 +319,27 @@ def task14_index_hash_v1(value: Task14RootIndexV1) -> str:
     return _hash_payload(value)
 
 
-@dataclass(frozen=True)
 class VerifiedCoreFinalRelease:
-    report: Task14StructuralReportV1
-    attestation: Task14AttestationV1
-    manifest: Task14RootManifestV1
-    index: Task14RootIndexV1
-    _token: object
+    __slots__ = ("_report", "_attestation", "_manifest", "_index")
 
-    def __post_init__(self) -> None:
-        if self._token is not _VERIFIED_RELEASE_TOKEN:
-            raise TypeError("VerifiedCoreFinalRelease requires explicit verification")
+    def __init__(self, *args, **kwargs) -> None:
+        raise TypeError("VerifiedCoreFinalRelease requires current-source verification")
+
+    @property
+    def report(self) -> Task14StructuralReportV1:
+        return self._report
+
+    @property
+    def attestation(self) -> Task14AttestationV1:
+        return self._attestation
+
+    @property
+    def manifest(self) -> Task14RootManifestV1:
+        return self._manifest
+
+    @property
+    def index(self) -> Task14RootIndexV1:
+        return self._index
 
     @property
     def final_approved(self) -> bool:
@@ -339,15 +348,30 @@ class VerifiedCoreFinalRelease:
             and self.attestation.final_approval_at_verification
         )
 
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("VerifiedCoreFinalRelease is immutable")
 
-def verify_task14_release_v1(
+
+def _create_verified_release_v1(
     report: Task14StructuralReportV1,
     attestation: Task14AttestationV1,
     manifest: Task14RootManifestV1,
     index: Task14RootIndexV1,
-    *,
-    _current_source_token: object | None = None,
 ) -> VerifiedCoreFinalRelease:
+    value = object.__new__(VerifiedCoreFinalRelease)
+    object.__setattr__(value, "_report", report)
+    object.__setattr__(value, "_attestation", attestation)
+    object.__setattr__(value, "_manifest", manifest)
+    object.__setattr__(value, "_index", index)
+    return value
+
+
+def _validate_task14_release_chain_v1(
+    report: Task14StructuralReportV1,
+    attestation: Task14AttestationV1,
+    manifest: Task14RootManifestV1,
+    index: Task14RootIndexV1,
+) -> None:
     if not all(
         type(value) is expected
         for value, expected in (
@@ -409,15 +433,6 @@ def verify_task14_release_v1(
         raise ValueError("Task 14 index does not bind the manifest artifacts")
     if index.artifacts[3].sha256 != task14_manifest_hash_v1(manifest):
         raise ValueError("Task 14 index manifest hash mismatch")
-    if _current_source_token is not _VERIFIED_RELEASE_TOKEN:
-        raise TypeError("Task 14 verified release requires current-source verification")
-    return VerifiedCoreFinalRelease(
-        report=report,
-        attestation=attestation,
-        manifest=manifest,
-        index=index,
-        _token=_VERIFIED_RELEASE_TOKEN,
-    )
 
 
 def _verify_task14_release_current_v1(
@@ -426,13 +441,8 @@ def _verify_task14_release_current_v1(
     manifest: Task14RootManifestV1,
     index: Task14RootIndexV1,
 ) -> VerifiedCoreFinalRelease:
-    return verify_task14_release_v1(
-        report,
-        attestation,
-        manifest,
-        index,
-        _current_source_token=_VERIFIED_RELEASE_TOKEN,
-    )
+    _validate_task14_release_chain_v1(report, attestation, manifest, index)
+    return _create_verified_release_v1(report, attestation, manifest, index)
 
 
 # Short aliases used by downstream review/publish modules.
