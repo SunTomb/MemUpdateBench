@@ -130,7 +130,16 @@ def build_task14_evidence_graph_v1(
         _node(loaded, node_id="task13_cases", role="task13/case_index.json", evidence_kind="verified_cases", accuracy=True),
         _node(loaded, node_id="task13_claims", role="task13/claim_ledger.jsonl", evidence_kind="claim_ledger", accuracy=True),
         _node(loaded, node_id="task13_audit", role="task13_audit/core_task13_bc82566_v1_audit.json", evidence_kind="task13_independent_audit", accuracy=True),
-        _node(loaded, node_id="task13_nfs_staging", role="task13_audit/core_task13_bc82566_v1_audit.json", evidence_kind="remote_nfs_staging", accuracy=False),
+        Task14EvidenceNodeV1(
+            node_id="task13_nfs_staging",
+            evidence_kind="remote_nfs_staging",
+            artifact=loaded.artifacts["task13_audit/core_task13_bc82566_v1_audit.json"].validated_replace(
+                root_kind="remote_nfs_staging",
+                source_location=loaded.paths.remote_task13_staging_path,
+            ),
+            accuracy_evidence=False,
+            scope="verified_staging_evidence_not_published_final",
+        ),
     )
     nodes = {item.node_id: item for item in values}
     edges = (

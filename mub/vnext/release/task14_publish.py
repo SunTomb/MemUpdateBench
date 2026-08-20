@@ -72,6 +72,21 @@ def _artifact(path: str, raw: bytes) -> Task14ArtifactRefV1:
     )
 
 
+def _runtime_matches(
+    loaded: Task14LoadedSourcesV1,
+    revision: str,
+    tree_sha256: str,
+) -> bool:
+    try:
+        runtime = current_clean_task13_runtime_v3(loaded.paths.repository_root)
+        return bool(
+            runtime.runtime_revision == revision
+            and runtime.runtime_tree_sha256 == tree_sha256
+        )
+    except Exception:
+        return False
+
+
 def build_task14_publication_v1(
     loaded: Task14LoadedSourcesV1,
     *,
@@ -81,10 +96,8 @@ def build_task14_publication_v1(
 ) -> Task14PublicationV1:
     if not revalidate_task14_sources_v1(loaded):
         raise RuntimeError("Task 14 source snapshot changed before attestation")
-    runtime = current_clean_task13_runtime_v3(loaded.paths.repository_root)
-    if (
-        runtime.runtime_revision != trusted_source_revision
-        or runtime.runtime_tree_sha256 != trusted_source_tree_sha256
+    if not _runtime_matches(
+        loaded, trusted_source_revision, trusted_source_tree_sha256
     ):
         raise RuntimeError("Task 14 trusted runtime binding mismatch")
     report = build_task14_structural_report_v1(
@@ -254,6 +267,10 @@ def publish_task14_review_v1(
         def pre_publish() -> None:
             if not revalidate_task14_sources_v1(loaded):
                 raise RuntimeError("Task 14 source changed during publication")
+            if not _runtime_matches(
+                loaded, trusted_source_revision, trusted_source_tree_sha256
+            ):
+                raise RuntimeError("Task 14 runtime changed during publication")
 
         publish_files_atomically(
             destinations,
@@ -266,9 +283,17 @@ def publish_task14_review_v1(
             raise ValueError("Task 14 staged publication differs from computed index")
         if not revalidate_task14_sources_v1(loaded):
             raise RuntimeError("Task 14 source changed before directory commit")
+        if not _runtime_matches(
+            loaded, trusted_source_revision, trusted_source_tree_sha256
+        ):
+            raise RuntimeError("Task 14 runtime changed before directory commit")
         _directory_commit_noreplace_v3(staging, output)
         committed = True
         verified = verify_task14_root_v1(output)
+        if not revalidate_task14_sources_v1(loaded) or not _runtime_matches(
+            loaded, trusted_source_revision, trusted_source_tree_sha256
+        ):
+            raise RuntimeError("Task 14 current roots changed after publication")
         if verified.index != publication.index:
             raise ValueError("Task 14 reopened final root differs from staged index")
         return Task14PublicationResultV1(

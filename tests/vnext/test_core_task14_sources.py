@@ -52,6 +52,30 @@ def test_source_inventory_rejects_hash_tamper(tmp_path: Path) -> None:
         load_task14_sources_v1(paths(evidence=copied))
 
 
+def test_source_inventory_rejects_root_and_file_aliases(tmp_path: Path) -> None:
+    duplicated_roots = Task14SourcePathsV1(
+        core_root=CORE,
+        evidence_root=CORE,
+        task13_root=TASK13,
+        task13_audit_path=TASK13_AUDIT,
+        repository_root=REPOSITORY,
+        remote_task13_staging_path=REMOTE_STAGE,
+    )
+    with pytest.raises(ValueError, match="aliases"):
+        load_task14_sources_v1(duplicated_roots)
+
+    overlapping_audit = Task14SourcePathsV1(
+        core_root=CORE,
+        evidence_root=EVIDENCE,
+        task13_root=TASK13,
+        task13_audit_path=TASK13 / "statistics_receipt.json",
+        repository_root=REPOSITORY,
+        remote_task13_staging_path=REMOTE_STAGE,
+    )
+    with pytest.raises(ValueError, match="overlaps"):
+        load_task14_sources_v1(overlapping_audit)
+
+
 def test_remote_nfs_staging_cannot_be_relabeled_final() -> None:
     with pytest.raises(ValueError, match="NFS staging"):
         load_task14_sources_v1(paths(remote="results/vnext/core_task13_bc82566_v1"))

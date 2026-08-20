@@ -35,6 +35,9 @@ def test_real_evidence_graph_is_closed_and_scope_safe() -> None:
     assert len(graph.nodes) == 22
     assert len(graph.edges) == 22
     by_kind = {item.evidence_kind: item for item in graph.nodes}
+    nfs = next(item for item in graph.nodes if item.node_id == "task13_nfs_staging")
+    assert nfs.artifact.root_kind == "remote_nfs_staging"
+    assert nfs.artifact.source_location == REMOTE_STAGE
     assert by_kind["mem0_admission"].accuracy_evidence is False
     assert by_kind["prompted_answer_matrix"].accuracy_evidence is True
     assert by_kind["clustered_statistics"].accuracy_evidence is True

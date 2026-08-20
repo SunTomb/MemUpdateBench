@@ -376,11 +376,28 @@ def load_task14_sources_v1(paths: Task14SourcePathsV1) -> Task14LoadedSourcesV1:
     if type(paths) is not Task14SourcePathsV1:
         raise TypeError("Task 14 paths must be Task14SourcePathsV1")
     _verify_repository_history(paths.repository_root)
+    canonical_roots = tuple(
+        _checked_root(value)
+        for value in (paths.core_root, paths.evidence_root, paths.task13_root)
+    )
+    if len(set(canonical_roots)) != len(canonical_roots):
+        raise ValueError("Task 14 source roots contain canonical aliases")
+    audit_path = _checked_file(paths.task13_audit_path)
+    if any(audit_path == root or root in audit_path.parents for root in canonical_roots):
+        raise ValueError("Task 14 audit path overlaps a source root")
     if not paths.remote_task13_staging_path.startswith("/NAS/") or ".mub-task13-stage-" not in paths.remote_task13_staging_path:
         raise ValueError("Task 14 remote Task 13 path must remain NFS staging evidence")
     locations = _source_locations(paths)
     if set(locations) != set(TASK14_EXPECTED_FILE_HASHES):
         raise AssertionError("Task 14 source location inventory is incomplete")
+    canonical_files = tuple(_checked_file(path) for path in locations.values())
+    if len(set(canonical_files)) != len(canonical_files):
+        raise ValueError("Task 14 source artifacts contain canonical aliases")
+    identities = tuple(
+        (path.stat().st_dev, path.stat().st_ino) for path in canonical_files
+    )
+    if len(set(identities)) != len(identities):
+        raise ValueError("Task 14 source artifacts contain filesystem aliases")
     artifacts: dict[str, Task14ArtifactRefV1] = {}
     payloads: dict[str, bytes] = {}
     json_payloads: dict[str, object] = {}

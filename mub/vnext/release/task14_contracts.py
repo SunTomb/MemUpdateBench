@@ -50,6 +50,7 @@ class Task14ArtifactRefV1(ImmutableContractModel):
         "remote_nfs_staging",
         "task14_output",
     ] = "task14_output"
+    source_location: StrictStr | None = None
 
     @field_validator("path")
     @classmethod
