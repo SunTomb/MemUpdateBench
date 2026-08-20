@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -199,6 +200,61 @@ def test_provenance_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path:
     assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "identity_status",
+        "artifact_sha256",
+        "byte_count",
+        "evidence_type",
+        "source_location",
+        "credential_env_var",
+        "runtime",
+    ),
+)
+def test_provided_provenance_must_equal_pending_intent_derivation(
+    tmp_path: Path, field: str
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    baseline = build_post_core_release_v1(config, core, task14)
+    rows = [
+        json.loads(line)
+        for line in baseline.artifact_bytes["provenance.jsonl"].decode().splitlines()
+    ]
+    row = rows[0]
+    if field == "identity_status":
+        row[field] = "QUALIFIED"
+    elif field == "artifact_sha256":
+        row[field] = "0" * 64
+    elif field == "byte_count":
+        row[field] += 1
+    elif field == "evidence_type":
+        row[field] = "fabricated_evidence"
+    elif field == "source_location":
+        row[field] = "fabricated://source"
+    elif field == "credential_env_var":
+        row[field] = (
+            "ANTHROPIC_API_KEY"
+            if row[field] == "OPENAI_API_KEY"
+            else "OPENAI_API_KEY"
+        )
+    else:
+        row[field] = {"fabricated": "value"}
+    provenance_path = tmp_path / "provenance.jsonl"
+    provenance_path.write_bytes(
+        b"".join(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n"
+            for item in rows
+        )
+    )
+    with pytest.raises(ValueError, match="provenance|pending|deterministic|expected"):
+        build_post_core_release_v1(
+            config, core, task14, provenance_path=provenance_path
+        )
+
+
 def test_config_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:
     core, task14 = _sources(tmp_path)
     config_path = _config(tmp_path, task14)
@@ -217,6 +273,103 @@ def test_config_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Pat
         )
     assert not (tmp_path / "output").exists()
     assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def _replace_with_same_bytes(path: Path) -> None:
+    replacement = path.with_name(f".{path.name}.replacement")
+    replacement.write_bytes(path.read_bytes())
+    os.replace(replacement, path)
+
+
+def test_config_original_snapshot_rejects_identity_replacement(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    config = load_post_core_config_v1(config_path)
+    _replace_with_same_bytes(config_path)
+
+    with pytest.raises(PostCoreReleaseError, match="config|identity"):
+        publish_post_core_release_v1(config, core, task14, tmp_path / "output")
+
+
+def test_config_mutation_after_rename_cannot_return_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    config = load_post_core_config_v1(config_path)
+    original_commit = release_v1._directory_commit_noreplace
+
+    def commit_then_mutate(staging: Path, output: Path) -> None:
+        original_commit(staging, output)
+        _replace_with_same_bytes(config_path)
+
+    monkeypatch.setattr(release_v1, "_directory_commit_noreplace", commit_then_mutate)
+    with pytest.raises(CommittedPostCoreReleaseError, match="config|identity|committed root"):
+        publish_post_core_release_v1(config, core, task14, tmp_path / "output")
+
+
+def test_independent_verify_rebuilds_against_external_registry_source(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    baseline = build_post_core_release_v1(config, core, task14)
+    registry_path = tmp_path / "model_registry.json"
+    registry_path.write_bytes(baseline.artifact_bytes["model_registry.json"])
+    registry = load_post_core_registry_v1(registry_path, config)
+    output = tmp_path / "output"
+    publication = publish_post_core_release_v1(
+        config, core, task14, output, registry=registry
+    )
+    reopened = verify_post_core_release_v1(
+        output, config, core, task14, registry=registry
+    )
+    assert reopened.index_sha256 == publication.index_sha256
+
+
+def test_registry_mutation_after_rename_cannot_return_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    baseline = build_post_core_release_v1(config, core, task14)
+    registry_path = tmp_path / "model_registry.json"
+    registry_path.write_bytes(baseline.artifact_bytes["model_registry.json"])
+    registry = load_post_core_registry_v1(registry_path, config)
+    original_commit = release_v1._directory_commit_noreplace
+
+    def commit_then_mutate(staging: Path, output: Path) -> None:
+        original_commit(staging, output)
+        _replace_with_same_bytes(registry_path)
+
+    monkeypatch.setattr(release_v1, "_directory_commit_noreplace", commit_then_mutate)
+    with pytest.raises(CommittedPostCoreReleaseError, match="registry|identity|committed root"):
+        publish_post_core_release_v1(
+            config, core, task14, tmp_path / "output", registry=registry
+        )
+
+
+def test_provenance_mutation_after_rename_cannot_return_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    baseline = build_post_core_release_v1(config, core, task14)
+    provenance_path = tmp_path / "provenance.jsonl"
+    provenance_path.write_bytes(baseline.artifact_bytes["provenance.jsonl"])
+    original_commit = release_v1._directory_commit_noreplace
+
+    def commit_then_mutate(staging: Path, output: Path) -> None:
+        original_commit(staging, output)
+        _replace_with_same_bytes(provenance_path)
+
+    monkeypatch.setattr(release_v1, "_directory_commit_noreplace", commit_then_mutate)
+    with pytest.raises(CommittedPostCoreReleaseError, match="provenance|identity|committed root"):
+        publish_post_core_release_v1(
+            config,
+            core,
+            task14,
+            tmp_path / "output",
+            provenance_path=provenance_path,
+        )
 
 
 def test_post_rename_verification_failure_preserves_committed_root(
@@ -334,6 +487,24 @@ def test_cli_stale_source_exit_code(tmp_path: Path) -> None:
             "--core-manifest", str(core),
             "--task14-index", str(task14),
             "--output-root", str(tmp_path / "out"),
+            "--execute",
+        ], capture_output=True, text=True,
+    )
+    assert run.returncode == EXIT_STALE_SOURCE
+    assert "secret" not in (run.stdout + run.stderr).lower()
+
+
+def test_qualification_cli_stale_source_exit_code(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = _config(tmp_path, task14)
+    task14.write_bytes(task14.read_bytes() + b"x")
+    run = subprocess.run(
+        [
+            sys.executable,
+            "scripts/vnext_qualify_post_core_models.py",
+            "--config", str(config),
+            "--core-manifest", str(core),
+            "--task14-index", str(task14),
             "--execute",
         ], capture_output=True, text=True,
     )

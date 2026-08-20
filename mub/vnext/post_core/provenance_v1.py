@@ -14,6 +14,7 @@ from mub.vnext.post_core.contracts_v1 import ALLOWED_CREDENTIAL_ENV_NAMES, canon
 
 _SECRET_KEYS = re.compile(r"(?:api[_-]?key|authorization|bearer|secret|password|private[_-]?key|token)", re.I)
 _SECRET_VALUES = re.compile(r"(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S+|-----BEGIN [A-Z ]+PRIVATE KEY-----)", re.I)
+_AUTHORIZATION_HEADER = re.compile(r"(?:^|[\s,;=])authorization\s*:", re.I)
 
 
 class ProvenanceRecordV1(ImmutableContractModel):
@@ -69,8 +70,15 @@ def _scan(value: Any, path: str = "$") -> None:
         for index, item in enumerate(value):
             _scan(item, f"{path}[{index}]")
         return
-    if isinstance(value, str) and _SECRET_VALUES.search(value):
-        raise ValueError(f"secret-like value rejected at {path}")
+    if isinstance(value, str):
+        if _AUTHORIZATION_HEADER.search(value):
+            raise ValueError(f"authorization header rejected at {path}")
+        if "=" in value:
+            assignment_key = value.split("=", 1)[0].strip()
+            if _SECRET_KEYS.search(assignment_key):
+                raise ValueError(f"credential assignment rejected at {path}")
+        if _SECRET_VALUES.search(value):
+            raise ValueError(f"secret-like value rejected at {path}")
 
 
 def validate_secret_free(value: Any, *, read_environment: bool = False) -> None:

@@ -11,10 +11,12 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from mub.vnext.post_core.qualification_v1 import CapabilityProbeReportV1, QualificationReportV1
 from mub.vnext.post_core.release_v1 import (
     EXIT_PUBLICATION,
+    EXIT_STALE_SOURCE,
     EXIT_SUCCESS_WITH_PENDING,
     EXIT_UNTRUSTED_RUNTIME,
     EXIT_USAGE,
     PostCoreReleaseError,
+    StaleSourceError,
     UnsafePathError,
     build_post_core_release_v1,
     load_post_core_config_v1,
@@ -77,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, UnsafePathError) as exc:
         print(f"post-Core qualification contract/usage rejected: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except StaleSourceError as exc:
+        print(f"post-Core qualification rejected stale source: {exc}", file=sys.stderr)
+        return EXIT_STALE_SOURCE
     except PostCoreReleaseError as exc:
         print(f"post-Core qualification failed: {exc}", file=sys.stderr)
         return EXIT_PUBLICATION

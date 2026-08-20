@@ -100,6 +100,16 @@ class CommittedPostCoreReleaseError(PostCoreReleaseError):
 
 
 @dataclass(frozen=True)
+class _SourceSnapshot:
+    path: Path
+    identity: tuple[int, int]
+    byte_count: int
+    sha256: str
+    raw: bytes
+    siblings: tuple["_SourceSnapshot", ...] = ()
+
+
+@dataclass(frozen=True)
 class PostCoreReleaseConfigV1:
     schema_version: str
     release_id: str
@@ -111,16 +121,7 @@ class PostCoreReleaseConfigV1:
     config_sha256: str
     config_raw: bytes
     config_path: Path | None = None
-
-
-@dataclass(frozen=True)
-class _SourceSnapshot:
-    path: Path
-    identity: tuple[int, int]
-    byte_count: int
-    sha256: str
-    raw: bytes
-    siblings: tuple["_SourceSnapshot", ...] = ()
+    source_snapshot: _SourceSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -322,7 +323,12 @@ def _source_pair(core_manifest_path: Path, task14_index_path: Path, expected_cor
     return core, task14
 
 
-def _load_config_payload(raw: bytes, path: Path) -> PostCoreReleaseConfigV1:
+def _load_config_payload(
+    raw: bytes,
+    path: Path,
+    *,
+    source_snapshot: _SourceSnapshot | None = None,
+) -> PostCoreReleaseConfigV1:
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError) as exc:
@@ -368,15 +374,19 @@ def _load_config_payload(raw: bytes, path: Path) -> PostCoreReleaseConfigV1:
         config_sha256=_sha256(raw),
         config_raw=bytes(raw),
         config_path=None if str(path) == "<mapping>" else path,
+        source_snapshot=source_snapshot,
     )
 
 
 def load_post_core_config_v1(path: Path) -> PostCoreReleaseConfigV1:
-    selected = _absolute_path(Path(path), require_exists=True)
-    if not _regular_single_link(selected):
+    source = _read_source(Path(path), "post-Core config")
+    if not _regular_single_link(source.path):
         raise UnsafePathError("post-Core config must be a regular file")
-    config = _load_config_payload(selected.read_bytes(), selected)
-    return config
+    return _load_config_payload(
+        source.raw,
+        source.path,
+        source_snapshot=source,
+    )
 
 
 def _coerce_config(config: PostCoreReleaseConfigV1 | Path | Mapping[str, Any]) -> PostCoreReleaseConfigV1:
@@ -385,6 +395,13 @@ def _coerce_config(config: PostCoreReleaseConfigV1 | Path | Mapping[str, Any]) -
             raise ValueError("post-Core config source hashes are not frozen")
         if canonical_bytes(json.loads(config.config_raw)) != config.config_raw or _sha256(config.config_raw) != config.config_sha256:
             raise ValueError("post-Core config bytes are not canonical or hash-bound")
+        if config.source_snapshot is not None and (
+            config.source_snapshot.path != config.config_path
+            or config.source_snapshot.raw != config.config_raw
+            or config.source_snapshot.sha256 != config.config_sha256
+            or config.source_snapshot.byte_count != len(config.config_raw)
+        ):
+            raise ValueError("post-Core config source snapshot does not match config bytes")
         return config
     if isinstance(config, (str, Path)):
         return load_post_core_config_v1(Path(config))
@@ -448,11 +465,11 @@ def _coerce_registry(registry: Mapping[str, ModelCandidateV1] | Path | None, con
     return registry
 
 
-def _provenance_bytes(config: PostCoreReleaseConfigV1, registry: Mapping[str, ModelCandidateV1], registry_payload: Mapping[str, Any], provided: Path | None) -> bytes:
-    if provided is not None:
-        source = _read_source(provided, "provenance input")
-        _validate_provenance_bytes(source.raw, registry)
-        return source.raw
+def _deterministic_provenance_bytes(
+    config: PostCoreReleaseConfigV1,
+    registry: Mapping[str, ModelCandidateV1],
+    registry_payload: Mapping[str, Any],
+) -> bytes:
     rows: list[bytes] = []
     for key, candidate_payload in zip(config.registry_keys, registry_payload["candidates"]):
         candidate_raw = _canonical_mapping_bytes(candidate_payload)
@@ -474,6 +491,26 @@ def _provenance_bytes(config: PostCoreReleaseConfigV1, registry: Mapping[str, Mo
     return b"".join(item + b"\n" for item in rows)
 
 
+def _provenance_bytes(
+    config: PostCoreReleaseConfigV1,
+    registry: Mapping[str, ModelCandidateV1],
+    registry_payload: Mapping[str, Any],
+    provided: Path | None,
+    *,
+    source_snapshot: _SourceSnapshot | None = None,
+) -> bytes:
+    expected = _deterministic_provenance_bytes(config, registry, registry_payload)
+    if provided is None:
+        return expected
+    source = source_snapshot or _read_source(provided, "provenance input")
+    _validate_provenance_bytes(source.raw, registry)
+    if source.raw != expected:
+        raise ValueError(
+            "provided provenance must exactly match deterministic pending-intent provenance"
+        )
+    return source.raw
+
+
 def _validate_provenance_bytes(raw: bytes, registry: Mapping[str, ModelCandidateV1]) -> tuple[ProvenanceRecordV1, ...]:
     if not raw or not raw.endswith(b"\n"):
         raise ValueError("provenance JSONL must be nonempty and LF-terminated")
@@ -491,12 +528,26 @@ def _validate_provenance_bytes(raw: bytes, registry: Mapping[str, ModelCandidate
     return tuple(rows)
 
 
-def _build_artifacts(config: PostCoreReleaseConfigV1, core: _SourceSnapshot, task14: _SourceSnapshot, registry: Mapping[str, ModelCandidateV1], provenance_path: Path | None) -> Mapping[str, bytes]:
+def _build_artifacts(
+    config: PostCoreReleaseConfigV1,
+    core: _SourceSnapshot,
+    task14: _SourceSnapshot,
+    registry: Mapping[str, ModelCandidateV1],
+    provenance_path: Path | None,
+    *,
+    provenance_snapshot: _SourceSnapshot | None = None,
+) -> Mapping[str, bytes]:
     registry_payload = _registry_payload(config, registry)
     registry_bytes = _canonical_mapping_bytes(registry_payload)
     qualification, probes = qualify_registry_offline_v1(registry)
     plan = build_phase0_execution_plan_v1(registry)
-    provenance = _provenance_bytes(config, registry, registry_payload, provenance_path)
+    provenance = _provenance_bytes(
+        config,
+        registry,
+        registry_payload,
+        provenance_path,
+        source_snapshot=provenance_snapshot,
+    )
     manifest = ReleaseManifestV1(
         release_id=config.release_id,
         schema_version="memupdatebench.post-core.release.v1",
@@ -561,11 +612,9 @@ def build_post_core_release_v1(
     return _publication_from_artifacts(config, artifacts)
 
 
-def _revalidate_config(config: PostCoreReleaseConfigV1) -> None:
-    if config.config_path is None:
-        return
-    snapshot = _SourceSnapshot(config.config_path, (config.config_path.stat().st_dev, config.config_path.stat().st_ino), len(config.config_raw), config.config_sha256, config.config_raw)
-    _revalidate_source(snapshot, "post-Core config")
+def _revalidate_config_snapshot(config: PostCoreReleaseConfigV1) -> None:
+    if config.source_snapshot is not None:
+        _revalidate_source(config.source_snapshot, "post-Core config")
 
 
 def _source_snapshot_for_optional(path: Path | None, label: str) -> _SourceSnapshot | None:
@@ -577,12 +626,20 @@ def _revalidate_optional(snapshot: _SourceSnapshot | None, label: str) -> None:
         _revalidate_source(snapshot, label)
 
 
+def _flatten_snapshots(sources: Sequence[_SourceSnapshot]) -> tuple[_SourceSnapshot, ...]:
+    flattened: list[_SourceSnapshot] = []
+    for source in sources:
+        flattened.append(source)
+        flattened.extend(_flatten_snapshots(source.siblings))
+    return tuple(flattened)
+
+
 def _assert_output_safe(output_root: Path, sources: Sequence[_SourceSnapshot]) -> tuple[Path, Path, tuple[int, int]]:
     requested = Path(output_root)
     _reject_reparse_components(requested)
     output = Path(os.path.abspath(os.path.normpath(str(requested))))
     output_key = os.path.normcase(str(output))
-    for source in sources:
+    for source in _flatten_snapshots(sources):
         source_key = os.path.normcase(str(source.path))
         if output_key == source_key or output in source.path.parents or source.path in output.parents:
             raise UnsafePathError("post-Core output root overlaps a source")
@@ -699,9 +756,16 @@ def verify_post_core_release_v1(
     core_manifest_path: Path,
     task14_index_path: Path,
     *,
+    registry: Mapping[str, ModelCandidateV1] | Path | None = None,
     provenance_path: Path | None = None,
+    _provenance_snapshot: _SourceSnapshot | None = None,
 ) -> PostCorePublicationV1:
     config = _coerce_config(config)
+    registry_value = _coerce_registry(registry, config)
+    registry_snapshot = getattr(registry_value, "source_snapshot", None)
+    provenance_snapshot = _provenance_snapshot or _source_snapshot_for_optional(
+        provenance_path, "provenance input"
+    )
     checked = _absolute_path(Path(root), require_exists=True)
     if _is_reparse(checked) or not checked.is_dir():
         raise UnsafePathError("post-Core output root must be a real directory")
@@ -750,15 +814,25 @@ def verify_post_core_release_v1(
         for item in index.artifacts:
             if item.sha256 != _sha256(actual[item.path]):
                 raise PostCoreReleaseError("artifact index hash does not match artifact bytes")
-        expected = _build_artifacts(config, core, task14, parsed_registry, provenance_path)
+        expected = _build_artifacts(
+            config,
+            core,
+            task14,
+            registry_value,
+            provenance_path,
+            provenance_snapshot=provenance_snapshot,
+        )
         if dict(actual) != dict(expected):
             raise PostCoreReleaseError("reopened post-Core artifacts differ from deterministic build")
     except PostCoreReleaseError:
         raise
     except Exception as exc:
         raise PostCoreReleaseError(f"post-Core artifact verification failed: {exc}") from exc
+    _revalidate_config_snapshot(config)
     _revalidate_source(core, "Core source manifest")
     _revalidate_source(task14, "Task 14 index")
+    _revalidate_optional(registry_snapshot, "model registry input")
+    _revalidate_optional(provenance_snapshot, "provenance input")
     return _publication_from_artifacts(config, actual, checked)
 
 
@@ -776,11 +850,19 @@ def publish_post_core_release_v1(
     core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_manifest_sha256, config.core_task14_index_sha256)
     registry_value = _coerce_registry(registry, config)
     registry_snapshot = getattr(registry_value, "source_snapshot", None)
-    config_snapshot = _source_snapshot_for_optional(config.config_path, "post-Core config")
+    config_snapshot = config.source_snapshot
     provenance_snapshot = _source_snapshot_for_optional(provenance_path, "provenance input")
     source_inputs = tuple(item for item in (core, task14, config_snapshot, registry_snapshot, provenance_snapshot) if item is not None)
     output, parent, parent_identity = _assert_output_safe(output_root, source_inputs)
-    publication = build_post_core_release_v1(config, core.path, task14.path, registry=registry_value, provenance_path=provenance_path)
+    artifacts = _build_artifacts(
+        config,
+        core,
+        task14,
+        registry_value,
+        provenance_path,
+        provenance_snapshot=provenance_snapshot,
+    )
+    publication = _publication_from_artifacts(config, artifacts)
     staging = parent / f".mub-post-core-stage-{uuid.uuid4().hex}"
     staging.mkdir(mode=0o700)
     staging_identity = (staging.stat().st_dev, staging.stat().st_ino)
@@ -791,7 +873,15 @@ def publish_post_core_release_v1(
     committed = False
     try:
         _write_staged(staging, publication.artifact_bytes)
-        verify_post_core_release_v1(staging, config, core.path, task14.path, provenance_path=provenance_path)
+        verify_post_core_release_v1(
+            staging,
+            config,
+            core.path,
+            task14.path,
+            registry=registry_value,
+            provenance_path=provenance_path,
+            _provenance_snapshot=provenance_snapshot,
+        )
         ownership = _capture_owned_members(staging)
         if before_commit is not None:
             before_commit()
@@ -811,7 +901,20 @@ def publish_post_core_release_v1(
         if (final_metadata.st_dev, final_metadata.st_ino) != staging_identity:
             raise PostCoreReleaseError("committed output identity differs from owned staging")
         _fsync_directory(parent)
-        reopened = verify_post_core_release_v1(output, config, core.path, task14.path, provenance_path=provenance_path)
+        reopened = verify_post_core_release_v1(
+            output,
+            config,
+            core.path,
+            task14.path,
+            registry=registry_value,
+            provenance_path=provenance_path,
+            _provenance_snapshot=provenance_snapshot,
+        )
+        _revalidate_config_snapshot(config)
+        _revalidate_source(core, "Core source manifest")
+        _revalidate_source(task14, "Task 14 index")
+        _revalidate_optional(registry_snapshot, "model registry input")
+        _revalidate_optional(provenance_snapshot, "provenance input")
         if reopened.artifact_bytes != publication.artifact_bytes:
             raise PostCoreReleaseError("reopened output differs from staged publication")
         return reopened

@@ -51,3 +51,25 @@ def test_command_rejects_separated_and_inline_credential_flags() -> None:
     assert redacted_command(["tool", "--registry", "registry.json"]) == (
         "tool", "--registry", "registry.json"
     )
+
+
+def test_command_rejects_opaque_authorization_headers_and_inline_assignments() -> None:
+    commands = (
+        ["curl", "-H", "Authorization: opaque"],
+        ["curl", "--header=Authorization: opaque"],
+        ["curl", "AUTHORIZATION=opaque"],
+        ["curl", "OPENAI_API_KEY=opaque"],
+    )
+    for command in commands:
+        with pytest.raises(ValueError, match="credential|secret|authorization"):
+            redacted_command(command)
+
+    header_values = (
+        {"headers": {"Authorization": "opaque"}},
+        {"header": "Authorization: opaque"},
+        {"headers": "Authorization: opaque"},
+        "Authorization: opaque",
+    )
+    for value in header_values:
+        with pytest.raises(ValueError, match="credential|secret|authorization"):
+            validate_secret_free(value)
