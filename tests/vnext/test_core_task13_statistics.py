@@ -183,7 +183,23 @@ def test_decimal_metric_reads_canonical_score_as_decimal():
     assert type(value) is Decimal
 
 
-def test_projection_aggregates_four_tasks_per_core_and_is_order_invariant():
+def test_decimal_metric_converts_boolean_protocol_metric_to_decimal():
+    from mub.vnext.contracts.score import ProtocolScores
+
+    base = _score("task", "run", 0.3)
+    supports = dict(base.supported_metric_fields)
+    supports.pop("protocol_scores.answer_parse_valid")
+    score = base.validated_replace(
+        protocol_scores=ProtocolScores(answer_parse_valid=True),
+        supported_metric_fields=supports,
+    )
+    assert decimal_metric_v1(score, "protocol_scores.answer_parse_valid") == Decimal(1)
+    score = score.model_copy(
+        update={"protocol_scores": ProtocolScores(answer_parse_valid=False)}
+    )
+    assert decimal_metric_v1(score, "protocol_scores.answer_parse_valid") == Decimal(0)
+
+
     run = _make_run("run-a")
     projection = project_metric_v1(run, "answer_scores.exact_match", BOOTSTRAP)
     shuffled = SimpleNamespace(**vars(run))

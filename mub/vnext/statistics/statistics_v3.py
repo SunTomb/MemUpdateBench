@@ -69,6 +69,8 @@ def decimal_metric_v1(score: Any, metric_path: str) -> Decimal | None:
     value = payload[layer][field]
     if value is None:
         return None
+    if type(value) is bool:
+        return Decimal(int(value))
     if type(value) is not Decimal or not value.is_finite():
         raise ValueError("Task 13 metric values must be finite Decimal values")
     return value
