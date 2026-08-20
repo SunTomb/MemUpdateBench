@@ -41,6 +41,10 @@ def validate_model_registry_v1(registry: Mapping[str, ModelCandidateV1]) -> None
     for key, candidate in registry.items():
         if key != candidate.registry_key or type(candidate) is not ModelCandidateV1:
             raise ValueError("post-Core registry candidate binding mismatch")
+    expected = build_initial_model_registry_v1()
+    for key, candidate in registry.items():
+        if candidate != expected[key]:
+            raise ValueError("post-Core registry candidate differs from frozen initial semantics")
     if registry["qwen35_9b_bf16"].scopes != ("full",):
         raise ValueError("Qwen3.5-9B must remain the BF16 full-matrix intent")
     if registry["meta_muse_glimmer_30b_bf16"].scopes != ("k16_subset",):

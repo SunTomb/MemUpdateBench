@@ -12,6 +12,9 @@ from mub.vnext.contracts.common import ImmutableContractModel
 
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
+ALLOWED_CREDENTIAL_ENV_NAMES = frozenset({
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY",
+})
 POST_CORE_ARTIFACT_ORDER = (
     "post_core_release_manifest.json",
     "model_registry.json",
@@ -56,6 +59,13 @@ class ModelCandidateV1(ImmutableContractModel):
     scopes: tuple[Literal["full", "hard_subset", "k16_subset", "none"], ...]
     credential_env_var: StrictStr | None = None
     blocked_reasons: tuple[StrictStr, ...] = ()
+
+    @field_validator("credential_env_var")
+    @classmethod
+    def _credential_env_allowlist(cls, value: str | None) -> str | None:
+        if value is not None and value not in ALLOWED_CREDENTIAL_ENV_NAMES:
+            raise ValueError("credential environment variable name is not allowlisted")
+        return value
 
     @model_validator(mode="after")
     def _identity_state(self) -> "ModelCandidateV1":
@@ -237,6 +247,7 @@ def canonical_hash(value: Any, *, exclude: set[str] | None = None) -> str:
 
 __all__ = [
     "ArtifactIndexV1", "CallBudgetV1", "CallPlanV1", "CandidateIdentityState",
+    "ALLOWED_CREDENTIAL_ENV_NAMES",
     "MatrixCellV1", "ModelCandidateV1", "ModelIdentityV1", "POST_CORE_ARTIFACT_ORDER",
     "QuantizationSpecV1", "ReleaseManifestV1", "SpeculativeDecodingSpecV1",
     "canonical_bytes", "canonical_hash",

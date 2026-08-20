@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import ctypes
 import errno
 import hashlib
@@ -18,6 +18,17 @@ from mub.vnext.post_core.contracts_v1 import (
     POST_CORE_ARTIFACT_ORDER,
     ReleaseManifestV1,
     canonical_bytes,
+)
+from mub.vnext.external.canaries_v3 import CoreTaskReleaseManifestV1
+from mub.vnext.release.task14_contracts import (
+    TASK14_ARTIFACT_PATHS,
+    Task14AttestationV1,
+    Task14EvidenceGraphV1,
+    Task14RootIndexV1,
+    Task14RootManifestV1,
+    Task14StructuralReportV1,
+    _verify_task14_release_current_v1,
+    task14_canonical_bytes_v1,
 )
 from mub.vnext.post_core.model_registry_v1 import (
     build_initial_model_registry_v1,
@@ -52,6 +63,8 @@ EXPECTED_REGISTRY_KEYS = (
     "gpt_5_5",
 )
 SHA256_PATTERN = set("0123456789abcdef")
+EXPECTED_CORE_MANIFEST_SHA256 = "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
+EXPECTED_TASK14_INDEX_SHA256 = "2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035"
 
 # Typed CLI outcomes.  Success-with-pending is intentionally a successful exit:
 # Phase 0 is a metadata release, and pending identity is an expected result.
@@ -77,14 +90,27 @@ class UnsafePathError(PostCoreReleaseError, ValueError):
     """A source, staging, or output path is unsafe for publication."""
 
 
+class CommittedPostCoreReleaseError(PostCoreReleaseError):
+    """The output directory was committed but could not be verified."""
+
+    def __init__(self, committed_root: Path, message: str, *, recovery: str | None = None) -> None:
+        self.committed_root = Path(committed_root)
+        self.recovery = recovery or "preserve the committed root and inspect its artifacts before retrying"
+        super().__init__(f"{message}; committed root preserved at {self.committed_root}; recovery: {self.recovery}")
+
+
 @dataclass(frozen=True)
 class PostCoreReleaseConfigV1:
     schema_version: str
     release_id: str
     phase: int
     network_allowed: bool
+    core_manifest_sha256: str
     core_task14_index_sha256: str
     registry_keys: tuple[str, ...]
+    config_sha256: str
+    config_raw: bytes
+    config_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +120,7 @@ class _SourceSnapshot:
     byte_count: int
     sha256: str
     raw: bytes
+    siblings: tuple["_SourceSnapshot", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +129,12 @@ class _OwnedMember:
     identity: tuple[int, int]
     byte_count: int
     sha256: str
+
+
+class _RegistryInput(dict[str, ModelCandidateV1]):
+    def __init__(self, values: Mapping[str, ModelCandidateV1], source: _SourceSnapshot) -> None:
+        super().__init__(values)
+        self.source_snapshot = source
 
 
 @dataclass(frozen=True)
@@ -210,21 +243,82 @@ def _revalidate_source(snapshot: _SourceSnapshot, label: str) -> None:
     raw = selected.read_bytes()
     if len(raw) != snapshot.byte_count or _sha256(raw) != snapshot.sha256:
         raise StaleSourceError(f"{label} bytes changed")
+    for sibling in snapshot.siblings:
+        _revalidate_source(sibling, f"Task 14 sibling {sibling.path.name}")
 
 
-def _source_pair(core_manifest_path: Path, task14_index_path: Path, expected_task14_sha256: str) -> tuple[_SourceSnapshot, _SourceSnapshot]:
+def _validate_core_manifest(raw: bytes) -> None:
+    if _sha256(raw) != EXPECTED_CORE_MANIFEST_SHA256:
+        raise StaleSourceError("Core source manifest hash is not the immutable approved release")
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, Mapping) or canonical_bytes(payload) != raw:
+            raise ValueError("Core source manifest is not canonical")
+        manifest = CoreTaskReleaseManifestV1.model_validate(payload)
+        without_hash = dict(payload)
+        without_hash.pop("release_manifest_hash", None)
+        if manifest.release_manifest_hash != _sha256(canonical_bytes(without_hash)):
+            raise ValueError("Core source manifest self-hash is invalid")
+        if manifest.release_stage != "task_release" or manifest.release_status != "FINAL_APPROVED":
+            raise ValueError("Core source manifest release identity is not final-approved")
+    except Exception as exc:
+        if isinstance(exc, StaleSourceError):
+            raise
+        raise StaleSourceError("Core source manifest schema or release identity is invalid") from exc
+
+
+def _validate_task14_index_and_siblings(index_path: Path, raw: bytes) -> None:
+    if _sha256(raw) != EXPECTED_TASK14_INDEX_SHA256:
+        raise StaleSourceError("Task 14 index hash is not the immutable approved release")
+    try:
+        index = Task14RootIndexV1.model_validate_json(raw)
+        if task14_canonical_bytes_v1(index) != raw:
+            raise ValueError("Task 14 index is not canonical")
+        root = index_path.parent
+        refs = {item.path: item for item in index.artifacts}
+        expected = TASK14_ARTIFACT_PATHS[:4]
+        if tuple(refs) != expected:
+            raise ValueError("Task 14 index artifact order is not exact")
+        report_payload = json.loads((root / expected[0]).read_bytes())
+        persisted_status = report_payload.pop("status", None)
+        report = Task14StructuralReportV1.model_validate(report_payload)
+        if persisted_status != report.status or task14_canonical_bytes_v1(report) != (root / expected[0]).read_bytes():
+            raise ValueError("Task 14 review report is not canonical")
+        graph = Task14EvidenceGraphV1.model_validate_json((root / expected[1]).read_bytes())
+        attestation = Task14AttestationV1.model_validate_json((root / expected[2]).read_bytes())
+        manifest = Task14RootManifestV1.model_validate_json((root / expected[3]).read_bytes())
+        models = (report, graph, attestation, manifest)
+        for model, name in zip(models, expected, strict=True):
+            if task14_canonical_bytes_v1(model) != (root / name).read_bytes():
+                raise ValueError(f"Task 14 sibling is not canonical: {name}")
+        _verify_task14_release_current_v1(report, attestation, manifest, index)
+        for item in index.artifacts:
+            sibling = root / item.path
+            if not _regular_single_link(sibling) or item.byte_count != sibling.stat().st_size or item.sha256 != _sha256(sibling.read_bytes()):
+                raise ValueError(f"Task 14 sibling hash binding is invalid: {item.path}")
+    except Exception as exc:
+        if isinstance(exc, StaleSourceError):
+            raise
+        raise StaleSourceError("Task 14 index schema, sibling set, or hash chain is invalid") from exc
+
+
+def _capture_task14_siblings(index_path: Path) -> tuple[_SourceSnapshot, ...]:
+    return tuple(
+        _read_source(index_path.parent / name, f"Task 14 sibling {name}")
+        for name in TASK14_ARTIFACT_PATHS[:4]
+    )
+
+
+def _source_pair(core_manifest_path: Path, task14_index_path: Path, expected_core_sha256: str, expected_task14_sha256: str) -> tuple[_SourceSnapshot, _SourceSnapshot]:
+    if expected_core_sha256 != EXPECTED_CORE_MANIFEST_SHA256 or expected_task14_sha256 != EXPECTED_TASK14_INDEX_SHA256:
+        raise StaleSourceError("caller-selected source hashes are not permitted")
     core = _read_source(core_manifest_path, "Core source manifest")
     task14 = _read_source(task14_index_path, "Task 14 index")
     if core.identity == task14.identity:
         raise UnsafePathError("Core source manifest and Task 14 index alias each other")
-    if task14.sha256 != expected_task14_sha256:
-        raise StaleSourceError("Task 14 index hash does not match the frozen config")
-    try:
-        parsed = json.loads(task14.raw)
-    except (TypeError, ValueError) as exc:
-        raise StaleSourceError("Task 14 index is not valid JSON") from exc
-    if not isinstance(parsed, Mapping):
-        raise StaleSourceError("Task 14 index must be a JSON object")
+    _validate_core_manifest(core.raw)
+    _validate_task14_index_and_siblings(task14.path, task14.raw)
+    task14 = replace(task14, siblings=_capture_task14_siblings(task14.path))
     return core, task14
 
 
@@ -235,19 +329,18 @@ def _load_config_payload(raw: bytes, path: Path) -> PostCoreReleaseConfigV1:
         raise ValueError(f"invalid post-Core config JSON: {path}") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("post-Core config must be a JSON object")
+    if canonical_bytes(payload) != raw:
+        raise ValueError("post-Core config must use canonical JSON bytes")
     required = {
         "schema_version", "release_id", "phase", "network_allowed",
-        "core_task14_index_sha256", "registry_keys",
+        "core_manifest_sha256", "core_task14_index_sha256", "registry_keys",
     }
     if set(payload) != required:
         raise ValueError("post-Core config has an unexpected or missing field")
     keys = payload["registry_keys"]
     if not isinstance(keys, list) or tuple(keys) != EXPECTED_REGISTRY_KEYS:
         raise ValueError("post-Core config registry order is not frozen")
-    values = {
-        key: payload[key]
-        for key in required
-    }
+    values = {key: payload[key] for key in required}
     if values["schema_version"] != "memupdatebench.post-core.config.v1":
         raise ValueError("post-Core config schema version mismatch")
     if values["release_id"] != "memupdatebench.post-core.phase0.v1":
@@ -256,16 +349,25 @@ def _load_config_payload(raw: bytes, path: Path) -> PostCoreReleaseConfigV1:
         raise ValueError("post-Core release phase must be zero")
     if type(values["network_allowed"]) is not bool or values["network_allowed"] is not False:
         raise ValueError("post-Core Phase 0 must forbid network access")
-    if not isinstance(values["core_task14_index_sha256"], str) or not _is_sha256(values["core_task14_index_sha256"]):
-        raise ValueError("post-Core Task 14 hash must be lowercase SHA-256")
-    validate_secret_free(payload, read_environment=False)
+    if values["core_manifest_sha256"] != EXPECTED_CORE_MANIFEST_SHA256:
+        raise ValueError("post-Core Core manifest hash is not frozen")
+    if values["core_task14_index_sha256"] != EXPECTED_TASK14_INDEX_SHA256:
+        raise ValueError("post-Core Task 14 hash is not frozen")
+    for label in ("core_manifest_sha256", "core_task14_index_sha256"):
+        if not isinstance(values[label], str) or not _is_sha256(values[label]):
+            raise ValueError(f"post-Core {label} must be lowercase SHA-256")
+    validate_secret_free(payload)
     return PostCoreReleaseConfigV1(
         schema_version=values["schema_version"],
         release_id=values["release_id"],
         phase=values["phase"],
         network_allowed=values["network_allowed"],
+        core_manifest_sha256=values["core_manifest_sha256"],
         core_task14_index_sha256=values["core_task14_index_sha256"],
         registry_keys=tuple(keys),
+        config_sha256=_sha256(raw),
+        config_raw=bytes(raw),
+        config_path=None if str(path) == "<mapping>" else path,
     )
 
 
@@ -273,11 +375,16 @@ def load_post_core_config_v1(path: Path) -> PostCoreReleaseConfigV1:
     selected = _absolute_path(Path(path), require_exists=True)
     if not _regular_single_link(selected):
         raise UnsafePathError("post-Core config must be a regular file")
-    return _load_config_payload(selected.read_bytes(), selected)
+    config = _load_config_payload(selected.read_bytes(), selected)
+    return config
 
 
 def _coerce_config(config: PostCoreReleaseConfigV1 | Path | Mapping[str, Any]) -> PostCoreReleaseConfigV1:
     if isinstance(config, PostCoreReleaseConfigV1):
+        if config.core_manifest_sha256 != EXPECTED_CORE_MANIFEST_SHA256 or config.core_task14_index_sha256 != EXPECTED_TASK14_INDEX_SHA256:
+            raise ValueError("post-Core config source hashes are not frozen")
+        if canonical_bytes(json.loads(config.config_raw)) != config.config_raw or _sha256(config.config_raw) != config.config_sha256:
+            raise ValueError("post-Core config bytes are not canonical or hash-bound")
         return config
     if isinstance(config, (str, Path)):
         return load_post_core_config_v1(Path(config))
@@ -291,8 +398,14 @@ def load_post_core_registry_v1(path: Path, config: PostCoreReleaseConfigV1 | Non
         payload = json.loads(source.raw)
         if not isinstance(payload, Mapping) or canonical_bytes(payload) != source.raw:
             raise ValueError("model registry input is not canonical")
-        candidates = payload.get("candidates")
-        keys = tuple(payload.get("registry_keys", ()))
+        if set(payload) != {"schema_version", "release_id", "registry_keys", "candidates"}:
+            raise ValueError("model registry input has unexpected or missing fields")
+        if payload["schema_version"] != "memupdatebench.post-core.model-registry.v1":
+            raise ValueError("model registry input schema version mismatch")
+        if config is not None and payload["release_id"] != config.release_id:
+            raise ValueError("model registry input release binding differs")
+        candidates = payload["candidates"]
+        keys = tuple(payload["registry_keys"])
         if not isinstance(candidates, list) or keys != EXPECTED_REGISTRY_KEYS:
             raise ValueError("model registry input keys are not frozen")
         registry = {item["registry_key"]: ModelCandidateV1.model_validate(item) for item in candidates}
@@ -302,7 +415,7 @@ def load_post_core_registry_v1(path: Path, config: PostCoreReleaseConfigV1 | Non
         if config is not None and tuple(registry) != config.registry_keys:
             raise ValueError("model registry input differs from config")
         validate_secret_free(payload, read_environment=False)
-        return MappingProxyType(registry)
+        return _RegistryInput(registry, source)
     except Exception as exc:
         if isinstance(exc, ValueError):
             raise
@@ -324,6 +437,15 @@ def _registry_payload(config: PostCoreReleaseConfigV1, registry: Mapping[str, Mo
     }
     validate_secret_free(payload, read_environment=False)
     return payload
+
+
+def _coerce_registry(registry: Mapping[str, ModelCandidateV1] | Path | None, config: PostCoreReleaseConfigV1) -> Mapping[str, ModelCandidateV1]:
+    if registry is None:
+        return build_initial_model_registry_v1()
+    if isinstance(registry, (str, Path)):
+        return load_post_core_registry_v1(Path(registry), config)
+    validate_model_registry_v1(registry)
+    return registry
 
 
 def _provenance_bytes(config: PostCoreReleaseConfigV1, registry: Mapping[str, ModelCandidateV1], registry_payload: Mapping[str, Any], provided: Path | None) -> bytes:
@@ -374,16 +496,19 @@ def _build_artifacts(config: PostCoreReleaseConfigV1, core: _SourceSnapshot, tas
     registry_bytes = _canonical_mapping_bytes(registry_payload)
     qualification, probes = qualify_registry_offline_v1(registry)
     plan = build_phase0_execution_plan_v1(registry)
+    provenance = _provenance_bytes(config, registry, registry_payload, provenance_path)
     manifest = ReleaseManifestV1(
         release_id=config.release_id,
         schema_version="memupdatebench.post-core.release.v1",
         artifact_order=POST_CORE_ARTIFACT_ORDER,
         source_hashes={
+            "config": config.config_sha256,
             "core_source_manifest": core.sha256,
             "core_task14_index": task14.sha256,
+            "model_registry": _sha256(registry_bytes),
+            "provenance": _sha256(provenance),
         },
     )
-    provenance = _provenance_bytes(config, registry, registry_payload, provenance_path)
     artifacts: dict[str, bytes] = {
         "post_core_release_manifest.json": canonical_bytes(manifest),
         "model_registry.json": registry_bytes,
@@ -416,7 +541,7 @@ def _publication_from_artifacts(config: PostCoreReleaseConfigV1, artifacts: Mapp
         pending_count=sum(1 for candidate in registry_payload["candidates"] if candidate["state"].startswith("PENDING")),
         provider_calls=capability.provider_calls,
         model_loads=capability.model_loads,
-        network_calls=0,
+        network_calls=capability.network_calls,
         executable_call_count=plan.executable_call_count,
     )
 
@@ -426,14 +551,30 @@ def build_post_core_release_v1(
     core_manifest_path: Path,
     task14_index_path: Path,
     *,
-    registry: Mapping[str, ModelCandidateV1] | None = None,
+    registry: Mapping[str, ModelCandidateV1] | Path | None = None,
     provenance_path: Path | None = None,
 ) -> PostCorePublicationV1:
     config = _coerce_config(config)
-    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_task14_index_sha256)
-    registry = registry or build_initial_model_registry_v1()
+    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_manifest_sha256, config.core_task14_index_sha256)
+    registry = _coerce_registry(registry, config)
     artifacts = _build_artifacts(config, core, task14, registry, provenance_path)
     return _publication_from_artifacts(config, artifacts)
+
+
+def _revalidate_config(config: PostCoreReleaseConfigV1) -> None:
+    if config.config_path is None:
+        return
+    snapshot = _SourceSnapshot(config.config_path, (config.config_path.stat().st_dev, config.config_path.stat().st_ino), len(config.config_raw), config.config_sha256, config.config_raw)
+    _revalidate_source(snapshot, "post-Core config")
+
+
+def _source_snapshot_for_optional(path: Path | None, label: str) -> _SourceSnapshot | None:
+    return _read_source(path, label) if path is not None else None
+
+
+def _revalidate_optional(snapshot: _SourceSnapshot | None, label: str) -> None:
+    if snapshot is not None:
+        _revalidate_source(snapshot, label)
 
 
 def _assert_output_safe(output_root: Path, sources: Sequence[_SourceSnapshot]) -> tuple[Path, Path, tuple[int, int]]:
@@ -569,13 +710,19 @@ def verify_post_core_release_v1(
         raise PostCoreReleaseError("post-Core output root must contain exactly seven artifacts")
     if any(not _regular_single_link(item) for item in entries):
         raise UnsafePathError("post-Core output contains an unsafe artifact")
-    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_task14_index_sha256)
+    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_manifest_sha256, config.core_task14_index_sha256)
     actual = MappingProxyType({name: (checked / name).read_bytes() for name in POST_CORE_ARTIFACTS})
     try:
         manifest = ReleaseManifestV1.model_validate_json(actual[POST_CORE_ARTIFACT_ORDER[0]])
         if canonical_bytes(manifest) != actual[POST_CORE_ARTIFACT_ORDER[0]]:
             raise PostCoreReleaseError("release manifest is not canonical")
-        if manifest.release_id != config.release_id or manifest.source_hashes != {"core_source_manifest": core.sha256, "core_task14_index": task14.sha256}:
+        if manifest.release_id != config.release_id or manifest.source_hashes != {
+            "config": config.config_sha256,
+            "core_source_manifest": core.sha256,
+            "core_task14_index": task14.sha256,
+            "model_registry": _sha256(actual["model_registry.json"]),
+            "provenance": _sha256(actual["provenance.jsonl"]),
+        }:
             raise StaleSourceError("release manifest source binding differs")
         registry_payload = json.loads(actual["model_registry.json"])
         if not isinstance(registry_payload, Mapping) or canonical_bytes(registry_payload) != actual["model_registry.json"]:
@@ -621,14 +768,19 @@ def publish_post_core_release_v1(
     task14_index_path: Path,
     output_root: Path,
     *,
-    registry: Mapping[str, ModelCandidateV1] | None = None,
+    registry: Mapping[str, ModelCandidateV1] | Path | None = None,
     provenance_path: Path | None = None,
     before_commit: Callable[[], None] | None = None,
 ) -> PostCorePublicationV1:
     config = _coerce_config(config)
-    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_task14_index_sha256)
-    output, parent, parent_identity = _assert_output_safe(output_root, (core, task14))
-    publication = build_post_core_release_v1(config, core.path, task14.path, registry=registry, provenance_path=provenance_path)
+    core, task14 = _source_pair(core_manifest_path, task14_index_path, config.core_manifest_sha256, config.core_task14_index_sha256)
+    registry_value = _coerce_registry(registry, config)
+    registry_snapshot = getattr(registry_value, "source_snapshot", None)
+    config_snapshot = _source_snapshot_for_optional(config.config_path, "post-Core config")
+    provenance_snapshot = _source_snapshot_for_optional(provenance_path, "provenance input")
+    source_inputs = tuple(item for item in (core, task14, config_snapshot, registry_snapshot, provenance_snapshot) if item is not None)
+    output, parent, parent_identity = _assert_output_safe(output_root, source_inputs)
+    publication = build_post_core_release_v1(config, core.path, task14.path, registry=registry_value, provenance_path=provenance_path)
     staging = parent / f".mub-post-core-stage-{uuid.uuid4().hex}"
     staging.mkdir(mode=0o700)
     staging_identity = (staging.stat().st_dev, staging.stat().st_ino)
@@ -640,11 +792,14 @@ def publish_post_core_release_v1(
     try:
         _write_staged(staging, publication.artifact_bytes)
         verify_post_core_release_v1(staging, config, core.path, task14.path, provenance_path=provenance_path)
+        ownership = _capture_owned_members(staging)
         if before_commit is not None:
             before_commit()
         _revalidate_source(core, "Core source manifest")
         _revalidate_source(task14, "Task 14 index")
-        ownership = _capture_owned_members(staging)
+        _revalidate_optional(config_snapshot, "post-Core config")
+        _revalidate_optional(registry_snapshot, "model registry input")
+        _revalidate_optional(provenance_snapshot, "provenance input")
         current_parent = parent.stat()
         if (current_parent.st_dev, current_parent.st_ino) != parent_identity or _is_reparse(parent):
             raise PostCoreReleaseError("output parent identity changed before commit")
@@ -660,13 +815,21 @@ def publish_post_core_release_v1(
         if reopened.artifact_bytes != publication.artifact_bytes:
             raise PostCoreReleaseError("reopened output differs from staged publication")
         return reopened
-    except StaleSourceError:
+    except CommittedPostCoreReleaseError:
+        raise
+    except StaleSourceError as exc:
+        if committed:
+            raise CommittedPostCoreReleaseError(output, str(exc)) from exc
         raise
     except (FileExistsError, UnsafePathError):
         raise
-    except PostCoreReleaseError:
+    except PostCoreReleaseError as exc:
+        if committed:
+            raise CommittedPostCoreReleaseError(output, str(exc)) from exc
         raise
     except OSError as exc:
+        if committed:
+            raise CommittedPostCoreReleaseError(output, str(exc)) from exc
         raise PostCoreReleaseError(f"post-Core publication failed: {exc}") from exc
     finally:
         if not committed:
@@ -675,6 +838,8 @@ def publish_post_core_release_v1(
 
 __all__ = [
     "EXPECTED_REGISTRY_KEYS",
+    "EXPECTED_CORE_MANIFEST_SHA256",
+    "EXPECTED_TASK14_INDEX_SHA256",
     "EXIT_BLOCKED",
     "EXIT_CONTRACT_USAGE",
     "EXIT_PUBLICATION",
@@ -688,6 +853,7 @@ __all__ = [
     "PostCorePublicationV1",
     "PostCoreReleaseConfigV1",
     "PostCoreReleaseError",
+    "CommittedPostCoreReleaseError",
     "StaleSourceError",
     "UnsafePathError",
     "build_post_core_release_v1",

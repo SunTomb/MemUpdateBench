@@ -25,6 +25,7 @@ class QualificationReportV1(ImmutableContractModel):
 class CapabilityProbeReportV1(ImmutableContractModel):
     schema_version: str = "memupdatebench.post-core.capability-probe-report.v1"
     network_allowed: Literal[False] = False
+    network_calls: Literal[0] = 0
     provider_calls: Literal[0] = 0
     model_loads: Literal[0] = 0
     rows: tuple[QualificationGateV1, ...]

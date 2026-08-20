@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-from mub.vnext.post_core.model_registry_v1 import build_initial_model_registry_v1
-from mub.vnext.post_core.qualification_v1 import qualify_registry_offline_v1
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+from mub.vnext.post_core.qualification_v1 import CapabilityProbeReportV1, QualificationReportV1
 from mub.vnext.post_core.release_v1 import (
     EXIT_PUBLICATION,
     EXIT_SUCCESS_WITH_PENDING,
@@ -14,8 +16,8 @@ from mub.vnext.post_core.release_v1 import (
     EXIT_USAGE,
     PostCoreReleaseError,
     UnsafePathError,
+    build_post_core_release_v1,
     load_post_core_config_v1,
-    load_post_core_registry_v1,
 )
 
 
@@ -26,10 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True, help="frozen Phase 0 release config JSON")
     parser.add_argument("--registry", help="optional canonical model registry JSON")
-    parser.add_argument("--core-manifest", help="optional Core source manifest for metadata context")
-    parser.add_argument("--task14-index", help="optional Task 14 root index for metadata context")
+    parser.add_argument("--core-manifest", required=True, help="authenticated immutable Core source manifest")
+    parser.add_argument("--task14-index", required=True, help="authenticated immutable Task 14 root index")
     parser.add_argument("--provenance", help="optional canonical provenance JSONL metadata input")
-    parser.add_argument("--output-root", help="reserved output-root context; qualification does not publish")
     parser.add_argument("--execute", action="store_true", help="validate/print metadata only; never execute calls")
     return parser
 
@@ -45,8 +46,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     try:
         config = load_post_core_config_v1(Path(args.config))
-        registry = load_post_core_registry_v1(Path(args.registry), config) if args.registry else build_initial_model_registry_v1()
-        report, probes = qualify_registry_offline_v1(registry)
+        publication = build_post_core_release_v1(
+            config,
+            Path(args.core_manifest),
+            Path(args.task14_index),
+            registry=Path(args.registry) if args.registry else None,
+            provenance_path=Path(args.provenance) if args.provenance else None,
+        )
+        report = QualificationReportV1.model_validate_json(publication.artifact_bytes["qualification_report.json"])
+        probes = CapabilityProbeReportV1.model_validate_json(publication.artifact_bytes["capability_probe_report.json"])
         pending = sum(row.status == "PENDING" for row in report.gates)
         blocked = sum(row.status == "BLOCKED" for row in report.gates)
         if blocked:
@@ -63,8 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             "network_allowed": probes.network_allowed,
             "provider_calls": probes.provider_calls,
             "model_loads": probes.model_loads,
-            "network_calls": 0,
-            "executable_call_count": 0,
+            "network_calls": probes.network_calls,
+            "executable_call_count": publication.executable_call_count,
         }
     except (ValueError, UnsafePathError) as exc:
         print(f"post-Core qualification contract/usage rejected: {exc}", file=sys.stderr)

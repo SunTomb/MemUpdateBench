@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -8,14 +7,18 @@ import sys
 
 import pytest
 
+import mub.vnext.post_core.release_v1 as release_v1
 from mub.vnext.post_core.contracts_v1 import POST_CORE_ARTIFACT_ORDER
+from mub.vnext.post_core.qualification_v1 import CapabilityProbeReportV1
 from mub.vnext.post_core.release_v1 import (
     EXIT_BLOCKED,
     EXIT_PUBLICATION,
     EXIT_STALE_SOURCE,
+    CommittedPostCoreReleaseError,
     PostCoreReleaseError,
     build_post_core_release_v1,
     load_post_core_config_v1,
+    load_post_core_registry_v1,
     publish_post_core_release_v1,
     verify_post_core_release_v1,
 )
@@ -23,6 +26,14 @@ from mub.vnext.post_core.model_registry_v1 import build_initial_model_registry_v
 
 
 CONFIG = Path(__file__).parents[2] / "configs" / "vnext" / "post_core" / "release_v1.json"
+ROOT = Path(__file__).parents[2]
+CORE_SOURCE_ROOT_CANDIDATES = (
+    ROOT / "data" / "vnext" / "core" / "v3",
+    ROOT.parent / "vnext-phase0" / "data" / "vnext" / "core" / "v3",
+)
+TASK14_SOURCE_ROOT_CANDIDATES = (
+    Path("D:/USTC/2026Winter/MemUpdateBench_releases/core_task14_84beabb_v1"),
+)
 TASK14_SHA = "2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035"
 EXPECTED_KEYS = (
     "qwen35_9b_bf16",
@@ -36,19 +47,33 @@ EXPECTED_KEYS = (
 )
 
 
+def _source_root(candidates: tuple[Path, ...], marker: str) -> Path:
+    for candidate in candidates:
+        if (candidate / marker).is_file():
+            return candidate
+    pytest.skip(f"authenticated post-Core source is unavailable: {marker}")
+
+
 def _sources(tmp_path: Path) -> tuple[Path, Path]:
+    core_source = _source_root(
+        CORE_SOURCE_ROOT_CANDIDATES, "task_release_manifest.json"
+    )
+    task14_source = _source_root(
+        TASK14_SOURCE_ROOT_CANDIDATES, "core_final_root_index.json"
+    )
     core = tmp_path / "core_manifest.json"
-    task14 = tmp_path / "core_final_root_index.json"
-    core.write_bytes(b'{"schema_version":"memupdatebench.core.manifest.v3","release":"frozen"}')
-    task14.write_bytes(b'{"schema_version":"memupdatebench.core-task14-index.v1","artifacts":[]}')
-    return core, task14
+    core.write_bytes((core_source / "task_release_manifest.json").read_bytes())
+    task14_root = tmp_path / "task14"
+    task14_root.mkdir()
+    for source in task14_source.iterdir():
+        if source.is_file():
+            (task14_root / source.name).write_bytes(source.read_bytes())
+    return core, task14_root / "core_final_root_index.json"
 
 
 def _config(tmp_path: Path, task14: Path) -> Path:
-    data = json.loads(CONFIG.read_text(encoding="utf-8"))
-    data["core_task14_index_sha256"] = hashlib.sha256(task14.read_bytes()).hexdigest()
     path = tmp_path / "release.json"
-    path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    path.write_bytes(CONFIG.read_bytes())
     return path
 
 
@@ -107,6 +132,118 @@ def test_source_mutation_is_rejected_before_commit(tmp_path: Path) -> None:
         publish_post_core_release_v1(config, core, task14, tmp_path / "output", before_commit=mutate)
 
 
+def test_task14_sibling_mutation_is_rejected_before_commit(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    sibling = task14.parent / "core_final_review_report.json"
+
+    def mutate() -> None:
+        sibling.write_bytes(sibling.read_bytes() + b"x")
+
+    with pytest.raises(PostCoreReleaseError, match="Task 14|sibling|source"):
+        publish_post_core_release_v1(
+            config,
+            core,
+            task14,
+            tmp_path / "output",
+            before_commit=mutate,
+        )
+    assert not (tmp_path / "output").exists()
+    assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_registry_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    registry_path = tmp_path / "model_registry.json"
+    baseline = build_post_core_release_v1(config, core, task14)
+    registry_path.write_bytes(baseline.artifact_bytes["model_registry.json"])
+    registry = load_post_core_registry_v1(registry_path, config)
+
+    def mutate() -> None:
+        registry_path.write_bytes(registry_path.read_bytes() + b"x")
+
+    with pytest.raises(PostCoreReleaseError, match="model registry|bytes changed"):
+        publish_post_core_release_v1(
+            config,
+            core,
+            task14,
+            tmp_path / "output",
+            registry=registry,
+            before_commit=mutate,
+        )
+    assert not (tmp_path / "output").exists()
+    assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_provenance_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    provenance_path = tmp_path / "provenance.jsonl"
+    baseline = build_post_core_release_v1(config, core, task14)
+    provenance_path.write_bytes(baseline.artifact_bytes["provenance.jsonl"])
+
+    def mutate() -> None:
+        provenance_path.write_bytes(provenance_path.read_bytes() + b"x")
+
+    with pytest.raises(PostCoreReleaseError, match="provenance|bytes changed"):
+        publish_post_core_release_v1(
+            config,
+            core,
+            task14,
+            tmp_path / "output",
+            provenance_path=provenance_path,
+            before_commit=mutate,
+        )
+    assert not (tmp_path / "output").exists()
+    assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_config_source_mutation_is_rejected_and_staging_is_cleaned(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    config_path = _config(tmp_path, task14)
+    config = load_post_core_config_v1(config_path)
+
+    def mutate() -> None:
+        config_path.write_bytes(config_path.read_bytes() + b"x")
+
+    with pytest.raises(PostCoreReleaseError, match="post-Core config|bytes changed"):
+        publish_post_core_release_v1(
+            config,
+            core,
+            task14,
+            tmp_path / "output",
+            before_commit=mutate,
+        )
+    assert not (tmp_path / "output").exists()
+    assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
+def test_post_rename_verification_failure_preserves_committed_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core, task14 = _sources(tmp_path)
+    config = load_post_core_config_v1(_config(tmp_path, task14))
+    output = tmp_path / "output"
+    original_verify = release_v1.verify_post_core_release_v1
+    calls = 0
+
+    def fail_after_commit(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise PostCoreReleaseError("forced post-rename verification failure")
+        return original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(release_v1, "verify_post_core_release_v1", fail_after_commit)
+    with pytest.raises(CommittedPostCoreReleaseError, match="committed root") as failure:
+        publish_post_core_release_v1(config, core, task14, output)
+    assert calls == 2
+    assert failure.value.committed_root == output.resolve()
+    assert output.is_dir()
+    assert not tuple(tmp_path.glob(".mub-post-core-stage-*"))
+
+
 def test_tampered_artifact_fails_exact_reopen_verification(tmp_path: Path) -> None:
     core, task14 = _sources(tmp_path)
     config = load_post_core_config_v1(_config(tmp_path, task14))
@@ -114,7 +251,7 @@ def test_tampered_artifact_fails_exact_reopen_verification(tmp_path: Path) -> No
     publish_post_core_release_v1(config, core, task14, output)
     artifact = output / "model_registry.json"
     artifact.write_bytes(artifact.read_bytes() + b" ")
-    with pytest.raises(PostCoreReleaseError, match="canonical|artifact|index"):
+    with pytest.raises(PostCoreReleaseError, match="canonical|artifact|index|binding"):
         verify_post_core_release_v1(output, config, core, task14)
 
 
@@ -161,6 +298,8 @@ def test_prepare_and_qualification_clis_emit_secret_free_json(tmp_path: Path) ->
             sys.executable,
             "scripts/vnext_qualify_post_core_models.py",
             "--config", str(config),
+            "--core-manifest", str(core),
+            "--task14-index", str(task14),
             "--execute",
         ],
         capture_output=True,
@@ -200,3 +339,39 @@ def test_cli_stale_source_exit_code(tmp_path: Path) -> None:
     )
     assert run.returncode == EXIT_STALE_SOURCE
     assert "secret" not in (run.stdout + run.stderr).lower()
+
+
+def test_tracked_config_is_canonical_and_pins_both_immutable_sources() -> None:
+    raw = CONFIG.read_bytes()
+    assert raw == json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")).encode()
+    config = load_post_core_config_v1(CONFIG)
+    assert config.core_manifest_sha256 == "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
+    assert config.core_task14_index_sha256 == TASK14_SHA
+
+
+def test_config_rejects_caller_selected_immutable_source_hash(tmp_path: Path) -> None:
+    payload = json.loads(CONFIG.read_text(encoding="utf-8"))
+    payload["core_manifest_sha256"] = "0" * 64
+    alternate = tmp_path / "alternate.json"
+    alternate.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(ValueError, match="frozen|hash"):
+        load_post_core_config_v1(alternate)
+
+
+def test_capability_probe_contract_records_zero_network_calls() -> None:
+    probe = CapabilityProbeReportV1(rows=())
+    assert probe.network_calls == 0
+
+
+def test_registry_validation_requires_frozen_candidate_semantics(tmp_path: Path) -> None:
+    core, task14 = _sources(tmp_path)
+    registry = dict(build_initial_model_registry_v1())
+    candidate = registry["qwen35_9b_bf16"]
+    registry["qwen35_9b_bf16"] = candidate.model_copy(update={"scopes": ("none",)})
+    with pytest.raises(ValueError, match="frozen|initial|semantics"):
+        build_post_core_release_v1(
+            load_post_core_config_v1(CONFIG),
+            core,
+            task14,
+            registry=registry,
+        )
