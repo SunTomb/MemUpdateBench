@@ -2423,3 +2423,122 @@ The typed parser explicitly recorded invalid outputs rather than silently coerci
 Task 12 real offline execution and its row/hash completeness audit are complete. The direct matrix shows strong sensitivity to presentation order and explicit version labels, but its ordering differs from the earlier P8.3 surface construction: reverse/no-label is stronger than chronological/no-label here. This is a boundary result, not evidence that one order is universally best or that stale same-slot conflict is universally the strongest distractor. The latest/outdated intervention removes scored stale copying in both slots across all three k values, while format failures remain a separate answer-layer mechanism.
 
 Do not start Task 13 implicitly from these means. The next task is the explicitly separate Task 13 statistics/claim-ledger/case-verification gate, which must treat semantic cores as independent units and bind every reported cell to the authenticated artifacts above. Overall Core is still not `FINAL_APPROVED`.
+
+## vNext Core Task 13 clustered statistics, claims, and verified cases
+
+### Motivation and contract
+
+Task 12 established 18 authenticated prompted-answer runs but reported only direct 80-task cell means. Task 13 converts those rows into claim-ready evidence without rerunning a model. The independent unit is the semantic core: each cell has 20 cores and exactly four surface tasks per core. Cell estimates first average the four tasks inside a core and then average 20 core values. Paired contrasts use the same 20 core identities on both sides. The frozen bootstrap uses 10,000 replicates, 20 draws with replacement, Decimal precision 50 with `ROUND_HALF_EVEN`, Hyndman-Fan Type 1 endpoints 250/9750, seed `9e3779b97f4a7c15d1b54a32d192ed03e47b8a31f5c6d2098374ab10ce69d542`, and binary SHA-256 `0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53`.
+
+The implementation authenticates the exact loader-issued matrix, exact capture-issued source snapshot, immutable publication bytes, Core/evidence/matrix membership, clean Git runtime, canonical Task 12 provenance, typed unsupported/null state, case score copies, and all receipt/index/claim hashes. It publishes exactly:
+
+```text
+bootstrap_indices.bin
+cell_statistics.jsonl
+paired_contrasts.jsonl
+statistics_receipt.json
+cases.jsonl
+case_index.json
+claim_ledger.jsonl
+task13_artifact_index.json
+```
+
+The final index binds the first seven artifacts and does not self-hash. The production CLI has no model, provider, token, API, fake, metric, or override option.
+
+### Implementation and validation
+
+The coherent Task 13 implementation spans the contracts, frozen bootstrap, authenticated input loader, statistics, case selection, receipt/ledger builders, atomic publisher, and production CLI. Final integration fixes discovered by the real matrix added strict support for the authenticated Task 12 matrix-integrity-audit v1 schema, Python 3.10 weak-reference compatibility, exactly one trailing LF on the tracked canonical statistics config, canonical typed-config hashing, and Boolean-to-Decimal conversion for `protocol_scores.answer_parse_valid`.
+
+Fresh gates included:
+
+```text
+Task 13 contracts/bootstrap/statistics/cases/ledger: 136 passed
+Task 13 input authentication after audit adapter:    24 passed, 1 skipped
+Task 13 CLI publication/safety review run:            42 passed, 3 skipped
+Task 13 statistics after Boolean metric fix:           7 passed
+Task 12 execution/matrix compatibility:               14 passed
+```
+
+The input skip and two CLI platform skips are not counted as passes: Windows lacked symlink privilege (`WinError 1314`), and POSIX-only renameat2/directory-fsync cases were skipped on Windows. Several earlier unbounded CLI attempts were stopped or killed and are not passing evidence. Independent reviews returned `SPEC_COMPLIANT` and, after closing the reported status/config/index/immutability/Python-floor findings, `CODE_QUALITY_APPROVED`.
+
+The authenticated Task 12 controls were rechecked before execution:
+
+```text
+matrix manifest: 85145a8a460ee6cec3785926f9aaa85c8bee8cd41d4ad0582d2b0333b8cf10d2
+matrix summary:  a1c4f89af2b9f39de9791ce9c6348c24b4c81474abf3da865f22e5dfe68f1f15
+integrity audit: bfc85922c36dcc87deca983ce39ff395b10da00c2ee91c8aba7a6c02c3f04f60
+```
+
+The final computation ran from clean detached runtime revision `bc82566dd888c3993e826626bb13c8c057846266`, tree SHA-256 `2f5cd73f2bb4677532951fc1bb594a20589e9456303f20938c6ae77b2f68d125`. It completed and fully verified an owned remote staging root. The Tang-2 project filesystem is NFSv3 and rejected `renameat2(RENAME_NOREPLACE)` with `EINVAL`; the implementation correctly left the remote final root absent rather than falling back to `os.replace` or copy/delete. The exact verified bytes were transferred to the local NTFS project root and atomically committed with the same no-replace `MoveFileExW` primitive:
+
+```text
+local final root:
+  results/vnext/core_task13_bc82566_v1
+
+verified remote staging evidence:
+  /NAS/yesh/MemUpdateBench/results/vnext/.mub-task13-stage-1a791f4cbfdd471aa6a8bd45ab6432d4
+
+independent audit:
+  results/vnext/core_task13_bc82566_v1_audit.json
+  SHA-256 c60c49d917c582506e262534a6c48bb68668027e428ba0c06557ae8381982145
+```
+
+The remote staging path is evidence, not a published remote final root. Task 14 must preserve this platform boundary rather than relabeling the absent NFS final root as published.
+
+### Artifact closure
+
+```text
+bootstrap_indices.bin      0d8faf77bc7e4d138f0f9dd3db85ab136f99884906298984202c8dc38c0bbd53
+cell_statistics.jsonl      e4f25e3a7fc9795a93e8007acb1131dc84bb24fcdaf4867ac65042683bf0036b
+paired_contrasts.jsonl     517d426b86e415467ab72e4655d9fe7972ca1218d3765141bc210d3b28120e47
+statistics_receipt.json    398914d52b22c9c2bb71fc548e1f4239cf15cbf99d7cae2cd53e86b4fdcf9451
+cases.jsonl                af863aa24f90851a6b7149b5cefbceafdbb8c3987bd7be439768386a4bdfdb80
+case_index.json            8c97243db3265cb39f7048ea4e825d49aead50da94e122fd9c8e638360f2ed36
+claim_ledger.jsonl         9f486dd90361dd8b70ed8cc2fa0c5a552dbf37f88b55addde71456347a4d0273
+task13_artifact_index.json da02787276dd171cce716258ec071947ae99fb047a607df983f52125a20937aa
+```
+
+Cardinality and rejoin checks:
+
+```text
+cell statistics:       126 = 18 cells x 7 metrics
+paired contrasts:       84 = 12 directed slot/k pairs x 7 metrics
+claim rows:             210
+verified cases:          57 across all 18 runs
+case categories:         18 correct, 11 stale_copied,
+                         16 answer_parse_invalid, 12 other_wrong
+matrix case rejoin:      18 runs, 1,440 observations, 57/57 cases
+bootstrap binary:        200,000 bytes
+```
+
+Four metrics are numeric in all 18 cells: exact match, stale copied, token F1, and answer-parse valid. Three remain typed unsupported/null in all 18 cells and were never converted to zero: gold-retrieved-wrong-answer, stale-count-in-context, and stale-exposure-rate.
+
+### Core-clustered exact-match intervals
+
+| slot | context | k=4 estimate [95% CI] | k=8 estimate [95% CI] | k=16 estimate [95% CI] |
+| --- | --- | --- | --- | --- |
+| Qwen | chronological / no label | 0.3875 [0.2500, 0.5250] | 0.5750 [0.4125, 0.7375] | 0.3875 [0.2250, 0.5625] |
+| Qwen | reverse / no label | 0.7250 [0.6125, 0.8375] | 0.7625 [0.6250, 0.8875] | 0.8000 [0.7000, 0.8875] |
+| Qwen | reverse / latest-outdated label | 0.7250 [0.6250, 0.8250] | 0.8500 [0.7875, 0.9125] | 0.9375 [0.8875, 0.9750] |
+| Mistral | chronological / no label | 0.7000 [0.5375, 0.8500] | 0.4250 [0.2625, 0.6000] | 0.2375 [0.0875, 0.4125] |
+| Mistral | reverse / no label | 0.9500 [0.8875, 1.0000] | 0.9000 [0.8250, 0.9625] | 0.9000 [0.8125, 0.9750] |
+| Mistral | reverse / latest-outdated label | 1.0000 [1.0000, 1.0000] | 1.0000 [1.0000, 1.0000] | 0.9750 [0.9250, 1.0000] |
+
+### Paired exact-match contrasts
+
+Each value is left minus right over the same 20 semantic cores.
+
+| slot | k | reverse/no-label minus chronological/no-label | labeled-reverse minus reverse/no-label |
+| --- | ---: | --- | --- |
+| Qwen | 4 | +0.3375 [0.1500, 0.5375] | 0.0000 [-0.1250, 0.1125] |
+| Qwen | 8 | +0.1875 [0.0250, 0.3625] | +0.0875 [-0.0250, 0.2250] |
+| Qwen | 16 | +0.4125 [0.2375, 0.5875] | +0.1375 [0.0625, 0.2375] |
+| Mistral | 4 | +0.2500 [0.0875, 0.4125] | +0.0500 [0.0000, 0.1125] |
+| Mistral | 8 | +0.4750 [0.3250, 0.6250] | +0.1000 [0.0375, 0.1750] |
+| Mistral | 16 | +0.6625 [0.5000, 0.8125] | +0.0750 [0.0125, 0.1500] |
+
+### Bounded conclusion
+
+The core-clustered evidence confirms the Task 12 boundary result rather than the earlier P8.3 order surface: in this frozen Core construction, reverse/no-label is consistently better than chronological/no-label, with all six paired intervals excluding zero. Explicit latest/outdated labels add a positive high-k benefit in both slots; the k=16 label contrasts are +0.1375 [0.0625, 0.2375] for Qwen and +0.0750 [0.0125, 0.1500] for Mistral. At smaller k the label effect is model-sensitive and some intervals include zero. This supports the narrow claim that version arbitration is order- and metadata-sensitive; it does not support a universal claim that reverse order is best or that stale same-slot conflict is always the strongest distractor. Answer-format invalidity remains a separate mechanism, represented by 16 verified parse-invalid cases.
+
+Task 13 is complete; Task 14 and overall Core `FINAL_APPROVED` remain not started.
