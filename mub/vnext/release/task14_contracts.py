@@ -245,7 +245,7 @@ class Task14RootIndexV1(ImmutableContractModel):
         return self
 
 
-def _hash_payload(value: Any, *, exclude: set[str] | None = None) -> str:
+def task14_canonical_bytes_v1(value: Any, *, exclude: set[str] | None = None) -> bytes:
     if hasattr(value, "model_dump"):
         payload = value.model_dump(
             mode="json",
@@ -256,14 +256,17 @@ def _hash_payload(value: Any, *, exclude: set[str] | None = None) -> str:
         payload = dict(value)
         for field in exclude or set():
             payload.pop(field, None)
-    encoded = json.dumps(
+    return json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+
+
+def _hash_payload(value: Any, *, exclude: set[str] | None = None) -> str:
+    return hashlib.sha256(task14_canonical_bytes_v1(value, exclude=exclude)).hexdigest()
 
 
 def task14_graph_hash_v1(value: Task14EvidenceGraphV1) -> str:
@@ -393,6 +396,7 @@ __all__ = [
     "VerifiedCoreFinalRelease",
     "task14_attestation_file_hash_v1",
     "task14_attestation_hash_v1",
+    "task14_canonical_bytes_v1",
     "task14_graph_hash_v1",
     "task14_index_hash_v1",
     "task14_manifest_hash_v1",
