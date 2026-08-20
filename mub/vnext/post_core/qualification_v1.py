@@ -45,8 +45,8 @@ def qualify_registry_offline_v1(registry: Mapping[str, ModelCandidateV1]) -> tup
         rows.append(QualificationGateV1(registry_key=key, gate_id="identity_and_execution_readiness", status=status, reason=reason))
     report = QualificationReportV1(gates=tuple(rows))
     probes = CapabilityProbeReportV1(rows=tuple(rows))
-    validate_secret_free(report.model_dump(mode="json"))
-    validate_secret_free(probes.model_dump(mode="json"))
+    validate_secret_free(report.model_dump(mode="json"), read_environment=False)
+    validate_secret_free(probes.model_dump(mode="json"), read_environment=False)
     return report, probes
 
 

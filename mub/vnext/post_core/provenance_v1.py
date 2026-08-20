@@ -57,7 +57,7 @@ def _scan(value: Any, path: str = "$", *, env_values: set[str] | None = None) ->
     if isinstance(value, Mapping):
         for key, item in value.items():
             key_text = str(key)
-            if _SECRET_KEYS.search(key_text) and key_text != "credential_env_var":
+            if _SECRET_KEYS.search(key_text) and key_text not in {"credential_env_var", "prompt_token_cap", "output_token_cap"}:
                 raise ValueError(f"secret-like key rejected at {path}.{key_text}")
             _scan(item, f"{path}.{key_text}", env_values=env_values)
         return
@@ -70,12 +70,15 @@ def _scan(value: Any, path: str = "$", *, env_values: set[str] | None = None) ->
             raise ValueError(f"secret-like value rejected at {path}")
 
 
-def validate_secret_free(value: Any) -> None:
-    env_values = {
-        value
-        for name, value in os.environ.items()
-        if name in _ALLOWED_CREDENTIAL_ENV_NAMES and value
-    }
+def validate_secret_free(value: Any, *, read_environment: bool = True) -> None:
+    if read_environment:
+        env_values = {
+            value
+            for name, value in os.environ.items()
+            if name in _ALLOWED_CREDENTIAL_ENV_NAMES and value
+        }
+    else:
+        env_values = set()
     _scan(value, env_values=env_values)
     if isinstance(value, Mapping):
         env_name = value.get("credential_env_var")
