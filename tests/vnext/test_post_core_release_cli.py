@@ -30,9 +30,8 @@ from mub.vnext.post_core.model_registry_v1 import build_initial_model_registry_v
 
 CONFIG = Path(__file__).parents[2] / "configs" / "vnext" / "post_core" / "release_v1.json"
 ROOT = Path(__file__).parents[2]
-CORE_SOURCE_ROOT_CANDIDATES = (
-    ROOT / "data" / "vnext" / "core" / "v3",
-)
+CORE_SOURCE = ROOT / "tests" / "vnext" / "fixtures" / "post_core" / "core_task_release_manifest.json"
+CORE_SHA = "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
 TASK14_SOURCE_ROOT_CANDIDATES = (
     ROOT / "tests" / "vnext" / "fixtures" / "post_core" / "task14_84beabb_v1",
 )
@@ -57,14 +56,15 @@ def _source_root(candidates: tuple[Path, ...], marker: str) -> Path:
 
 
 def _sources(tmp_path: Path) -> tuple[Path, Path]:
-    core_source = _source_root(
-        CORE_SOURCE_ROOT_CANDIDATES, "task_release_manifest.json"
-    )
+    if not CORE_SOURCE.is_file():
+        raise AssertionError(
+            "authenticated post-Core fixture is missing or corrupt: core manifest"
+        )
     task14_source = _source_root(
         TASK14_SOURCE_ROOT_CANDIDATES, "core_final_root_index.json"
     )
     core = tmp_path / "core_manifest.json"
-    core.write_bytes((core_source / "task_release_manifest.json").read_bytes())
+    core.write_bytes(CORE_SOURCE.read_bytes())
     task14_root = tmp_path / "task14"
     task14_root.mkdir()
     for source in task14_source.iterdir():
@@ -687,7 +687,10 @@ def test_qualification_cli_stale_source_exit_code(tmp_path: Path) -> None:
     assert "secret" not in (run.stdout + run.stderr).lower()
 
 
-def test_repository_fixture_has_authenticated_task14_index_and_sibling_hashes() -> None:
+def test_repository_fixtures_have_authenticated_core_manifest_and_task14_hashes() -> None:
+    core_raw = CORE_SOURCE.read_bytes()
+    assert release_v1._sha256(core_raw) == CORE_SHA
+
     fixture = TASK14_SOURCE_ROOT_CANDIDATES[0]
     index_raw = (fixture / "core_final_root_index.json").read_bytes()
     assert release_v1._sha256(index_raw) == TASK14_SHA
@@ -703,7 +706,7 @@ def test_repository_fixture_has_authenticated_task14_index_and_sibling_hashes() 
     raw = CONFIG.read_bytes()
     assert raw == json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")).encode()
     config = load_post_core_config_v1(CONFIG)
-    assert config.core_manifest_sha256 == "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b"
+    assert config.core_manifest_sha256 == CORE_SHA
     assert config.core_task14_index_sha256 == TASK14_SHA
 
 
