@@ -2917,3 +2917,88 @@ Multiple independent review attempts were made with separate local, inherited, r
 ### Next hard gate
 
 The document identity preflight is complete, but Phase 1 model execution has not started. Downloading Qwen or Muse files, allocating approved storage, authenticating a complete local snapshot tree, installing or changing Transformers/llama.cpp runtimes, or loading either model requires a separate explicit storage/download/execution authorization. Provider probes likewise require explicit network, credential-environment, and hard-budget authorization. Until those approvals exist, all execution counts remain zero and this document evidence is not scientific model evidence.
+
+## Post-Core shared Hugging Face cache cleanup
+
+### Motivation and authorization
+
+The shared NAS reported only approximately 135 GB available while the next open-model panel requires Qwen3.5-9B BF16 and potentially Muse Glimmer int4/BF16 artifacts. The user explicitly selected the recommended deletion set after a read-only inventory. The cleanup was limited to `/NAS/yesh/hf_cache/hub`; no project artifact, frozen Core root, Task 11/12 model snapshot, result root, checkpoint, or another user's model path was targeted.
+
+Before deletion, the inventory checked every cache root's exact `refs/main`, snapshot set, logical and allocated bytes. Project dependencies established two required cache roots:
+
+```text
+KEEP Qwen/Qwen2.5-7B-Instruct
+  revision a09a35458c702b33eeacc393d103063234e8bc28
+  reason: current Task 11 Qwen weights and long25 LoRA base model
+
+KEEP sentence-transformers/all-MiniLM-L6-v2
+  revision c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+  reason: Pilot and heuristic CRUD encoder
+```
+
+The Task 11 Mistral v0.3 weights are an independent 28 GB project snapshot under `external/task11_answer_models`, not an HF-cache root. No running MemUpdateBench process was found.
+
+### Exact deletion set
+
+After reconfirming each target was a real direct child of the exact cache root, not a link, and still had the inventoried revision/snapshot set, the cleanup removed:
+
+```text
+models--NousResearch--Llama-2-7b-hf
+  revision 8efe6c9b93655b934e27bd9981e3ec13e55aee9d
+  allocated 40,434,376,704 bytes
+
+models--Qwen--Qwen2.5-7B
+  revision d149729398750b98c0af14eb82c78cfe92750796
+  allocated 15,242,833,920 bytes
+
+models--facebook--contriever-msmarco
+  revision abe8c1493371369031bcb1e02acb754cf4e162fa
+  allocated 438,734,848 bytes
+
+models--facebook--wav2vec2-base
+  revision 0b5b8e868dd84f03fd87d01f9c4ff0f080fecfe8
+  allocated 380,301,312 bytes
+
+models--meta-llama--Llama-3.1-8B
+  revision d04e592bb4f6aa9cfee91e2e20afa771667e1d4b
+  allocated 32,132,624,384 bytes
+
+models--selfrag--selfrag_llama2_7b
+  revision 190261383b0779ff66d2f95a73c7ad267d94b820
+  allocated 13,477,765,120 bytes
+
+models--meta-llama--Llama-2-7b-hf
+  incomplete ref-only directory, no snapshot
+  allocated 4,096 bytes
+```
+
+Total measured deletion:
+
+```text
+allocated bytes: 102,106,640,384
+logical bytes:   102,106,422,168
+approximate GiB: 95.1
+```
+
+NAS available space rose from `134,597,705,728` bytes immediately before deletion to `232,908,390,400` bytes in the cleanup script; the following independent `df` observation reported `232,998,699,008` bytes, reflecting concurrent filesystem activity.
+
+### Receipt and independent verification
+
+The operation wrote an atomic project-local receipt:
+
+```text
+/NAS/yesh/MemUpdateBench/external/post_core_storage_cleanup_20260821_v1.json
+SHA-256:
+  7ca169060d061852635872b1cfe13b068fa0a252f01af39de44d85593f3ba71e
+payload self-hash:
+  fa925cfccf742213bbeea3abda181ff87469ffe24fa6586022a7bd9701b13f23
+```
+
+A separate read-only verification confirmed all seven targets absent and exactly two HF model roots remaining. It also rechecked both required revisions, the long25 adapter file, and the independent Mistral snapshot. The final cache model roots are:
+
+```text
+models--Qwen--Qwen2.5-7B-Instruct
+models--sentence-transformers--all-MiniLM-L6-v2
+```
+
+This cleanup only creates storage headroom. It does not authorize or perform Qwen3.5/Muse downloads, runtime installation, model loading, provider calls, or benchmark execution.
