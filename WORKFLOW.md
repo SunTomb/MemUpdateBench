@@ -2661,3 +2661,136 @@ The bounded MemUpdateBench vNext Core release is `FINAL_APPROVED`.
 This approval means that the immutable Core task release, deterministic engineering gates, genuine Mem0 admission boundary, offline answer-model provenance, real Task 12 prompted-answer matrix, and Task 13 statistics/claims/cases are mutually authenticated and correctly scoped. It does not turn Mem0 admission into accuracy, broaden the two-model Raw-append Family-A matrix into a universal external-memory benchmark, or support universal reverse-order/strongest-distractor claims.
 
 The next project phase is separate from this frozen release: design the main-track external-validity expansion with genuine external-memory prompted-answer results, more independent semantic cores and domains/languages, and a layered reproducible-open/frontier-closed answer-model panel. Do not modify or rebind the `FINAL_APPROVED` Core release while designing that expansion.
+
+## Post-Core model-expansion Phase 0 metadata release
+
+### Motivation and boundary
+
+The first post-Core unit turns the agreed modern model panel into a separate, authenticated execution plan without extending the literal two-slot Task 11/12/13 contracts or modifying any frozen Core artifact. It is Phase 0 metadata only: it performs no network request, provider call, model download/load, credential-value read, generation, scoring, or scientific comparison.
+
+The frozen candidate intents are Qwen3.5-9B BF16, Meta Muse Glimmer 30B fixed int4 plus a BF16 k=16 control, Claude Sonnet 4.6, Claude Opus 4.8, Gemini 3.6 Flash, Grok 4.5, and GPT-5.5. Unverified model facts remain null/pending rather than inferred. The Qwen canary budget records 320 future requested generations, but every Phase 0 executable count is zero.
+
+The design and plan are frozen in:
+
+```text
+docs/superpowers/specs/2026-08-20-memupdatebench-post-core-model-expansion-design.md
+docs/superpowers/plans/2026-08-20-memupdatebench-post-core-model-expansion.md
+```
+
+### Implementation
+
+A separate versioned namespace now owns the contracts, frozen registry, secret-free provenance, metadata qualification, call planning, transactional release, and no-network CLIs:
+
+```text
+mub/vnext/post_core/contracts_v1.py
+mub/vnext/post_core/model_registry_v1.py
+mub/vnext/post_core/provenance_v1.py
+mub/vnext/post_core/qualification_v1.py
+mub/vnext/post_core/planning_v1.py
+mub/vnext/post_core/release_v1.py
+configs/vnext/post_core/release_v1.json
+scripts/vnext_prepare_post_core_release.py
+scripts/vnext_qualify_post_core_models.py
+```
+
+The release publishes exactly seven files. Its final index binds the preceding six in frozen order and does not bind itself:
+
+```text
+post_core_release_manifest.json
+model_registry.json
+provenance.jsonl
+qualification_report.json
+capability_probe_report.json
+execution_plan.json
+post_core_artifact_index.json
+```
+
+The source boundary independently pins the approved Core task-release manifest and Task 14 index, semantically reopens the exact Task 14 sibling chain, snapshots/revalidates external config/registry/provenance inputs, requires the exact eight-candidate pending registry, and requires provided provenance to equal deterministic pending-intent provenance. Output publication uses a same-filesystem owned staging directory, no-replace directory commit, source/staging/output identity and digest checks, safe quarantine of tampered staging, parent durability, and a typed committed-but-unverified outcome.
+
+Security hardening forbids environment credential-value reads, provider/model/network imports and calls, secret-bearing command flags and headers, and secret-bearing diagnostics. Credential environment-variable names are allowlisted and values are never persisted. Repository-relative authenticated Core and Task 14 fixtures keep the publication tests fail-closed in clean checkouts; the fixture hashes equal the immutable sources.
+
+### Review, failures, and verification
+
+Development followed failing-regression-first cycles. The first parent-worktree integration run exposed three direct-CLI import failures hidden by an inherited `PYTHONPATH`. Independent specification review then found caller-controlled source hashes, shallow Task 14 validation, mutable external metadata inputs, credential-value reads, staging cleanup gaps, and unbound zero network accounting. Subsequent reviews found public-config construction bypass, source snapshot races, secret-bearing exception echo, Task 14 sibling and staging/output TOCTOU windows, POSIX syscall fallback gaps, header-scanner bypasses, and tests that silently depended on local absolute roots. Every Critical/Important finding received a regression and was re-reviewed. An accidental Task 14 hardening edit was byte-restored immediately to preserve the frozen Task 14 implementation boundary.
+
+Final independent decisions:
+
+```text
+specification review:  SPEC_COMPLIANT
+code-quality review:   CODE_QUALITY_APPROVED
+```
+
+Fresh clean-checkout gates at revision `0745fc9dce33a1ace5efdf966d3b1f8b90b9e07b`:
+
+```text
+python -m pytest tests/vnext/test_post_core_*.py -q
+  58 passed
+
+python -m pytest tests/vnext/test_core_task14_atomic.py \
+  tests/vnext/test_core_task14_sources.py -q
+  14 passed, 2 skipped
+
+python -m py_compile <post-Core modules, CLIs, and changed tests>
+  PASS
+
+git diff --check
+  PASS
+```
+
+The two Task 14 skips are Windows symlink-privilege cases (`WinError 1314`) and are not counted as passes. The authenticated test fixtures have SHA-256 values:
+
+```text
+Core task-release manifest:
+  dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b
+Task 14 root index:
+  2ccc737dffb04bc377b123edee2ac1ca04ed338651d0bd19f9c112430bc04035
+```
+
+### Strict-clean publication and artifact closure
+
+The authoritative no-replace local root was produced with `PYTHONDONTWRITEBYTECODE=1` from a detached repository that passed the strict clean-runtime checker both immediately before publication and after semantic reopen:
+
+```text
+runtime revision:
+  0745fc9dce33a1ace5efdf966d3b1f8b90b9e07b
+runtime tree SHA-256:
+  916a9cbc1c832270ccc1a9c57b4ac2a5404000da77d03bd35f986cacfc7ec84c
+authoritative root:
+  D:/USTC/2026Winter/MemUpdateBench_releases/post_core_phase0_0745fc9_clean_v1
+```
+
+A second independent strict-clean detached worktree reopened the seven files, rebuilt their exact semantics from the authenticated Core/Task 14/config sources, verified the six-entry non-self-hashing index, and returned `VERIFIED_PENDING_ONLY`.
+
+```text
+post_core_release_manifest.json
+  6b01cf32ec76299e38c6bf3e4250994f7356717ba1108e2ec1914d73dd9c41b5
+model_registry.json
+  1cb669f3188b5d145338feab19412309cf774337c0b85cded412cd09e85fba12
+provenance.jsonl
+  01e4b65ae9c1948005a32533e76f1f26a5b0f5875f1abd8fd38a66cb5cc61965
+qualification_report.json
+  b6b49063a44623120f31ca613843b0b934bfc016dcb9fc5fc64f7fe35491078c
+capability_probe_report.json
+  7ed5ed5ba44e32eed60fb724870f2509951c686b0b95e72929abe8fb901c2de7
+execution_plan.json
+  d1657289003738dd8dd02de2afabc690b12e2f32271ef1bae43cadb33629ffca
+post_core_artifact_index.json
+  e0b08cf0752798b55388c16f176af88a7a6a25a6facf29d6fa4100348ac199fd
+```
+
+The earlier root `D:/USTC/2026Winter/MemUpdateBench_releases/post_core_phase0_0745fc9_v1` has identical deterministic artifact hashes but was created after tests had generated ignored cache directories in its detached worktree. It is retained only as a superseded diagnostic; the `_clean_v1` root above is authoritative.
+
+Final metadata counts are:
+
+```text
+candidate rows:          8
+qualification PENDING:   8
+provenance rows:         8
+provider calls:          0
+model loads:             0
+network calls:           0
+executable calls:        0
+Qwen future requested: 320
+```
+
+Post-publication hashes for the immutable Core manifest, Task 13 index, and all five Task 14 files exactly matched their pre-publication baselines. Therefore Phase 0 closes only the safe planning/publication gate. It is not model capability, accuracy, external-system, prompted-answer, or main-track scientific evidence. Phase 1 remains blocked until exact official open-model identities/revisions/licenses/snapshot manifests are authenticated and local model load/download execution is separately authorized; closed-provider preflight remains a later explicit network/credential/budget gate.
