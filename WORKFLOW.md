@@ -2794,3 +2794,126 @@ Qwen future requested: 320
 ```
 
 Post-publication hashes for the immutable Core manifest, Task 13 index, and all five Task 14 files exactly matched their pre-publication baselines. Therefore Phase 0 closes only the safe planning/publication gate. It is not model capability, accuracy, external-system, prompted-answer, or main-track scientific evidence. Phase 1 remains blocked until exact official open-model identities/revisions/licenses/snapshot manifests are authenticated and local model load/download execution is separately authorized; closed-provider preflight remains a later explicit network/credential/budget gate.
+
+## Post-Core official model-identity document preflight
+
+### Purpose and evidence boundary
+
+The first post-Phase-0 step authenticated public model identities without modifying the frozen Phase 0 registry or release root. This work used public official documentation and pinned Hugging Face repository metadata only. It did not download a weight, create a local model snapshot, load a model, read a credential, call a provider inference API, generate an answer, or make any candidate executable.
+
+The canonical evidence file is:
+
+```text
+configs/vnext/post_core/official_identity_evidence_v1.json
+SHA-256:
+  9e3780ed3d4303bda7bbd27865df89fcb384041da64af56107c8c5b7abf0a4f0
+bound Phase 0 index:
+  e0b08cf0752798b55388c16f176af88a7a6a25a6facf29d6fa4100348ac199fd
+```
+
+The strict contract and no-execution validator are:
+
+```text
+mub/vnext/post_core/identity_v1.py
+scripts/vnext_validate_post_core_identities.py
+tests/vnext/test_post_core_identity_evidence.py
+```
+
+The contract freezes the complete evidence bytes, exact candidate order, official URLs, repository revisions, selected artifact hashes, response identity fields, and conservative state transitions. It rejects links/reparse points, hard-linked inputs, noncanonical JSON, substituted evidence bytes, mutable-alias promotion, invented GPT-5.5 identity, closed-model architecture/license/parameter claims, and any nonzero provider/model/network/executable count.
+
+### Open-model findings
+
+`Qwen/Qwen3.5-9B` is an official Qwen repository, not a provisional display-name guess:
+
+```text
+repository:   Qwen/Qwen3.5-9B
+revision:     c202236235762e1c871ad0ccb60c8ee5ba337b9a
+created:      2026-02-27
+license:      Apache-2.0
+architecture: Qwen3_5ForConditionalGeneration
+model type:   qwen3_5
+parameters:   9,653,104,368
+native max positions in config: 262,144
+```
+
+The selected revision provides four BF16 safetensors shards and explicit tokenizer/chat-template files. Their exact LFS SHA-256 values are bound in the evidence. The repository card calls the model 9B while the official API reports 9,653,104,368 parameters; the exact API total is preserved rather than rounding it into an architectural claim. No official static Qwen int4 variant is needed for the selected BF16 role. State advances only to `PENDING_LOCAL_SNAPSHOT`.
+
+`meta-models/Muse-Glimmer-30B` and its GGUF repository are also official releases under Hugging Face's verified Meta Inc. organization:
+
+```text
+BF16 repository: meta-models/Muse-Glimmer-30B
+BF16 revision:   a4e59da52a7bc87ae7251dd5545c0dd437c44b68
+GGUF repository: meta-models/Muse-Glimmer-30B-GGUF
+GGUF revision:   70bf1b61ac09f91b24d39038091b41c582bc5d7a
+license:         Apache-2.0
+architecture:    MuseGlimmerForConditionalGeneration
+parameters:      29,776,626,688
+```
+
+The official repository resolves the earlier feasibility uncertainty. It publishes two static 4-bit builds plus a vision projector and an optional DFlash speculative drafter. The planned primary quantized target is the higher-fidelity Dynamic build:
+
+```text
+Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
+bytes:  19,653,960,832
+SHA-256:
+  ac7023d6a4c704eb9af54ab53e476a66b7f5b6c0ef2fc4a8dde5253c291a6c38
+
+mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+SHA-256:
+  f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6
+
+dflash-Muse-Glimmer-30B-Q4_K_M.gguf
+SHA-256:
+  b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef
+```
+
+The official card reports approximately 20 GB for the Dynamic text-only build, approximately 22 GB with vision, and approximately 23 GB with vision plus drafter. These published estimates support a later A40/A100 resource preflight but are not local load evidence. Speculative decoding remains OFF for the scientific baseline and cannot enter results until a paired parity receipt passes. The BF16 and int4 roles both remain `PENDING_LOCAL_SNAPSHOT`.
+
+### Closed-provider findings
+
+Official provider documentation verifies three requested identities sufficiently to prepare—but not execute—a provider preflight:
+
+```text
+claude-sonnet-4-6  READY_FOR_PROVIDER_PREFLIGHT
+claude-opus-4-8    READY_FOR_PROVIDER_PREFLIGHT
+gemini-3.6-flash   READY_FOR_PROVIDER_PREFLIGHT
+```
+
+Anthropic explicitly documents `claude-sonnet-4-6` and `claude-opus-4-8` as dateless but pinned snapshots, not evergreen aliases. The Messages response schema exposes `model`, which must equal the requested pinned identity. Google lists `gemini-3.6-flash` as a stable specific model ID rather than a `latest` alias; `GenerateContentResponse.modelVersion` exposes the version used and must remain constant across accepted calls. These state changes authorize only a future identity/format preflight after separate network, credential, and hard-budget approval.
+
+Two candidates remain blocked from preflight promotion:
+
+```text
+grok-4.5  PENDING_PROVIDER_QUALIFICATION
+gpt-5.5   PENDING_OFFICIAL_IDENTITY
+```
+
+xAI officially lists `grok-4.5`, but its versioning documentation says undated IDs are mutable aliases for the newest stable release. No public dated `grok-4.5-YYYYMMDD` identity was verified, and the response `model` field is not documented to expose a resolved dated version. OpenAI's official model catalog retrieved on 2026-08-21 did not list `gpt-5.5`; an internal transfer-station alias therefore remains insufficient evidence.
+
+Current pricing/context facts were inspected only for feasibility and were deliberately not frozen into the identity evidence because provider pricing is time-varying. A provider preflight must refresh and version its own price/budget table.
+
+### Validation and review status
+
+The implementation followed RED/GREEN development. Initial RED failed at module import; subsequent RED runs exposed the Phase 0 index computed-field serialization rule, exact-message test drift, evidence substitution, and lexical link handling. Final verification:
+
+```text
+python -m py_compile \
+  mub/vnext/post_core/identity_v1.py \
+  scripts/vnext_validate_post_core_identities.py \
+  tests/vnext/test_post_core_identity_evidence.py
+  PASS
+
+python -m pytest tests/vnext/test_post_core_*.py -q
+  65 passed, 1 skipped
+
+git diff --check
+  PASS
+```
+
+The one skip is the Windows symlink-construction case (`WinError 1314`) and is not counted as a pass; lexical reparse rejection remains implemented. The validator receipt contains eight candidates, three `PENDING_LOCAL_SNAPSHOT`, one `PENDING_OFFICIAL_IDENTITY`, one `PENDING_PROVIDER_QUALIFICATION`, three `READY_FOR_PROVIDER_PREFLIGHT`, and zero provider calls, model loads, network calls, or executable calls.
+
+Multiple independent review attempts were made with separate local, inherited, remote, and alternate-profile agents. Every attempt terminated before reading the files because the subagent router selected unavailable `grok-4.6`. No independent review verdict exists for this unit; it must not be labeled `SPEC_COMPLIANT` or `CODE_QUALITY_APPROVED`. The completed evidence consists of official-source inspection, hash-frozen contracts, automated verification, and an inline adversarial review that closed evidence-substitution and lexical-link bypasses.
+
+### Next hard gate
+
+The document identity preflight is complete, but Phase 1 model execution has not started. Downloading Qwen or Muse files, allocating approved storage, authenticating a complete local snapshot tree, installing or changing Transformers/llama.cpp runtimes, or loading either model requires a separate explicit storage/download/execution authorization. Provider probes likewise require explicit network, credential-environment, and hard-budget authorization. Until those approvals exist, all execution counts remain zero and this document evidence is not scientific model evidence.
