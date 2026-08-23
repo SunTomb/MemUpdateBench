@@ -3124,3 +3124,72 @@ available bytes at audit:
 ```
 
 Post-audit structural checks again confirmed the three public roots are real directories, both personal Muse cache roots and the download staging root are absent, Qwen2.5-Instruct and MiniLM retain their exact revisions, and long25 plus the frozen Task 11 Mistral snapshot remain present. These snapshots are authenticated storage/preflight inputs only; they are not load, capability, accuracy, prompted-answer, or benchmark evidence.
+
+## Tang-3 GPU6 Qwen offline load preflight
+
+### Authorization and shared-GPU boundary
+
+The user explicitly designated `Tang-3-Wu` GPU6 for testing and authorized co-use with existing low-memory jobs. The two existing `tuzx` processes were not terminated or altered. At preflight start, GPU6 was an NVIDIA A40 with 46,068 MiB total and approximately 44.5 GiB free; the other processes each occupied approximately 454 MiB. The test did not start a benchmark, generate a prompt answer, or call a provider.
+
+The preflight ran from an already installed `routertc` environment, without modifying the shared `gmsra` environment or installing packages. The runtime was:
+
+```text
+Python:       3.10
+Transformers: 5.9.0
+PyTorch:      2.5.1+cu121
+Accelerate:   1.13.0
+CUDA device:  NVIDIA A40, visible as CUDA device 6
+```
+
+The first attempt stopped before weight loading because `accelerate` was absent from `gmsra`; it was not treated as a passing run. A second isolated script-edit attempt initially failed with a local `NameError` (`model.to(cuda)`), also before GPU model loading. After correcting the isolated preflight script, the real load succeeded.
+
+### Qwen result
+
+```text
+model:
+  Qwen/Qwen3.5-9B
+revision:
+  c202236235762e1c871ad0ccb60c8ee5ba337b9a
+public snapshot:
+  /NAS/HuggingFaceModels/Qwen3.5-9B
+tree SHA-256:
+  e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db
+class:
+  Qwen3_5ForConditionalGeneration
+parameters loaded:
+  9,409,813,744
+```
+
+The model loaded completely from local files with `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `local_files_only=True`, and `trust_remote_code=False`, then was moved to CUDA device 6, set to eval mode, and unloaded. No prompt or generation was performed.
+
+```text
+free before load:       46,373,076,992 bytes
+memory allocated:       18,831,103,488 bytes
+memory reserved:        18,884,853,760 bytes
+free after load:        27,488,223,232 bytes
+free after unload:      46,373,076,992 bytes
+model loads:            1
+generations:            0
+provider calls:         0
+network calls:          0
+```
+
+The optional fast-path packages `flash-linear-attention` and `causal-conv1d` were absent, so Transformers reported a torch fallback. This is a runtime/throughput caveat and must be fixed or explicitly frozen before any benchmark throughput claim.
+
+The receipt is:
+
+```text
+/NAS/yesh/MemUpdateBench/external/post_core_qwen35_gpu6_load_preflight_20260823.json
+SHA-256:
+  fd4e47d75d86efdbe9add3cc469017b9aef23bb05bc4d03b74877bfbe289f6b7
+payload self-hash:
+  f8cf70557a713a910a75e37adfe47b08e1758003fcd63146d999db5f40ac579a
+```
+
+### Muse boundary
+
+Muse BF16 is approximately 59.6 GB and cannot fit on this A40 alongside the existing shared processes; it was not loaded. Muse GGUF is public and fully hash-audited, but `llama.cpp` executables were not installed on Tang-3 and no GGUF load was attempted. The next Muse preflight requires an approved llama.cpp build/runtime and explicit device/context limits; it remains separate from Qwen's successful load-only check.
+
+### Conclusion
+
+Qwen3.5-9B passes an offline load/unload preflight on shared Tang-3 GPU6. This proves only local snapshot readability, architecture/runtime recognition, and one co-use load boundary. It is not a prompted-answer result, capability score, throughput result, or benchmark evidence. No Phase 1 benchmark execution has started.
