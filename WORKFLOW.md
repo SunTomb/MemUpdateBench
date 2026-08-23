@@ -3002,3 +3002,125 @@ models--sentence-transformers--all-MiniLM-L6-v2
 ```
 
 This cleanup only creates storage headroom. It does not authorize or perform Qwen3.5/Muse downloads, runtime installation, model loading, provider calls, or benchmark execution.
+
+## Post-Core public open-model snapshots
+
+### Scope and transfer boundary
+
+The user subsequently authorized downloading the document-verified open models and requested that final weights live in the shared `/NAS/HuggingFaceModels` library rather than a personal cache. The cluster could not resolve or reach Hugging Face directly, so fixed-revision files were streamed from the local authenticated public connection through SSH into a resumable NAS staging root. The workstation never retained a complete weight file. No runtime package was installed or changed, and no model was loaded or invoked.
+
+The exact source set remained:
+
+```text
+Qwen/Qwen3.5-9B
+  revision c202236235762e1c871ad0ccb60c8ee5ba337b9a
+
+meta-models/Muse-Glimmer-30B-GGUF
+  revision 70bf1b61ac09f91b24d39038091b41c582bc5d7a
+  selected Dynamic Q4_K_XL + mmproj + DFlash
+
+meta-models/Muse-Glimmer-30B
+  revision a4e59da52a7bc87ae7251dd5545c0dd437c44b68
+```
+
+Transfers used remote-size-based range resumes. Multiple CDN TLS close events, one Tang-2 SSH disconnect, and several transient NAS `No space left on device` failures were handled by stopping the process, preserving exact partial bytes, and resuming only when capacity exceeded remaining bytes plus a safety reserve. No failed transfer exposed a final model root.
+
+### Shared Qwen reuse
+
+A read-only NAS search found several existing Qwen3.5-9B copies. `/NAS/HuggingFaceModels/Qwen3.5-9B` matched all 16 official files, four LFS shard hashes, tokenizer hash, ordinary Git blob OIDs, sizes, and the pinned revision manifest. It was adopted directly rather than downloading another final copy. The duplicated personal staging copy was removed only after both copies were fully rehashed.
+
+```text
+public path:
+  /NAS/HuggingFaceModels/Qwen3.5-9B
+file count:
+  16
+total bytes:
+  19,329,393,661
+tree SHA-256:
+  e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db
+binding receipt:
+  /NAS/yesh/MemUpdateBench/external/post_core_shared_qwen_binding_20260822_v1.json
+receipt SHA-256:
+  924cb994248cf56d1d41df0da3bca06ce7abe1184cde5f0af489d4d364a1d9c2
+```
+
+The broader search found size-compatible copies under other users but did not rely on them. No reusable Muse Glimmer copy was found in the central library or during a time-bounded unique-filename NAS search.
+
+### Muse download and public migration
+
+The complete Muse GGUF package was downloaded first and verified against every frozen source digest:
+
+```text
+public path:
+  /NAS/HuggingFaceModels/Muse-Glimmer-30B-GGUF
+file count:
+  5
+total bytes:
+  22,685,535,060
+tree SHA-256:
+  55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f
+```
+
+The BF16 snapshot then completed both official shards:
+
+```text
+model-00001-of-00002.safetensors
+  49,950,112,952 bytes
+  8eef61530e1283642c77ce2e6721feb5c6f348fa055c00e90f2844a136372694
+
+model-00002-of-00002.safetensors
+  9,603,322,320 bytes
+  b58cc2144ba1ba1af4420f67f4ca3ced7f09298510b80464cc75018a0be14381
+```
+
+All 13 BF16 files were first verified in the HF cache snapshot. Public flat snapshots were built through same-filesystem hardlinks in absent temporary roots and atomically renamed only after full membership, size, source digest, and SHA-256 validation. The public BF16 root was then reopened and rehashed before the personal cache duplicates were unlinked.
+
+```text
+public path:
+  /NAS/HuggingFaceModels/Muse-Glimmer-30B
+file count:
+  13
+total bytes:
+  59,581,829,216
+tree SHA-256:
+  7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782
+download receipt:
+  /NAS/yesh/MemUpdateBench/external/post_core_open_snapshot_download_20260821_v1.json
+receipt SHA-256:
+  c8a16cda9dbb5646305d29a3c2e97d4ea7a92c10ae7fd3a43673c4a159f4f0a6
+```
+
+A finalize-script Git blob header bug (`\\0` rather than NUL) initially rejected a correct GGUF license file after download. Independent Git blob calculation proved the file and hardlink were exact. The verifier was corrected; no model data was rewritten. A separate cache-snapshot symlink handling bug was also closed by strictly resolving HF snapshot links to authenticated blobs before creating public hardlinks.
+
+### Final receipt and independent audit
+
+The source-bound public closure receipt is:
+
+```text
+/NAS/yesh/MemUpdateBench/external/post_core_public_open_models_20260822_v1.json
+SHA-256:
+  77a69e02a8b092b7e1bf5e89ff9a5f69b449c89a1c2cd319f9c48edd3e2f4645
+```
+
+A second independent remote program then reopened and rehashed all 34 public files—approximately 101.6 GB—without reusing the finalizer result. It verified the three exact tree hashes, four source receipts, preserved dependencies, absence of personal Muse cache/staging duplicates, and available disk space.
+
+```text
+independent audit:
+  /NAS/yesh/MemUpdateBench/external/post_core_public_open_models_20260822_audit.json
+audit SHA-256:
+  0b146bd8dc04e3343d899801f4746bee0ae69635f1ace3f4c92ada8f32819940
+audit payload self-hash:
+  392a4d11205803cf2559dff8843a87529ee93daefe1a27c152ca3b5363d588d6
+dependencies preserved:
+  true
+personal duplicates absent:
+  true
+model loads:
+  0
+provider calls:
+  0
+available bytes at audit:
+  102,711,689,216
+```
+
+Post-audit structural checks again confirmed the three public roots are real directories, both personal Muse cache roots and the download staging root are absent, Qwen2.5-Instruct and MiniLM retain their exact revisions, and long25 plus the frozen Task 11 Mistral snapshot remain present. These snapshots are authenticated storage/preflight inputs only; they are not load, capability, accuracy, prompted-answer, or benchmark evidence.
