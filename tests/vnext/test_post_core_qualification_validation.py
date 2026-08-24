@@ -373,3 +373,109 @@ def test_qualification_validation_exports_only_the_contract_functions() -> None:
         "validate_provider_attestations_v1",
         "validate_qualification_secret_free",
     ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "credential",
+        "backup_token",
+        "APIKey",
+        "XAPIKey",
+        "accessToken",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\nopaque",
+        {"value": "XAPIKey=opaque"},
+    ],
+)
+def test_post_scan_rejects_standalone_sensitive_identifier_values(value: object) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "the credential is redacted in prose",
+        "this APIKey label appears in a sentence",
+        {"api_version": "v1"},
+        {"key": "public-label"},
+        {"key_count": 2},
+    ],
+)
+def test_post_scan_allows_benign_prose_and_generic_mapping_keys(value: object) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    validate_qualification_secret_free(value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://exa mple.test/path",
+        "https://example.test/%ZZ",
+        "https:///missing-host",
+        "https://-leading.test/path",
+        "https://trailing-.test/path",
+        "https://double..label.test/path",
+        "https://example!.test/path",
+    ],
+)
+def test_url_validation_rejects_whitespace_bad_escapes_and_invalid_host_syntax(url: str) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free({"endpoint": url})
+
+
+@pytest.mark.parametrize(
+    "query_key",
+    ["key", "sig", "signature", "APIKey", "XAPIKey", "X-Amz-Signature", "X-Goog-Signature", "access_token"],
+)
+def test_url_query_validation_rejects_generic_and_compact_credential_keys(query_key: str) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free({"endpoint": f"https://example.test/?{query_key}=opaque"})
+
+
+@pytest.mark.parametrize("row_index", [0, 4])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"stop_reason": None},
+        {"stop_reason": "other"},
+        {"usage_present": False},
+        {"usage_present": None},
+    ],
+)
+def test_all_observations_reject_missing_or_substituted_retention_metadata(
+    row_index: int, changes: dict[str, object]
+) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_provider_attestations_v1
+
+    rows = provider_attestations()
+    row = rows[row_index]
+    changed = _unsafe_observation(row.observations[0], **changes)
+    invalid_row = _unsafe_row(row, observations=(changed, *row.observations[1:]))
+    with pytest.raises(ValueError):
+        validate_provider_attestations_v1((*rows[:row_index], invalid_row, *rows[row_index + 1:]))
+
+
+def test_load_canonical_jsonl_rejects_same_inode_same_size_timestamp_mutation(tmp_path: Path, monkeypatch) -> None:
+    import mub.vnext.post_core.qualification_validation_v1 as validation
+
+    path = tmp_path / "attestations.jsonl"
+    path.write_bytes(canonical_bytes(provider_attestations()[0]) + b"\n")
+    original_read = validation._read_fd_all
+
+    def read_then_mutate(descriptor: int) -> bytes:
+        raw = original_read(descriptor)
+        current = path.stat()
+        os.utime(path, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
+        return raw
+
+    monkeypatch.setattr(validation, "_read_fd_all", read_then_mutate)
+    with pytest.raises(ValueError, match="changed while being read"):
+        validation.load_canonical_jsonl_v1(path, ProviderCapabilityAttestationV1, label="attestations")

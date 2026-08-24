@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -37,11 +38,26 @@ _GPT_OBSERVATION_IDS = (
 )
 _GPT_RESPONSE_FORMATS = ("SSE", "SSE", "SSE", "ANTHROPIC_MESSAGE_JSON")
 _URL_KEYS = frozenset({"endpoint", "endpoint_url", "source_url"})
-_CREDENTIAL_COMPONENTS = frozenset(
-    {"api", "auth", "authorization", "bearer", "credential", "key", "password", "private", "secret", "sig", "signature", "token"}
+_SENSITIVE_IDENTIFIER_ATOMS = frozenset(
+    {"auth", "authorization", "bearer", "credential", "password", "secret", "token"}
 )
-_PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)
+_SENSITIVE_IDENTIFIER_COMPOUNDS = frozenset(
+    {
+        "api_key", "x_api_key", "private_key", "access_token", "refresh_token", "auth_token",
+        "x_auth_token", "x_access_token", "x_api_token", "x_goog_api_key",
+        "x_amz_security_token", "openai_api_key", "anthropic_api_key", "gemini_api_key",
+        "google_api_key", "xai_api_key",
+    }
+)
+_SENSITIVE_COMPACT_IDENTIFIERS = frozenset(
+    {item.replace("_", "") for item in _SENSITIVE_IDENTIFIER_COMPOUNDS} | {"apikey", "xapikey"}
+)
+_QUERY_GENERIC_SENSITIVE_PARTS = frozenset({"key", "sig", "signature"})
+_PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
 _ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
+_IDENTIFIER_SHAPED = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _SAFE_CONTRACT_KEYS = frozenset({"registry_key"})
 
 
@@ -50,16 +66,42 @@ def _normalized_key(value: object) -> str:
     return re.sub(r"[-\s]+", "_", text).lower()
 
 
-def _is_credential_identifier(value: object) -> bool:
+def _is_sensitive_identifier(value: object, *, query_key: bool = False) -> bool:
     normalized = _normalized_key(value)
     if normalized == "credential_env_var" or normalized in _SAFE_CONTRACT_KEYS:
         return False
-    return any(component in _CREDENTIAL_COMPONENTS for component in normalized.split("_"))
+    parts = tuple(part for part in normalized.split("_") if part)
+    compact = normalized.replace("_", "")
+    if (
+        normalized in _SENSITIVE_IDENTIFIER_ATOMS
+        or normalized in _SENSITIVE_IDENTIFIER_COMPOUNDS
+        or compact in _SENSITIVE_COMPACT_IDENTIFIERS
+        or any(part in _SENSITIVE_IDENTIFIER_ATOMS for part in parts)
+    ):
+        return True
+    return query_key and any(part in _QUERY_GENERIC_SENSITIVE_PARTS for part in parts)
+
+
+def _validate_host(host: str) -> None:
+    try:
+        ipaddress.ip_address(host)
+        return
+    except ValueError:
+        pass
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("endpoint/source URL host is invalid") from exc
+    labels = ascii_host.lower().split(".")
+    if not labels or any(not _HOST_LABEL.fullmatch(label) for label in labels):
+        raise ValueError("endpoint/source URL host is invalid")
 
 
 def _validate_url(value: object, key: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be an HTTPS URL")
+    if any(char.isspace() or ord(char) < 32 for char in value) or _BAD_PERCENT_ESCAPE.search(value):
+        raise ValueError(f"{key} must be a well-formed HTTPS URL")
     try:
         parsed = urlsplit(value)
         _ = parsed.port
@@ -67,12 +109,13 @@ def _validate_url(value: object, key: str) -> None:
         raise ValueError(f"{key} must be a well-formed HTTPS URL") from exc
     if parsed.scheme != "https" or not parsed.netloc or parsed.hostname is None:
         raise ValueError(f"{key} must be an HTTPS URL")
-    if "@" in parsed.netloc:
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
         raise ValueError(f"{key} may not include userinfo")
+    _validate_host(parsed.hostname)
     if parsed.fragment:
         raise ValueError(f"{key} may not include a fragment")
     for query_key, _ in parse_qsl(parsed.query, keep_blank_values=True):
-        if _is_credential_identifier(query_key):
+        if _is_sensitive_identifier(query_key, query_key=True):
             raise ValueError(f"{key} query contains a credential-like key")
 
 
@@ -82,7 +125,9 @@ def _post_scan(value: Any) -> None:
             normalized = _normalized_key(key)
             if normalized in _URL_KEYS:
                 _validate_url(item, normalized)
-            elif _is_credential_identifier(key):
+            elif normalized == "credential_env_var":
+                continue
+            elif _is_sensitive_identifier(key):
                 raise ValueError("credential-like key rejected")
             _post_scan(item)
     elif isinstance(value, (list, tuple)):
@@ -91,8 +136,10 @@ def _post_scan(value: Any) -> None:
     elif isinstance(value, str):
         if _PRIVATE_KEY_BLOCK.search(value):
             raise ValueError("private key block rejected")
+        if _IDENTIFIER_SHAPED.fullmatch(value) and _is_sensitive_identifier(value):
+            raise ValueError("credential-like identifier rejected")
         assignment = _ASSIGNMENT.match(value)
-        if assignment and _is_credential_identifier(assignment.group(1)):
+        if assignment and _is_sensitive_identifier(assignment.group(1)):
             raise ValueError("credential-like assignment rejected")
 
 
@@ -143,6 +190,10 @@ def _identity(metadata: os.stat_result) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _stable_times(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_mtime_ns, metadata.st_ctime_ns
+
+
 def _read_fd_all(descriptor: int) -> bytes:
     chunks: list[bytes] = []
     while True:
@@ -190,7 +241,9 @@ def _read_regular_single_link(path: Path, label: str) -> bytes:
         or _identity(after_descriptor) != _identity(before_descriptor)
         or _identity(after_path) != _identity(before_descriptor)
         or after_descriptor.st_size != before_descriptor.st_size
-        or after_path.st_size != before_descriptor.st_size
+        or after_path.st_size != before_path.st_size
+        or _stable_times(after_descriptor) != _stable_times(before_descriptor)
+        or _stable_times(after_path) != _stable_times(before_path)
         or len(raw) != before_descriptor.st_size
     ):
         raise ValueError(f"{label} changed while being read")
