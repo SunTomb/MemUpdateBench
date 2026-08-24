@@ -3193,3 +3193,80 @@ Muse BF16 is approximately 59.6 GB and cannot fit on this A40 alongside the exis
 ### Conclusion
 
 Qwen3.5-9B passes an offline load/unload preflight on shared Tang-3 GPU6. This proves only local snapshot readability, architecture/runtime recognition, and one co-use load boundary. It is not a prompted-answer result, capability score, throughput result, or benchmark evidence. No Phase 1 benchmark execution has started.
+
+## Post-Core closed-provider local and Tang-2 capability preflight (2026-08-23)
+
+### Motivation and boundary
+
+After the no-execution Phase 0 registry, frozen official-document identity gate, authenticated open snapshots, and Qwen load-only preflight, the user explicitly authorized bounded connectivity/interface checks for five selected API-Transfer-Station routes. These probes tested only whether an Anthropic Messages-compatible request could traverse the provider and return a short parseable response. They did not execute a MemUpdateBench task, measure accuracy, authenticate every upstream model identity, or authorize a broader provider matrix.
+
+The credential was read from the selected CC Switch provider record into process memory. For Tang-2 it was passed only through SSH standard input to the remote in-memory process. No credential value, credential-bearing command, raw response, or provider configuration was written to a local or remote artifact or printed in probe output.
+
+### Model names and provenance
+
+The exact transfer-station request names were:
+
+```text
+claude-sonnet-4-6
+claude-opus-4-8
+Gemini 3.6 Flash (Low)
+grok-4.5
+gpt-5.5
+```
+
+Gemini must retain both provenance layers:
+
+```text
+canonical model identity:          gemini-3.6-flash
+transfer-station request name:     Gemini 3.6 Flash (Low)
+transfer-station reasoning tier:   Low
+```
+
+The Low route distinguishes this request from transfer-station Medium/High variants that force greater reasoning effort. It must not be silently collapsed into the canonical identity in raw call provenance.
+
+### Local checks
+
+Each route received one minimal request with prompt `Reply only: OK`, `max_tokens=8`, and zero retries. All five returned HTTP 200, exact `OK`, and a response `model` matching the requested transfer name. Sonnet, Opus, Gemini, and Grok returned standard Anthropic Messages JSON.
+
+GPT-5.5 returned a valid complete SSE stream even when non-streaming behavior was expected. One additional local diagnostic explicitly set `stream=false`; GPT-5.5 again returned `text/event-stream`, but the six-event Anthropic stream parsed without error, reported `model=gpt-5.5`, ended with `end_turn`, and produced exact `OK`. This established a response-format defect, not a failed model route.
+
+### Tang-2 checks and GPT fix verification
+
+The cluster check ran from `Tang-2-Wu` (hostname `Tang2`) against the same endpoint and request names. An initial SSH command-quoting attempt failed before the remote Python probe executed and therefore generated zero provider calls. The corrected in-memory script then issued one request per model with explicit `stream=false`, `max_tokens=8`, and zero retries.
+
+All five routes returned HTTP 200, exact `OK`, and matching response model names. Sonnet, Opus, Gemini, and Grok returned standard JSON. GPT-5.5 still returned a complete valid SSE response at that point. After the transfer-station implementation was fixed, one bounded Tang-2 GPT-5.5 retest returned:
+
+```text
+HTTP status:       200
+Content-Type:      application/json
+response type:     message
+response model:    gpt-5.5
+stop reason:       end_turn
+text:              OK
+usage:             present
+stream requested:  false
+retries:           0
+```
+
+The known GPT-5.5 `stream=false` format blocker is closed for this endpoint and Tang-2 path.
+
+### Exact call accounting
+
+```text
+claude-sonnet-4-6:          2
+claude-opus-4-8:            2
+Gemini 3.6 Flash (Low):     2
+grok-4.5:                   2
+gpt-5.5:                    4
+real provider calls:       12
+retries:                    0
+benchmark generations:      0
+```
+
+The failed SSH quoting attempt is excluded because it stopped before provider execution.
+
+### Conclusions and next steps
+
+The five transfer routes pass bounded local and Tang-2 connectivity/interface checks. Claude Sonnet 4.6 and Opus 4.8 retain their document-verified identities; Gemini retains the canonical/request-name/Low-tier mapping above. Matching transfer request and response fields do not authenticate Grok 4.5 or GPT-5.5 as immutable official upstream identities, so their identity blockers remain explicit.
+
+The next formal unit is a separate Post-Core Phase 1–2 qualification release. It should publish no-replace redacted provider receipts, freeze an approved llama.cpp runtime for Muse GGUF with speculative decoding off, advance Qwen from load-only to bounded generation/template/parser/determinism checks, run the same small smoke across qualified roles, and emit typed `READY`, `BLOCKED`, or `UNSUPPORTED` decisions. Only then should the planned 320-generation canary and three-condition confirmatory hard subset be authorized. None of this evidence may be retrofitted into immutable Core, Task 9–14, Phase 0, or `official_identity_evidence_v1.json`.
