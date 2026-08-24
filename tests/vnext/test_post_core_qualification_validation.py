@@ -440,6 +440,23 @@ def test_url_query_validation_rejects_generic_and_compact_credential_keys(query_
         validate_qualification_secret_free({"endpoint": f"https://example.test/?{query_key}=opaque"})
 
 
+def test_url_query_validation_rejects_percent_encoded_private_key_armor() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    encoded_armor = "-----BEGIN%20PGP%20PRIVATE%20KEY%20BLOCK-----"
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free({"endpoint": f"https://example.test/?payload={encoded_armor}"})
+
+
+def test_url_validation_rejects_overlong_idna_dns_host() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    overlong_host = ".".join(["a" * 63] * 4)
+    assert len(overlong_host.encode("ascii")) > 253
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free({"endpoint": f"https://{overlong_host}/path"})
+
+
 @pytest.mark.parametrize("row_index", [0, 4])
 @pytest.mark.parametrize(
     "changes",

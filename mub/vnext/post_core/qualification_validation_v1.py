@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import stat
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
@@ -121,8 +121,23 @@ def _validate_host(host: str) -> None:
     except UnicodeError as exc:
         raise ValueError("endpoint/source URL host is invalid") from exc
     labels = ascii_host.lower().split(".")
-    if not labels or any(not _HOST_LABEL.fullmatch(label) for label in labels):
+    if not labels or len(ascii_host.encode("ascii")) > 253 or any(not _HOST_LABEL.fullmatch(label) for label in labels):
         raise ValueError("endpoint/source URL host is invalid")
+
+
+def _strict_unquote(value: str) -> str:
+    try:
+        return unquote_to_bytes(value).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("URL query contains invalid percent encoding") from exc
+
+
+def _scan_decoded_query_value(value: str) -> None:
+    if _PRIVATE_KEY_BLOCK.search(value):
+        raise ValueError("URL query contains sensitive material")
+    assignment = _ASSIGNMENT.match(value)
+    if assignment and _is_sensitive_identifier(assignment.group(1)):
+        raise ValueError("URL query contains sensitive material")
 
 
 def _validate_url(value: object, key: str) -> None:
@@ -142,9 +157,13 @@ def _validate_url(value: object, key: str) -> None:
     _validate_host(parsed.hostname)
     if parsed.fragment:
         raise ValueError(f"{key} may not include a fragment")
-    for query_key, _ in parse_qsl(parsed.query, keep_blank_values=True):
+    for field in parsed.query.split("&"):
+        raw_query_key, separator, raw_query_value = field.partition("=")
+        query_key = _strict_unquote(raw_query_key)
+        query_value = _strict_unquote(raw_query_value) if separator else ""
         if _is_sensitive_identifier(query_key, query_key=True):
             raise ValueError(f"{key} query contains a credential-like key")
+        _scan_decoded_query_value(query_value)
 
 
 def _post_scan(value: Any) -> None:
