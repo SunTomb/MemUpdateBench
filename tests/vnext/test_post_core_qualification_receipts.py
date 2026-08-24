@@ -24,6 +24,7 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
     QualificationReleaseManifestV1,
     QualificationStatus,
     QualificationValidationReceiptV1,
+    RuntimeManifestV1,
     SourceBindingV1,
     SourceBindingBundleV1,
     QUALIFICATION_ARTIFACT_ORDER,
@@ -321,7 +322,33 @@ def test_planned_fixture_attempt_receipt_and_decision_interfaces() -> None:
         )
 
 
-def test_validation_receipt_uses_planned_counters_and_strict_zero_inputs() -> None:
+def test_runtime_requires_device_and_token_capacity_fields() -> None:
+    payload = {
+        "engine": "transformers",
+        "engine_version": "v1",
+        "device_name": "A40",
+        "context_tokens": 1,
+        "max_output_tokens": 1,
+    }
+    assert RuntimeManifestV1(**payload).device_name == "A40"
+    for required_field in ("device_name", "context_tokens", "max_output_tokens"):
+        incomplete = dict(payload)
+        incomplete.pop(required_field)
+        with pytest.raises(ValidationError):
+            RuntimeManifestV1(**incomplete)
+
+
+def test_attempt_receipt_accepts_non_end_turn_local_stop_reason() -> None:
+    receipt = CapabilityAttemptReceiptV1(
+        call_id=HASH_A,
+        registry_key="role",
+        status=GateStatus.NOT_RUN,
+        stop_reason="local_length_limit",
+    )
+
+    assert receipt.stop_reason == "local_length_limit"
+
+
     receipt = QualificationValidationReceiptV1(
         release_id="release",
         status="SUCCESS_WITH_BLOCKERS",

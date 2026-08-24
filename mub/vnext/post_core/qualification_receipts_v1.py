@@ -260,9 +260,9 @@ class RuntimeManifestV1(ImmutableContractModel):
     accelerate_version: StrictStr | None = None
     cuda_version: StrictStr | None = None
     driver_version: StrictStr | None = None
-    device_name: StrictStr | None = None
-    context_tokens: StrictInt | None = Field(default=None, gt=0)
-    max_output_tokens: StrictInt | None = Field(default=None, gt=0)
+    device_name: StrictStr
+    context_tokens: StrictInt = Field(gt=0)
+    max_output_tokens: StrictInt = Field(gt=0)
     build_options_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
 
 
@@ -371,7 +371,7 @@ class CapabilityAttemptReceiptV1(ImmutableContractModel):
     retry_count: Literal[0] = 0
     response_model: StrictStr | None = None
     response_format: Literal["ANTHROPIC_MESSAGE_JSON", "SSE", "LOCAL_TEXT"] | None = None
-    stop_reason: Literal["end_turn"] | None = None
+    stop_reason: StrictStr | None = None
     usage_present: StrictBool | None = None
     latency_ms: StrictInt | None = Field(default=None, ge=0)
     redacted_response_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
