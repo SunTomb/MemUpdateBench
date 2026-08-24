@@ -11,6 +11,18 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
 )
 
 
+FROZEN_REGISTRY_KEYS = (
+    "qwen35_9b_bf16",
+    "meta_muse_glimmer_30b_int4",
+    "meta_muse_glimmer_30b_bf16",
+    "claude_sonnet_4_6",
+    "claude_opus_4_8",
+    "gemini_3_6_flash",
+    "grok_4_5",
+    "gpt_5_5",
+)
+
+
 def _budget() -> CapabilityBudgetV1:
     return CapabilityBudgetV1(
         max_prompt_tokens=256,
@@ -23,9 +35,10 @@ def _budget() -> CapabilityBudgetV1:
 
 
 def _fixtures() -> tuple[CapabilityFixtureV1, ...]:
+    fixture_ids = ("exact_ok_1", "exact_ok_2", "parser_city_1", "parser_city_2")
     return tuple(
         CapabilityFixtureV1(
-            fixture_id=f"fixture_{index}",
+            fixture_id=fixture_ids[index],
             category="EXACT_OUTPUT" if index < 2 else "CHAT_TEMPLATE_PARSER",
             prompt_sha256=f"{index + 1:064x}",
             parser_sha256=f"{index + 11:064x}",
@@ -41,7 +54,7 @@ def _config(**changes):
 
     config = CapabilitySmokePlanConfigV1(
         release_id="release-v1",
-        registry_keys=("qwen35_9b_bf16", "claude_sonnet_4_6"),
+        registry_keys=FROZEN_REGISTRY_KEYS,
         budget=_budget(),
     )
     return replace(config, **changes)
@@ -52,7 +65,7 @@ def test_builds_exact_two_phase_two_repetition_plan_per_role() -> None:
 
     plan = build_capability_smoke_plan_v1(_config(), _fixtures())
 
-    assert len(plan.attempts) == 32
+    assert len(plan.attempts) == 128
     assert plan.base_attempts_per_role == 8
     assert plan.escalation_attempts_per_role == 8
     for key in plan.registry_keys:
@@ -90,8 +103,32 @@ def test_plan_is_canonical_and_does_not_accept_caller_call_ids() -> None:
     first = build_capability_smoke_plan_v1(_config(), _fixtures())
     second = build_capability_smoke_plan_v1(_config(), tuple(reversed(_fixtures())))
     assert canonical_bytes(first) == canonical_bytes(second)
-    assert len({row.call_id for row in first.attempts}) == 32
+    assert len({row.call_id for row in first.attempts}) == 128
     assert all("call_id" not in row.model_fields_set for row in first.attempts)
+
+
+def test_preserves_exact_frozen_registry_order() -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
+
+    plan = build_capability_smoke_plan_v1(_config(), _fixtures())
+
+    assert plan.registry_keys == FROZEN_REGISTRY_KEYS
+    assert tuple(row.registry_key for row in plan.attempts[::16]) == FROZEN_REGISTRY_KEYS
+
+
+@pytest.mark.parametrize(
+    "registry_keys",
+    [
+        FROZEN_REGISTRY_KEYS[:-1],
+        (*FROZEN_REGISTRY_KEYS, "closed_extra"),
+        tuple(reversed(FROZEN_REGISTRY_KEYS)),
+    ],
+)
+def test_rejects_registry_subset_extra_or_reordered(registry_keys) -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
+
+    with pytest.raises(ValueError, match="exact frozen"):
+        build_capability_smoke_plan_v1(_config(registry_keys=registry_keys), _fixtures())
 
 
 @pytest.mark.parametrize(
@@ -127,6 +164,15 @@ def test_rejects_wrong_fixture_count_duplicate_or_category_balance(fixtures) -> 
 
     with pytest.raises(ValueError):
         build_capability_smoke_plan_v1(_config(), fixtures())
+
+
+def test_rejects_balanced_categories_with_substituted_fixture_id() -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
+
+    fixtures = list(_fixtures())
+    fixtures[0] = fixtures[0].model_copy(update={"fixture_id": "exact_ok_wrong"})
+    with pytest.raises(ValueError, match="exact fixture"):
+        build_capability_smoke_plan_v1(_config(), tuple(fixtures))
 
 
 @pytest.mark.parametrize(

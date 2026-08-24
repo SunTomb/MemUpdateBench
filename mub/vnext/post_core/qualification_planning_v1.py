@@ -75,6 +75,19 @@ def _reject_forbidden_object_fields(value: object) -> None:
             raise ValueError(f"planner input cannot carry {name}")
 
 
+_EXPECTED_REGISTRY_KEYS = (
+    "qwen35_9b_bf16",
+    "meta_muse_glimmer_30b_int4",
+    "meta_muse_glimmer_30b_bf16",
+    "claude_sonnet_4_6",
+    "claude_opus_4_8",
+    "gemini_3_6_flash",
+    "grok_4_5",
+    "gpt_5_5",
+)
+_EXPECTED_FIXTURE_IDS = ("exact_ok_1", "exact_ok_2", "parser_city_1", "parser_city_2")
+
+
 _RUNTIME_CLASSES = {
     "qwen35_9b_bf16": "transformers_offline",
     "meta_muse_glimmer_30b_int4": "llama_cpp_offline",
@@ -124,8 +137,8 @@ def _validate_inputs(
         raise ValueError("planner requires exactly eight attempts per phase and role")
     if config.max_retries != 0 or config.authorized is not False:
         raise ValueError("planner cannot authorize execution or retries")
-    if not config.registry_keys or len(config.registry_keys) != len(set(config.registry_keys)):
-        raise ValueError("registry_keys must be nonempty and unique")
+    if config.registry_keys != _EXPECTED_REGISTRY_KEYS:
+        raise ValueError("registry_keys must match the exact frozen registry tuple and order")
     for key in config.registry_keys:
         if type(key) is not str or not key:
             raise ValueError("registry keys must be nonempty strings")
@@ -147,6 +160,8 @@ def _validate_inputs(
         seen_ids.add(fixture_id)
         categories.append(_fixture_category(fixture))
         _fixture_values(fixture)
+    if set(seen_ids) != set(_EXPECTED_FIXTURE_IDS):
+        raise ValueError("fixtures must use the exact fixture IDs")
     if categories.count("EXACT_OUTPUT") != 2 or categories.count("CHAT_TEMPLATE_PARSER") != 2:
         raise ValueError("planner requires two fixtures of each category")
     return config
@@ -159,7 +174,7 @@ def build_capability_smoke_plan_v1(
     config = _validate_inputs(config, fixtures)
     fixture_rows = tuple(sorted((_fixture_values(fixture) for fixture in fixtures), key=lambda row: row[0]))
     attempts: list[CapabilityAttemptPlanV1] = []
-    for registry_key in sorted(config.registry_keys):
+    for registry_key in config.registry_keys:
         runtime_class = _runtime_class(registry_key)
         for phase in (AttemptPhase.BASE, AttemptPhase.ESCALATION):
             for fixture_id, prompt_sha256, parser_sha256, max_prompt_tokens, max_output_tokens in fixture_rows:
@@ -187,7 +202,7 @@ def build_capability_smoke_plan_v1(
                     )
     return CapabilitySmokePlanV1(
         release_id=config.release_id,
-        registry_keys=tuple(sorted(config.registry_keys)),
+        registry_keys=config.registry_keys,
         base_attempts_per_role=8,
         escalation_attempts_per_role=8,
         max_retries=0,
