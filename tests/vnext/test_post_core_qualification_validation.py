@@ -431,7 +431,7 @@ def test_url_validation_rejects_whitespace_bad_escapes_and_invalid_host_syntax(u
 
 @pytest.mark.parametrize(
     "query_key",
-    ["key", "sig", "signature", "APIKey", "XAPIKey", "X-Amz-Signature", "X-Goog-Signature", "access_token"],
+    ["key", "sig", "signature", "private", "APIKey", "XAPIKey", "X-Amz-Signature", "X-Goog-Signature", "access_token"],
 )
 def test_url_query_validation_rejects_generic_and_compact_credential_keys(query_key: str) -> None:
     from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free

@@ -60,7 +60,7 @@ _SENSITIVE_PART_SEQUENCES = (
     ("service", "account", "key"),
 )
 _CREDENTIAL_PROVIDER_PREFIXES = frozenset({"aws", "gcp", "google", "azure", "amz"})
-_QUERY_GENERIC_SENSITIVE_PARTS = frozenset({"key", "sig", "signature"})
+_QUERY_GENERIC_SENSITIVE_PARTS = frozenset({"key", "private", "sig", "signature"})
 _PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
 _ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
 _IDENTIFIER_SHAPED = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
