@@ -119,6 +119,9 @@ class CapabilityAttemptPlanV1(ImmutableContractModel):
 
 
 class ArtifactBindingV1(ImmutableContractModel):
+    schema_version: Literal["memupdatebench.post-core.qualification-artifact-binding.v1"] = (
+        "memupdatebench.post-core.qualification-artifact-binding.v1"
+    )
     path: StrictStr
     sha256: StrictStr = Field(pattern=SHA256_PATTERN)
 
