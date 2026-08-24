@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ctypes
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import stat
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
+import uuid
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
@@ -81,6 +85,7 @@ class QualificationReleaseConfigV1:
     config_sha256: str
     config_raw: bytes
     config_path: Path | None = None
+    source_snapshot: _SourceSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -203,7 +208,13 @@ def _load_canonical_json(path: Path, label: str) -> tuple[Any, bytes]:
     return payload, source.raw
 
 
-def _validate_config_payload(payload: Any, raw: bytes, path: Path | None) -> QualificationReleaseConfigV1:
+def _validate_config_payload(
+    payload: Any,
+    raw: bytes,
+    path: Path | None,
+    *,
+    source_snapshot: _SourceSnapshot | None = None,
+) -> QualificationReleaseConfigV1:
     if not isinstance(payload, Mapping):
         raise ValueError("qualification config must be a JSON object")
     validate_qualification_secret_free(payload)
@@ -245,19 +256,30 @@ def _validate_config_payload(payload: Any, raw: bytes, path: Path | None) -> Qua
         registry_keys=tuple(keys), base_attempts_per_role=payload["base_attempts_per_role"],
         escalation_attempts_per_role=payload["escalation_attempts_per_role"], max_retries=payload["max_retries"],
         publisher_network_allowed=False, scientific_execution_allowed=False,
-        required_source_sha256=MappingProxyType(dict(required)), config_sha256=_sha256(raw), config_raw=bytes(raw), config_path=path,
+        required_source_sha256=MappingProxyType(dict(required)), config_sha256=_sha256(raw), config_raw=bytes(raw),
+        config_path=path, source_snapshot=source_snapshot,
     )
 
 
-def load_qualification_release_config_v1(path: Path) -> QualificationReleaseConfigV1:
-    selected = _absolute(Path(path))
-    payload, raw = _load_canonical_json(selected, "qualification config")
-    return _validate_config_payload(payload, raw, selected)
+def load_qualification_release_config_v1(path_or_mapping: Path | str | Mapping[str, Any]) -> QualificationReleaseConfigV1:
+    if isinstance(path_or_mapping, (str, Path)):
+        selected = _absolute(Path(path_or_mapping))
+        source = _read_source("qualification config", selected)
+        try:
+            payload = json.loads(source.raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("qualification config is not valid JSON") from exc
+        return _validate_config_payload(payload, source.raw, selected, source_snapshot=source)
+    raw = canonical_bytes(path_or_mapping)
+    return _validate_config_payload(path_or_mapping, raw, None)
 
 
 def _coerce_config(config: QualificationReleaseConfigV1 | Path | Mapping[str, Any]) -> QualificationReleaseConfigV1:
     if isinstance(config, QualificationReleaseConfigV1):
-        return _validate_config_payload(json.loads(config.config_raw), config.config_raw, config.config_path)
+        return _validate_config_payload(
+            json.loads(config.config_raw), config.config_raw, config.config_path,
+            source_snapshot=config.source_snapshot,
+        )
     if isinstance(config, (str, Path)):
         return load_qualification_release_config_v1(Path(config))
     raw = canonical_bytes(config)
@@ -270,7 +292,7 @@ def _source_map(
 ) -> dict[str, Path]:
     result = dict(source_paths or {})
     result.update({key: value for key, value in explicit.items() if value is not None})
-    if tuple(result) != REQUIRED_SOURCE_IDS:
+    if set(result) != set(REQUIRED_SOURCE_IDS):
         raise ValueError("qualification source paths must contain the exact nine source IDs")
     return {key: Path(result[key]) for key in REQUIRED_SOURCE_IDS}
 
@@ -460,10 +482,266 @@ def verify_qualification_artifact_bytes_v1(publication: QualificationPublication
     return publication
 
 
+class QualificationReleaseError(RuntimeError):
+    """Base class for qualification publication errors."""
+
+
+class UnsafeQualificationPathError(QualificationReleaseError, ValueError):
+    """A source, staging, or output path is unsafe."""
+
+
+class NoReplacePrimitiveUnavailableError(QualificationReleaseError):
+    """The host does not expose an atomic no-replace rename primitive."""
+
+
+class CommittedQualificationReleaseError(QualificationReleaseError):
+    """The output root was committed but failed post-commit verification."""
+
+    def __init__(self, committed_root: Path, message: str) -> None:
+        self.committed_root = Path(committed_root)
+        super().__init__(f"{message}; committed root preserved at {self.committed_root}")
+
+
+@dataclass(frozen=True)
+class _StageMember:
+    path: Path
+    identity: tuple[int, int]
+    byte_count: int
+    sha256: str
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _capture_member(path: Path) -> _StageMember:
+    metadata = path.lstat()
+    if not _regular_single_link(metadata):
+        raise UnsafeQualificationPathError(f"publication member is not a regular single-link file: {path.name}")
+    raw = path.read_bytes()
+    after = path.lstat()
+    if (
+        not _regular_single_link(after)
+        or (metadata.st_dev, metadata.st_ino) != (after.st_dev, after.st_ino)
+        or metadata.st_size != after.st_size
+        or len(raw) != metadata.st_size
+    ):
+        raise QualificationReleaseError(f"publication member changed while captured: {path.name}")
+    return _StageMember(path, (metadata.st_dev, metadata.st_ino), metadata.st_size, _sha256(raw))
+
+
+def _capture_stage(stage: Path) -> tuple[_StageMember, ...]:
+    if _is_reparse(stage) or not stage.is_dir():
+        raise UnsafeQualificationPathError("qualification staging directory is unsafe")
+    names = tuple(item.name for item in stage.iterdir())
+    if set(names) != set(QUALIFICATION_ARTIFACTS):
+        raise QualificationReleaseError("qualification staging artifact set mismatch")
+    return tuple(_capture_member(stage / name) for name in QUALIFICATION_ARTIFACTS)
+
+
+def _stage_matches(members: Sequence[_StageMember]) -> bool:
+    try:
+        for item in members:
+            current = _capture_member(item.path)
+            if (current.identity, current.byte_count, current.sha256) != (item.identity, item.byte_count, item.sha256):
+                return False
+        return True
+    except (OSError, ValueError, QualificationReleaseError):
+        return False
+
+
+def _path_overlap(left: Path, right: Path) -> bool:
+    left = _absolute(left)
+    right = _absolute(right)
+    try:
+        return os.path.commonpath((str(left), str(right))) in {str(left), str(right)}
+    except ValueError:
+        return False
+
+
+def _prepare_output_root(output_root: Path, snapshots: Sequence[_SourceSnapshot], config: QualificationReleaseConfigV1) -> Path:
+    selected = _absolute(output_root)
+    _reject_reparse_components(selected.parent)
+    if any(_path_overlap(selected, snapshot.path) for snapshot in snapshots):
+        raise UnsafeQualificationPathError("qualification output overlaps a frozen source")
+    if config.config_path is not None and _path_overlap(selected, config.config_path):
+        raise UnsafeQualificationPathError("qualification output overlaps the release config")
+    if selected.exists() or selected.is_symlink() or _is_reparse(selected):
+        raise UnsafeQualificationPathError("qualification output root must be absent")
+    if not selected.parent.exists() or not selected.parent.is_dir() or _is_reparse(selected.parent):
+        raise UnsafeQualificationPathError("qualification output parent must be a safe directory")
+    return selected
+
+
+def _write_stage(stage: Path, artifacts: Mapping[str, bytes]) -> tuple[_StageMember, ...]:
+    stage.mkdir()
+    for name in QUALIFICATION_ARTIFACTS:
+        target = stage / name
+        try:
+            with target.open("xb") as stream:
+                stream.write(artifacts[name])
+                stream.flush()
+                os.fsync(stream.fileno())
+        except FileExistsError as exc:
+            raise QualificationReleaseError(f"duplicate qualification staging member: {name}") from exc
+    _fsync_directory(stage)
+    return _capture_stage(stage)
+
+
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        try:
+            move_file = ctypes.windll.kernel32.MoveFileExW
+            move_file.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+            move_file.restype = ctypes.c_int
+        except (AttributeError, NameError) as exc:
+            raise NoReplacePrimitiveUnavailableError("Windows MoveFileExW is unavailable") from exc
+        if destination.exists() or destination.is_symlink():
+            raise UnsafeQualificationPathError("qualification output root appeared before commit")
+        # The destination is checked absent immediately before MoveFileExW; the
+        # WRITE_THROUGH flag makes the successful same-volume move durable.
+        if not move_file(str(source), str(destination), 0x00000008):
+            raise QualificationReleaseError("Windows MoveFileExW no-replace commit failed")
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        syscall = libc.syscall
+    except (AttributeError, OSError) as exc:
+        raise NoReplacePrimitiveUnavailableError("POSIX renameat2 is unavailable") from exc
+    # Linux exposes renameat2 through a raw syscall; unsupported architectures
+    # fail closed rather than falling back to a replace-capable operation.
+    syscall_number = {
+        "x86_64": 316, "amd64": 316, "aarch64": 276, "arm64": 276,
+    }.get(platform.machine().lower())
+    if syscall_number is None:
+        raise NoReplacePrimitiveUnavailableError("POSIX renameat2 syscall number is unavailable on this architecture")
+    syscall.restype = ctypes.c_long
+    result = syscall(syscall_number, -100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == getattr(errno, "EEXIST", 17):
+            raise UnsafeQualificationPathError("qualification output root appeared before commit")
+        if error in {getattr(errno, "ENOSYS", 38), getattr(errno, "EINVAL", 22)}:
+            raise NoReplacePrimitiveUnavailableError("POSIX renameat2 no-replace is unavailable")
+        raise QualificationReleaseError(f"POSIX no-replace commit failed: errno {error}")
+
+
+def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[str, bytes]:
+    if _is_reparse(root) or not root.is_dir():
+        raise UnsafeQualificationPathError("committed qualification root is unsafe")
+    if set(item.name for item in root.iterdir()) != set(QUALIFICATION_ARTIFACTS):
+        raise QualificationReleaseError("committed qualification artifact set/order mismatch")
+    actual: dict[str, bytes] = {}
+    for name in QUALIFICATION_ARTIFACTS:
+        path = root / name
+        member = _capture_member(path)
+        raw = path.read_bytes()
+        if raw != expected[name] or member.sha256 != _sha256(expected[name]):
+            raise QualificationReleaseError(f"committed qualification artifact mismatch: {name}")
+        actual[name] = raw
+    publication = QualificationPublicationV1(
+        RELEASE_ID, root, MappingProxyType(actual), _sha256(actual[QUALIFICATION_INDEX_PATH])
+    )
+    return verify_qualification_artifact_bytes_v1(publication).artifact_bytes
+
+
+def _publication_with_root(publication: QualificationPublicationV1, root: Path) -> QualificationPublicationV1:
+    return QualificationPublicationV1(
+        publication.release_id, root, publication.artifact_bytes, publication.index_sha256,
+        publication.provider_calls, publication.model_loads, publication.network_calls,
+        publication.credential_reads, publication.benchmark_generations,
+    )
+
+
+def publish_qualification_release_v1(
+    output_root: Path,
+    config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
+    *,
+    before_commit: Any | None = None,
+    **inputs: Any,
+) -> QualificationPublicationV1:
+    config_obj = _coerce_config(config)
+    paths = _source_map(inputs.get("source_paths"), {
+        "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
+        "identity_evidence": inputs.get("identity_evidence_path"), "open_snapshot_audit_receipt": inputs.get("open_snapshot_audit_receipt_path"),
+        "open_snapshot_closure_receipt": inputs.get("open_snapshot_closure_receipt_path"), "phase0_index": inputs.get("phase0_index_path"),
+        "qwen_load_receipt": inputs.get("qwen_load_receipt_path"), "task14_index": inputs.get("task14_index_path"),
+        "workflow_source": inputs.get("workflow_source_path"),
+    })
+    _, snapshots = _source_bindings(config_obj, paths)
+    source_snapshots = (*snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ()))
+    output = _prepare_output_root(Path(output_root), source_snapshots, config_obj)
+    publication = build_qualification_release_v1(config_obj, **inputs)
+    parent = output.parent
+    stage = parent / f".mub-post-core-qualification-stage-{uuid.uuid4().hex}"
+    owned: tuple[_StageMember, ...] = ()
+    committed = False
+    try:
+        owned = _write_stage(stage, publication.artifact_bytes)
+        if before_commit is not None:
+            before_commit(stage)
+        for snapshot in source_snapshots:
+            _revalidate_source(snapshot)
+        if not _stage_matches(owned):
+            raise QualificationReleaseError("qualification staging bytes changed before commit")
+        _rename_noreplace(stage, output)
+        committed = True
+        _fsync_directory(parent)
+        try:
+            _read_published_root(output, publication.artifact_bytes)
+        except Exception as exc:
+            raise CommittedQualificationReleaseError(output, "committed qualification release failed reopening") from exc
+        return _publication_with_root(publication, output)
+    except CommittedQualificationReleaseError:
+        raise
+    except Exception:
+        if not committed and stage.exists() and _stage_matches(owned):
+            import shutil
+            shutil.rmtree(stage)
+        raise
+
+
+def verify_qualification_release_v1(
+    root: Path,
+    config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
+    **inputs: Any,
+) -> QualificationPublicationV1:
+    config_obj = _coerce_config(config)
+    paths = _source_map(inputs.get("source_paths"), {
+        "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
+        "identity_evidence": inputs.get("identity_evidence_path"), "open_snapshot_audit_receipt": inputs.get("open_snapshot_audit_receipt_path"),
+        "open_snapshot_closure_receipt": inputs.get("open_snapshot_closure_receipt_path"), "phase0_index": inputs.get("phase0_index_path"),
+        "qwen_load_receipt": inputs.get("qwen_load_receipt_path"), "task14_index": inputs.get("task14_index_path"),
+        "workflow_source": inputs.get("workflow_source_path"),
+    })
+    _, snapshots = _source_bindings(config_obj, paths)
+    root = _absolute(Path(root))
+    if not root.exists() or _is_reparse(root) or not root.is_dir():
+        raise UnsafeQualificationPathError("qualification root is absent or unsafe")
+    for snapshot in (*snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
+        _revalidate_source(snapshot)
+    expected = build_qualification_release_v1(config_obj, **inputs)
+    try:
+        _read_published_root(root, expected.artifact_bytes)
+    except Exception as exc:
+        raise CommittedQualificationReleaseError(root, "qualification release verification failed") from exc
+    return _publication_with_root(expected, root)
+
+
 QUALIFICATION_ARTIFACTS = (*QUALIFICATION_ARTIFACT_ORDER, QUALIFICATION_INDEX_PATH)
+
 
 __all__ = [
     "BASE_COMMIT", "QUALIFICATION_ARTIFACTS", "QUALIFICATION_ARTIFACT_ORDER", "QualificationPublicationV1",
-    "QualificationReleaseConfigV1", "build_qualification_release_v1", "load_qualification_release_config_v1",
-    "verify_qualification_artifact_bytes_v1",
+    "QualificationReleaseConfigV1", "QualificationReleaseError", "UnsafeQualificationPathError",
+    "NoReplacePrimitiveUnavailableError", "CommittedQualificationReleaseError",
+    "build_qualification_release_v1", "load_qualification_release_config_v1",
+    "publish_qualification_release_v1", "verify_qualification_release_v1", "verify_qualification_artifact_bytes_v1",
 ]

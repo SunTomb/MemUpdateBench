@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import hashlib
-import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,11 +21,16 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
     QUALIFICATION_INDEX_PATH,
 )
 from tests.vnext.qualification_fixtures import open_runtime_receipts, provider_attestations
+from mub.vnext.post_core import qualification_release_v1
 from mub.vnext.post_core.qualification_release_v1 import (
     BASE_COMMIT,
     QUALIFICATION_ARTIFACTS,
+    CommittedQualificationReleaseError,
+    QualificationReleaseError,
     build_qualification_release_v1,
     load_qualification_release_config_v1,
+    publish_qualification_release_v1,
+    verify_qualification_release_v1,
     verify_qualification_artifact_bytes_v1,
 )
 
@@ -137,3 +142,91 @@ def test_builder_rejects_secret_like_and_metric_fields_before_exposing_bytes(tmp
     bad["decision_bundle"] = _decisions(inputs["config"].release_id, inputs["config"].registry_keys).model_copy(update={"decisions": ()})
     with pytest.raises(ValueError):
         build_qualification_release_v1(**bad)
+
+
+def test_publish_reopens_exact_artifacts_and_refuses_clobber(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "published"
+    published = publish_qualification_release_v1(output, **inputs)
+    reopened = verify_qualification_release_v1(output, **inputs)
+    assert published.output_root == output.resolve()
+    assert dict(reopened.artifact_bytes) == dict(published.artifact_bytes)
+    with pytest.raises(ValueError):
+        publish_qualification_release_v1(output, **inputs)
+
+
+def test_publish_rejects_output_overlap_and_source_mutation(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    source = inputs["source_paths"]["workflow_source"]
+    with pytest.raises(ValueError, match="overlaps"):
+        publish_qualification_release_v1(source, **inputs)
+    output = tmp_path / "mutated"
+    def mutate_source(_stage: Path) -> None:
+        source.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="workflow_source"):
+        publish_qualification_release_v1(output, before_commit=mutate_source, **inputs)
+    assert not output.exists()
+
+
+def test_publish_rejects_file_backed_config_mutation_before_commit(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    config_path = inputs["config"].config_path
+    assert config_path is not None
+    def mutate_config(_stage: Path) -> None:
+        config_path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="qualification config"):
+        publish_qualification_release_v1(tmp_path / "mutated-config", before_commit=mutate_config, **inputs)
+
+
+def test_publish_preserves_tampered_stage_for_quarantine(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "tampered"
+    seen: list[Path] = []
+    def mutate_stage(stage: Path) -> None:
+        seen.append(stage)
+        (stage / "source_bindings.json").write_bytes(b"tampered")
+    with pytest.raises(QualificationReleaseError, match="staging"):
+        publish_qualification_release_v1(output, before_commit=mutate_stage, **inputs)
+    assert seen and seen[0].exists()
+
+
+def test_verify_preserves_committed_root_when_artifact_is_tampered(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "post-commit"
+    publish_qualification_release_v1(output, **inputs)
+    (output / "source_bindings.json").write_bytes(b"tampered")
+    with pytest.raises(CommittedQualificationReleaseError):
+        verify_qualification_release_v1(output, **inputs)
+    assert output.exists()
+
+
+def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    source = inputs["source_paths"]["workflow_source"]
+    alias = tmp_path / "workflow-hardlink"
+    try:
+        os.link(source, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="single-link"):
+        build_qualification_release_v1(**inputs)
+
+
+def test_output_symlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    output = tmp_path / "output-link"
+    try:
+        output.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="absent"):
+        publish_qualification_release_v1(output, **inputs)
+
+
+def test_missing_no_replace_primitive_raises_typed_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    monkeypatch.delattr(qualification_release_v1.ctypes, "windll", raising=False)
+    with pytest.raises(qualification_release_v1.NoReplacePrimitiveUnavailableError):
+        publish_qualification_release_v1(tmp_path / "no-primitive", **inputs)
