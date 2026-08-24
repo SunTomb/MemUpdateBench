@@ -2,25 +2,15 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Literal, Mapping
+from typing import Literal
 
-from pydantic import (
-    Field,
-    PlainSerializer,
-    StrictBool,
-    StrictInt,
-    StrictStr,
-    computed_field,
-    field_validator,
-    model_validator,
-)
+from pydantic import Field, StrictBool, StrictInt, StrictStr, computed_field, field_validator, model_validator
 
 from mub.vnext.contracts.common import (
     FrozenNonnegativeIntMap,
     FrozenStringMap,
     ImmutableContractModel,
     freeze_mapping,
-    thaw_json,
 )
 from mub.vnext.post_core.contracts_v1 import SHA256_PATTERN, canonical_hash
 
@@ -36,11 +26,6 @@ QUALIFICATION_ARTIFACT_ORDER = (
 )
 QUALIFICATION_INDEX_PATH = "qualification_artifact_index.json"
 QUALIFICATION_ARTIFACTS = (*QUALIFICATION_ARTIFACT_ORDER, QUALIFICATION_INDEX_PATH)
-
-FrozenDecimalMap = Annotated[
-    Mapping[str, Decimal],
-    PlainSerializer(thaw_json, return_type=dict[str, Decimal], when_used="always"),
-]
 
 
 def _require_exact_int_literal(value: object) -> object:
@@ -82,8 +67,8 @@ class AttemptPhase(str, Enum):
 
 
 class SourceBindingV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.qualification-source-binding.v1"] = (
-        "memupdatebench.post-core.qualification-source-binding.v1"
+    schema_version: Literal["memupdatebench.post-core.qualification-source.v1"] = (
+        "memupdatebench.post-core.qualification-source.v1"
     )
     source_id: StrictStr
     evidence_class: StrictStr
@@ -93,22 +78,22 @@ class SourceBindingV1(ImmutableContractModel):
 
 
 class SourceBindingBundleV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.qualification-source-bindings.v1"] = (
-        "memupdatebench.post-core.qualification-source-bindings.v1"
+    schema_version: Literal["memupdatebench.post-core.qualification-sources.v1"] = (
+        "memupdatebench.post-core.qualification-sources.v1"
     )
     release_id: StrictStr
     sources: tuple[SourceBindingV1, ...]
 
 
 class CapabilityBudgetV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.capability-budget.v1"] = (
-        "memupdatebench.post-core.capability-budget.v1"
+    schema_version: Literal["memupdatebench.post-core.qualification-budget.v1"] = (
+        "memupdatebench.post-core.qualification-budget.v1"
     )
     max_calls: Literal[1] = 1
-    input_token_cap: StrictInt = Field(gt=0)
-    output_token_cap: StrictInt = Field(gt=0)
-    estimated_cost_usd: Decimal = Field(ge=Decimal("0"))
-    hard_max_cost_usd: Decimal = Field(ge=Decimal("0"))
+    max_prompt_tokens: StrictInt = Field(gt=0)
+    max_output_tokens: StrictInt = Field(gt=0)
+    estimated_cost: Decimal = Field(ge=Decimal("0"))
+    hard_max_cost: Decimal = Field(ge=Decimal("0"))
     price_version: StrictStr
     max_retries: Literal[0] = 0
     timeout_seconds: StrictInt = Field(gt=0)
@@ -120,9 +105,9 @@ class CapabilityBudgetV1(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _cost_bound(self) -> "CapabilityBudgetV1":
-        if not self.estimated_cost_usd.is_finite() or not self.hard_max_cost_usd.is_finite():
+        if not self.estimated_cost.is_finite() or not self.hard_max_cost.is_finite():
             raise ValueError("capability costs must be finite")
-        if self.estimated_cost_usd > self.hard_max_cost_usd:
+        if self.estimated_cost > self.hard_max_cost:
             raise ValueError("estimated capability cost exceeds hard maximum")
         return self
 
@@ -164,8 +149,8 @@ class ArtifactBindingV1(ImmutableContractModel):
 
 
 class QualificationArtifactIndexV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.qualification-artifact-index.v1"] = (
-        "memupdatebench.post-core.qualification-artifact-index.v1"
+    schema_version: Literal["memupdatebench.post-core.qualification-index.v1"] = (
+        "memupdatebench.post-core.qualification-index.v1"
     )
     release_id: StrictStr
     artifacts: tuple[ArtifactBindingV1, ...]
@@ -191,11 +176,11 @@ class ProviderObservationV1(ImmutableContractModel):
     provider_call_count: Literal[1] = 1
     retry_count: Literal[0] = 0
     http_status: Literal[200] = 200
-    response_format: Literal["JSON", "SSE"]
+    response_format: Literal["ANTHROPIC_MESSAGE_JSON", "SSE"]
     response_model: StrictStr
     exact_ok: Literal[True] = True
-    end_turn: StrictBool | None = None
-    usage: FrozenNonnegativeIntMap | None = None
+    stop_reason: Literal["end_turn"] | None = None
+    usage_present: StrictBool | None = None
 
     @field_validator("provider_call_count", "retry_count", "http_status", mode="before")
     @classmethod
@@ -207,54 +192,53 @@ class ProviderObservationV1(ImmutableContractModel):
     def _strict_bool_literals(cls, value: object) -> object:
         return _require_exact_bool_literal(value)
 
-    @field_validator("usage")
-    @classmethod
-    def _freeze_usage(cls, value: FrozenNonnegativeIntMap | None) -> FrozenNonnegativeIntMap | None:
-        return None if value is None else freeze_mapping(value)
-
 
 class ProviderCapabilityAttestationV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.provider-capability-attestation.v1"] = (
-        "memupdatebench.post-core.provider-capability-attestation.v1"
+    schema_version: Literal["memupdatebench.post-core.provider-attestation.v1"] = (
+        "memupdatebench.post-core.provider-attestation.v1"
     )
+    registry_key: StrictStr
     evidence_class: Literal["connectivity_interface_attestation"] = (
         "connectivity_interface_attestation"
     )
-    registry_key: StrictStr
-    requested_model: StrictStr
-    canonical_model: StrictStr
-    capability_tier: StrictStr
-    caveat: StrictStr | None = None
+    request_name: StrictStr
+    canonical_model_identity: StrictStr | None = None
+    reasoning_tier: StrictStr | None = None
+    identity_caveat: StrictStr | None = None
     observations: tuple[ProviderObservationV1, ...]
-    observation_count: StrictInt = Field(gt=0)
-    provider_call_count: StrictInt = Field(gt=0)
+    provider_call_count: StrictInt = Field(ge=0)
+    retry_count: Literal[0] = 0
+    benchmark_generation_count: Literal[0] = 0
     raw_response_persisted: Literal[False] = False
-    source_bindings: tuple[SourceBindingV1, ...]
+    source_binding_ids: tuple[StrictStr, ...]
 
-    @model_validator(mode="after")
-    def _observation_counts(self) -> "ProviderCapabilityAttestationV1":
-        if self.observation_count != len(self.observations):
-            raise ValueError("provider observation count does not match observations")
-        if self.provider_call_count != sum(item.provider_call_count for item in self.observations):
-            raise ValueError("provider call count does not match observations")
-        return self
+    @field_validator("retry_count", "benchmark_generation_count", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
 
     @field_validator("raw_response_persisted", mode="before")
     @classmethod
     def _strict_bool_literals(cls, value: object) -> object:
         return _require_exact_bool_literal(value)
 
+    @model_validator(mode="after")
+    def _observation_count(self) -> "ProviderCapabilityAttestationV1":
+        if self.provider_call_count != sum(item.provider_call_count for item in self.observations):
+            raise ValueError("provider call count does not match observations")
+        return self
+
 
 class ProviderSetupEventV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.post-core.provider-setup-event.v1"] = (
         "memupdatebench.post-core.provider-setup-event.v1"
     )
-    registry_key: StrictStr
-    event_type: Literal["PRE_PROVIDER_SETUP"] = "PRE_PROVIDER_SETUP"
+    event_id: StrictStr
+    stage: Literal["PRE_PROVIDER_SETUP"] = "PRE_PROVIDER_SETUP"
     status: Literal["FAILED"] = "FAILED"
     provider_call_count: Literal[0] = 0
-    detail: StrictStr | None = None
-    source_binding_ids: tuple[StrictStr, ...] = ()
+    reason_class: StrictStr
+    source_binding_ids: tuple[StrictStr, ...]
 
     @field_validator("provider_call_count", mode="before")
     @classmethod
@@ -270,17 +254,16 @@ class RuntimeManifestV1(ImmutableContractModel):
     engine_version: StrictStr
     engine_commit: StrictStr | None = None
     binary_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    package_versions: FrozenStringMap | None = None
-    runtime_version: StrictStr | None = None
-    device: StrictStr | None = None
-    context_window: StrictInt | None = Field(default=None, gt=0)
-    output_token_cap: StrictInt | None = Field(default=None, gt=0)
-    build: StrictStr | None = None
-
-    @field_validator("package_versions")
-    @classmethod
-    def _freeze_package_versions(cls, value: FrozenStringMap | None) -> FrozenStringMap | None:
-        return None if value is None else freeze_mapping(value)
+    python_version: StrictStr | None = None
+    torch_version: StrictStr | None = None
+    transformers_version: StrictStr | None = None
+    accelerate_version: StrictStr | None = None
+    cuda_version: StrictStr | None = None
+    driver_version: StrictStr | None = None
+    device_name: StrictStr | None = None
+    context_tokens: StrictInt | None = Field(default=None, gt=0)
+    max_output_tokens: StrictInt | None = Field(default=None, gt=0)
+    build_options_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
 
 
 class OpenRuntimeReceiptV1(ImmutableContractModel):
@@ -289,23 +272,21 @@ class OpenRuntimeReceiptV1(ImmutableContractModel):
     )
     registry_key: StrictStr
     revision: StrictStr
-    tree_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    snapshot_tree_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     runtime: RuntimeManifestV1
     speculative_decoding: Literal["off"] = "off"
-    storage_input_status: GateStatus
-    short_generation_status: GateStatus
-    capability_smoke_status: GateStatus
-    benchmark_admission_status: GateStatus
-    tokenizer_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    checkpoint_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    measurements: FrozenDecimalMap | None = None
-    blockers: tuple[StrictStr, ...] = ()
+    load_status: GateStatus
+    generation_status: GateStatus
+    determinism_status: GateStatus
+    unload_status: GateStatus
+    prompt_fixture_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    parser_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    chat_template_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    output_projection_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    generated_token_count: StrictInt | None = Field(default=None, ge=0)
+    peak_memory_bytes: StrictInt | None = Field(default=None, ge=0)
+    blocked_reasons: tuple[StrictStr, ...] = ()
     source_binding_ids: tuple[StrictStr, ...]
-
-    @field_validator("measurements")
-    @classmethod
-    def _freeze_measurements(cls, value: FrozenDecimalMap | None) -> FrozenDecimalMap | None:
-        return None if value is None else freeze_mapping(value)
 
 
 class CapabilityFixtureV1(ImmutableContractModel):
@@ -313,9 +294,11 @@ class CapabilityFixtureV1(ImmutableContractModel):
         "memupdatebench.post-core.capability-fixture.v1"
     )
     fixture_id: StrictStr
+    category: Literal["EXACT_OUTPUT", "CHAT_TEMPLATE_PARSER"]
     prompt_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     parser_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
-    expected_response_format: Literal["JSON", "SSE"]
+    max_prompt_tokens: StrictInt = Field(gt=0)
+    max_output_tokens: StrictInt = Field(gt=0)
 
 
 class CapabilitySmokePlanV1(ImmutableContractModel):
@@ -323,6 +306,7 @@ class CapabilitySmokePlanV1(ImmutableContractModel):
         "memupdatebench.post-core.capability-smoke-plan.v1"
     )
     release_id: StrictStr
+    registry_keys: tuple[StrictStr, ...]
     base_attempts_per_role: Literal[8] = 8
     escalation_attempts_per_role: Literal[8] = 8
     max_retries: Literal[0] = 0
@@ -343,10 +327,35 @@ class CapabilitySmokePlanV1(ImmutableContractModel):
 
     @model_validator(mode="after")
     def _attempt_shape(self) -> "CapabilitySmokePlanV1":
-        base = sum(item.phase is AttemptPhase.BASE for item in self.attempts)
-        escalation = sum(item.phase is AttemptPhase.ESCALATION for item in self.attempts)
-        if base != self.base_attempts_per_role or escalation != self.escalation_attempts_per_role:
-            raise ValueError("capability smoke plan must contain eight base and eight escalation attempts")
+        if not self.registry_keys or len(self.registry_keys) != len(set(self.registry_keys)):
+            raise ValueError("qualification smoke plan registry keys must be nonempty and unique")
+        if len(self.attempts) != 16 * len(self.registry_keys):
+            raise ValueError("qualification smoke plan has an unexpected attempt count")
+        if {item.registry_key for item in self.attempts} != set(self.registry_keys):
+            raise ValueError("qualification smoke plan attempts must reference exactly listed keys")
+        coordinates = tuple(
+            (item.registry_key, item.fixture_id, item.phase, item.repetition)
+            for item in self.attempts
+        )
+        if len(coordinates) != len(set(coordinates)):
+            raise ValueError("qualification smoke plan attempt coordinates must be unique")
+        call_ids = tuple(item.call_id for item in self.attempts)
+        if len(call_ids) != len(set(call_ids)):
+            raise ValueError("qualification smoke plan call IDs must be unique")
+        for key in self.registry_keys:
+            base_count = sum(
+                item.registry_key == key and item.phase is AttemptPhase.BASE
+                for item in self.attempts
+            )
+            escalation_count = sum(
+                item.registry_key == key and item.phase is AttemptPhase.ESCALATION
+                for item in self.attempts
+            )
+            if (
+                base_count != self.base_attempts_per_role
+                or escalation_count != self.escalation_attempts_per_role
+            ):
+                raise ValueError("qualification smoke plan must have eight attempts per phase and role")
         if any(item.authorized or item.executable or item.budget.max_retries != 0 for item in self.attempts):
             raise ValueError("qualification smoke plan cannot authorize execution or retries")
         return self
@@ -358,15 +367,15 @@ class CapabilityAttemptReceiptV1(ImmutableContractModel):
     )
     call_id: StrictStr = Field(pattern=SHA256_PATTERN)
     registry_key: StrictStr
-    fixture_id: StrictStr
-    phase: AttemptPhase
-    gate_status: GateStatus
+    status: GateStatus
     retry_count: Literal[0] = 0
-    provider_call_count: StrictInt | None = Field(default=None, ge=0)
     response_model: StrictStr | None = None
-    exact_ok: StrictBool | None = None
-    blocker: StrictStr | None = None
-    source_binding_ids: tuple[StrictStr, ...] = ()
+    response_format: Literal["ANTHROPIC_MESSAGE_JSON", "SSE", "LOCAL_TEXT"] | None = None
+    stop_reason: Literal["end_turn"] | None = None
+    usage_present: StrictBool | None = None
+    latency_ms: StrictInt | None = Field(default=None, ge=0)
+    redacted_response_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    error_class: StrictStr | None = None
 
     @field_validator("retry_count", mode="before")
     @classmethod
@@ -381,9 +390,9 @@ class QualificationDecisionV1(ImmutableContractModel):
     registry_key: StrictStr
     scope: DecisionScope
     status: QualificationStatus
-    gate_status: GateStatus
-    reason: StrictStr
-    source_binding_ids: tuple[StrictStr, ...] = ()
+    reasons: tuple[StrictStr, ...]
+    evidence_binding_ids: tuple[StrictStr, ...]
+    scientific_status: Literal["NOT_RUN"] = "NOT_RUN"
 
 
 class QualificationDecisionBundleV1(ImmutableContractModel):
@@ -399,58 +408,52 @@ class QualificationReleaseManifestV1(ImmutableContractModel):
         "memupdatebench.post-core.qualification-release.v1"
     )
     release_id: StrictStr
+    base_commit: StrictStr = Field(pattern=r"^[0-9a-f]{40}$")
     artifact_order: tuple[StrictStr, ...]
-    required_source_sha256: FrozenStringMap
+    source_hashes: FrozenStringMap
 
-    @field_validator("required_source_sha256")
+    @field_validator("source_hashes")
     @classmethod
-    def _freeze_required_source_sha256(cls, value: FrozenStringMap) -> FrozenStringMap:
+    def _freeze_source_hashes(cls, value: FrozenStringMap) -> FrozenStringMap:
         return freeze_mapping(value)
 
     @model_validator(mode="after")
     def _artifact_order(self) -> "QualificationReleaseManifestV1":
         if self.artifact_order != QUALIFICATION_ARTIFACT_ORDER:
             raise ValueError("qualification manifest artifact order mismatch")
-        if not self.required_source_sha256 or any(
+        if not self.source_hashes or any(
             len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
-            for value in self.required_source_sha256.values()
+            for value in self.source_hashes.values()
         ):
             raise ValueError("qualification manifest source hashes must be lowercase SHA-256")
         return self
 
 
 class QualificationValidationReceiptV1(ImmutableContractModel):
-    schema_version: Literal["memupdatebench.post-core.qualification-validation-receipt.v1"] = (
-        "memupdatebench.post-core.qualification-validation-receipt.v1"
+    schema_version: Literal["memupdatebench.post-core.qualification-validation.v1"] = (
+        "memupdatebench.post-core.qualification-validation.v1"
     )
     release_id: StrictStr
     status: Literal["SUCCESS_WITH_BLOCKERS", "SUCCESS"]
-    source_count: StrictInt = Field(ge=0)
-    decision_count: StrictInt = Field(ge=0)
-    decision_counts: FrozenNonnegativeIntMap | None = None
-    provider_calls: Literal[0] = 0
-    model_loads: Literal[0] = 0
-    network_calls: Literal[0] = 0
-    executable_calls: Literal[0] = 0
-    published_provider_attestations: Literal[0] = 0
-    published_open_runtime_receipts: Literal[0] = 0
-    published_capability_attempt_receipts: Literal[0] = 0
+    source_count: StrictInt = Field(gt=0)
+    decision_counts: FrozenNonnegativeIntMap
+    provider_calls_during_publication: Literal[0] = 0
+    model_loads_during_publication: Literal[0] = 0
+    network_calls_during_publication: Literal[0] = 0
+    credential_reads_during_publication: Literal[0] = 0
+    benchmark_generations: Literal[0] = 0
 
     @field_validator("decision_counts")
     @classmethod
-    def _freeze_decision_counts(
-        cls, value: FrozenNonnegativeIntMap | None
-    ) -> FrozenNonnegativeIntMap | None:
-        return None if value is None else freeze_mapping(value)
+    def _freeze_decision_counts(cls, value: FrozenNonnegativeIntMap) -> FrozenNonnegativeIntMap:
+        return freeze_mapping(value)
 
     @field_validator(
-        "provider_calls",
-        "model_loads",
-        "network_calls",
-        "executable_calls",
-        "published_provider_attestations",
-        "published_open_runtime_receipts",
-        "published_capability_attempt_receipts",
+        "provider_calls_during_publication",
+        "model_loads_during_publication",
+        "network_calls_during_publication",
+        "credential_reads_during_publication",
+        "benchmark_generations",
         mode="before",
     )
     @classmethod
@@ -467,7 +470,6 @@ __all__ = [
     "CapabilityFixtureV1",
     "CapabilitySmokePlanV1",
     "DecisionScope",
-    "FrozenDecimalMap",
     "GateStatus",
     "OpenRuntimeReceiptV1",
     "ProviderCapabilityAttestationV1",
