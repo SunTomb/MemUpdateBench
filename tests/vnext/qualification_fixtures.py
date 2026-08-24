@@ -12,6 +12,18 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
 
 SOURCE_BINDING_IDS = ("workflow_source", "handoff_source")
 
+RUNTIME_SOURCE_BINDINGS = {
+    "qwen35_9b_bf16": ("qwen_snapshot_closure",),
+    "meta_muse_glimmer_30b_int4": ("muse_gguf_snapshot_closure",),
+    "meta_muse_glimmer_30b_bf16": ("muse_bf16_snapshot_closure",),
+}
+
+_RUNTIME_TREE_HASHES = {
+    "qwen35_9b_bf16": "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db",
+    "meta_muse_glimmer_30b_int4": "55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f",
+    "meta_muse_glimmer_30b_bf16": "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
+}
+
 
 def _observation(
     location: str,
@@ -136,14 +148,11 @@ def _runtime_manifest(
 
 
 def open_runtime_receipts() -> tuple[OpenRuntimeReceiptV1, ...]:
-    hash_a = "a" * 64
-    hash_b = "b" * 64
-    hash_c = "c" * 64
     return (
         OpenRuntimeReceiptV1(
             registry_key="qwen35_9b_bf16",
             revision="c202236235762e1c871ad0ccb60c8ee5ba337b9a",
-            snapshot_tree_sha256=hash_a,
+            snapshot_tree_sha256=_RUNTIME_TREE_HASHES["qwen35_9b_bf16"],
             runtime=_runtime_manifest(
                 engine="transformers",
                 engine_version="4.57.1",
@@ -158,12 +167,12 @@ def open_runtime_receipts() -> tuple[OpenRuntimeReceiptV1, ...]:
             generation_status=GateStatus.NOT_RUN,
             determinism_status=GateStatus.NOT_RUN,
             unload_status=GateStatus.PASS,
-            source_binding_ids=SOURCE_BINDING_IDS,
+            source_binding_ids=RUNTIME_SOURCE_BINDINGS["qwen35_9b_bf16"],
         ),
         OpenRuntimeReceiptV1(
             registry_key="meta_muse_glimmer_30b_int4",
             revision="70bf1b61ac09f91b24d39038091b41c582bc5d7a",
-            snapshot_tree_sha256=hash_b,
+            snapshot_tree_sha256=_RUNTIME_TREE_HASHES["meta_muse_glimmer_30b_int4"],
             runtime=_runtime_manifest(
                 engine="llama.cpp",
                 engine_version="b1",
@@ -177,12 +186,12 @@ def open_runtime_receipts() -> tuple[OpenRuntimeReceiptV1, ...]:
             generation_status=GateStatus.NOT_RUN,
             determinism_status=GateStatus.NOT_RUN,
             unload_status=GateStatus.NOT_RUN,
-            source_binding_ids=SOURCE_BINDING_IDS,
+            source_binding_ids=RUNTIME_SOURCE_BINDINGS["meta_muse_glimmer_30b_int4"],
         ),
         OpenRuntimeReceiptV1(
             registry_key="meta_muse_glimmer_30b_bf16",
             revision="a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
-            snapshot_tree_sha256=hash_c,
+            snapshot_tree_sha256=_RUNTIME_TREE_HASHES["meta_muse_glimmer_30b_bf16"],
             runtime=_runtime_manifest(
                 engine="transformers",
                 engine_version="4.57.1",
@@ -198,12 +207,13 @@ def open_runtime_receipts() -> tuple[OpenRuntimeReceiptV1, ...]:
             determinism_status=GateStatus.NOT_RUN,
             unload_status=GateStatus.NOT_RUN,
             blocked_reasons=("resource/runtime unavailable",),
-            source_binding_ids=SOURCE_BINDING_IDS,
+            source_binding_ids=RUNTIME_SOURCE_BINDINGS["meta_muse_glimmer_30b_bf16"],
         ),
     )
 
 
 __all__ = [
+    "RUNTIME_SOURCE_BINDINGS",
     "SOURCE_BINDING_IDS",
     "failed_ssh_setup_event",
     "open_runtime_receipts",

@@ -24,6 +24,16 @@ def test_open_runtime_receipts_accept_load_only_qwen_and_blocked_bf16() -> None:
     assert rows[0].generation_status is GateStatus.NOT_RUN
     assert rows[0].load_status is GateStatus.PASS
     assert rows[2].load_status is GateStatus.BLOCKED
+    assert tuple(row.snapshot_tree_sha256 for row in rows) == (
+        "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db",
+        "55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f",
+        "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
+    )
+    assert tuple(row.source_binding_ids for row in rows) == (
+        ("qwen_snapshot_closure",),
+        ("muse_gguf_snapshot_closure",),
+        ("muse_bf16_snapshot_closure",),
+    )
     assert rows[2].blocked_reasons == ("resource/runtime unavailable",)
 
 
@@ -34,6 +44,10 @@ def test_muse_gguf_requires_llama_commit_binary_build_and_speculative_off() -> N
     missing_commit = rows[1].runtime.model_copy(update={"engine_commit": None})
     with pytest.raises(ValueError):
         validate_runtime_receipts_v1(_replace(rows, 1, runtime=missing_commit))
+
+    malformed_commit = rows[1].runtime.model_copy(update={"engine_commit": "not-a-sha"})
+    with pytest.raises(ValueError):
+        validate_runtime_receipts_v1(_replace(rows, 1, runtime=malformed_commit))
 
     payload = rows[1].model_dump(mode="python")
     payload["runtime"] = rows[1].runtime
@@ -61,8 +75,28 @@ def test_bf16_blocked_receipt_keeps_measurements_and_generation_evidence_null() 
     [
         {
             "generation_status": GateStatus.PASS,
+            "determinism_status": GateStatus.NOT_RUN,
             "load_status": GateStatus.PASS,
             "unload_status": GateStatus.PASS,
+            "prompt_fixture_sha256": "a" * 64,
+            "parser_sha256": "b" * 64,
+            "chat_template_sha256": "c" * 64,
+            "output_projection_sha256": "d" * 64,
+            "generated_token_count": 8,
+            "peak_memory_bytes": 1,
+        },
+        {
+            "generation_status": GateStatus.PASS,
+            "determinism_status": GateStatus.BLOCKED,
+            "load_status": GateStatus.PASS,
+            "unload_status": GateStatus.PASS,
+            "prompt_fixture_sha256": "a" * 64,
+            "parser_sha256": "b" * 64,
+            "chat_template_sha256": "c" * 64,
+            "output_projection_sha256": "d" * 64,
+            "generated_token_count": 8,
+            "peak_memory_bytes": 1,
+            "blocked_reasons": ("determinism was not run",),
         },
         {
             "generation_status": GateStatus.NOT_RUN,
@@ -102,7 +136,13 @@ def test_runtime_identity_order_revision_and_source_bindings_are_exact() -> None
     with pytest.raises(ValueError):
         validate_runtime_receipts_v1(_replace(rows, 0, source_binding_ids=()))
     with pytest.raises(ValueError):
-        validate_runtime_receipts_v1(_replace(rows, 0, source_binding_ids=("same", "same")))
+        validate_runtime_receipts_v1(
+            _replace(rows, 0, source_binding_ids=("muse_gguf_snapshot_closure",))
+        )
+    with pytest.raises(ValueError):
+        validate_runtime_receipts_v1(
+            _replace(rows, 0, source_binding_ids=("qwen_snapshot_closure", "qwen_snapshot_closure"))
+        )
     with pytest.raises(ValueError):
         validate_runtime_receipts_v1(_replace(rows, 0, registry_key="unexpected"))
 

@@ -28,11 +28,30 @@ _EXPECTED_PROVIDER_ROWS = (
     ("gpt_5_5", "gpt-5.5", 4),
 )
 _EXPECTED_RUNTIME_ROWS = (
-    ("qwen35_9b_bf16", "c202236235762e1c871ad0ccb60c8ee5ba337b9a", "transformers"),
-    ("meta_muse_glimmer_30b_int4", "70bf1b61ac09f91b24d39038091b41c582bc5d7a", "llama.cpp"),
-    ("meta_muse_glimmer_30b_bf16", "a4e59da52a7bc87ae7251dd5545c0dd437c44b68", "transformers"),
+    (
+        "qwen35_9b_bf16",
+        "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "transformers",
+        "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db",
+        ("qwen_snapshot_closure",),
+    ),
+    (
+        "meta_muse_glimmer_30b_int4",
+        "70bf1b61ac09f91b24d39038091b41c582bc5d7a",
+        "llama.cpp",
+        "55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f",
+        ("muse_gguf_snapshot_closure",),
+    ),
+    (
+        "meta_muse_glimmer_30b_bf16",
+        "a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
+        "transformers",
+        "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
+        ("muse_bf16_snapshot_closure",),
+    ),
 )
 _RUNTIME_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _RUNTIME_EVIDENCE_FIELDS = (
     "prompt_fixture_sha256",
     "parser_sha256",
@@ -454,13 +473,14 @@ def validate_runtime_receipts_v1(
         "runtime receipts must use OpenRuntimeReceiptV1",
     )
 
-    for row, (registry_key, revision, engine) in zip(result, _EXPECTED_RUNTIME_ROWS):
+    for row, (registry_key, revision, engine, snapshot_tree_sha256, source_binding_ids) in zip(
+        result, _EXPECTED_RUNTIME_ROWS
+    ):
         _require(row.registry_key == registry_key, "runtime receipt registry order mismatch")
         _require(row.revision == revision, "runtime receipt revision mismatch")
         _require(
-            isinstance(row.snapshot_tree_sha256, str)
-            and _RUNTIME_SHA256.fullmatch(row.snapshot_tree_sha256) is not None,
-            "runtime snapshot hash invalid",
+            row.snapshot_tree_sha256 == snapshot_tree_sha256,
+            "runtime snapshot tree identity mismatch",
         )
         _require(
             isinstance(row.source_binding_ids, tuple) and bool(row.source_binding_ids),
@@ -469,6 +489,10 @@ def validate_runtime_receipts_v1(
         _require(
             all(isinstance(item, str) for item in row.source_binding_ids),
             "runtime source bindings must be strings",
+        )
+        _require(
+            row.source_binding_ids == source_binding_ids,
+            "runtime source bindings mismatch",
         )
         _require(
             len(row.source_binding_ids) == len(set(row.source_binding_ids)),
@@ -501,7 +525,11 @@ def validate_runtime_receipts_v1(
 
         if registry_key == "meta_muse_glimmer_30b_int4":
             _require(row.runtime.engine == "llama.cpp", "Muse GGUF must use llama.cpp")
-            _require(bool(row.runtime.engine_commit), "Muse GGUF engine commit is required")
+            _require(
+                isinstance(row.runtime.engine_commit, str)
+                and _RUNTIME_GIT_SHA.fullmatch(row.runtime.engine_commit) is not None,
+                "Muse GGUF engine commit must be a lowercase git SHA",
+            )
             _require(
                 isinstance(row.runtime.binary_sha256, str)
                 and _RUNTIME_SHA256.fullmatch(row.runtime.binary_sha256) is not None,
@@ -514,12 +542,15 @@ def validate_runtime_receipts_v1(
             )
             _require(row.speculative_decoding == "off", "Muse GGUF speculative decoding must be off")
 
-        if _gate_value(row.generation_status) == GateStatus.PASS.value:
+        generation_pass = _gate_value(row.generation_status) == GateStatus.PASS.value
+        determinism_pass = _gate_value(row.determinism_status) == GateStatus.PASS.value
+        if generation_pass:
             _require(
                 _gate_value(row.load_status) == GateStatus.PASS.value
                 and _gate_value(row.unload_status) == GateStatus.PASS.value,
                 "generation requires load and unload PASS",
             )
+            _require(determinism_pass, "generation requires determinism PASS")
             _require(
                 all(getattr(row, field) is not None for field in _RUNTIME_EVIDENCE_FIELDS[:5]),
                 "generation evidence is incomplete",
@@ -529,11 +560,13 @@ def validate_runtime_receipts_v1(
                 all(getattr(row, field) is None for field in _RUNTIME_EVIDENCE_FIELDS),
                 "non-PASS generation cannot carry measurements or evidence",
             )
-        if _gate_value(row.determinism_status) == GateStatus.PASS.value:
+        if not determinism_pass:
             _require(
-                _gate_value(row.generation_status) == GateStatus.PASS.value,
-                "determinism requires generation PASS",
+                all(getattr(row, field) is None for field in _RUNTIME_EVIDENCE_FIELDS),
+                "non-PASS determinism cannot carry measurements or evidence",
             )
+        if determinism_pass:
+            _require(generation_pass, "determinism requires generation PASS")
         if _gate_value(row.load_status) == GateStatus.BLOCKED:
             _require(
                 all(_gate_value(status) != GateStatus.PASS.value for status in statuses[1:]),
