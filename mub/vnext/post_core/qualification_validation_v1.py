@@ -50,8 +50,16 @@ _SENSITIVE_IDENTIFIER_COMPOUNDS = frozenset(
     }
 )
 _SENSITIVE_COMPACT_IDENTIFIERS = frozenset(
-    {item.replace("_", "") for item in _SENSITIVE_IDENTIFIER_COMPOUNDS} | {"apikey", "xapikey"}
+    {item.replace("_", "") for item in _SENSITIVE_IDENTIFIER_COMPOUNDS}
+    | {"apikey", "xapikey", "awsaccesskeyid", "awssecretaccesskey", "gcpserviceaccountkey"}
 )
+_SENSITIVE_PART_SEQUENCES = (
+    ("private", "key"),
+    ("access", "key"),
+    ("secret", "access", "key"),
+    ("service", "account", "key"),
+)
+_CREDENTIAL_PROVIDER_PREFIXES = frozenset({"aws", "gcp", "google", "azure", "amz"})
 _QUERY_GENERIC_SENSITIVE_PARTS = frozenset({"key", "sig", "signature"})
 _PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
 _ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
@@ -62,8 +70,23 @@ _SAFE_CONTRACT_KEYS = frozenset({"registry_key"})
 
 
 def _normalized_key(value: object) -> str:
-    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(value).strip())
+    text = str(value).strip()
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
     return re.sub(r"[-\s]+", "_", text).lower()
+
+
+def _contains_sequence(parts: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
+    return any(parts[index : index + len(sequence)] == sequence for index in range(len(parts)))
+
+
+def _is_provider_prefixed_sequence(parts: tuple[str, ...], sequence: tuple[str, ...]) -> bool:
+    for index in range(len(parts) - len(sequence) + 1):
+        if parts[index : index + len(sequence)] == sequence and any(
+            part in _CREDENTIAL_PROVIDER_PREFIXES for part in parts[:index]
+        ):
+            return True
+    return False
 
 
 def _is_sensitive_identifier(value: object, *, query_key: bool = False) -> bool:
@@ -77,6 +100,11 @@ def _is_sensitive_identifier(value: object, *, query_key: bool = False) -> bool:
         or normalized in _SENSITIVE_IDENTIFIER_COMPOUNDS
         or compact in _SENSITIVE_COMPACT_IDENTIFIERS
         or any(part in _SENSITIVE_IDENTIFIER_ATOMS for part in parts)
+        or _contains_sequence(parts, ("private", "key"))
+        or any(
+            _is_provider_prefixed_sequence(parts, sequence)
+            for sequence in _SENSITIVE_PART_SEQUENCES[1:]
+        )
     ):
         return True
     return query_key and any(part in _QUERY_GENERIC_SENSITIVE_PARTS for part in parts)

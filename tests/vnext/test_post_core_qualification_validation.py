@@ -479,3 +479,48 @@ def test_load_canonical_jsonl_rejects_same_inode_same_size_timestamp_mutation(tm
     monkeypatch.setattr(validation, "_read_fd_all", read_then_mutate)
     with pytest.raises(ValueError, match="changed while being read"):
         validation.load_canonical_jsonl_v1(path, ProviderCapabilityAttestationV1, label="attestations")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "backup_private_key",
+        "privateKeyBackup",
+        "private-key-backup",
+        {"private key backup": "opaque"},
+        "AWSAccessKeyId",
+        "AWSAccessKeyID",
+        "AWSSecretAccessKey",
+        "GCPServiceAccountKey",
+        {"AWSAccessKeyId": "opaque"},
+        {"AWSAccessKeyID": "opaque"},
+        {"AWSSecretAccessKey": "opaque"},
+        {"GCPServiceAccountKey": "opaque"},
+    ],
+)
+def test_post_scan_rejects_private_key_sequences_and_acronym_credentials(value: object) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "private",
+        "key",
+        "authored_by",
+        "tokenizer",
+        {"private": "label"},
+        {"key": "label"},
+        {"api_version": "v1"},
+        {"key_count": 2},
+        {"authored_by": "writer"},
+        {"tokenizer": "identity"},
+    ],
+)
+def test_post_scan_allows_noncredential_private_key_and_word_prefix_counterexamples(value: object) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    validate_qualification_secret_free(value)
