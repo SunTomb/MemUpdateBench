@@ -85,7 +85,12 @@ _EXPECTED_REGISTRY_KEYS = (
     "grok_4_5",
     "gpt_5_5",
 )
-_EXPECTED_FIXTURE_IDS = ("exact_ok_1", "exact_ok_2", "parser_city_1", "parser_city_2")
+_EXPECTED_FIXTURE_CATEGORIES = {
+    "exact_ok_1": "EXACT_OUTPUT",
+    "exact_ok_2": "EXACT_OUTPUT",
+    "parser_city_1": "CHAT_TEMPLATE_PARSER",
+    "parser_city_2": "CHAT_TEMPLATE_PARSER",
+}
 
 
 _RUNTIME_CLASSES = {
@@ -149,7 +154,7 @@ def _validate_inputs(
         raise ValueError("planner requires exactly four fixtures")
     _reject_forbidden_mapping(fixtures)
     seen_ids: set[str] = set()
-    categories: list[str] = []
+    fixture_categories: dict[str, str] = {}
     for fixture in fixtures:
         if type(fixture) is not CapabilityFixtureV1:
             _reject_forbidden_mapping(fixture)
@@ -158,11 +163,14 @@ def _validate_inputs(
         if fixture_id in seen_ids:
             raise ValueError("fixture IDs must be unique")
         seen_ids.add(fixture_id)
-        categories.append(_fixture_category(fixture))
+        category = _fixture_category(fixture)
+        fixture_categories[fixture_id] = category
         _fixture_values(fixture)
-    if set(seen_ids) != set(_EXPECTED_FIXTURE_IDS):
+    if fixture_categories != _EXPECTED_FIXTURE_CATEGORIES:
+        raise ValueError("fixtures must use the exact fixture category mapping")
+    if len(fixture_categories) != 4:
         raise ValueError("fixtures must use the exact fixture IDs")
-    if categories.count("EXACT_OUTPUT") != 2 or categories.count("CHAT_TEMPLATE_PARSER") != 2:
+    if tuple(fixture_categories.values()).count("EXACT_OUTPUT") != 2 or tuple(fixture_categories.values()).count("CHAT_TEMPLATE_PARSER") != 2:
         raise ValueError("planner requires two fixtures of each category")
     return config
 

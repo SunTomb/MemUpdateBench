@@ -166,6 +166,16 @@ def test_rejects_wrong_fixture_count_duplicate_or_category_balance(fixtures) -> 
         build_capability_smoke_plan_v1(_config(), fixtures())
 
 
+def test_rejects_swapped_fixture_categories() -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
+
+    fixtures = list(_fixtures())
+    fixtures[0] = fixtures[0].model_copy(update={"category": "CHAT_TEMPLATE_PARSER"})
+    fixtures[2] = fixtures[2].model_copy(update={"category": "EXACT_OUTPUT"})
+    with pytest.raises(ValueError, match="exact fixture category"):
+        build_capability_smoke_plan_v1(_config(), tuple(fixtures))
+
+
 def test_rejects_balanced_categories_with_substituted_fixture_id() -> None:
     from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
 
