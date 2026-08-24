@@ -195,7 +195,7 @@ def test_publish_reopens_exact_artifacts_and_refuses_clobber(tmp_path: Path) -> 
     reopened = verify_qualification_release_v1(output, **inputs)
     assert published.output_root == output.resolve()
     assert dict(reopened.artifact_bytes) == dict(published.artifact_bytes)
-    with pytest.raises(ValueError):
+    with pytest.raises(FileExistsError):
         publish_qualification_release_v1(output, **inputs)
 
 
@@ -205,7 +205,7 @@ def test_publish_rejects_output_overlap_and_source_mutation(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="overlaps"):
         publish_qualification_release_v1(source, **inputs)
     output = tmp_path / "mutated"
-    def mutate_source(_stage: Path) -> None:
+    def mutate_source() -> None:
         source.write_bytes(b"changed")
     with pytest.raises(ValueError, match="workflow_source"):
         publish_qualification_release_v1(output, before_commit=mutate_source, **inputs)
@@ -216,21 +216,45 @@ def test_publish_rejects_file_backed_config_mutation_before_commit(tmp_path: Pat
     inputs = _inputs(tmp_path)
     config_path = inputs["config"].config_path
     assert config_path is not None
-    def mutate_config(_stage: Path) -> None:
+    def mutate_config() -> None:
         config_path.write_bytes(b"changed")
     with pytest.raises(ValueError, match="qualification config"):
         publish_qualification_release_v1(tmp_path / "mutated-config", before_commit=mutate_config, **inputs)
+
+
+def test_publish_rejects_provider_receipt_mutation_before_commit(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    provider_path = tmp_path / "provider.jsonl"
+    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
+    inputs["provider_attestations_path"] = provider_path
+    def mutate_provider() -> None:
+        provider_path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="provider attestations"):
+        publish_qualification_release_v1(tmp_path / "mutated-provider", before_commit=mutate_provider, **inputs)
 
 
 def test_publish_preserves_tampered_stage_for_quarantine(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     output = tmp_path / "tampered"
     seen: list[Path] = []
-    def mutate_stage(stage: Path) -> None:
+    def mutate_stage() -> None:
+        stage = next(tmp_path.glob(".mub-post-core-qualification-stage-*"))
         seen.append(stage)
         (stage / "source_bindings.json").write_bytes(b"tampered")
     with pytest.raises(QualificationReleaseError, match="staging"):
         publish_qualification_release_v1(output, before_commit=mutate_stage, **inputs)
+    assert seen and seen[0].exists()
+
+
+def test_publish_rejects_extra_stage_member_before_commit(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    seen: list[Path] = []
+    def add_member() -> None:
+        stage = next(tmp_path.glob(".mub-post-core-qualification-stage-*"))
+        seen.append(stage)
+        (stage / "unexpected").write_bytes(b"extra")
+    with pytest.raises(QualificationReleaseError, match="staging"):
+        publish_qualification_release_v1(tmp_path / "extra-member", before_commit=add_member, **inputs)
     assert seen and seen[0].exists()
 
 
@@ -274,3 +298,30 @@ def test_missing_no_replace_primitive_raises_typed_error(tmp_path: Path, monkeyp
     monkeypatch.delattr(qualification_release_v1.ctypes, "windll", raising=False)
     with pytest.raises(qualification_release_v1.NoReplacePrimitiveUnavailableError):
         publish_qualification_release_v1(tmp_path / "no-primitive", **inputs)
+
+
+def test_fsync_directory_does_not_swallow_open_eio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.name == "nt":
+        pytest.skip("Windows directory fsync is intentionally unavailable")
+    def fail_open(*_args: object, **_kwargs: object) -> int:
+        raise OSError(5, "EIO")
+    monkeypatch.setattr(qualification_release_v1.os, "open", fail_open)
+    with pytest.raises(OSError):
+        qualification_release_v1._fsync_directory(tmp_path)
+
+
+def test_post_rename_fsync_failure_preserves_committed_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "fsync-committed"
+    original = qualification_release_v1._fsync_directory
+    calls = 0
+    def fail_final(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(5, "EIO")
+        original(path)
+    monkeypatch.setattr(qualification_release_v1, "_fsync_directory", fail_final)
+    with pytest.raises(CommittedQualificationReleaseError):
+        publish_qualification_release_v1(output, **inputs)
+    assert output.exists()

@@ -600,33 +600,71 @@ class _StageMember:
     identity: tuple[int, int]
     byte_count: int
     sha256: str
+    raw: bytes
+
+
+@dataclass(frozen=True)
+class _StageOwnership:
+    identity: tuple[int, int]
+    members: tuple[_StageMember, ...]
 
 
 def _fsync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError:
+    if os.name == "nt":
         return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        os.fsync(descriptor)
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            unsupported = {errno.EINVAL, getattr(errno, "ENOTSUP", errno.EINVAL), getattr(errno, "EOPNOTSUPP", errno.EINVAL)}
+            if exc.errno not in unsupported:
+                raise
     finally:
         os.close(descriptor)
 
 
-def _capture_member(path: Path) -> _StageMember:
-    metadata = path.lstat()
-    if not _regular_single_link(metadata):
-        raise UnsafeQualificationPathError(f"publication member is not a regular single-link file: {path.name}")
-    raw = path.read_bytes()
-    after = path.lstat()
+def _read_member(path: Path, label: str) -> _StageMember:
+    selected = _absolute(path)
+    _reject_reparse_components(selected)
+    before = selected.lstat()
+    if _is_reparse(selected) or not _regular_single_link(before):
+        raise UnsafeQualificationPathError(f"{label} is not a regular single-link file")
+    descriptor = os.open(selected, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        if not _regular_single_link(opened) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise QualificationReleaseError(f"{label} changed while opened")
+        expected_size = opened.st_size
+        chunks: list[bytes] = []
+        remaining = expected_size + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after_open = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    _reject_reparse_components(selected)
+    after = selected.lstat()
     if (
-        not _regular_single_link(after)
-        or (metadata.st_dev, metadata.st_ino) != (after.st_dev, after.st_ino)
-        or metadata.st_size != after.st_size
-        or len(raw) != metadata.st_size
+        len(raw) != expected_size
+        or not _regular_single_link(after_open)
+        or not _regular_single_link(after)
+        or (after_open.st_dev, after_open.st_ino) != (before.st_dev, before.st_ino)
+        or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+        or after_open.st_size != expected_size
+        or after.st_size != expected_size
     ):
-        raise QualificationReleaseError(f"publication member changed while captured: {path.name}")
-    return _StageMember(path, (metadata.st_dev, metadata.st_ino), metadata.st_size, _sha256(raw))
+        raise QualificationReleaseError(f"{label} changed while being captured")
+    return _StageMember(selected, (before.st_dev, before.st_ino), expected_size, _sha256(raw), raw)
+
+
+def _capture_member(path: Path) -> _StageMember:
+    return _read_member(path, f"publication member {path.name}")
 
 
 def _capture_stage(stage: Path) -> tuple[_StageMember, ...]:
@@ -640,6 +678,11 @@ def _capture_stage(stage: Path) -> tuple[_StageMember, ...]:
 
 def _stage_matches(members: Sequence[_StageMember]) -> bool:
     try:
+        if set(item.path.name for item in members) != set(QUALIFICATION_ARTIFACTS):
+            return False
+        stage = members[0].path.parent if members else None
+        if stage is None or set(item.name for item in stage.iterdir()) != set(QUALIFICATION_ARTIFACTS):
+            return False
         for item in members:
             current = _capture_member(item.path)
             if (current.identity, current.byte_count, current.sha256) != (item.identity, item.byte_count, item.sha256):
@@ -658,7 +701,11 @@ def _path_overlap(left: Path, right: Path) -> bool:
         return False
 
 
-def _prepare_output_root(output_root: Path, snapshots: Sequence[_SourceSnapshot], config: QualificationReleaseConfigV1) -> Path:
+def _prepare_output_root(
+    output_root: Path,
+    snapshots: Sequence[_SourceSnapshot],
+    config: QualificationReleaseConfigV1,
+) -> tuple[Path, Path, tuple[int, int]]:
     selected = _absolute(output_root)
     _reject_reparse_components(selected.parent)
     if any(_path_overlap(selected, snapshot.path) for snapshot in snapshots):
@@ -666,14 +713,17 @@ def _prepare_output_root(output_root: Path, snapshots: Sequence[_SourceSnapshot]
     if config.config_path is not None and _path_overlap(selected, config.config_path):
         raise UnsafeQualificationPathError("qualification output overlaps the release config")
     if selected.exists() or selected.is_symlink() or _is_reparse(selected):
-        raise UnsafeQualificationPathError("qualification output root must be absent")
-    if not selected.parent.exists() or not selected.parent.is_dir() or _is_reparse(selected.parent):
+        raise FileExistsError("qualification output root already exists or is unsafe")
+    parent = _absolute(selected.parent)
+    if not parent.exists() or not parent.is_dir() or _is_reparse(parent):
         raise UnsafeQualificationPathError("qualification output parent must be a safe directory")
-    return selected
+    parent_metadata = parent.stat()
+    return selected, parent, (parent_metadata.st_dev, parent_metadata.st_ino)
 
 
 def _write_stage(stage: Path, artifacts: Mapping[str, bytes]) -> tuple[_StageMember, ...]:
-    stage.mkdir()
+    if _is_reparse(stage) or not stage.is_dir():
+        raise UnsafeQualificationPathError("qualification staging directory is unsafe")
     for name in QUALIFICATION_ARTIFACTS:
         target = stage / name
         try:
@@ -704,18 +754,26 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
         return
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        syscall = libc.syscall
-    except (AttributeError, OSError) as exc:
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is not None:
+            renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+            renameat2.restype = ctypes.c_int
+            result = renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
+        else:
+            syscall = getattr(libc, "syscall", None)
+            if syscall is None:
+                raise NoReplacePrimitiveUnavailableError("POSIX renameat2 is unavailable")
+            syscall_number = {
+                "x86_64": 316, "amd64": 316, "aarch64": 276, "arm64": 276,
+            }.get(platform.machine().lower())
+            if syscall_number is None:
+                raise NoReplacePrimitiveUnavailableError("POSIX renameat2 syscall number is unavailable on this architecture")
+            syscall.restype = ctypes.c_long
+            result = syscall(syscall_number, -100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    except NoReplacePrimitiveUnavailableError:
+        raise
+    except (AttributeError, OSError, TypeError) as exc:
         raise NoReplacePrimitiveUnavailableError("POSIX renameat2 is unavailable") from exc
-    # Linux exposes renameat2 through a raw syscall; unsupported architectures
-    # fail closed rather than falling back to a replace-capable operation.
-    syscall_number = {
-        "x86_64": 316, "amd64": 316, "aarch64": 276, "arm64": 276,
-    }.get(platform.machine().lower())
-    if syscall_number is None:
-        raise NoReplacePrimitiveUnavailableError("POSIX renameat2 syscall number is unavailable on this architecture")
-    syscall.restype = ctypes.c_long
-    result = syscall(syscall_number, -100, os.fsencode(source), -100, os.fsencode(destination), 1)
     if result != 0:
         error = ctypes.get_errno()
         if error == getattr(errno, "EEXIST", 17):
@@ -734,7 +792,7 @@ def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[s
     for name in QUALIFICATION_ARTIFACTS:
         path = root / name
         member = _capture_member(path)
-        raw = path.read_bytes()
+        raw = member.raw
         if raw != expected[name] or member.sha256 != _sha256(expected[name]):
             raise QualificationReleaseError(f"committed qualification artifact mismatch: {name}")
         actual[name] = raw
@@ -777,32 +835,50 @@ def publish_qualification_release_v1(
         if path is not None
     )
     source_snapshots = (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ()))
-    output = _prepare_output_root(Path(output_root), source_snapshots, config_obj)
+    output, parent, parent_identity = _prepare_output_root(Path(output_root), source_snapshots, config_obj)
     publication = build_qualification_release_v1(config_obj, **inputs)
-    parent = output.parent
     stage = parent / f".mub-post-core-qualification-stage-{uuid.uuid4().hex}"
-    owned: tuple[_StageMember, ...] = ()
+    stage.mkdir(mode=0o700)
+    stage_metadata = stage.stat()
+    stage_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
+    if stage_identity[0] != parent_identity[0] or _is_reparse(stage):
+        raise QualificationReleaseError("qualification staging directory is unsafe or crosses filesystems")
+    owned: tuple[_StageMember, ...] | None = None
     committed = False
     try:
         owned = _write_stage(stage, publication.artifact_bytes)
         if before_commit is not None:
-            before_commit(stage)
+            before_commit()
         for snapshot in source_snapshots:
             _revalidate_source(snapshot)
         if not _stage_matches(owned):
             raise QualificationReleaseError("qualification staging bytes changed before commit")
+        current_parent = parent.stat()
+        if _is_reparse(parent) or (current_parent.st_dev, current_parent.st_ino) != parent_identity:
+            raise QualificationReleaseError("qualification output parent identity changed before commit")
+        current_stage = stage.stat()
+        if _is_reparse(stage) or (current_stage.st_dev, current_stage.st_ino) != stage_identity:
+            raise QualificationReleaseError("qualification staging identity changed before commit")
         _rename_noreplace(stage, output)
         committed = True
-        _fsync_directory(parent)
+        final_metadata = output.stat()
+        if _is_reparse(output) or (final_metadata.st_dev, final_metadata.st_ino) != stage_identity:
+            raise QualificationReleaseError("committed qualification output identity differs from staging")
         try:
+            _fsync_directory(parent)
+            _read_published_root(output, publication.artifact_bytes)
+            for snapshot in source_snapshots:
+                _revalidate_source(snapshot)
             _read_published_root(output, publication.artifact_bytes)
         except Exception as exc:
-            raise CommittedQualificationReleaseError(output, "committed qualification release failed reopening") from exc
+            raise CommittedQualificationReleaseError(output, "committed qualification release failed verification") from exc
         return _publication_with_root(publication, output)
     except CommittedQualificationReleaseError:
         raise
-    except Exception:
-        if not committed and stage.exists() and _stage_matches(owned):
+    except Exception as exc:
+        if committed:
+            raise CommittedQualificationReleaseError(output, "committed qualification release failed verification") from exc
+        if stage.exists() and owned is not None and _stage_matches(owned):
             import shutil
             shutil.rmtree(stage)
         raise
@@ -841,6 +917,7 @@ def verify_qualification_release_v1(
         _read_published_root(root, expected.artifact_bytes)
         for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
             _revalidate_source(snapshot)
+        _read_published_root(root, expected.artifact_bytes)
     except Exception as exc:
         raise CommittedQualificationReleaseError(root, "qualification release verification failed") from exc
     return _publication_with_root(expected, root)
