@@ -12,7 +12,12 @@ from urllib.parse import unquote_to_bytes, urlsplit
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
-from mub.vnext.post_core.qualification_receipts_v1 import ProviderCapabilityAttestationV1
+from mub.vnext.post_core.qualification_receipts_v1 import (
+    GateStatus,
+    OpenRuntimeReceiptV1,
+    ProviderCapabilityAttestationV1,
+    RuntimeManifestV1,
+)
 
 
 _EXPECTED_PROVIDER_ROWS = (
@@ -21,6 +26,28 @@ _EXPECTED_PROVIDER_ROWS = (
     ("gemini_3_6_flash", "Gemini 3.6 Flash (Low)", 2),
     ("grok_4_5", "grok-4.5", 2),
     ("gpt_5_5", "gpt-5.5", 4),
+)
+_EXPECTED_RUNTIME_ROWS = (
+    ("qwen35_9b_bf16", "c202236235762e1c871ad0ccb60c8ee5ba337b9a", "transformers"),
+    ("meta_muse_glimmer_30b_int4", "70bf1b61ac09f91b24d39038091b41c582bc5d7a", "llama.cpp"),
+    ("meta_muse_glimmer_30b_bf16", "a4e59da52a7bc87ae7251dd5545c0dd437c44b68", "transformers"),
+)
+_RUNTIME_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_EVIDENCE_FIELDS = (
+    "prompt_fixture_sha256",
+    "parser_sha256",
+    "chat_template_sha256",
+    "output_projection_sha256",
+    "generated_token_count",
+    "peak_memory_bytes",
+)
+_QWEN_PACKAGE_FIELDS = (
+    "python_version",
+    "torch_version",
+    "transformers_version",
+    "accelerate_version",
+    "cuda_version",
+    "driver_version",
 )
 _EXPECTED_SOURCE_BINDINGS = ("workflow_source", "handoff_source")
 _EXPECTED_IDENTITY_METADATA = {
@@ -66,7 +93,7 @@ _ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
 _IDENTIFIER_SHAPED = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_SAFE_CONTRACT_KEYS = frozenset({"registry_key"})
+_SAFE_CONTRACT_KEYS = frozenset({"registry_key", "generated_token_count"})
 
 
 def _normalized_key(value: object) -> str:
@@ -399,8 +426,133 @@ def validate_provider_attestations_v1(
     return result
 
 
+def _gate_value(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def _runtime_payloads(rows: object) -> tuple[object, ...]:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        return (rows,)
+    payloads: list[object] = []
+    for row in rows:
+        if isinstance(row, OpenRuntimeReceiptV1):
+            payloads.append(row.model_dump(mode="json"))
+        else:
+            payloads.append(row)
+    return tuple(payloads)
+
+
+def validate_runtime_receipts_v1(
+    rows: Sequence[OpenRuntimeReceiptV1],
+) -> tuple[OpenRuntimeReceiptV1, ...]:
+    validate_qualification_secret_free(_runtime_payloads(rows))
+    _require(not isinstance(rows, (str, bytes)), "runtime receipts must be a sequence")
+    result = tuple(rows)
+    _require(len(result) == len(_EXPECTED_RUNTIME_ROWS), "runtime receipt count mismatch")
+    _require(
+        all(isinstance(row, OpenRuntimeReceiptV1) for row in result),
+        "runtime receipts must use OpenRuntimeReceiptV1",
+    )
+
+    for row, (registry_key, revision, engine) in zip(result, _EXPECTED_RUNTIME_ROWS):
+        _require(row.registry_key == registry_key, "runtime receipt registry order mismatch")
+        _require(row.revision == revision, "runtime receipt revision mismatch")
+        _require(
+            isinstance(row.snapshot_tree_sha256, str)
+            and _RUNTIME_SHA256.fullmatch(row.snapshot_tree_sha256) is not None,
+            "runtime snapshot hash invalid",
+        )
+        _require(
+            isinstance(row.source_binding_ids, tuple) and bool(row.source_binding_ids),
+            "runtime source bindings must be a nonempty tuple",
+        )
+        _require(
+            all(isinstance(item, str) for item in row.source_binding_ids),
+            "runtime source bindings must be strings",
+        )
+        _require(
+            len(row.source_binding_ids) == len(set(row.source_binding_ids)),
+            "runtime source bindings must be unique",
+        )
+        _require(isinstance(row.runtime, RuntimeManifestV1), "runtime manifest type mismatch")
+        _require(row.runtime.engine == engine, "runtime engine mismatch")
+
+        statuses = (
+            row.load_status,
+            row.generation_status,
+            row.determinism_status,
+            row.unload_status,
+        )
+        status_values = tuple(_gate_value(status) for status in statuses)
+        _require(
+            all(isinstance(status, str) and status in {item.value for item in GateStatus} for status in status_values),
+            "runtime gate status invalid",
+        )
+        if registry_key == "meta_muse_glimmer_30b_bf16":
+            _require(
+                _gate_value(row.load_status) != GateStatus.UNSUPPORTED.value,
+                "Muse BF16 resource block must use BLOCKED",
+            )
+        if registry_key == "qwen35_9b_bf16" and _gate_value(row.load_status) == GateStatus.PASS.value:
+            _require(
+                all(getattr(row.runtime, field) is not None for field in _QWEN_PACKAGE_FIELDS),
+                "Qwen transformers runtime package metadata incomplete",
+            )
+
+        if registry_key == "meta_muse_glimmer_30b_int4":
+            _require(row.runtime.engine == "llama.cpp", "Muse GGUF must use llama.cpp")
+            _require(bool(row.runtime.engine_commit), "Muse GGUF engine commit is required")
+            _require(
+                isinstance(row.runtime.binary_sha256, str)
+                and _RUNTIME_SHA256.fullmatch(row.runtime.binary_sha256) is not None,
+                "Muse GGUF binary hash is required",
+            )
+            _require(
+                isinstance(row.runtime.build_options_sha256, str)
+                and _RUNTIME_SHA256.fullmatch(row.runtime.build_options_sha256) is not None,
+                "Muse GGUF build hash is required",
+            )
+            _require(row.speculative_decoding == "off", "Muse GGUF speculative decoding must be off")
+
+        if _gate_value(row.generation_status) == GateStatus.PASS.value:
+            _require(
+                _gate_value(row.load_status) == GateStatus.PASS.value
+                and _gate_value(row.unload_status) == GateStatus.PASS.value,
+                "generation requires load and unload PASS",
+            )
+            _require(
+                all(getattr(row, field) is not None for field in _RUNTIME_EVIDENCE_FIELDS[:5]),
+                "generation evidence is incomplete",
+            )
+        else:
+            _require(
+                all(getattr(row, field) is None for field in _RUNTIME_EVIDENCE_FIELDS),
+                "non-PASS generation cannot carry measurements or evidence",
+            )
+        if _gate_value(row.determinism_status) == GateStatus.PASS.value:
+            _require(
+                _gate_value(row.generation_status) == GateStatus.PASS.value,
+                "determinism requires generation PASS",
+            )
+        if _gate_value(row.load_status) == GateStatus.BLOCKED:
+            _require(
+                all(_gate_value(status) != GateStatus.PASS.value for status in statuses[1:]),
+                "blocked load cannot have downstream PASS gates",
+            )
+            _require(
+                all(getattr(row, field) is None for field in _RUNTIME_EVIDENCE_FIELDS),
+                "blocked load cannot carry measurements",
+            )
+        if any(_gate_value(status) in {GateStatus.FAIL.value, GateStatus.BLOCKED.value, GateStatus.UNSUPPORTED.value} for status in statuses):
+            _require(bool(row.blocked_reasons), "failed or blocked runtime gate requires a reason")
+
+    validate_qualification_secret_free(tuple(row.model_dump(mode="json") for row in result))
+    return result
+
+
 __all__ = [
     "load_canonical_jsonl_v1",
     "validate_provider_attestations_v1",
     "validate_qualification_secret_free",
+    "validate_runtime_receipts_v1",
 ]

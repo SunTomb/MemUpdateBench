@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from mub.vnext.post_core.qualification_receipts_v1 import (
+    GateStatus,
+    OpenRuntimeReceiptV1,
     ProviderCapabilityAttestationV1,
     ProviderObservationV1,
     ProviderSetupEventV1,
+    RuntimeManifestV1,
 )
 
 
@@ -97,4 +100,112 @@ def failed_ssh_setup_event() -> ProviderSetupEventV1:
     )
 
 
-__all__ = ["SOURCE_BINDING_IDS", "failed_ssh_setup_event", "provider_attestations"]
+
+
+def _runtime_manifest(
+    *,
+    engine: str,
+    engine_version: str,
+    device_name: str = "A40",
+    engine_commit: str | None = None,
+    binary_sha256: str | None = None,
+    build_options_sha256: str | None = None,
+    python_version: str | None = None,
+    torch_version: str | None = None,
+    transformers_version: str | None = None,
+    accelerate_version: str | None = None,
+    cuda_version: str | None = None,
+    driver_version: str | None = None,
+) -> RuntimeManifestV1:
+    return RuntimeManifestV1(
+        engine=engine,
+        engine_version=engine_version,
+        engine_commit=engine_commit,
+        binary_sha256=binary_sha256,
+        python_version=python_version,
+        torch_version=torch_version,
+        transformers_version=transformers_version,
+        accelerate_version=accelerate_version,
+        cuda_version=cuda_version,
+        driver_version=driver_version,
+        device_name=device_name,
+        context_tokens=4096,
+        max_output_tokens=128,
+        build_options_sha256=build_options_sha256,
+    )
+
+
+def open_runtime_receipts() -> tuple[OpenRuntimeReceiptV1, ...]:
+    hash_a = "a" * 64
+    hash_b = "b" * 64
+    hash_c = "c" * 64
+    return (
+        OpenRuntimeReceiptV1(
+            registry_key="qwen35_9b_bf16",
+            revision="c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+            snapshot_tree_sha256=hash_a,
+            runtime=_runtime_manifest(
+                engine="transformers",
+                engine_version="4.57.1",
+                python_version="3.11.9",
+                torch_version="2.7.1",
+                transformers_version="4.57.1",
+                accelerate_version="1.10.1",
+                cuda_version="12.8",
+                driver_version="570.124.06",
+            ),
+            load_status=GateStatus.PASS,
+            generation_status=GateStatus.NOT_RUN,
+            determinism_status=GateStatus.NOT_RUN,
+            unload_status=GateStatus.PASS,
+            source_binding_ids=SOURCE_BINDING_IDS,
+        ),
+        OpenRuntimeReceiptV1(
+            registry_key="meta_muse_glimmer_30b_int4",
+            revision="70bf1b61ac09f91b24d39038091b41c582bc5d7a",
+            snapshot_tree_sha256=hash_b,
+            runtime=_runtime_manifest(
+                engine="llama.cpp",
+                engine_version="b1",
+                engine_commit="d" * 40,
+                binary_sha256="e" * 64,
+                build_options_sha256="f" * 64,
+                device_name="A40",
+            ),
+            speculative_decoding="off",
+            load_status=GateStatus.NOT_RUN,
+            generation_status=GateStatus.NOT_RUN,
+            determinism_status=GateStatus.NOT_RUN,
+            unload_status=GateStatus.NOT_RUN,
+            source_binding_ids=SOURCE_BINDING_IDS,
+        ),
+        OpenRuntimeReceiptV1(
+            registry_key="meta_muse_glimmer_30b_bf16",
+            revision="a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
+            snapshot_tree_sha256=hash_c,
+            runtime=_runtime_manifest(
+                engine="transformers",
+                engine_version="4.57.1",
+                python_version="3.11.9",
+                torch_version="2.7.1",
+                transformers_version="4.57.1",
+                accelerate_version="1.10.1",
+                cuda_version="12.8",
+                driver_version="570.124.06",
+            ),
+            load_status=GateStatus.BLOCKED,
+            generation_status=GateStatus.NOT_RUN,
+            determinism_status=GateStatus.NOT_RUN,
+            unload_status=GateStatus.NOT_RUN,
+            blocked_reasons=("resource/runtime unavailable",),
+            source_binding_ids=SOURCE_BINDING_IDS,
+        ),
+    )
+
+
+__all__ = [
+    "SOURCE_BINDING_IDS",
+    "failed_ssh_setup_event",
+    "open_runtime_receipts",
+    "provider_attestations",
+]
