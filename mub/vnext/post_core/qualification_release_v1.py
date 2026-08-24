@@ -16,10 +16,18 @@ import uuid
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
+from mub.vnext.post_core.qualification_planning_v1 import (
+    CapabilitySmokePlanConfigV1,
+    _EXPECTED_REGISTRY_KEYS,
+    build_capability_smoke_plan_v1,
+)
 from mub.vnext.post_core.qualification_decisions_v1 import derive_qualification_decisions_v1
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
+    CapabilityBudgetV1,
+    CapabilityFixtureV1,
     CapabilitySmokePlanV1,
+    DecisionScope,
     QualificationArtifactIndexV1,
     QualificationDecisionBundleV1,
     QualificationReleaseManifestV1,
@@ -242,8 +250,11 @@ def _validate_config_payload(
     if payload["scientific_execution_allowed"] is not False or type(payload["scientific_execution_allowed"]) is not bool:
         raise ValueError("scientific execution must be disabled")
     keys = payload["registry_keys"]
-    if not isinstance(keys, list) or not keys or any(not isinstance(k, str) for k in keys) or len(set(keys)) != len(keys):
-        raise ValueError("qualification registry tuple is invalid")
+    if (
+        not isinstance(keys, list)
+        or tuple(keys) != _EXPECTED_REGISTRY_KEYS
+    ):
+        raise ValueError("qualification registry tuple/order differs from the frozen planner registry")
     required = payload["required_source_sha256"]
     if not isinstance(required, Mapping) or tuple(required) != REQUIRED_SOURCE_IDS:
         raise ValueError("qualification source hash mapping is incomplete or out of order")
@@ -276,6 +287,15 @@ def load_qualification_release_config_v1(path_or_mapping: Path | str | Mapping[s
 
 def _coerce_config(config: QualificationReleaseConfigV1 | Path | Mapping[str, Any]) -> QualificationReleaseConfigV1:
     if isinstance(config, QualificationReleaseConfigV1):
+        if config.config_path is not None and config.source_snapshot is None:
+            raise ValueError("file-backed qualification config must retain a matching source snapshot")
+        if config.source_snapshot is not None and (
+            config.source_snapshot.path != config.config_path
+            or config.source_snapshot.raw != config.config_raw
+            or config.source_snapshot.sha256 != config.config_sha256
+            or config.source_snapshot.byte_count != len(config.config_raw)
+        ):
+            raise ValueError("qualification config source snapshot does not match canonical config bytes")
         return _validate_config_payload(
             json.loads(config.config_raw), config.config_raw, config.config_path,
             source_snapshot=config.source_snapshot,
@@ -318,12 +338,44 @@ def _jsonl_bytes(rows: Sequence[Any], label: str) -> bytes:
     return raw
 
 
-def _load_provider_rows(path: Path) -> tuple[tuple[ProviderCapabilityAttestationV1, ...], bytes]:
-    return load_canonical_jsonl_v1(path, ProviderCapabilityAttestationV1, label="provider attestations")
+def _rows_from_snapshot(
+    snapshot: _SourceSnapshot,
+    model_type: type[Any],
+    *,
+    label: str,
+) -> tuple[tuple[Any, ...], bytes]:
+    raw = snapshot.raw
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError(f"{label} JSONL must be nonempty and LF-terminated")
+    rows: list[Any] = []
+    for line in raw[:-1].split(b"\n"):
+        if not line:
+            raise ValueError(f"{label} JSONL contains an empty row")
+        try:
+            payload = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{label} JSONL contains invalid JSON") from exc
+        validate_qualification_secret_free(payload)
+        try:
+            row = model_type.model_validate(payload)
+        except Exception as exc:
+            raise ValueError(f"{label} JSONL row does not satisfy its contract") from exc
+        if canonical_bytes(row) != line:
+            raise ValueError(f"{label} JSONL is not canonical")
+        rows.append(row)
+    return tuple(rows), raw
 
 
-def _load_runtime_rows(path: Path) -> tuple[tuple[OpenRuntimeReceiptV1, ...], bytes]:
-    return load_canonical_jsonl_v1(path, OpenRuntimeReceiptV1, label="runtime receipts")
+def _load_provider_rows(path: Path) -> tuple[tuple[ProviderCapabilityAttestationV1, ...], bytes, _SourceSnapshot]:
+    snapshot = _read_source("provider attestations", path)
+    rows, raw = _rows_from_snapshot(snapshot, ProviderCapabilityAttestationV1, label="provider attestations")
+    return rows, raw, snapshot
+
+
+def _load_runtime_rows(path: Path) -> tuple[tuple[OpenRuntimeReceiptV1, ...], bytes, _SourceSnapshot]:
+    snapshot = _read_source("runtime receipts", path)
+    rows, raw = _rows_from_snapshot(snapshot, OpenRuntimeReceiptV1, label="runtime receipts")
+    return rows, raw, snapshot
 
 
 _SAFE_COUNTER_KEYS = frozenset({
@@ -356,35 +408,68 @@ def _reject_metrics(value: Any) -> None:
             _reject_metrics(item)
 
 
-def _validate_smoke_plan(config: QualificationReleaseConfigV1, plan: CapabilitySmokePlanV1) -> None:
-    if plan.release_id != config.release_id or tuple(plan.registry_keys) != config.registry_keys:
-        raise ValueError("qualification smoke plan release or registry binding differs")
-    if plan.base_attempts_per_role != 8 or plan.escalation_attempts_per_role != 8 or plan.max_retries != 0 or plan.authorized is not False:
-        raise ValueError("qualification smoke plan budget differs from frozen config")
-    if any(item.authorized or item.executable or item.budget.max_retries != 0 for item in plan.attempts):
-        raise ValueError("qualification smoke plan may not authorize execution")
+def _build_expected_smoke_plan(
+    config: QualificationReleaseConfigV1,
+    fixtures: Sequence[CapabilityFixtureV1],
+    budget: CapabilityBudgetV1,
+) -> CapabilitySmokePlanV1:
+    return build_capability_smoke_plan_v1(
+        CapabilitySmokePlanConfigV1(
+            release_id=config.release_id,
+            registry_keys=config.registry_keys,
+            budget=budget,
+            base_attempts_per_role=config.base_attempts_per_role,
+            escalation_attempts_per_role=config.escalation_attempts_per_role,
+            max_retries=config.max_retries,
+            authorized=False,
+        ),
+        fixtures,
+    )
 
 
-def _decision_bundle(config: QualificationReleaseConfigV1, decisions: QualificationDecisionBundleV1 | Sequence[Any]) -> QualificationDecisionBundleV1:
-    bundle = decisions if isinstance(decisions, QualificationDecisionBundleV1) else QualificationDecisionBundleV1(release_id=config.release_id, decisions=tuple(decisions))
-    if bundle.release_id != config.release_id or not bundle.decisions:
-        raise ValueError("qualification decision bundle binding is invalid")
-    if any(item.scientific_status != "NOT_RUN" for item in bundle.decisions):
-        raise ValueError("scientific qualification execution must remain NOT_RUN")
-    return bundle
+def _derived_decision_bundle(
+    config: QualificationReleaseConfigV1,
+    identity_bundle: IdentityEvidenceBundleV1 | None,
+    providers: Sequence[ProviderCapabilityAttestationV1],
+    runtimes: Sequence[OpenRuntimeReceiptV1],
+) -> QualificationDecisionBundleV1:
+    if not isinstance(identity_bundle, IdentityEvidenceBundleV1):
+        raise ValueError("identity bundle is required to derive qualification decisions")
+    decisions = derive_qualification_decisions_v1(identity_bundle, providers, runtimes)
+    if len(decisions) != len(config.registry_keys) * 4:
+        raise ValueError("derived qualification decision count is not exact")
+    coordinates = tuple((item.registry_key, item.scope) for item in decisions)
+    expected_coordinates = tuple(
+        (key, scope)
+        for key in config.registry_keys
+        for scope in DecisionScope
+    )
+    if coordinates != expected_coordinates or len(set(coordinates)) != len(coordinates):
+        raise ValueError("derived qualification decision coordinates/order are not exact")
+    if any(
+        item.scope is DecisionScope.BENCHMARK_ADMISSION
+        and item.status is not QualificationStatus.BLOCKED
+        for item in decisions
+    ):
+        raise ValueError("benchmark admission decisions must remain BLOCKED")
+    return QualificationDecisionBundleV1(release_id=config.release_id, decisions=decisions)
 
 
-def _validation_receipt(config: QualificationReleaseConfigV1, receipt: QualificationValidationReceiptV1 | None, decisions: QualificationDecisionBundleV1, source_count: int) -> QualificationValidationReceiptV1:
+def _validation_receipt(
+    config: QualificationReleaseConfigV1,
+    decisions: QualificationDecisionBundleV1,
+    source_count: int,
+) -> QualificationValidationReceiptV1:
     counts: dict[str, int] = {status.value: 0 for status in QualificationStatus}
     for decision in decisions.decisions:
         counts[decision.status.value] += 1
-    if receipt is None:
-        receipt = QualificationValidationReceiptV1(release_id=config.release_id, status="SUCCESS_WITH_BLOCKERS", source_count=source_count, decision_counts=counts)
-    if receipt.release_id != config.release_id or receipt.source_count != source_count:
-        raise ValueError("qualification validation receipt binding differs")
-    if any(getattr(receipt, field) != 0 for field in ("provider_calls_during_publication", "model_loads_during_publication", "network_calls_during_publication", "credential_reads_during_publication", "benchmark_generations")):
-        raise ValueError("qualification publication counters must remain zero")
-    return receipt
+    status = "SUCCESS_WITH_BLOCKERS" if counts[QualificationStatus.BLOCKED.value] or counts[QualificationStatus.UNSUPPORTED.value] else "SUCCESS"
+    return QualificationValidationReceiptV1(
+        release_id=config.release_id,
+        status=status,
+        source_count=source_count,
+        decision_counts=counts,
+    )
 
 
 def build_qualification_release_v1(
@@ -404,6 +489,8 @@ def build_qualification_release_v1(
     provider_attestations_path: Path | None = None,
     runtime_receipts: Sequence[OpenRuntimeReceiptV1] | None = None,
     runtime_receipts_path: Path | None = None,
+    capability_fixtures: Sequence[CapabilityFixtureV1] | None = None,
+    capability_budget: CapabilityBudgetV1 | None = None,
     smoke_plan: CapabilitySmokePlanV1 | None = None,
     decision_bundle: QualificationDecisionBundleV1 | None = None,
     decisions: Sequence[Any] | None = None,
@@ -418,40 +505,43 @@ def build_qualification_release_v1(
         "qwen_load_receipt": qwen_load_receipt_path, "task14_index": task14_index_path, "workflow_source": workflow_source_path,
     })
     source_bundle, snapshots = _source_bindings(config, paths)
+    provider_snapshot: _SourceSnapshot | None = None
+    runtime_snapshot: _SourceSnapshot | None = None
     if provider_attestations is None:
         if provider_attestations_path is None:
             raise ValueError("provider attestations must be supplied as typed rows or a JSONL source")
-        provider_attestations, provider_raw = _load_provider_rows(Path(provider_attestations_path))
+        provider_attestations, provider_raw, provider_snapshot = _load_provider_rows(Path(provider_attestations_path))
     else:
         provider_raw = _jsonl_bytes(provider_attestations, "provider attestations")
     providers = validate_provider_attestations_v1(provider_attestations)
     if runtime_receipts is None:
         if runtime_receipts_path is None:
             raise ValueError("runtime receipts must be supplied as typed rows or a JSONL source")
-        runtime_receipts, runtime_raw = _load_runtime_rows(Path(runtime_receipts_path))
+        runtime_receipts, runtime_raw, runtime_snapshot = _load_runtime_rows(Path(runtime_receipts_path))
     else:
         runtime_raw = _jsonl_bytes(runtime_receipts, "runtime receipts")
     runtimes = validate_runtime_receipts_v1(runtime_receipts)
-    if smoke_plan is None:
-        raise ValueError("capability smoke plan must be supplied as typed input")
-    _validate_smoke_plan(config, smoke_plan)
-    if decision_bundle is None:
-        if decisions is not None:
-            decision_bundle = _decision_bundle(config, decisions)
-        elif identity_bundle is not None:
-            decision_bundle = QualificationDecisionBundleV1(release_id=config.release_id, decisions=derive_qualification_decisions_v1(identity_bundle, providers, runtimes))
-        else:
-            raise ValueError("qualification decisions must be supplied as typed input")
-    decision_bundle = _decision_bundle(config, decision_bundle)
-    receipt = _validation_receipt(config, validation_receipt, decision_bundle, len(source_bundle.sources))
+    if capability_fixtures is None or type(capability_budget) is not CapabilityBudgetV1:
+        raise ValueError("canonical capability fixtures and budget are required")
+    expected_smoke_plan = _build_expected_smoke_plan(config, capability_fixtures, capability_budget)
+    if smoke_plan is not None and smoke_plan != expected_smoke_plan:
+        raise ValueError("caller smoke plan differs from the canonical derived plan")
+    derived_bundle = _derived_decision_bundle(config, identity_bundle, providers, runtimes)
+    if decision_bundle is not None and decision_bundle != derived_bundle:
+        raise ValueError("caller decision bundle differs from derived qualification decisions")
+    if decisions is not None and tuple(decisions) != derived_bundle.decisions:
+        raise ValueError("caller decisions differ from derived qualification decisions")
+    receipt = _validation_receipt(config, derived_bundle, len(source_bundle.sources))
+    if validation_receipt is not None and validation_receipt != receipt:
+        raise ValueError("caller validation receipt differs from derived validation receipt")
     manifest = QualificationReleaseManifestV1(release_id=config.release_id, base_commit=config.base_commit, artifact_order=QUALIFICATION_ARTIFACT_ORDER, source_hashes=config.required_source_sha256)
     artifacts: dict[str, bytes] = {
         "qualification_release_manifest.json": canonical_bytes(manifest),
         "source_bindings.json": canonical_bytes(source_bundle),
         "provider_capability_attestations.jsonl": provider_raw,
         "open_runtime_receipts.jsonl": runtime_raw,
-        "capability_smoke_plan.json": canonical_bytes(smoke_plan),
-        "qualification_decisions.json": canonical_bytes(decision_bundle),
+        "capability_smoke_plan.json": canonical_bytes(expected_smoke_plan),
+        "qualification_decisions.json": canonical_bytes(derived_bundle),
         "qualification_validation_receipt.json": canonical_bytes(receipt),
     }
     for name, raw in artifacts.items():
@@ -466,6 +556,8 @@ def build_qualification_release_v1(
     artifacts[QUALIFICATION_INDEX_PATH] = canonical_bytes(index, exclude={"canonical_hash"})
     validate_qualification_secret_free(_secret_scan_payload(index.model_dump(mode="json")))
     _reject_metrics(json.loads(artifacts[QUALIFICATION_INDEX_PATH]))
+    for snapshot in (*snapshots, *((config.source_snapshot,) if config.source_snapshot is not None else ()), *((provider_snapshot,) if provider_snapshot is not None else ()), *((runtime_snapshot,) if runtime_snapshot is not None else ())):
+        _revalidate_source(snapshot)
     return QualificationPublicationV1(config.release_id, None, MappingProxyType(dict(artifacts)), _sha256(artifacts[QUALIFICATION_INDEX_PATH]))
 
 
@@ -676,7 +768,15 @@ def publish_qualification_release_v1(
         "workflow_source": inputs.get("workflow_source_path"),
     })
     _, snapshots = _source_bindings(config_obj, paths)
-    source_snapshots = (*snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ()))
+    evidence_snapshots = tuple(
+        _read_source(label, Path(path))
+        for label, path in (
+            ("provider attestations", inputs.get("provider_attestations_path")),
+            ("runtime receipts", inputs.get("runtime_receipts_path")),
+        )
+        if path is not None
+    )
+    source_snapshots = (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ()))
     output = _prepare_output_root(Path(output_root), source_snapshots, config_obj)
     publication = build_qualification_release_v1(config_obj, **inputs)
     parent = output.parent
@@ -722,14 +822,25 @@ def verify_qualification_release_v1(
         "workflow_source": inputs.get("workflow_source_path"),
     })
     _, snapshots = _source_bindings(config_obj, paths)
+    evidence_snapshots = tuple(
+        _read_source(label, Path(path))
+        for label, path in (
+            ("provider attestations", inputs.get("provider_attestations_path")),
+            ("runtime receipts", inputs.get("runtime_receipts_path")),
+        )
+        if path is not None
+    )
+    _reject_reparse_components(Path(root))
     root = _absolute(Path(root))
     if not root.exists() or _is_reparse(root) or not root.is_dir():
         raise UnsafeQualificationPathError("qualification root is absent or unsafe")
-    for snapshot in (*snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
+    for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
         _revalidate_source(snapshot)
     expected = build_qualification_release_v1(config_obj, **inputs)
     try:
         _read_published_root(root, expected.artifact_bytes)
+        for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
+            _revalidate_source(snapshot)
     except Exception as exc:
         raise CommittedQualificationReleaseError(root, "qualification release verification failed") from exc
     return _publication_with_root(expected, root)

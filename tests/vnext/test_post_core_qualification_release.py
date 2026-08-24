@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 import hashlib
 import os
@@ -8,10 +9,12 @@ from pathlib import Path
 import pytest
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
+from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
     CapabilityAttemptPlanV1,
     CapabilityBudgetV1,
+    CapabilityFixtureV1,
     CapabilitySmokePlanV1,
     DecisionScope,
     QualificationDecisionBundleV1,
@@ -19,6 +22,10 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
     QualificationStatus,
     QUALIFICATION_ARTIFACT_ORDER,
     QUALIFICATION_INDEX_PATH,
+)
+from mub.vnext.post_core.qualification_planning_v1 import (
+    CapabilitySmokePlanConfigV1,
+    build_capability_smoke_plan_v1,
 )
 from tests.vnext.qualification_fixtures import open_runtime_receipts, provider_attestations
 from mub.vnext.post_core import qualification_release_v1
@@ -68,22 +75,33 @@ def _source_inputs(tmp_path: Path) -> tuple[dict[str, Path], Path]:
     return paths, config_path
 
 
-def _smoke_plan(release_id: str, keys: tuple[str, ...]) -> CapabilitySmokePlanV1:
-    budget = CapabilityBudgetV1(
+def _smoke_budget() -> CapabilityBudgetV1:
+    return CapabilityBudgetV1(
         max_calls=1, max_prompt_tokens=8, max_output_tokens=8,
         estimated_cost=Decimal("0"), hard_max_cost=Decimal("0"), price_version="unpriced",
         max_retries=0, timeout_seconds=1,
     )
-    attempts = []
-    for key in keys:
-        for phase in (AttemptPhase.BASE, AttemptPhase.ESCALATION):
-            for index in range(8):
-                attempts.append(CapabilityAttemptPlanV1(
-                    release_id=release_id, registry_key=key, fixture_id=f"{phase.value}-{index}",
-                    phase=phase, repetition=(index % 2) + 1, prompt_sha256="a" * 64,
-                    parser_sha256="b" * 64, runtime_or_endpoint_class="offline", budget=budget,
-                ))
-    return CapabilitySmokePlanV1(release_id=release_id, registry_keys=keys, attempts=tuple(attempts))
+
+
+def _fixtures() -> tuple[CapabilityFixtureV1, ...]:
+    return (
+        CapabilityFixtureV1(fixture_id="exact_ok_1", category="EXACT_OUTPUT", prompt_sha256="a" * 64, parser_sha256="b" * 64, max_prompt_tokens=8, max_output_tokens=8),
+        CapabilityFixtureV1(fixture_id="exact_ok_2", category="EXACT_OUTPUT", prompt_sha256="c" * 64, parser_sha256="d" * 64, max_prompt_tokens=8, max_output_tokens=8),
+        CapabilityFixtureV1(fixture_id="parser_city_1", category="CHAT_TEMPLATE_PARSER", prompt_sha256="e" * 64, parser_sha256="f" * 64, max_prompt_tokens=8, max_output_tokens=8),
+        CapabilityFixtureV1(fixture_id="parser_city_2", category="CHAT_TEMPLATE_PARSER", prompt_sha256="0" * 64, parser_sha256="1" * 64, max_prompt_tokens=8, max_output_tokens=8),
+    )
+
+
+def _identity_bundle() -> IdentityEvidenceBundleV1:
+    path = Path(__file__).resolve().parents[2] / "configs" / "vnext" / "post_core" / "official_identity_evidence_v1.json"
+    return IdentityEvidenceBundleV1.model_validate_json(path.read_bytes())
+
+
+def _smoke_plan(release_id: str, keys: tuple[str, ...]) -> CapabilitySmokePlanV1:
+    return build_capability_smoke_plan_v1(
+        CapabilitySmokePlanConfigV1(release_id=release_id, registry_keys=keys, budget=_smoke_budget()),
+        _fixtures(),
+    )
 
 
 def _decisions(release_id: str, keys: tuple[str, ...]) -> QualificationDecisionBundleV1:
@@ -105,8 +123,9 @@ def _inputs(tmp_path: Path) -> dict[str, object]:
     return {
         "config": config, "source_paths": paths,
         "provider_attestations": provider_attestations(), "runtime_receipts": open_runtime_receipts(),
+        "capability_fixtures": _fixtures(), "capability_budget": _smoke_budget(),
         "smoke_plan": _smoke_plan(config.release_id, config.registry_keys),
-        "decision_bundle": _decisions(config.release_id, config.registry_keys),
+        "identity_bundle": _identity_bundle(),
     }
 
 
@@ -138,10 +157,35 @@ def test_builder_rejects_source_substitution_and_missing_source(tmp_path: Path) 
 
 def test_builder_rejects_secret_like_and_metric_fields_before_exposing_bytes(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
-    bad = dict(inputs)
-    bad["decision_bundle"] = _decisions(inputs["config"].release_id, inputs["config"].registry_keys).model_copy(update={"decisions": ()})
-    with pytest.raises(ValueError):
-        build_qualification_release_v1(**bad)
+    with pytest.raises(ValueError, match="decision"):
+        build_qualification_release_v1(
+            **inputs,
+            decision_bundle=_decisions(inputs["config"].release_id, inputs["config"].registry_keys),
+        )
+
+
+def test_builder_rejects_caller_selected_decisions_plan_and_receipt(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    with pytest.raises(ValueError, match="identity"):
+        build_qualification_release_v1(**{key: value for key, value in inputs.items() if key != "identity_bundle"})
+
+
+def test_builder_rejects_file_backed_config_without_its_snapshot(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    with pytest.raises(ValueError, match="source snapshot"):
+        build_qualification_release_v1(**{**inputs, "config": replace(inputs["config"], source_snapshot=None)})
+
+
+def test_builder_revalidates_source_after_artifact_construction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    source = inputs["source_paths"]["workflow_source"]
+    original = qualification_release_v1._reject_metrics
+    def mutate_once(value: object) -> None:
+        source.write_bytes(b"changed")
+        original(value)
+    monkeypatch.setattr(qualification_release_v1, "_reject_metrics", mutate_once)
+    with pytest.raises(ValueError, match="workflow_source"):
+        build_qualification_release_v1(**inputs)
 
 
 def test_publish_reopens_exact_artifacts_and_refuses_clobber(tmp_path: Path) -> None:
