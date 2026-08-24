@@ -924,7 +924,7 @@ def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[s
     return verify_qualification_artifact_bytes_v1(publication).artifact_bytes
 
 
-def _cleanup_verified_partial_stage(
+def _cleanup_verified_stage(
     stage: Path,
     stage_identity: tuple[int, int],
     tracked: Sequence[_StageMember],
@@ -1022,11 +1022,12 @@ def publish_qualification_release_v1(
     except Exception as exc:
         if committed:
             raise CommittedQualificationReleaseError(output, "committed qualification release failed verification") from exc
-        if stage.exists() and owned is not None and _stage_matches(owned):
-            import shutil
-            shutil.rmtree(stage)
-        elif stage.exists():
-            _cleanup_verified_partial_stage(stage, stage_identity, tracked)
+        if stage.exists():
+            _cleanup_verified_stage(
+                stage,
+                stage_identity,
+                owned if owned is not None else tracked,
+            )
         raise
 
 

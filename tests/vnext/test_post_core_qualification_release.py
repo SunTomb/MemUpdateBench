@@ -5,6 +5,7 @@ from decimal import Decimal
 import hashlib
 import os
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -440,3 +441,29 @@ def test_tampered_partial_stage_is_preserved_for_quarantine(tmp_path: Path, monk
     with pytest.raises(OSError):
         publish_qualification_release_v1(tmp_path / "write-tampered", **inputs)
     assert seen and seen[0].exists()
+
+
+def test_intact_complete_stage_is_cleaned_after_precommit_failure(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    def fail_precommit() -> None:
+        raise RuntimeError("stop")
+    with pytest.raises(RuntimeError, match="stop"):
+        publish_qualification_release_v1(tmp_path / "complete-clean", before_commit=fail_precommit, **inputs)
+    assert not tuple(tmp_path.glob(".mub-post-core-qualification-stage-*"))
+
+
+def test_substituted_complete_stage_is_preserved_after_precommit_failure(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    replacement: list[Path] = []
+    def substitute_stage() -> None:
+        stage = next(tmp_path.glob(".mub-post-core-qualification-stage-*"))
+        parked = tmp_path / "parked-stage"
+        stage.rename(parked)
+        stage.mkdir()
+        for member in parked.iterdir():
+            shutil.copy2(member, stage / member.name)
+        replacement.append(stage)
+        raise RuntimeError("stop")
+    with pytest.raises(RuntimeError, match="stop"):
+        publish_qualification_release_v1(tmp_path / "complete-substitution", before_commit=substitute_stage, **inputs)
+    assert replacement and replacement[0].exists()
