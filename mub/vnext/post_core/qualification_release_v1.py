@@ -723,7 +723,11 @@ def _prepare_output_root(
     return selected, parent, (parent_metadata.st_dev, parent_metadata.st_ino)
 
 
-def _write_stage(stage: Path, artifacts: Mapping[str, bytes]) -> tuple[_StageMember, ...]:
+def _write_stage(
+    stage: Path,
+    artifacts: Mapping[str, bytes],
+    tracked: list[_StageMember],
+) -> tuple[_StageMember, ...]:
     if _is_reparse(stage) or not stage.is_dir():
         raise UnsafeQualificationPathError("qualification staging directory is unsafe")
     for name in QUALIFICATION_ARTIFACTS:
@@ -735,6 +739,7 @@ def _write_stage(stage: Path, artifacts: Mapping[str, bytes]) -> tuple[_StageMem
                 os.fsync(stream.fileno())
         except FileExistsError as exc:
             raise QualificationReleaseError(f"duplicate qualification staging member: {name}") from exc
+        tracked.append(_capture_member(target))
     _fsync_directory(stage)
     return _capture_stage(stage)
 
@@ -859,6 +864,37 @@ def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[s
     return verify_qualification_artifact_bytes_v1(publication).artifact_bytes
 
 
+def _cleanup_verified_partial_stage(
+    stage: Path,
+    stage_identity: tuple[int, int],
+    tracked: Sequence[_StageMember],
+) -> None:
+    if not tracked:
+        return
+    try:
+        metadata = stage.lstat()
+        if (
+            _is_reparse(stage)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != stage_identity
+            or set(item.name for item in stage.iterdir()) != {item.path.name for item in tracked}
+        ):
+            return
+        for item in tracked:
+            current = _capture_member(item.path)
+            if (current.identity, current.byte_count, current.sha256) != (
+                item.identity, item.byte_count, item.sha256
+            ):
+                return
+        for item in tracked:
+            item.path.unlink()
+        _fsync_directory(stage.parent)
+        stage.rmdir()
+        _fsync_directory(stage.parent)
+    except OSError:
+        return
+
+
 def _publication_with_root(publication: QualificationPublicationV1, root: Path) -> QualificationPublicationV1:
     return QualificationPublicationV1(
         publication.release_id, root, publication.artifact_bytes, publication.index_sha256,
@@ -901,9 +937,10 @@ def publish_qualification_release_v1(
     if stage_identity[0] != parent_identity[0] or _is_reparse(stage):
         raise QualificationReleaseError("qualification staging directory is unsafe or crosses filesystems")
     owned: tuple[_StageMember, ...] | None = None
+    tracked: list[_StageMember] = []
     committed = False
     try:
-        owned = _write_stage(stage, publication.artifact_bytes)
+        owned = _write_stage(stage, publication.artifact_bytes, tracked)
         if before_commit is not None:
             before_commit()
         for snapshot in source_snapshots:
@@ -927,6 +964,8 @@ def publish_qualification_release_v1(
             for snapshot in source_snapshots:
                 _revalidate_source(snapshot)
             _read_published_root(output, publication.artifact_bytes)
+            for snapshot in source_snapshots:
+                _revalidate_source(snapshot)
         except Exception as exc:
             raise CommittedQualificationReleaseError(output, "committed qualification release failed verification") from exc
         return _publication_with_root(publication, output)
@@ -938,6 +977,8 @@ def publish_qualification_release_v1(
         if stage.exists() and owned is not None and _stage_matches(owned):
             import shutil
             shutil.rmtree(stage)
+        elif stage.exists():
+            _cleanup_verified_partial_stage(stage, stage_identity, tracked)
         raise
 
 
@@ -975,6 +1016,8 @@ def verify_qualification_release_v1(
         for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
             _revalidate_source(snapshot)
         _read_published_root(root, expected.artifact_bytes)
+        for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
+            _revalidate_source(snapshot)
     except Exception as exc:
         raise CommittedQualificationReleaseError(root, "qualification release verification failed") from exc
     return _publication_with_root(expected, root)

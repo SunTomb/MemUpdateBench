@@ -287,6 +287,25 @@ def test_collective_capture_rejects_early_artifact_mutation_during_later_reads(t
         qualification_release_v1._capture_all_artifacts(output, publication.artifact_bytes)
 
 
+def test_publish_revalidates_sources_after_final_collective_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "final-source-order"
+    source = inputs["source_paths"]["workflow_source"]
+    original = qualification_release_v1._read_published_root
+    calls = 0
+    def mutate_on_second_check(root: Path, expected: object):
+        nonlocal calls
+        calls += 1
+        result = original(root, expected)
+        if calls == 2:
+            source.write_bytes(b"changed")
+        return result
+    monkeypatch.setattr(qualification_release_v1, "_read_published_root", mutate_on_second_check)
+    with pytest.raises(CommittedQualificationReleaseError):
+        publish_qualification_release_v1(output, **inputs)
+    assert output.exists()
+
+
 def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     source = inputs["source_paths"]["workflow_source"]
@@ -344,3 +363,40 @@ def test_post_rename_fsync_failure_preserves_committed_root(tmp_path: Path, monk
     with pytest.raises(CommittedQualificationReleaseError):
         publish_qualification_release_v1(output, **inputs)
     assert output.exists()
+
+
+def test_write_failure_after_first_member_cleans_verified_partial_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    original_open = Path.open
+    calls = 0
+    def fail_second_stage_open(path: Path, *args: object, **kwargs: object):
+        nonlocal calls
+        if path.parent.name.startswith(".mub-post-core-qualification-stage-"):
+            calls += 1
+            if calls == 2:
+                raise OSError(5, "EIO")
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", fail_second_stage_open)
+    with pytest.raises(OSError):
+        publish_qualification_release_v1(tmp_path / "write-failure", **inputs)
+    assert not tuple(tmp_path.glob(".mub-post-core-qualification-stage-*"))
+
+
+def test_tampered_partial_stage_is_preserved_for_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    original_open = Path.open
+    calls = 0
+    seen: list[Path] = []
+    def tamper_then_fail(path: Path, *args: object, **kwargs: object):
+        nonlocal calls
+        if path.parent.name.startswith(".mub-post-core-qualification-stage-"):
+            calls += 1
+            if calls == 2:
+                seen.append(path.parent)
+                (path.parent / "unexpected").write_bytes(b"foreign")
+                raise OSError(5, "EIO")
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", tamper_then_fail)
+    with pytest.raises(OSError):
+        publish_qualification_release_v1(tmp_path / "write-tampered", **inputs)
+    assert seen and seen[0].exists()
