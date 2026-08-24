@@ -2,11 +2,26 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import Enum
-from typing import Literal, Mapping
+from typing import Annotated, Literal, Mapping
 
-from pydantic import Field, StrictBool, StrictInt, StrictStr, computed_field, model_validator
+from pydantic import (
+    Field,
+    PlainSerializer,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
-from mub.vnext.contracts.common import ImmutableContractModel
+from mub.vnext.contracts.common import (
+    FrozenNonnegativeIntMap,
+    FrozenStringMap,
+    ImmutableContractModel,
+    freeze_mapping,
+    thaw_json,
+)
 from mub.vnext.post_core.contracts_v1 import SHA256_PATTERN, canonical_hash
 
 
@@ -21,6 +36,23 @@ QUALIFICATION_ARTIFACT_ORDER = (
 )
 QUALIFICATION_INDEX_PATH = "qualification_artifact_index.json"
 QUALIFICATION_ARTIFACTS = (*QUALIFICATION_ARTIFACT_ORDER, QUALIFICATION_INDEX_PATH)
+
+FrozenDecimalMap = Annotated[
+    Mapping[str, Decimal],
+    PlainSerializer(thaw_json, return_type=dict[str, Decimal], when_used="always"),
+]
+
+
+def _require_exact_int_literal(value: object) -> object:
+    if type(value) is not int:
+        raise ValueError("numeric literal fields require an exact int input")
+    return value
+
+
+def _require_exact_bool_literal(value: object) -> object:
+    if type(value) is not bool:
+        raise ValueError("boolean literal fields require an exact bool input")
+    return value
 
 
 class QualificationStatus(str, Enum):
@@ -80,6 +112,11 @@ class CapabilityBudgetV1(ImmutableContractModel):
     price_version: StrictStr
     max_retries: Literal[0] = 0
     timeout_seconds: StrictInt = Field(gt=0)
+
+    @field_validator("max_calls", "max_retries", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
 
     @model_validator(mode="after")
     def _cost_bound(self) -> "CapabilityBudgetV1":
@@ -158,7 +195,22 @@ class ProviderObservationV1(ImmutableContractModel):
     response_model: StrictStr
     exact_ok: Literal[True] = True
     end_turn: StrictBool | None = None
-    usage: Mapping[StrictStr, StrictInt] | None = None
+    usage: FrozenNonnegativeIntMap | None = None
+
+    @field_validator("provider_call_count", "retry_count", "http_status", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
+
+    @field_validator("exact_ok", mode="before")
+    @classmethod
+    def _strict_bool_literals(cls, value: object) -> object:
+        return _require_exact_bool_literal(value)
+
+    @field_validator("usage")
+    @classmethod
+    def _freeze_usage(cls, value: FrozenNonnegativeIntMap | None) -> FrozenNonnegativeIntMap | None:
+        return None if value is None else freeze_mapping(value)
 
 
 class ProviderCapabilityAttestationV1(ImmutableContractModel):
@@ -187,6 +239,11 @@ class ProviderCapabilityAttestationV1(ImmutableContractModel):
             raise ValueError("provider call count does not match observations")
         return self
 
+    @field_validator("raw_response_persisted", mode="before")
+    @classmethod
+    def _strict_bool_literals(cls, value: object) -> object:
+        return _require_exact_bool_literal(value)
+
 
 class ProviderSetupEventV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.post-core.provider-setup-event.v1"] = (
@@ -199,6 +256,11 @@ class ProviderSetupEventV1(ImmutableContractModel):
     detail: StrictStr | None = None
     source_binding_ids: tuple[StrictStr, ...] = ()
 
+    @field_validator("provider_call_count", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
+
 
 class RuntimeManifestV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.post-core.runtime-manifest.v1"] = (
@@ -208,12 +270,17 @@ class RuntimeManifestV1(ImmutableContractModel):
     engine_version: StrictStr
     engine_commit: StrictStr | None = None
     binary_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    package_versions: Mapping[StrictStr, StrictStr] | None = None
+    package_versions: FrozenStringMap | None = None
     runtime_version: StrictStr | None = None
     device: StrictStr | None = None
     context_window: StrictInt | None = Field(default=None, gt=0)
     output_token_cap: StrictInt | None = Field(default=None, gt=0)
     build: StrictStr | None = None
+
+    @field_validator("package_versions")
+    @classmethod
+    def _freeze_package_versions(cls, value: FrozenStringMap | None) -> FrozenStringMap | None:
+        return None if value is None else freeze_mapping(value)
 
 
 class OpenRuntimeReceiptV1(ImmutableContractModel):
@@ -231,9 +298,14 @@ class OpenRuntimeReceiptV1(ImmutableContractModel):
     benchmark_admission_status: GateStatus
     tokenizer_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     checkpoint_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    measurements: Mapping[StrictStr, Decimal] | None = None
+    measurements: FrozenDecimalMap | None = None
     blockers: tuple[StrictStr, ...] = ()
     source_binding_ids: tuple[StrictStr, ...]
+
+    @field_validator("measurements")
+    @classmethod
+    def _freeze_measurements(cls, value: FrozenDecimalMap | None) -> FrozenDecimalMap | None:
+        return None if value is None else freeze_mapping(value)
 
 
 class CapabilityFixtureV1(ImmutableContractModel):
@@ -257,6 +329,18 @@ class CapabilitySmokePlanV1(ImmutableContractModel):
     authorized: Literal[False] = False
     attempts: tuple[CapabilityAttemptPlanV1, ...]
 
+    @field_validator(
+        "base_attempts_per_role", "escalation_attempts_per_role", "max_retries", mode="before"
+    )
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
+
+    @field_validator("authorized", mode="before")
+    @classmethod
+    def _strict_bool_literals(cls, value: object) -> object:
+        return _require_exact_bool_literal(value)
+
     @model_validator(mode="after")
     def _attempt_shape(self) -> "CapabilitySmokePlanV1":
         base = sum(item.phase is AttemptPhase.BASE for item in self.attempts)
@@ -277,11 +361,17 @@ class CapabilityAttemptReceiptV1(ImmutableContractModel):
     fixture_id: StrictStr
     phase: AttemptPhase
     gate_status: GateStatus
+    retry_count: Literal[0] = 0
     provider_call_count: StrictInt | None = Field(default=None, ge=0)
     response_model: StrictStr | None = None
     exact_ok: StrictBool | None = None
     blocker: StrictStr | None = None
     source_binding_ids: tuple[StrictStr, ...] = ()
+
+    @field_validator("retry_count", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
 
 
 class QualificationDecisionV1(ImmutableContractModel):
@@ -310,7 +400,12 @@ class QualificationReleaseManifestV1(ImmutableContractModel):
     )
     release_id: StrictStr
     artifact_order: tuple[StrictStr, ...]
-    required_source_sha256: Mapping[StrictStr, StrictStr]
+    required_source_sha256: FrozenStringMap
+
+    @field_validator("required_source_sha256")
+    @classmethod
+    def _freeze_required_source_sha256(cls, value: FrozenStringMap) -> FrozenStringMap:
+        return freeze_mapping(value)
 
     @model_validator(mode="after")
     def _artifact_order(self) -> "QualificationReleaseManifestV1":
@@ -332,6 +427,7 @@ class QualificationValidationReceiptV1(ImmutableContractModel):
     status: Literal["SUCCESS_WITH_BLOCKERS", "SUCCESS"]
     source_count: StrictInt = Field(ge=0)
     decision_count: StrictInt = Field(ge=0)
+    decision_counts: FrozenNonnegativeIntMap | None = None
     provider_calls: Literal[0] = 0
     model_loads: Literal[0] = 0
     network_calls: Literal[0] = 0
@@ -339,6 +435,27 @@ class QualificationValidationReceiptV1(ImmutableContractModel):
     published_provider_attestations: Literal[0] = 0
     published_open_runtime_receipts: Literal[0] = 0
     published_capability_attempt_receipts: Literal[0] = 0
+
+    @field_validator("decision_counts")
+    @classmethod
+    def _freeze_decision_counts(
+        cls, value: FrozenNonnegativeIntMap | None
+    ) -> FrozenNonnegativeIntMap | None:
+        return None if value is None else freeze_mapping(value)
+
+    @field_validator(
+        "provider_calls",
+        "model_loads",
+        "network_calls",
+        "executable_calls",
+        "published_provider_attestations",
+        "published_open_runtime_receipts",
+        "published_capability_attempt_receipts",
+        mode="before",
+    )
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
 
 
 __all__ = [
@@ -350,6 +467,7 @@ __all__ = [
     "CapabilityFixtureV1",
     "CapabilitySmokePlanV1",
     "DecisionScope",
+    "FrozenDecimalMap",
     "GateStatus",
     "OpenRuntimeReceiptV1",
     "ProviderCapabilityAttestationV1",

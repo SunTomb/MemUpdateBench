@@ -10,10 +10,20 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
     ArtifactBindingV1,
     AttemptPhase,
     CapabilityAttemptPlanV1,
+    CapabilityAttemptReceiptV1,
     CapabilityBudgetV1,
+    CapabilitySmokePlanV1,
     DecisionScope,
+    GateStatus,
+    OpenRuntimeReceiptV1,
+    ProviderCapabilityAttestationV1,
+    ProviderObservationV1,
+    ProviderSetupEventV1,
     QualificationArtifactIndexV1,
+    QualificationReleaseManifestV1,
     QualificationStatus,
+    QualificationValidationReceiptV1,
+    RuntimeManifestV1,
     SourceBindingV1,
     QUALIFICATION_ARTIFACT_ORDER,
 )
@@ -28,17 +38,19 @@ def _binding() -> SourceBindingV1:
     )
 
 
-def _budget() -> CapabilityBudgetV1:
-    return CapabilityBudgetV1(
-        max_calls=1,
-        input_token_cap=1,
-        output_token_cap=1,
-        estimated_cost_usd=Decimal("0.01"),
-        hard_max_cost_usd=Decimal("0.02"),
-        price_version="v1",
-        max_retries=0,
-        timeout_seconds=1,
-    )
+def _budget(**overrides: object) -> CapabilityBudgetV1:
+    payload: dict[str, object] = {
+        "max_calls": 1,
+        "input_token_cap": 1,
+        "output_token_cap": 1,
+        "estimated_cost_usd": Decimal("0.01"),
+        "hard_max_cost_usd": Decimal("0.02"),
+        "price_version": "v1",
+        "max_retries": 0,
+        "timeout_seconds": 1,
+    }
+    payload.update(overrides)
+    return CapabilityBudgetV1(**payload)
 
 
 def _attempt(**overrides: object) -> CapabilityAttemptPlanV1:
@@ -165,3 +177,141 @@ def test_production_config_is_canonical_and_has_nine_frozen_sources() -> None:
         "schema_version": "memupdatebench.post-core.qualification-config.v1",
         "scientific_execution_allowed": False,
     }
+
+
+def _observation(**overrides: object) -> ProviderObservationV1:
+    payload: dict[str, object] = {
+        "location": "LOCAL",
+        "observation_id": "observation",
+        "response_format": "JSON",
+        "response_model": "model",
+        "usage": {"input_tokens": 1},
+    }
+    payload.update(overrides)
+    return ProviderObservationV1(**payload)
+
+
+def _runtime(**overrides: object) -> RuntimeManifestV1:
+    payload: dict[str, object] = {
+        "engine": "transformers",
+        "engine_version": "v1",
+        "package_versions": {"transformers": "v1"},
+    }
+    payload.update(overrides)
+    return RuntimeManifestV1(**payload)
+
+
+def _smoke_plan(**overrides: object) -> CapabilitySmokePlanV1:
+    attempts = tuple(
+        _attempt(phase=phase, repetition=(index % 2) + 1)
+        for phase in (AttemptPhase.BASE, AttemptPhase.ESCALATION)
+        for index in range(8)
+    )
+    payload: dict[str, object] = {"release_id": "release", "attempts": attempts}
+    payload.update(overrides)
+    return CapabilitySmokePlanV1(**payload)
+
+
+def test_mapping_fields_are_immutable_and_canonical_bytes_are_stable() -> None:
+    runtime = _runtime()
+    open_receipt = OpenRuntimeReceiptV1(
+        registry_key="open-model",
+        revision="revision",
+        runtime=runtime,
+        storage_input_status=GateStatus.NOT_RUN,
+        short_generation_status=GateStatus.NOT_RUN,
+        capability_smoke_status=GateStatus.NOT_RUN,
+        benchmark_admission_status=GateStatus.BLOCKED,
+        measurements={"latency": Decimal("1.0")},
+        source_binding_ids=("source",),
+    )
+    release_manifest = QualificationReleaseManifestV1(
+        release_id="release",
+        artifact_order=QUALIFICATION_ARTIFACT_ORDER,
+        required_source_sha256={"source": "e" * 64},
+    )
+    validation_receipt = QualificationValidationReceiptV1(
+        release_id="release",
+        status="SUCCESS",
+        source_count=1,
+        decision_count=1,
+        decision_counts={"READY": 1},
+    )
+    cases = (
+        (_observation(), "usage", "input_tokens", 2),
+        (runtime, "package_versions", "transformers", "v2"),
+        (open_receipt, "measurements", "latency", Decimal("2.0")),
+        (release_manifest, "required_source_sha256", "source", "f" * 64),
+        (validation_receipt, "decision_counts", "READY", 2),
+    )
+
+    for model, field, key, replacement in cases:
+        before = canonical_bytes(model)
+        before_serialized = model.model_dump(mode="json")
+        with pytest.raises(TypeError):
+            getattr(model, field)[key] = replacement
+        assert canonical_bytes(model) == before
+        assert model.model_dump(mode="json") == before_serialized
+
+
+def test_literal_fields_reject_cross_type_inputs_before_const_validation() -> None:
+    with pytest.raises(ValidationError):
+        _budget(max_calls=True)
+    with pytest.raises(ValidationError):
+        _budget(max_retries=False)
+    for field, invalid in (
+        ("provider_call_count", True),
+        ("retry_count", False),
+        ("http_status", True),
+        ("exact_ok", 1),
+    ):
+        with pytest.raises(ValidationError):
+            _observation(**{field: invalid})
+    with pytest.raises(ValidationError):
+        ProviderSetupEventV1(registry_key="model", provider_call_count=False)
+    with pytest.raises(ValidationError):
+        ProviderCapabilityAttestationV1(
+            registry_key="model",
+            requested_model="model",
+            canonical_model="model",
+            capability_tier="tier",
+            observations=(_observation(),),
+            observation_count=1,
+            provider_call_count=1,
+            raw_response_persisted=1,
+            source_bindings=(_binding(),),
+        )
+    for field, invalid in (
+        ("base_attempts_per_role", True),
+        ("escalation_attempts_per_role", True),
+        ("max_retries", False),
+        ("authorized", 0),
+    ):
+        with pytest.raises(ValidationError):
+            _smoke_plan(**{field: invalid})
+    with pytest.raises(ValidationError):
+        CapabilityAttemptReceiptV1(
+            call_id="f" * 64,
+            registry_key="model",
+            fixture_id="fixture",
+            phase=AttemptPhase.BASE,
+            gate_status=GateStatus.NOT_RUN,
+            retry_count=False,
+        )
+    for field in (
+        "provider_calls",
+        "model_loads",
+        "network_calls",
+        "executable_calls",
+        "published_provider_attestations",
+        "published_open_runtime_receipts",
+        "published_capability_attempt_receipts",
+    ):
+        with pytest.raises(ValidationError):
+            QualificationValidationReceiptV1(
+                release_id="release",
+                status="SUCCESS",
+                source_count=1,
+                decision_count=1,
+                **{field: False},
+            )
