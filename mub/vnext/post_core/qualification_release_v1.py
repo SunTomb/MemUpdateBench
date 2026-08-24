@@ -712,8 +712,10 @@ def _prepare_output_root(
         raise UnsafeQualificationPathError("qualification output overlaps a frozen source")
     if config.config_path is not None and _path_overlap(selected, config.config_path):
         raise UnsafeQualificationPathError("qualification output overlaps the release config")
-    if selected.exists() or selected.is_symlink() or _is_reparse(selected):
-        raise FileExistsError("qualification output root already exists or is unsafe")
+    if selected.is_symlink() or _is_reparse(selected):
+        raise UnsafeQualificationPathError("qualification output root is unsafe")
+    if selected.exists():
+        raise FileExistsError("qualification output root already exists")
     parent = _absolute(selected.parent)
     if not parent.exists() or not parent.is_dir() or _is_reparse(parent):
         raise UnsafeQualificationPathError("qualification output parent must be a safe directory")
@@ -783,21 +785,76 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
         raise QualificationReleaseError(f"POSIX no-replace commit failed: errno {error}")
 
 
-def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[str, bytes]:
+def _capture_all_artifacts(root: Path, expected: Mapping[str, bytes]) -> Mapping[str, bytes]:
+    _reject_reparse_components(root)
     if _is_reparse(root) or not root.is_dir():
         raise UnsafeQualificationPathError("committed qualification root is unsafe")
     if set(item.name for item in root.iterdir()) != set(QUALIFICATION_ARTIFACTS):
         raise QualificationReleaseError("committed qualification artifact set/order mismatch")
-    actual: dict[str, bytes] = {}
-    for name in QUALIFICATION_ARTIFACTS:
-        path = root / name
-        member = _capture_member(path)
-        raw = member.raw
-        if raw != expected[name] or member.sha256 != _sha256(expected[name]):
-            raise QualificationReleaseError(f"committed qualification artifact mismatch: {name}")
-        actual[name] = raw
+    opened: list[tuple[str, Path, os.stat_result, int, os.stat_result]] = []
+    try:
+        # Keep every member descriptor open before reading any bytes, so the
+        # capture observes one coherent, no-follow member set.
+        for name in QUALIFICATION_ARTIFACTS:
+            path = root / name
+            before = path.lstat()
+            if _is_reparse(path) or not _regular_single_link(before):
+                raise UnsafeQualificationPathError(f"committed qualification artifact is unsafe: {name}")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            opened_stat = os.fstat(descriptor)
+            if (
+                not _regular_single_link(opened_stat)
+                or (opened_stat.st_dev, opened_stat.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                os.close(descriptor)
+                raise QualificationReleaseError(f"committed qualification artifact changed while opened: {name}")
+            opened.append((name, path, before, descriptor, opened_stat))
+        captured: list[tuple[str, Path, os.stat_result, int, os.stat_result, bytes]] = []
+        for name, path, before, descriptor, opened_stat in opened:
+            remaining = opened_stat.st_size + 1
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            captured.append((name, path, before, descriptor, opened_stat, b"".join(chunks)))
+        if set(item.name for item in root.iterdir()) != set(QUALIFICATION_ARTIFACTS):
+            raise QualificationReleaseError("committed qualification artifact set changed during capture")
+        actual: dict[str, bytes] = {}
+        for name, path, before, descriptor, opened_stat, raw in captured:
+            after_open = os.fstat(descriptor)
+            _reject_reparse_components(path)
+            after = path.lstat()
+            if (
+                len(raw) != opened_stat.st_size
+                or raw != expected[name]
+                or _sha256(raw) != _sha256(expected[name])
+                or not _regular_single_link(after_open)
+                or not _regular_single_link(after)
+                or (after_open.st_dev, after_open.st_ino) != (before.st_dev, before.st_ino)
+                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+                or after_open.st_size != opened_stat.st_size
+                or after.st_size != opened_stat.st_size
+                or (after_open.st_mtime_ns, after_open.st_ctime_ns) != (opened_stat.st_mtime_ns, opened_stat.st_ctime_ns)
+                or (after.st_mtime_ns, after.st_ctime_ns) != (before.st_mtime_ns, before.st_ctime_ns)
+            ):
+                raise QualificationReleaseError(f"committed qualification artifact changed during collective capture: {name}")
+            actual[name] = raw
+        return MappingProxyType(actual)
+    finally:
+        for _, _, _, descriptor, _ in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[str, bytes]:
+    actual = _capture_all_artifacts(root, expected)
     publication = QualificationPublicationV1(
-        RELEASE_ID, root, MappingProxyType(actual), _sha256(actual[QUALIFICATION_INDEX_PATH])
+        RELEASE_ID, root, actual, _sha256(actual[QUALIFICATION_INDEX_PATH])
     )
     return verify_qualification_artifact_bytes_v1(publication).artifact_bytes
 

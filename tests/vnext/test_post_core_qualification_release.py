@@ -268,6 +268,25 @@ def test_verify_preserves_committed_root_when_artifact_is_tampered(tmp_path: Pat
     assert output.exists()
 
 
+def test_collective_capture_rejects_early_artifact_mutation_during_later_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.name == "nt":
+        pytest.skip("Windows descriptor sharing prevents the concurrent replacement probe")
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "collective-mutation"
+    publication = publish_qualification_release_v1(output, **inputs)
+    original_read = qualification_release_v1.os.read
+    calls = 0
+    def mutate_during_later_read(descriptor: int, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            (output / "qualification_release_manifest.json").write_bytes(b"tampered")
+        return original_read(descriptor, size)
+    monkeypatch.setattr(qualification_release_v1.os, "read", mutate_during_later_read)
+    with pytest.raises(QualificationReleaseError):
+        qualification_release_v1._capture_all_artifacts(output, publication.artifact_bytes)
+
+
 def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     source = inputs["source_paths"]["workflow_source"]
@@ -289,7 +308,7 @@ def test_output_symlink_is_rejected_when_host_supports_it(tmp_path: Path) -> Non
         output.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"symlink creation unavailable: {exc}")
-    with pytest.raises(ValueError, match="absent"):
+    with pytest.raises(ValueError, match="unsafe"):
         publish_qualification_release_v1(output, **inputs)
 
 
