@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,6 +159,8 @@ def test_load_canonical_jsonl_roundtrip_and_rejects_invalid_rows(tmp_path: Path)
         "missing-lf.jsonl": canonical_bytes(row),
         "empty-row.jsonl": raw + b"\n",
         "secret.jsonl": b'{"api_key":"opaque"}\n',
+        "empty.jsonl": b"",
+        "typed-invalid.jsonl": b'{"registry_key":"missing-contract-fields"}\n',
     }
     for name, contents in cases.items():
         candidate = tmp_path / name
@@ -203,3 +206,170 @@ def test_provider_attestation_validation_rejects_structural_mutations(rows) -> N
 
     with pytest.raises(ValueError):
         validate_provider_attestations_v1(rows(provider_attestations()))
+
+
+def _unsafe_observation(observation, **changes: object):
+    payload = observation.model_dump(mode="python")
+    payload.update(changes)
+    return type(observation).model_construct(**payload)
+
+
+def _unsafe_row(row, **changes: object):
+    payload = row.model_dump(mode="python")
+    payload.update(changes)
+    return type(row).model_construct(**payload)
+
+
+def test_secret_scan_delegates_first_with_environment_reading_disabled(monkeypatch) -> None:
+    import mub.vnext.post_core.qualification_validation_v1 as validation
+
+    calls = []
+
+    def delegate(value, *, read_environment: bool) -> None:
+        calls.append((value, read_environment))
+
+    monkeypatch.setattr(validation, "validate_secret_free", delegate)
+    with pytest.raises(ValueError, match="credential"):
+        validation.validate_qualification_secret_free({"backupToken": "opaque"})
+    assert calls == [({"backupToken": "opaque"}, False)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"backup_token": "opaque"},
+        {"backupToken": "opaque"},
+        {"backup-token": "opaque"},
+        {"backup token": "opaque"},
+        {"value": "backup_token=opaque"},
+        {"endpointUrl": "https://example.test/?key=opaque"},
+        {"sourceUrl": "https://example.test/?sig=opaque"},
+        {"endpoint_url": "https://example.test/?signature=opaque"},
+        {"source_url": "https://example.test/?X-Amz-Signature=opaque"},
+        {"endpoint": "https://example.test/?X-Goog-Signature=opaque"},
+    ],
+)
+def test_secret_scan_rejects_normalized_credential_components_and_query_keys(value: object) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_qualification_secret_free
+
+    with pytest.raises(ValueError):
+        validate_qualification_secret_free(value)
+
+
+def test_provider_identity_metadata_is_exact_and_complete() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_provider_attestations_v1
+
+    rows = provider_attestations()
+    sonnet, opus, gemini, grok, gpt = rows
+    assert (sonnet.canonical_model_identity, sonnet.reasoning_tier, sonnet.identity_caveat) == (
+        "claude-sonnet-4-6", None, None
+    )
+    assert (opus.canonical_model_identity, opus.reasoning_tier, opus.identity_caveat) == (
+        "claude-opus-4-8", None, None
+    )
+    assert (gemini.canonical_model_identity, gemini.reasoning_tier, gemini.identity_caveat) == (
+        "gemini-3.6-flash", "Low", None
+    )
+    assert (grok.canonical_model_identity, grok.reasoning_tier, grok.identity_caveat) == (
+        None, None, "explicitly mutable transfer alias"
+    )
+    assert (gpt.canonical_model_identity, gpt.reasoning_tier, gpt.identity_caveat) == (
+        None, None, "unverified official upstream identity"
+    )
+    for index, changes in (
+        (0, {"reasoning_tier": "Low"}),
+        (0, {"identity_caveat": "unexpected"}),
+        (1, {"reasoning_tier": "Low"}),
+        (1, {"identity_caveat": "unexpected"}),
+        (2, {"identity_caveat": "unexpected"}),
+        (3, {"canonical_model_identity": "grok-4.5"}),
+        (3, {"reasoning_tier": "Low"}),
+        (3, {"identity_caveat": "mutable alias"}),
+        (4, {"reasoning_tier": "Low"}),
+        (4, {"identity_caveat": "unverified"}),
+    ):
+        with pytest.raises(ValueError):
+            validate_provider_attestations_v1(_replace_row(rows, index, **changes))
+
+
+@pytest.mark.parametrize("row_index", [0, 4])
+@pytest.mark.parametrize("changes", [{"stop_reason": None}, {"usage_present": False}])
+def test_all_retained_observations_require_end_turn_and_usage(row_index: int, changes: dict[str, object]) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_provider_attestations_v1
+
+    rows = provider_attestations()
+    row = rows[row_index]
+    with pytest.raises(ValueError):
+        validate_provider_attestations_v1(
+            _replace_row(rows, row_index, observations=_replace_observation(row, 0, **changes).observations)
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"http_status": 500},
+        {"exact_ok": False},
+        {"provider_call_count": 0},
+        {"retry_count": 1},
+        {"response_model": "wrong"},
+        {"response_format": "SSE"},
+    ],
+)
+def test_observation_contract_mutations_are_rejected(changes: dict[str, object]) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_provider_attestations_v1
+
+    rows = provider_attestations()
+    changed = _unsafe_observation(rows[0].observations[0], **changes)
+    invalid_row = _unsafe_row(rows[0], observations=(changed, rows[0].observations[1]))
+    with pytest.raises(ValueError):
+        validate_provider_attestations_v1((invalid_row, *rows[1:]))
+
+
+def test_load_canonical_jsonl_rejects_hardlink_when_host_permits(tmp_path: Path) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import load_canonical_jsonl_v1
+
+    target = tmp_path / "target.jsonl"
+    target.write_bytes(canonical_bytes(provider_attestations()[0]) + b"\n")
+    linked = tmp_path / "linked.jsonl"
+    try:
+        os.link(target, linked)
+    except OSError:
+        pytest.skip("host does not permit hardlink creation")
+    with pytest.raises(ValueError, match="regular single-link"):
+        load_canonical_jsonl_v1(linked, ProviderCapabilityAttestationV1, label="attestations")
+
+
+def test_load_canonical_jsonl_rejects_replacement_before_reading_swapped_bytes(tmp_path: Path, monkeypatch) -> None:
+    import mub.vnext.post_core.qualification_validation_v1 as validation
+
+    path = tmp_path / "attestations.jsonl"
+    path.write_bytes(canonical_bytes(provider_attestations()[0]) + b"\n")
+    attacker = tmp_path / "attacker.jsonl"
+    attacker.write_bytes(b"ATTACKER_BYTES_MUST_NOT_BE_READ")
+    original_open = os.open
+    read_attempts = []
+
+    def open_after_swap(name, flags, *args):
+        os.replace(attacker, path)
+        return original_open(name, flags, *args)
+
+    def trap_read(*args):
+        read_attempts.append(args)
+        raise AssertionError("swapped-in bytes must not be read")
+
+    monkeypatch.setattr(validation.os, "open", open_after_swap)
+    monkeypatch.setattr(validation, "_read_fd_all", trap_read, raising=False)
+    with pytest.raises(ValueError, match="changed while being read"):
+        validation.load_canonical_jsonl_v1(path, ProviderCapabilityAttestationV1, label="attestations")
+    assert read_attempts == []
+
+
+def test_qualification_validation_exports_only_the_contract_functions() -> None:
+    import mub.vnext.post_core.qualification_validation_v1 as validation
+
+    assert validation.__all__ == [
+        "load_canonical_jsonl_v1",
+        "validate_provider_attestations_v1",
+        "validate_qualification_secret_free",
+    ]

@@ -22,6 +22,13 @@ _EXPECTED_PROVIDER_ROWS = (
     ("gpt_5_5", "gpt-5.5", 4),
 )
 _EXPECTED_SOURCE_BINDINGS = ("workflow_source", "handoff_source")
+_EXPECTED_IDENTITY_METADATA = {
+    "claude_sonnet_4_6": ("claude-sonnet-4-6", None, None),
+    "claude_opus_4_8": ("claude-opus-4-8", None, None),
+    "gemini_3_6_flash": ("gemini-3.6-flash", "Low", None),
+    "grok_4_5": (None, None, "explicitly mutable transfer alias"),
+    "gpt_5_5": (None, None, "unverified official upstream identity"),
+}
 _GPT_OBSERVATION_IDS = (
     "LOCAL_INITIAL_SSE",
     "LOCAL_EXPLICIT_FALSE_SSE",
@@ -30,15 +37,24 @@ _GPT_OBSERVATION_IDS = (
 )
 _GPT_RESPONSE_FORMATS = ("SSE", "SSE", "SSE", "ANTHROPIC_MESSAGE_JSON")
 _URL_KEYS = frozenset({"endpoint", "endpoint_url", "source_url"})
-_SENSITIVE_QUERY_KEY = re.compile(
-    r"credential|token|authorization|password|secret|private[-_ ]?key|api[-_ ]?key|bearer|auth",
-    re.IGNORECASE,
+_CREDENTIAL_COMPONENTS = frozenset(
+    {"api", "auth", "authorization", "bearer", "credential", "key", "password", "private", "secret", "sig", "signature", "token"}
 )
 _PRIVATE_KEY_BLOCK = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)
+_ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
+_SAFE_CONTRACT_KEYS = frozenset({"registry_key"})
 
 
 def _normalized_key(value: object) -> str:
-    return re.sub(r"[-\s]+", "_", str(value).strip()).lower()
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(value).strip())
+    return re.sub(r"[-\s]+", "_", text).lower()
+
+
+def _is_credential_identifier(value: object) -> bool:
+    normalized = _normalized_key(value)
+    if normalized == "credential_env_var" or normalized in _SAFE_CONTRACT_KEYS:
+        return False
+    return any(component in _CREDENTIAL_COMPONENTS for component in normalized.split("_"))
 
 
 def _validate_url(value: object, key: str) -> None:
@@ -56,27 +72,33 @@ def _validate_url(value: object, key: str) -> None:
     if parsed.fragment:
         raise ValueError(f"{key} may not include a fragment")
     for query_key, _ in parse_qsl(parsed.query, keep_blank_values=True):
-        if _SENSITIVE_QUERY_KEY.search(query_key):
+        if _is_credential_identifier(query_key):
             raise ValueError(f"{key} query contains a credential-like key")
 
 
-def _scan_urls(value: Any) -> None:
+def _post_scan(value: Any) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized = _normalized_key(key)
             if normalized in _URL_KEYS:
                 _validate_url(item, normalized)
-            _scan_urls(item)
+            elif _is_credential_identifier(key):
+                raise ValueError("credential-like key rejected")
+            _post_scan(item)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _scan_urls(item)
-    elif isinstance(value, str) and _PRIVATE_KEY_BLOCK.search(value):
-        raise ValueError("private key block rejected")
+            _post_scan(item)
+    elif isinstance(value, str):
+        if _PRIVATE_KEY_BLOCK.search(value):
+            raise ValueError("private key block rejected")
+        assignment = _ASSIGNMENT.match(value)
+        if assignment and _is_credential_identifier(assignment.group(1)):
+            raise ValueError("credential-like assignment rejected")
 
 
 def validate_qualification_secret_free(value: Any) -> None:
     validate_secret_free(value, read_environment=False)
-    _scan_urls(value)
+    _post_scan(value)
 
 
 def _is_reparse(path: Path) -> bool:
@@ -117,27 +139,59 @@ def _regular_single_link(metadata: os.stat_result) -> bool:
     )
 
 
+def _identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _read_fd_all(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
 def _read_regular_single_link(path: Path, label: str) -> bytes:
     selected = _absolute_path(path)
     _reject_reparse_components(selected)
     try:
-        before = selected.lstat()
+        before_path = selected.lstat()
     except OSError as exc:
         raise ValueError(f"{label} does not exist") from exc
-    if _is_reparse(selected) or not _regular_single_link(before):
+    if _is_reparse(selected) or not _regular_single_link(before_path):
         raise ValueError(f"{label} must be a regular single-link file")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
     try:
-        with selected.open("rb") as handle:
-            raw = handle.read()
-        after = selected.lstat()
+        descriptor = os.open(selected, flags)
+        before_descriptor = os.fstat(descriptor)
+        if (
+            not _regular_single_link(before_descriptor)
+            or _identity(before_descriptor) != _identity(before_path)
+            or before_descriptor.st_size != before_path.st_size
+        ):
+            raise ValueError(f"{label} changed while being read")
+        raw = _read_fd_all(descriptor)
+        after_descriptor = os.fstat(descriptor)
+        _reject_reparse_components(selected)
+        after_path = selected.lstat()
     except OSError as exc:
         raise ValueError(f"{label} could not be read safely") from exc
-    if _is_reparse(selected) or not _regular_single_link(after):
-        raise ValueError(f"{label} changed while being read")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
     if (
-        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-        or before.st_size != after.st_size
-        or len(raw) != before.st_size
+        _is_reparse(selected)
+        or not _regular_single_link(after_descriptor)
+        or not _regular_single_link(after_path)
+        or _identity(after_descriptor) != _identity(before_descriptor)
+        or _identity(after_path) != _identity(before_descriptor)
+        or after_descriptor.st_size != before_descriptor.st_size
+        or after_path.st_size != before_descriptor.st_size
+        or len(raw) != before_descriptor.st_size
     ):
         raise ValueError(f"{label} changed while being read")
     return raw
@@ -195,14 +249,16 @@ def validate_provider_attestations_v1(
         _require(row.retry_count == 0, "provider retry count must be zero")
         _require(row.benchmark_generation_count == 0, "benchmark generation count must be zero")
         _require(row.raw_response_persisted is False, "raw provider responses may not be persisted")
-        _require(
-            row.source_binding_ids == _EXPECTED_SOURCE_BINDINGS,
-            "provider source bindings must be the exact workflow/handoff pair",
-        )
+        _require(row.source_binding_ids == _EXPECTED_SOURCE_BINDINGS, "provider source bindings mismatch")
         _require(len(row.observations) == expected_calls, "provider observation count mismatch")
         _require(
             sum(item.provider_call_count for item in row.observations) == expected_calls,
             "provider observation call total mismatch",
+        )
+        _require(
+            (row.canonical_model_identity, row.reasoning_tier, row.identity_caveat)
+            == _EXPECTED_IDENTITY_METADATA[registry_key],
+            "provider identity metadata mismatch",
         )
         for observation in row.observations:
             _require(bool(observation.observation_id), "provider observation ID must be nonempty")
@@ -212,6 +268,8 @@ def validate_provider_attestations_v1(
             _require(observation.retry_count == 0, "observation retry count must be zero")
             _require(observation.http_status == 200, "observation HTTP status must be 200")
             _require(observation.exact_ok is True, "observation exact result must be true")
+            _require(observation.stop_reason == "end_turn", "observation must end normally")
+            _require(observation.usage_present is True, "observation usage must be retained")
             _require(observation.response_model == row.request_name, "observation response model mismatch")
 
         if registry_key != "gpt_5_5":
@@ -223,34 +281,7 @@ def validate_provider_attestations_v1(
                 all(item.response_format == "ANTHROPIC_MESSAGE_JSON" for item in row.observations),
                 "non-GPT observations must use Anthropic message JSON",
             )
-            _require(
-                all(item.stop_reason == "end_turn" for item in row.observations),
-                "non-GPT observations must end normally",
-            )
-
-        if registry_key == "claude_sonnet_4_6":
-            _require(row.canonical_model_identity == "claude-sonnet-4-6", "Claude Sonnet identity mismatch")
-        elif registry_key == "claude_opus_4_8":
-            _require(row.canonical_model_identity == "claude-opus-4-8", "Claude Opus identity mismatch")
-        elif registry_key == "gemini_3_6_flash":
-            _require(
-                row.canonical_model_identity == "gemini-3.6-flash"
-                and row.request_name == "Gemini 3.6 Flash (Low)"
-                and row.reasoning_tier == "Low",
-                "Gemini request, canonical identity, and reasoning tier must be exact",
-            )
-        elif registry_key == "grok_4_5":
-            _require(row.canonical_model_identity == "grok-4.5", "Grok canonical identity mismatch")
-            _require(
-                isinstance(row.identity_caveat, str) and "mutable alias" in row.identity_caveat.lower(),
-                "Grok identity caveat must say mutable alias",
-            )
         else:
-            _require(row.canonical_model_identity is None, "GPT canonical identity must remain null")
-            _require(
-                isinstance(row.identity_caveat, str) and "unverified" in row.identity_caveat.lower(),
-                "GPT identity caveat must state unverified status",
-            )
             _require(
                 tuple(item.observation_id for item in row.observations) == _GPT_OBSERVATION_IDS,
                 "GPT observation ordering mismatch",

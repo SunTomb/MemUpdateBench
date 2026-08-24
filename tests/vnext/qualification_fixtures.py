@@ -68,8 +68,7 @@ def provider_attestations() -> tuple[ProviderCapabilityAttestationV1, ...]:
         ProviderCapabilityAttestationV1(
             registry_key="grok_4_5",
             request_name=grok,
-            canonical_model_identity=grok,
-            identity_caveat="mutable alias",
+            identity_caveat="explicitly mutable transfer alias",
             observations=_paired_observations(grok, "GROK"),
             provider_call_count=2,
             source_binding_ids=SOURCE_BINDING_IDS,
