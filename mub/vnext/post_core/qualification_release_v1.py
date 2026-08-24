@@ -109,6 +109,31 @@ class QualificationPublicationV1:
     benchmark_generations: int = 0
 
 
+@dataclass(frozen=True)
+class _ResolvedQualificationInputs:
+    config: QualificationReleaseConfigV1
+    source_bundle: SourceBindingBundleV1
+    source_snapshots: tuple[_SourceSnapshot, ...]
+    providers: tuple[ProviderCapabilityAttestationV1, ...]
+    provider_raw: bytes
+    provider_snapshot: _SourceSnapshot | None
+    runtimes: tuple[OpenRuntimeReceiptV1, ...]
+    runtime_raw: bytes
+    runtime_snapshot: _SourceSnapshot | None
+    identity_bundle: IdentityEvidenceBundleV1 | None
+    capability_fixtures: Sequence[CapabilityFixtureV1] | None
+    capability_budget: CapabilityBudgetV1 | None
+
+    @property
+    def snapshots(self) -> tuple[_SourceSnapshot, ...]:
+        return (
+            *self.source_snapshots,
+            *((self.config.source_snapshot,) if self.config.source_snapshot is not None else ()),
+            *((self.provider_snapshot,) if self.provider_snapshot is not None else ()),
+            *((self.runtime_snapshot,) if self.runtime_snapshot is not None else ()),
+        )
+
+
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -378,6 +403,58 @@ def _load_runtime_rows(path: Path) -> tuple[tuple[OpenRuntimeReceiptV1, ...], by
     return rows, raw, snapshot
 
 
+def _resolve_inputs(
+    config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> _ResolvedQualificationInputs:
+    resolved_config = _coerce_config(config)
+    paths = _source_map(inputs.get("source_paths"), {
+        "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
+        "identity_evidence": inputs.get("identity_evidence_path"), "open_snapshot_audit_receipt": inputs.get("open_snapshot_audit_receipt_path"),
+        "open_snapshot_closure_receipt": inputs.get("open_snapshot_closure_receipt_path"), "phase0_index": inputs.get("phase0_index_path"),
+        "qwen_load_receipt": inputs.get("qwen_load_receipt_path"), "task14_index": inputs.get("task14_index_path"),
+        "workflow_source": inputs.get("workflow_source_path"),
+    })
+    source_bundle, source_snapshots = _source_bindings(resolved_config, paths)
+    provider_snapshot: _SourceSnapshot | None = None
+    provider_input = inputs.get("provider_attestations")
+    if provider_input is None:
+        provider_path = inputs.get("provider_attestations_path")
+        if provider_path is None:
+            raise ValueError("provider attestations must be supplied as typed rows or a JSONL source")
+        provider_input, provider_raw, provider_snapshot = _load_provider_rows(Path(provider_path))
+    else:
+        provider_raw = _jsonl_bytes(provider_input, "provider attestations")
+    runtime_snapshot: _SourceSnapshot | None = None
+    runtime_input = inputs.get("runtime_receipts")
+    if runtime_input is None:
+        runtime_path = inputs.get("runtime_receipts_path")
+        if runtime_path is None:
+            raise ValueError("runtime receipts must be supplied as typed rows or a JSONL source")
+        runtime_input, runtime_raw, runtime_snapshot = _load_runtime_rows(Path(runtime_path))
+    else:
+        runtime_raw = _jsonl_bytes(runtime_input, "runtime receipts")
+    return _ResolvedQualificationInputs(
+        config=resolved_config,
+        source_bundle=source_bundle,
+        source_snapshots=source_snapshots,
+        providers=validate_provider_attestations_v1(provider_input),
+        provider_raw=provider_raw,
+        provider_snapshot=provider_snapshot,
+        runtimes=validate_runtime_receipts_v1(runtime_input),
+        runtime_raw=runtime_raw,
+        runtime_snapshot=runtime_snapshot,
+        identity_bundle=inputs.get("identity_bundle"),
+        capability_fixtures=inputs.get("capability_fixtures"),
+        capability_budget=inputs.get("capability_budget"),
+    )
+
+
+def _revalidate_resolved(resolved: _ResolvedQualificationInputs) -> None:
+    for snapshot in resolved.snapshots:
+        _revalidate_source(snapshot)
+
+
 _SAFE_COUNTER_KEYS = frozenset({
     "provider_calls_during_publication", "model_loads_during_publication",
     "network_calls_during_publication", "credential_reads_during_publication",
@@ -472,55 +549,23 @@ def _validation_receipt(
     )
 
 
-def build_qualification_release_v1(
-    config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
+def _build_from_resolved(
+    resolved: _ResolvedQualificationInputs,
     *,
-    source_paths: Mapping[str, Path] | None = None,
-    core_manifest_path: Path | None = None,
-    handoff_source_path: Path | None = None,
-    identity_evidence_path: Path | None = None,
-    open_snapshot_audit_receipt_path: Path | None = None,
-    open_snapshot_closure_receipt_path: Path | None = None,
-    phase0_index_path: Path | None = None,
-    qwen_load_receipt_path: Path | None = None,
-    task14_index_path: Path | None = None,
-    workflow_source_path: Path | None = None,
-    provider_attestations: Sequence[ProviderCapabilityAttestationV1] | None = None,
-    provider_attestations_path: Path | None = None,
-    runtime_receipts: Sequence[OpenRuntimeReceiptV1] | None = None,
-    runtime_receipts_path: Path | None = None,
-    capability_fixtures: Sequence[CapabilityFixtureV1] | None = None,
-    capability_budget: CapabilityBudgetV1 | None = None,
     smoke_plan: CapabilitySmokePlanV1 | None = None,
     decision_bundle: QualificationDecisionBundleV1 | None = None,
     decisions: Sequence[Any] | None = None,
     validation_receipt: QualificationValidationReceiptV1 | None = None,
-    identity_bundle: IdentityEvidenceBundleV1 | None = None,
 ) -> QualificationPublicationV1:
-    config = _coerce_config(config)
-    paths = _source_map(source_paths, {
-        "core_manifest": core_manifest_path, "handoff_source": handoff_source_path,
-        "identity_evidence": identity_evidence_path, "open_snapshot_audit_receipt": open_snapshot_audit_receipt_path,
-        "open_snapshot_closure_receipt": open_snapshot_closure_receipt_path, "phase0_index": phase0_index_path,
-        "qwen_load_receipt": qwen_load_receipt_path, "task14_index": task14_index_path, "workflow_source": workflow_source_path,
-    })
-    source_bundle, snapshots = _source_bindings(config, paths)
-    provider_snapshot: _SourceSnapshot | None = None
-    runtime_snapshot: _SourceSnapshot | None = None
-    if provider_attestations is None:
-        if provider_attestations_path is None:
-            raise ValueError("provider attestations must be supplied as typed rows or a JSONL source")
-        provider_attestations, provider_raw, provider_snapshot = _load_provider_rows(Path(provider_attestations_path))
-    else:
-        provider_raw = _jsonl_bytes(provider_attestations, "provider attestations")
-    providers = validate_provider_attestations_v1(provider_attestations)
-    if runtime_receipts is None:
-        if runtime_receipts_path is None:
-            raise ValueError("runtime receipts must be supplied as typed rows or a JSONL source")
-        runtime_receipts, runtime_raw, runtime_snapshot = _load_runtime_rows(Path(runtime_receipts_path))
-    else:
-        runtime_raw = _jsonl_bytes(runtime_receipts, "runtime receipts")
-    runtimes = validate_runtime_receipts_v1(runtime_receipts)
+    config = resolved.config
+    source_bundle = resolved.source_bundle
+    providers = resolved.providers
+    runtimes = resolved.runtimes
+    provider_raw = resolved.provider_raw
+    runtime_raw = resolved.runtime_raw
+    capability_fixtures = resolved.capability_fixtures
+    capability_budget = resolved.capability_budget
+    identity_bundle = resolved.identity_bundle
     if capability_fixtures is None or type(capability_budget) is not CapabilityBudgetV1:
         raise ValueError("canonical capability fixtures and budget are required")
     expected_smoke_plan = _build_expected_smoke_plan(config, capability_fixtures, capability_budget)
@@ -556,9 +601,24 @@ def build_qualification_release_v1(
     artifacts[QUALIFICATION_INDEX_PATH] = canonical_bytes(index, exclude={"canonical_hash"})
     validate_qualification_secret_free(_secret_scan_payload(index.model_dump(mode="json")))
     _reject_metrics(json.loads(artifacts[QUALIFICATION_INDEX_PATH]))
-    for snapshot in (*snapshots, *((config.source_snapshot,) if config.source_snapshot is not None else ()), *((provider_snapshot,) if provider_snapshot is not None else ()), *((runtime_snapshot,) if runtime_snapshot is not None else ())):
-        _revalidate_source(snapshot)
+    _revalidate_resolved(resolved)
     return QualificationPublicationV1(config.release_id, None, MappingProxyType(dict(artifacts)), _sha256(artifacts[QUALIFICATION_INDEX_PATH]))
+
+
+def build_qualification_release_v1(
+    config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
+    **inputs: Any,
+) -> QualificationPublicationV1:
+    resolved = _resolve_inputs(config, inputs)
+    publication = _build_from_resolved(
+        resolved,
+        smoke_plan=inputs.get("smoke_plan"),
+        decision_bundle=inputs.get("decision_bundle"),
+        decisions=inputs.get("decisions"),
+        validation_receipt=inputs.get("validation_receipt"),
+    )
+    _revalidate_resolved(resolved)
+    return publication
 
 
 def verify_qualification_artifact_bytes_v1(publication: QualificationPublicationV1) -> QualificationPublicationV1:
@@ -910,26 +970,17 @@ def publish_qualification_release_v1(
     before_commit: Any | None = None,
     **inputs: Any,
 ) -> QualificationPublicationV1:
-    config_obj = _coerce_config(config)
-    paths = _source_map(inputs.get("source_paths"), {
-        "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
-        "identity_evidence": inputs.get("identity_evidence_path"), "open_snapshot_audit_receipt": inputs.get("open_snapshot_audit_receipt_path"),
-        "open_snapshot_closure_receipt": inputs.get("open_snapshot_closure_receipt_path"), "phase0_index": inputs.get("phase0_index_path"),
-        "qwen_load_receipt": inputs.get("qwen_load_receipt_path"), "task14_index": inputs.get("task14_index_path"),
-        "workflow_source": inputs.get("workflow_source_path"),
-    })
-    _, snapshots = _source_bindings(config_obj, paths)
-    evidence_snapshots = tuple(
-        _read_source(label, Path(path))
-        for label, path in (
-            ("provider attestations", inputs.get("provider_attestations_path")),
-            ("runtime receipts", inputs.get("runtime_receipts_path")),
-        )
-        if path is not None
+    resolved = _resolve_inputs(config, inputs)
+    output, parent, parent_identity = _prepare_output_root(
+        Path(output_root), resolved.snapshots, resolved.config
     )
-    source_snapshots = (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ()))
-    output, parent, parent_identity = _prepare_output_root(Path(output_root), source_snapshots, config_obj)
-    publication = build_qualification_release_v1(config_obj, **inputs)
+    publication = _build_from_resolved(
+        resolved,
+        smoke_plan=inputs.get("smoke_plan"),
+        decision_bundle=inputs.get("decision_bundle"),
+        decisions=inputs.get("decisions"),
+        validation_receipt=inputs.get("validation_receipt"),
+    )
     stage = parent / f".mub-post-core-qualification-stage-{uuid.uuid4().hex}"
     stage.mkdir(mode=0o700)
     stage_metadata = stage.stat()
@@ -943,8 +994,7 @@ def publish_qualification_release_v1(
         owned = _write_stage(stage, publication.artifact_bytes, tracked)
         if before_commit is not None:
             before_commit()
-        for snapshot in source_snapshots:
-            _revalidate_source(snapshot)
+        _revalidate_resolved(resolved)
         if not _stage_matches(owned):
             raise QualificationReleaseError("qualification staging bytes changed before commit")
         current_parent = parent.stat()
@@ -961,11 +1011,9 @@ def publish_qualification_release_v1(
         try:
             _fsync_directory(parent)
             _read_published_root(output, publication.artifact_bytes)
-            for snapshot in source_snapshots:
-                _revalidate_source(snapshot)
+            _revalidate_resolved(resolved)
             _read_published_root(output, publication.artifact_bytes)
-            for snapshot in source_snapshots:
-                _revalidate_source(snapshot)
+            _revalidate_resolved(resolved)
         except Exception as exc:
             raise CommittedQualificationReleaseError(output, "committed qualification release failed verification") from exc
         return _publication_with_root(publication, output)
@@ -987,37 +1035,24 @@ def verify_qualification_release_v1(
     config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
     **inputs: Any,
 ) -> QualificationPublicationV1:
-    config_obj = _coerce_config(config)
-    paths = _source_map(inputs.get("source_paths"), {
-        "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
-        "identity_evidence": inputs.get("identity_evidence_path"), "open_snapshot_audit_receipt": inputs.get("open_snapshot_audit_receipt_path"),
-        "open_snapshot_closure_receipt": inputs.get("open_snapshot_closure_receipt_path"), "phase0_index": inputs.get("phase0_index_path"),
-        "qwen_load_receipt": inputs.get("qwen_load_receipt_path"), "task14_index": inputs.get("task14_index_path"),
-        "workflow_source": inputs.get("workflow_source_path"),
-    })
-    _, snapshots = _source_bindings(config_obj, paths)
-    evidence_snapshots = tuple(
-        _read_source(label, Path(path))
-        for label, path in (
-            ("provider attestations", inputs.get("provider_attestations_path")),
-            ("runtime receipts", inputs.get("runtime_receipts_path")),
-        )
-        if path is not None
-    )
+    resolved = _resolve_inputs(config, inputs)
     _reject_reparse_components(Path(root))
     root = _absolute(Path(root))
     if not root.exists() or _is_reparse(root) or not root.is_dir():
         raise UnsafeQualificationPathError("qualification root is absent or unsafe")
-    for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
-        _revalidate_source(snapshot)
-    expected = build_qualification_release_v1(config_obj, **inputs)
+    _revalidate_resolved(resolved)
+    expected = _build_from_resolved(
+        resolved,
+        smoke_plan=inputs.get("smoke_plan"),
+        decision_bundle=inputs.get("decision_bundle"),
+        decisions=inputs.get("decisions"),
+        validation_receipt=inputs.get("validation_receipt"),
+    )
     try:
         _read_published_root(root, expected.artifact_bytes)
-        for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
-            _revalidate_source(snapshot)
+        _revalidate_resolved(resolved)
         _read_published_root(root, expected.artifact_bytes)
-        for snapshot in (*snapshots, *evidence_snapshots, *((config_obj.source_snapshot,) if config_obj.source_snapshot is not None else ())):
-            _revalidate_source(snapshot)
+        _revalidate_resolved(resolved)
     except Exception as exc:
         raise CommittedQualificationReleaseError(root, "qualification release verification failed") from exc
     return _publication_with_root(expected, root)

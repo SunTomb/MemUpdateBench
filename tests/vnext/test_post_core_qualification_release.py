@@ -306,6 +306,46 @@ def test_publish_revalidates_sources_after_final_collective_check(tmp_path: Path
     assert output.exists()
 
 
+def test_publish_resolves_provider_jsonl_once_before_final_revalidation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    provider_path = tmp_path / "provider.jsonl"
+    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
+    inputs["provider_attestations_path"] = provider_path
+    original = qualification_release_v1._load_provider_rows
+    calls = 0
+    def count_provider(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+    monkeypatch.setattr(qualification_release_v1, "_load_provider_rows", count_provider)
+    publish_qualification_release_v1(tmp_path / "resolve-once", **inputs)
+    assert calls == 1
+
+
+def test_build_and_verify_resolve_provider_jsonl_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    provider_path = tmp_path / "provider.jsonl"
+    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
+    inputs["provider_attestations_path"] = provider_path
+    original = qualification_release_v1._load_provider_rows
+    calls = 0
+    def count_provider(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+    monkeypatch.setattr(qualification_release_v1, "_load_provider_rows", count_provider)
+    built = build_qualification_release_v1(**inputs)
+    assert calls == 1
+    monkeypatch.setattr(qualification_release_v1, "_load_provider_rows", original)
+    output = tmp_path / "verify-resolve-once"
+    publish_qualification_release_v1(output, **inputs)
+    calls = 0
+    monkeypatch.setattr(qualification_release_v1, "_load_provider_rows", count_provider)
+    verify_qualification_release_v1(output, **inputs)
+    assert calls == 1
+    assert built.artifact_bytes["provider_capability_attestations.jsonl"] == provider_path.read_bytes()
+
+
 def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     source = inputs["source_paths"]["workflow_source"]
