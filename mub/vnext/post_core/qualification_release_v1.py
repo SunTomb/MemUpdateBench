@@ -68,6 +68,26 @@ _METRIC_KEYS = frozenset({
 })
 
 
+_SOURCE_PATH_ALIASES = {
+    "core_manifest": "core_manifest_path",
+    "handoff_source": "handoff_source_path",
+    "identity_evidence": "identity_evidence_path",
+    "open_snapshot_audit_receipt": "open_snapshot_audit_receipt_path",
+    "open_snapshot_closure_receipt": "open_snapshot_closure_receipt_path",
+    "phase0_index": "phase0_index_path",
+    "qwen_load_receipt": "qwen_load_receipt_path",
+    "task14_index": "task14_index_path",
+    "workflow_source": "workflow_source_path",
+}
+_ALLOWED_INPUT_KEYS = frozenset({
+    "source_paths", *tuple(_SOURCE_PATH_ALIASES.values()),
+    "provider_attestations", "provider_attestations_path",
+    "runtime_receipts", "runtime_receipts_path",
+    "identity_bundle", "capability_fixtures", "capability_budget",
+    "smoke_plan", "decision_bundle", "decisions", "validation_receipt",
+})
+
+
 @dataclass(frozen=True)
 class _SourceSnapshot:
     source_id: str
@@ -407,6 +427,21 @@ def _resolve_inputs(
     config: QualificationReleaseConfigV1 | Path | Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> _ResolvedQualificationInputs:
+    unknown = set(inputs) - _ALLOWED_INPUT_KEYS
+    if unknown:
+        raise TypeError(f"unknown qualification release input: {sorted(unknown)[0]}")
+    source_mapping = inputs.get("source_paths")
+    if source_mapping is not None:
+        if not isinstance(source_mapping, Mapping):
+            raise TypeError("source_paths must be a mapping")
+        for source_id, alias in _SOURCE_PATH_ALIASES.items():
+            if alias in inputs and source_id in source_mapping and inputs[alias] is not None:
+                if _absolute(Path(source_mapping[source_id])) != _absolute(Path(inputs[alias])):
+                    raise ValueError(f"conflicting source path forms for {source_id}")
+    if inputs.get("provider_attestations") is not None and inputs.get("provider_attestations_path") is not None:
+        raise ValueError("provider attestations typed rows conflict with provider attestations path")
+    if inputs.get("runtime_receipts") is not None and inputs.get("runtime_receipts_path") is not None:
+        raise ValueError("runtime receipts typed rows conflict with runtime receipts path")
     resolved_config = _coerce_config(config)
     paths = _source_map(inputs.get("source_paths"), {
         "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),

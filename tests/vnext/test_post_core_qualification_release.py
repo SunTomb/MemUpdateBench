@@ -347,6 +347,34 @@ def test_build_and_verify_resolve_provider_jsonl_once(tmp_path: Path, monkeypatc
     assert built.artifact_bytes["provider_capability_attestations.jsonl"] == provider_path.read_bytes()
 
 
+def test_public_apis_reject_unknown_input_keys(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    with pytest.raises(TypeError, match="smoke_plna"):
+        build_qualification_release_v1(**inputs, smoke_plna=None)
+    with pytest.raises(TypeError, match="decison_bundle"):
+        publish_qualification_release_v1(tmp_path / "unknown-publish", **inputs, decison_bundle=None)
+    output = tmp_path / "unknown-verify"
+    publish_qualification_release_v1(output, **inputs)
+    with pytest.raises(TypeError, match="validation_reciept"):
+        verify_qualification_release_v1(output, **inputs, validation_reciept=None)
+
+
+def test_resolver_rejects_conflicting_input_forms(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    replacement = tmp_path / "different-workflow"
+    replacement.write_bytes(b"different")
+    with pytest.raises(ValueError, match="conflicting source path"):
+        build_qualification_release_v1(**inputs, workflow_source_path=replacement)
+    provider_path = tmp_path / "provider.jsonl"
+    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs["provider_attestations"]))
+    with pytest.raises(ValueError, match="provider attestations"):
+        build_qualification_release_v1(**inputs, provider_attestations_path=provider_path)
+    runtime_path = tmp_path / "runtime.jsonl"
+    runtime_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs["runtime_receipts"]))
+    with pytest.raises(ValueError, match="runtime receipts"):
+        build_qualification_release_v1(**inputs, runtime_receipts_path=runtime_path)
+
+
 def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     source = inputs["source_paths"]["workflow_source"]
