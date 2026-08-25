@@ -296,6 +296,19 @@ def _run_python_adapter_bounded(
     return returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
 
 
+def _consume_authorization_once(path: Path, authorization: Any) -> None:
+    marker = path.with_name(
+        f".{path.name}.{hashlib.sha256(canonical_bytes(authorization)).hexdigest()}.consumed"
+    )
+    try:
+        with marker.open("x", encoding="ascii") as stream:
+            stream.write("consumed\\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise ValueError("execution authorization has already been consumed") from exc
+
+
 def _selected_attempts(plan: Any, authorization: Any) -> tuple[Any, ...]:
     allowed = set(authorization.authorized_call_ids)
     return tuple(attempt for attempt in plan.attempts if attempt.call_id in allowed)
@@ -443,6 +456,26 @@ def _parse_adapter_stdout(raw: bytes) -> tuple[CapabilityAdapterResultV1, ...]:
             raise _AdapterProtocolError
         rows.append(result)
     return tuple(rows)
+
+
+def _fill_missing_adapter_results(
+    selected: tuple[Any, ...], results: tuple[CapabilityAdapterResultV1, ...]
+) -> tuple[CapabilityAdapterResultV1, ...]:
+    by_call_id = {result.call_id: result for result in results}
+    if len(by_call_id) != len(results):
+        raise _AdapterProtocolError
+    filled: list[CapabilityAdapterResultV1] = []
+    for attempt in selected:
+        result = by_call_id.get(attempt.call_id)
+        if result is None:
+            result = CapabilityAdapterResultV1(
+                call_id=attempt.call_id,
+                registry_key=attempt.registry_key,
+                request_sha256=hashlib.sha256(canonical_bytes(attempt)).hexdigest(),
+                error_class="ADAPTER_FAILURE",
+            )
+        filled.append(result)
+    return tuple(filled)
 
 
 def _adapter_results_to_receipts(
@@ -649,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
         adapter, adapter_raw, adapter_source = _capture_python_adapter(Path(args.adapter_executable))
         if hashlib.sha256(adapter_raw).hexdigest() != authorization.adapter_sha256:
             raise ValueError("adapter source hash mismatch")
+        _consume_authorization_once(Path(args.authorization_receipt), authorization)
         _after_adapter_pinned(adapter, adapter)
     except (ValueError, OSError):
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
@@ -670,9 +704,9 @@ def main(argv: list[str] | None = None) -> int:
         returncode, stdout, stderr = _run_python_adapter_bounded(
             adapter_source, payload, timeout_seconds
         )
+        adapter_results = _fill_missing_adapter_results(selected, _parse_adapter_stdout(stdout))
         if returncode != 0 or stderr:
-            raise _AdapterProtocolError
-        adapter_results = _parse_adapter_stdout(stdout)
+            adapter_results = _fill_missing_adapter_results(selected, adapter_results)
         receipts = _adapter_results_to_receipts(selected, adapter_results)
         validate_capability_attempt_receipts_v1(selected, receipts)
         receipt_raw = b"".join(canonical_bytes(receipt) + b"\n" for receipt in receipts)

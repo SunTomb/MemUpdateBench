@@ -666,12 +666,22 @@ def validate_escalation_anomaly_evidence_v1(
     return receipt
 
 
+def _authorization_attestation_hash(authorization: ExecutionAuthorizationV1) -> str:
+    payload = authorization.model_dump(mode="json")
+    payload.pop("authorization_attestation_sha256", None)
+    return canonical_hash(payload)
+
+
 def load_execution_authorization_v1(
     path: Path, plan_raw: CapabilitySmokePlanV1 | bytes | bytearray
 ) -> ExecutionAuthorizationV1:
     plan = _coerce_capability_smoke_plan_v1(plan_raw)
     authorization = _load_canonical_json_model_v1(
         path, ExecutionAuthorizationV1, label="execution authorization"
+    )
+    _require(
+        authorization.authorization_attestation_sha256 == _authorization_attestation_hash(authorization),
+        "authorization attestation hash mismatch",
     )
     _require(authorization.release_id == plan.release_id, "authorization release ID mismatch")
     _require(authorization.plan_sha256 == canonical_hash(plan), "authorization plan hash mismatch")

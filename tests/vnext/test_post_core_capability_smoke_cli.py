@@ -36,6 +36,10 @@ def _authorization(**overrides: object) -> ExecutionAuthorizationV1:
         "escalation_anomaly_receipt_sha256": None,
     }
     payload.update(overrides)
+    provisional = ExecutionAuthorizationV1(**payload)
+    attestation_payload = provisional.model_dump(mode="json")
+    attestation_payload.pop("authorization_attestation_sha256", None)
+    payload["authorization_attestation_sha256"] = canonical_hash(attestation_payload)
     return ExecutionAuthorizationV1(**payload)
 
 
@@ -889,7 +893,39 @@ def test_cli_rejects_mutated_plan_before_missing_authorization(tmp_path: Path) -
     assert completed.stderr == "capability smoke contract/usage rejected\n"
 
 
-def test_adapter_result_binds_closed_registry_response_model() -> None:
+def test_execution_authorization_is_single_use(tmp_path: Path) -> None:
+    import runpy
+
+    module = runpy.run_path(str(CLI))
+    authorization = _authorization()
+    path = tmp_path / "authorization.json"
+    path.write_bytes(canonical_bytes(authorization))
+
+    module["_consume_authorization_once"](path, authorization)
+    with pytest.raises(ValueError, match="already been consumed"):
+        module["_consume_authorization_once"](path, authorization)
+
+
+def test_partial_adapter_results_are_filled_with_typed_failures() -> None:
+    import runpy
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAdapterResultV1
+
+    module = runpy.run_path(str(CLI))
+    attempts = _plan().attempts[:2]
+    result = CapabilityAdapterResultV1(
+        call_id=attempts[0].call_id,
+        registry_key=attempts[0].registry_key,
+        request_sha256=hashlib.sha256(canonical_bytes(attempts[0])).hexdigest(),
+        response_projection="READY",
+        response_format="LOCAL_TEXT",
+        latency_ms=1,
+    )
+    filled = module["_fill_missing_adapter_results"](attempts, (result,))
+
+    assert filled[0] == result
+    assert filled[1].error_class == "ADAPTER_FAILURE"
+
+
     import runpy
     from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAdapterResultV1
 
