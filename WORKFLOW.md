@@ -3350,10 +3350,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
   tests/vnext/test_post_core_qualification_release.py \
   tests/vnext/test_post_core_qualification_release_cli.py \
   tests/vnext/test_post_core_capability_smoke_cli.py -q
-# 302 passed, 6 skipped, 0 failed
+# 304 passed, 6 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest tests/vnext/test_post_core_*.py -q
-# 367 passed, 7 skipped, 0 failed
+# 369 passed, 7 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python scripts/smoke_test.py
 # SMOKE TEST: 32/32 passed
