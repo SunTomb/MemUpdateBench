@@ -3270,3 +3270,118 @@ The failed SSH quoting attempt is excluded because it stopped before provider ex
 The five transfer routes pass bounded local and Tang-2 connectivity/interface checks. Claude Sonnet 4.6 and Opus 4.8 retain their document-verified identities; Gemini retains the canonical/request-name/Low-tier mapping above. Matching transfer request and response fields do not authenticate Grok 4.5 or GPT-5.5 as immutable official upstream identities, so their identity blockers remain explicit.
 
 The next formal unit is a separate Post-Core Phase 1–2 qualification release. It should publish no-replace redacted provider receipts, freeze an approved llama.cpp runtime for Muse GGUF with speculative decoding off, advance Qwen from load-only to bounded generation/template/parser/determinism checks, run the same small smoke across qualified roles, and emit typed `READY`, `BLOCKED`, or `UNSUPPORTED` decisions. Only then should the planned 320-generation canary and three-condition confirmatory hard subset be authorized. None of this evidence may be retrofitted into immutable Core, Task 9–14, Phase 0, or `official_identity_evidence_v1.json`.
+
+## Post-Core Phase 1–2 qualification release implementation (2026-08-24)
+
+### Motivation and boundary
+
+Task 10 registers the offline qualification contracts in the normal smoke path without modifying frozen Core or Phase 0 evidence. The implementation is offline, source-bound, and no-replace. It authorizes no provider, adapter, model, credential, network request, benchmark generation, canary, confirmatory subset, or full matrix.
+
+The prior 12 calls are imported as source-bound aggregate connectivity/interface attestations in this qualification release. They are not benchmark/scientific accuracy or release-`READY` evidence.
+
+### Files changed/generated
+
+```text
+configs/vnext/post_core/qualification_release_v1.json
+mub/vnext/post_core/qualification_receipts_v1.py
+mub/vnext/post_core/qualification_validation_v1.py
+mub/vnext/post_core/qualification_planning_v1.py
+mub/vnext/post_core/qualification_decisions_v1.py
+mub/vnext/post_core/qualification_release_v1.py
+scripts/vnext_prepare_post_core_qualification_release.py
+scripts/vnext_run_post_core_capability_smoke.py
+scripts/smoke_test.py
+tests/vnext/qualification_fixtures.py
+tests/vnext/test_post_core_qualification_receipts.py
+tests/vnext/test_post_core_qualification_validation.py
+tests/vnext/test_post_core_qualification_runtime.py
+tests/vnext/test_post_core_qualification_planning.py
+tests/vnext/test_post_core_qualification_decisions.py
+tests/vnext/test_post_core_qualification_release.py
+tests/vnext/test_post_core_qualification_release_cli.py
+tests/vnext/test_post_core_capability_smoke_cli.py
+docs/superpowers/specs/2026-08-24-memupdatebench-post-core-phase12-qualification-design.md
+docs/superpowers/plans/2026-08-24-memupdatebench-post-core-phase12-qualification.md
+WORKFLOW.md
+```
+
+The smoke executable runs these exact isolated offline test files:
+
+```text
+tests/vnext/test_post_core_qualification_receipts.py
+tests/vnext/test_post_core_qualification_validation.py
+tests/vnext/test_post_core_qualification_runtime.py
+tests/vnext/test_post_core_qualification_planning.py
+tests/vnext/test_post_core_qualification_decisions.py
+tests/vnext/test_post_core_qualification_release.py
+tests/vnext/test_post_core_qualification_release_cli.py
+tests/vnext/test_post_core_capability_smoke_cli.py
+```
+
+No real adapter is invoked.
+
+### Fresh offline verification
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile \
+  scripts/prepare_data.py \
+  scripts/eval_evomemory.py \
+  scripts/generate_constrained_sft.py \
+  scripts/train_constrained_sft.py \
+  scripts/analyze_ood_errors.py \
+  scripts/summarize_update_frequency.py \
+  scripts/smoke_test.py \
+  mub/vnext/post_core/qualification_v1.py \
+  mub/vnext/post_core/qualification_receipts_v1.py \
+  mub/vnext/post_core/qualification_validation_v1.py \
+  mub/vnext/post_core/qualification_planning_v1.py \
+  mub/vnext/post_core/qualification_decisions_v1.py \
+  mub/vnext/post_core/qualification_release_v1.py \
+  scripts/vnext_prepare_post_core_qualification_release.py \
+  scripts/vnext_run_post_core_capability_smoke.py
+# PASS: exit 0, no output
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
+  tests/vnext/test_post_core_qualification_receipts.py \
+  tests/vnext/test_post_core_qualification_validation.py \
+  tests/vnext/test_post_core_qualification_runtime.py \
+  tests/vnext/test_post_core_qualification_planning.py \
+  tests/vnext/test_post_core_qualification_decisions.py \
+  tests/vnext/test_post_core_qualification_release.py \
+  tests/vnext/test_post_core_qualification_release_cli.py \
+  tests/vnext/test_post_core_capability_smoke_cli.py -q
+# 305 passed, 6 skipped, 0 failed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest tests/vnext/test_post_core_*.py -q
+# 370 passed, 7 skipped, 0 failed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python scripts/smoke_test.py
+# SMOKE TEST: 32/32 passed
+
+git diff --check
+# PASS
+```
+
+The targeted-test skips are documented Windows host limitations: unavailable symlink creation, Windows descriptor sharing for the concurrent replacement probe, unavailable directory `fsync`, and a controlled output-parent replacement that Windows denies while the reserved file handle is open; they are not counted as passes. The full Post-Core regression suite adds one unavailable identity-evidence symlink-creation skip.
+
+The planned combined Post-Core plus frozen Task 14 regression command was also attempted:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
+  tests/vnext/test_post_core_*.py \
+  tests/vnext/test_core_task14_atomic.py \
+  tests/vnext/test_core_task14_sources.py -q
+# 304 passed, 7 skipped, 7 failed, 6 errors
+```
+
+The 13 Task 14 failures/errors are pre-existing worktree-fixture unavailability, not qualification-code failures: `data/vnext/core/v3` is absent, so strict Task 14 source loading raises `FileNotFoundError [WinError 3]`. The focused Post-Core suite passes independently. Frozen Task 14 code and sources were not modified.
+
+The authoritative open-snapshot audit receipt was reread on Tang-2 from `/NAS/yesh/MemUpdateBench/external/post_core_public_open_models_20260822_audit.json`. A fresh remote `sha256sum` recovered the exact 64-character SHA-256 `0b146bd8dc04e3343d899801f4746bee0ae69635f1ace3f4c92ada8f32819940`; the checked-in qualification configuration had omitted the seventeenth character (`3`) and is now corrected. No hash was guessed or padded. This removes the malformed-hash configuration blocker but does not authorize publication, model/provider execution, or capability smoke.
+
+Validation performed zero model loads, provider calls, network calls, benchmark generations, and credential reads. The capability adapter transport now carries the canonical prompt payload and parser contract in each hash-bound request envelope, and the provider source-bound JSONL can preserve the typed zero-call pre-provider setup failure alongside the five capability attestations. Live short-generation and 8–16 smoke are `NOT_RUN` and require explicit authorization. All eight current `CAPABILITY_SMOKE` decisions remain `BLOCKED`; provider connectivity and open-model short-generation readiness cannot promote an unexecuted smoke to `READY`. The frozen zero-cost/PENDING budget also blocks all closed API attempts until an authorized price-version and nonzero hard cost ceiling are published. The 320 canary, confirmatory, and full matrix are unauthorized.
+
+`EXIT10` remains reserved. A `SUCCESS_WITH_BLOCKERS` metadata release returns `0`.
+
+### Conclusion
+
+The offline/source-bound/no-replace qualification-release implementation is complete and registered in the smoke path. The malformed audit-hash configuration blocker is resolved from an authoritative remote rehash, but no publication or execution is authorized by that correction. Live short-generation, capability smoke, canary, confirmatory, and benchmark evidence remain `NOT_RUN`/`BLOCKED` under their separate gates.

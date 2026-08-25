@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -924,6 +925,39 @@ def test_vnext_pilot_pipeline(results: SmokeTestResult) -> None:
         results.fail(name, exc)
 
 
+POST_CORE_QUALIFICATION_TESTS = (
+    "tests/vnext/test_post_core_qualification_receipts.py",
+    "tests/vnext/test_post_core_qualification_validation.py",
+    "tests/vnext/test_post_core_qualification_runtime.py",
+    "tests/vnext/test_post_core_qualification_planning.py",
+    "tests/vnext/test_post_core_qualification_decisions.py",
+    "tests/vnext/test_post_core_qualification_release.py",
+    "tests/vnext/test_post_core_qualification_release_cli.py",
+    "tests/vnext/test_post_core_capability_smoke_cli.py",
+)
+
+
+def test_post_core_qualification(results: SmokeTestResult) -> None:
+    print("\n[10/10] Testing Post-Core qualification contracts...")
+    name = "Post-Core qualification contract and CLI tests"
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", *POST_CORE_QUALIFICATION_TESTS, "-q"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stdout + completed.stderr)
+        results.ok(name, completed.stdout.strip())
+    except Exception as exc:
+        results.fail(name, exc)
+
+
 def main() -> int:
     print("=" * 50)
     print("MemUpdateBench SMOKE TEST")
@@ -939,6 +973,7 @@ def main() -> int:
     test_api_probe_helpers(results)
     test_vnext_contracts(results)
     test_vnext_pilot_pipeline(results)
+    test_post_core_qualification(results)
     return 0 if results.summary() else 1
 
 
