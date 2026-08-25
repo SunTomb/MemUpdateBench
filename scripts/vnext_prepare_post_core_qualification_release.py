@@ -21,6 +21,7 @@ from mub.vnext.post_core.qualification_release_v1 import (
 
 
 EXIT_SUCCESS = 0
+# Reserved for a future typed qualification blocker; SUCCESS_WITH_BLOCKERS publishes with exit 0.
 EXIT_BLOCKED = 10
 EXIT_USAGE = 11
 EXIT_STALE_SOURCE = 12
@@ -82,9 +83,23 @@ def _is_unsafe_path_rejection(exception: ValueError) -> bool:
     return "link" in message or "reparse" in message
 
 
-def _is_stale_source_or_config(exception: ValueError) -> bool:
+def _is_stale_source_rejection(exception: ValueError) -> bool:
     message = str(exception).lower()
-    return any(token in message for token in ("source", "snapshot", "hash", "config"))
+    if message.startswith("source "):
+        return any(
+            phrase in message
+            for phrase in (
+                " changed while being read",
+                " changed after validation",
+                " hash differs from the frozen config",
+                " hash mismatch",
+            )
+        )
+    return (
+        "source binding" in message
+        or (message.startswith("required source") and "mismatch" in message)
+        or (message.startswith("authoritative source") and "mismatch" in message)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         if _is_unsafe_path_rejection(exception):
             print("qualification publication rejected: unsafe publication path", file=sys.stderr)
             return EXIT_PUBLICATION
-        if _is_stale_source_or_config(exception):
+        if _is_stale_source_rejection(exception):
             print("qualification stale source rejected: source/config mismatch", file=sys.stderr)
             return EXIT_STALE_SOURCE
         print("qualification contract/usage rejected: invalid source input", file=sys.stderr)

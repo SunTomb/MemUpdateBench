@@ -187,6 +187,40 @@ def test_prepare_cli_maps_source_mutation_to_stale_source_without_output(
     assert not (tmp_path / "published").exists()
 
 
+def test_prepare_cli_maps_valid_source_hash_mismatch_to_stale_source_without_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments, paths = _inputs(tmp_path)
+    paths["workflow_source"].write_bytes(b"changed-source")
+    assert command.main([*arguments, "--execute"]) == command.EXIT_STALE_SOURCE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "qualification stale source rejected: source/config mismatch\n"
+    assert not (tmp_path / "published").exists()
+
+
+def test_prepare_cli_maps_valid_config_snapshot_mutation_to_stale_source_without_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments, paths = _inputs(tmp_path)
+    original = command.publish_qualification_release_v1
+
+    def mutate_before_commit(output_root: Path, config: object, **inputs: object):
+        return original(
+            output_root,
+            config,
+            before_commit=lambda: paths["config"].write_bytes(paths["config"].read_bytes() + b" "),
+            **inputs,
+        )
+
+    monkeypatch.setattr(command, "publish_qualification_release_v1", mutate_before_commit)
+    assert command.main([*arguments, "--execute"]) == command.EXIT_STALE_SOURCE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "qualification stale source rejected: source/config mismatch\n"
+    assert not (tmp_path / "published").exists()
+
+
 def test_prepare_cli_rejects_secret_input_without_leaking_value(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -200,18 +234,27 @@ def test_prepare_cli_rejects_secret_input_without_leaking_value(
     assert not (tmp_path / "published").exists()
 
 
-def test_prepare_cli_rejects_production_style_short_hash_without_output(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("config_case", ("short_hash", "invalid_json", "wrong_schema", "pretty"))
+def test_prepare_cli_rejects_malformed_production_style_config_without_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], config_case: str
 ) -> None:
     arguments, paths = _inputs(tmp_path)
     production_config = PROJECT_ROOT / "configs" / "vnext" / "post_core" / "qualification_release_v1.json"
     payload = json.loads(production_config.read_bytes())
-    payload["required_source_sha256"]["workflow_source"] = "a" * 63
-    paths["config"].write_bytes(canonical_bytes(payload))
-    assert command.main([*arguments, "--execute"]) == command.EXIT_STALE_SOURCE
+    if config_case == "short_hash":
+        payload["required_source_sha256"]["workflow_source"] = "a" * 63
+        paths["config"].write_bytes(canonical_bytes(payload))
+    elif config_case == "invalid_json":
+        paths["config"].write_bytes(b"{")
+    elif config_case == "wrong_schema":
+        payload["schema_version"] = "memupdatebench.invalid-config.v1"
+        paths["config"].write_bytes(canonical_bytes(payload))
+    else:
+        paths["config"].write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="")
+    assert command.main([*arguments, "--execute"]) == command.EXIT_USAGE
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "qualification stale source rejected: source/config mismatch\n"
+    assert captured.err == "qualification contract/usage rejected: invalid source input\n"
     assert not (tmp_path / "published").exists()
 
 
