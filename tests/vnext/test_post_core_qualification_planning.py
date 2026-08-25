@@ -203,6 +203,7 @@ def test_contract_rejects_duplicate_attempt_coordinate() -> None:
 
 
 def test_canonical_planner_owned_fixtures_budget_and_hashes_are_deterministic() -> None:
+    import mub.vnext.post_core.qualification_planning_v1 as planning
     from mub.vnext.post_core.contracts_v1 import canonical_bytes
     from mub.vnext.post_core.qualification_planning_v1 import (
         build_capability_budget_v1,
@@ -217,6 +218,7 @@ def test_canonical_planner_owned_fixtures_budget_and_hashes_are_deterministic() 
     assert canonical_bytes(tuple(fixture.model_dump(mode="json") for fixture in fixtures)) == canonical_bytes(
         tuple(fixture.model_dump(mode="json") for fixture in build_capability_fixtures_v1())
     )
+    assert all("task" not in payload and "gold" not in payload for payload in planning._CAPABILITY_PROMPT_PAYLOADS.values())
     budget = build_capability_budget_v1()
     assert (budget.max_calls, budget.max_retries, budget.timeout_seconds) == (1, 0, 60)
     assert budget.estimated_cost == budget.hard_max_cost == Decimal("0")

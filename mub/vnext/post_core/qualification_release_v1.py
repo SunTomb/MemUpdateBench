@@ -16,9 +16,14 @@ import uuid
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
+from mub.vnext.post_core import qualification_planning_v1
 from mub.vnext.post_core.qualification_planning_v1 import (
     CapabilitySmokePlanConfigV1,
+    _canonical_fixture_bundle_bytes,
+    _canonical_parser_contract_bytes,
     _EXPECTED_REGISTRY_KEYS,
+    build_capability_budget_v1,
+    build_capability_fixtures_v1,
     build_capability_smoke_plan_v1,
 )
 from mub.vnext.post_core.qualification_decisions_v1 import derive_qualification_decisions_v1
@@ -362,17 +367,55 @@ def _source_map(
     return {key: Path(result[key]) for key in REQUIRED_SOURCE_IDS}
 
 
+def _source_binding(
+    source_id: str,
+    raw: bytes,
+    *,
+    evidence_class: str,
+    required: bool = True,
+) -> SourceBindingV1:
+    return SourceBindingV1(
+        source_id=source_id,
+        evidence_class=evidence_class,
+        sha256=_sha256(raw),
+        required=required,
+        byte_count=len(raw),
+    )
+
+
 def _source_bindings(config: QualificationReleaseConfigV1, paths: Mapping[str, Path]) -> tuple[SourceBindingBundleV1, tuple[_SourceSnapshot, ...]]:
     snapshots = tuple(_read_source(source_id, paths[source_id]) for source_id in REQUIRED_SOURCE_IDS)
     for snapshot in snapshots:
         expected = config.required_source_sha256[snapshot.source_id]
         if snapshot.sha256 != expected:
             raise ValueError(f"source {snapshot.source_id} hash differs from the frozen config")
-    bindings = tuple(
-        SourceBindingV1(source_id=s.source_id, evidence_class=("source_blob" if s.source_id in {"workflow_source", "handoff_source"} else "authenticated_receipt"), sha256=s.sha256, required=True, byte_count=s.byte_count)
-        for s in snapshots
+    planner_file = qualification_planning_v1.__file__
+    if not isinstance(planner_file, str) or not planner_file:
+        raise ValueError("qualification planner source path is unavailable")
+    planner_snapshot = _read_source("qualification planner", Path(planner_file))
+    bindings = (
+        *(
+            SourceBindingV1(
+                source_id=s.source_id,
+                evidence_class=("source_blob" if s.source_id in {"workflow_source", "handoff_source"} else "authenticated_receipt"),
+                sha256=s.sha256,
+                required=True,
+                byte_count=s.byte_count,
+            )
+            for s in snapshots
+        ),
+        _source_binding("qualification_config", config.config_raw, evidence_class="qualification_config"),
+        _source_binding("capability_fixtures", _canonical_fixture_bundle_bytes(), evidence_class="capability_fixture_bundle"),
+        _source_binding("capability_parser_contract", _canonical_parser_contract_bytes(), evidence_class="capability_parser_contract"),
+        SourceBindingV1(
+            source_id="qualification_planner",
+            evidence_class="planner_source",
+            sha256=planner_snapshot.sha256,
+            required=True,
+            byte_count=planner_snapshot.byte_count,
+        ),
     )
-    return SourceBindingBundleV1(release_id=config.release_id, sources=bindings), snapshots
+    return SourceBindingBundleV1(release_id=config.release_id, sources=bindings), (*snapshots, planner_snapshot)
 
 
 def _jsonl_bytes(rows: Sequence[Any], label: str) -> bytes:
@@ -438,10 +481,6 @@ def _resolve_inputs(
             if alias in inputs and source_id in source_mapping and inputs[alias] is not None:
                 if _absolute(Path(source_mapping[source_id])) != _absolute(Path(inputs[alias])):
                     raise ValueError(f"conflicting source path forms for {source_id}")
-    if inputs.get("provider_attestations") is not None and inputs.get("provider_attestations_path") is not None:
-        raise ValueError("provider attestations typed rows conflict with provider attestations path")
-    if inputs.get("runtime_receipts") is not None and inputs.get("runtime_receipts_path") is not None:
-        raise ValueError("runtime receipts typed rows conflict with runtime receipts path")
     resolved_config = _coerce_config(config)
     paths = _source_map(inputs.get("source_paths"), {
         "core_manifest": inputs.get("core_manifest_path"), "handoff_source": inputs.get("handoff_source_path"),
@@ -451,35 +490,72 @@ def _resolve_inputs(
         "workflow_source": inputs.get("workflow_source_path"),
     })
     source_bundle, source_snapshots = _source_bindings(resolved_config, paths)
-    provider_snapshot: _SourceSnapshot | None = None
+    provider_path = inputs.get("provider_attestations_path")
+    if provider_path is None:
+        raise ValueError("provider attestations path is required for source-bound release evidence")
+    provider_rows, provider_raw, provider_snapshot = _load_provider_rows(Path(provider_path))
     provider_input = inputs.get("provider_attestations")
-    if provider_input is None:
-        provider_path = inputs.get("provider_attestations_path")
-        if provider_path is None:
-            raise ValueError("provider attestations must be supplied as typed rows or a JSONL source")
-        provider_input, provider_raw, provider_snapshot = _load_provider_rows(Path(provider_path))
-    else:
-        provider_raw = _jsonl_bytes(provider_input, "provider attestations")
-    runtime_snapshot: _SourceSnapshot | None = None
+    if provider_input is not None and _jsonl_bytes(provider_input, "provider attestations") != provider_raw:
+        raise ValueError("provider attestations typed rows differ from the source-bound JSONL")
+
+    runtime_path = inputs.get("runtime_receipts_path")
+    if runtime_path is None:
+        raise ValueError("runtime receipts path is required for source-bound release evidence")
+    runtime_rows, runtime_raw, runtime_snapshot = _load_runtime_rows(Path(runtime_path))
     runtime_input = inputs.get("runtime_receipts")
-    if runtime_input is None:
-        runtime_path = inputs.get("runtime_receipts_path")
-        if runtime_path is None:
-            raise ValueError("runtime receipts must be supplied as typed rows or a JSONL source")
-        runtime_input, runtime_raw, runtime_snapshot = _load_runtime_rows(Path(runtime_path))
-    else:
-        runtime_raw = _jsonl_bytes(runtime_input, "runtime receipts")
+    if runtime_input is not None and _jsonl_bytes(runtime_input, "runtime receipts") != runtime_raw:
+        raise ValueError("runtime receipts typed rows differ from the source-bound JSONL")
+
+    identity_snapshot = next(
+        snapshot for snapshot in source_snapshots if snapshot.source_id == "identity_evidence"
+    )
+    try:
+        source_identity_bundle = IdentityEvidenceBundleV1.model_validate_json(identity_snapshot.raw)
+    except Exception as exc:
+        raise ValueError("identity evidence source does not satisfy IdentityEvidenceBundleV1") from exc
+    if canonical_bytes(source_identity_bundle) != identity_snapshot.raw:
+        raise ValueError("identity evidence source is not canonical")
+    compatibility_identity = inputs.get("identity_bundle")
+    if compatibility_identity is not None:
+        if not isinstance(compatibility_identity, IdentityEvidenceBundleV1):
+            raise ValueError("identity bundle compatibility input must use IdentityEvidenceBundleV1")
+        if (
+            compatibility_identity != source_identity_bundle
+            or canonical_bytes(compatibility_identity) != identity_snapshot.raw
+        ):
+            raise ValueError("identity bundle compatibility input differs from source-bound identity evidence")
+
+    source_bundle = SourceBindingBundleV1(
+        release_id=resolved_config.release_id,
+        sources=(
+            *source_bundle.sources,
+            SourceBindingV1(
+                source_id="provider_attestations",
+                evidence_class="provider_attestation_jsonl",
+                sha256=provider_snapshot.sha256,
+                required=True,
+                byte_count=provider_snapshot.byte_count,
+            ),
+            SourceBindingV1(
+                source_id="runtime_receipts",
+                evidence_class="runtime_receipt_jsonl",
+                sha256=runtime_snapshot.sha256,
+                required=True,
+                byte_count=runtime_snapshot.byte_count,
+            ),
+        ),
+    )
     return _ResolvedQualificationInputs(
         config=resolved_config,
         source_bundle=source_bundle,
         source_snapshots=source_snapshots,
-        providers=validate_provider_attestations_v1(provider_input),
+        providers=validate_provider_attestations_v1(provider_rows),
         provider_raw=provider_raw,
         provider_snapshot=provider_snapshot,
-        runtimes=validate_runtime_receipts_v1(runtime_input),
+        runtimes=validate_runtime_receipts_v1(runtime_rows),
         runtime_raw=runtime_raw,
         runtime_snapshot=runtime_snapshot,
-        identity_bundle=inputs.get("identity_bundle"),
+        identity_bundle=source_identity_bundle,
         capability_fixtures=inputs.get("capability_fixtures"),
         capability_budget=inputs.get("capability_budget"),
     )
@@ -567,6 +643,21 @@ def _derived_decision_bundle(
     return QualificationDecisionBundleV1(release_id=config.release_id, decisions=decisions)
 
 
+def _validate_evidence_binding_ids(
+    source_bundle: SourceBindingBundleV1,
+    providers: Sequence[ProviderCapabilityAttestationV1],
+    runtimes: Sequence[OpenRuntimeReceiptV1],
+    decisions: QualificationDecisionBundleV1,
+) -> None:
+    source_ids = {source.source_id for source in source_bundle.sources}
+    for row in (*providers, *runtimes):
+        if any(source_id not in source_ids for source_id in row.source_binding_ids):
+            raise ValueError("provider/runtime evidence binding refers to an unknown source")
+    for decision in decisions.decisions:
+        if any(source_id not in source_ids for source_id in decision.evidence_binding_ids):
+            raise ValueError("decision evidence binding refers to an unknown source")
+
+
 def _validation_receipt(
     config: QualificationReleaseConfigV1,
     decisions: QualificationDecisionBundleV1,
@@ -598,15 +689,19 @@ def _build_from_resolved(
     runtimes = resolved.runtimes
     provider_raw = resolved.provider_raw
     runtime_raw = resolved.runtime_raw
-    capability_fixtures = resolved.capability_fixtures
-    capability_budget = resolved.capability_budget
-    identity_bundle = resolved.identity_bundle
-    if capability_fixtures is None or type(capability_budget) is not CapabilityBudgetV1:
-        raise ValueError("canonical capability fixtures and budget are required")
+    capability_fixtures = build_capability_fixtures_v1()
+    capability_budget = build_capability_budget_v1()
+    compatibility_fixtures = resolved.capability_fixtures
+    compatibility_budget = resolved.capability_budget
+    if compatibility_fixtures is not None or compatibility_budget is not None:
+        if compatibility_fixtures is None or type(compatibility_budget) is not CapabilityBudgetV1:
+            raise ValueError("capability fixture and budget compatibility inputs must be supplied together")
+        _build_expected_smoke_plan(config, compatibility_fixtures, compatibility_budget)
     expected_smoke_plan = _build_expected_smoke_plan(config, capability_fixtures, capability_budget)
     if smoke_plan is not None and smoke_plan != expected_smoke_plan:
         raise ValueError("caller smoke plan differs from the canonical derived plan")
-    derived_bundle = _derived_decision_bundle(config, identity_bundle, providers, runtimes)
+    derived_bundle = _derived_decision_bundle(config, resolved.identity_bundle, providers, runtimes)
+    _validate_evidence_binding_ids(source_bundle, providers, runtimes, derived_bundle)
     if decision_bundle is not None and decision_bundle != derived_bundle:
         raise ValueError("caller decision bundle differs from derived qualification decisions")
     if decisions is not None and tuple(decisions) != derived_bundle.decisions:
@@ -614,7 +709,12 @@ def _build_from_resolved(
     receipt = _validation_receipt(config, derived_bundle, len(source_bundle.sources))
     if validation_receipt is not None and validation_receipt != receipt:
         raise ValueError("caller validation receipt differs from derived validation receipt")
-    manifest = QualificationReleaseManifestV1(release_id=config.release_id, base_commit=config.base_commit, artifact_order=QUALIFICATION_ARTIFACT_ORDER, source_hashes=config.required_source_sha256)
+    manifest = QualificationReleaseManifestV1(
+        release_id=config.release_id,
+        base_commit=config.base_commit,
+        artifact_order=QUALIFICATION_ARTIFACT_ORDER,
+        source_hashes={source.source_id: source.sha256 for source in source_bundle.sources},
+    )
     artifacts: dict[str, bytes] = {
         "qualification_release_manifest.json": canonical_bytes(manifest),
         "source_bindings.json": canonical_bytes(source_bundle),
@@ -656,7 +756,7 @@ def build_qualification_release_v1(
     return publication
 
 
-def verify_qualification_artifact_bytes_v1(publication: QualificationPublicationV1) -> QualificationPublicationV1:
+def _verify_qualification_artifact_bytes_v1(publication: QualificationPublicationV1) -> QualificationPublicationV1:
     if tuple(publication.artifact_bytes) != tuple(QUALIFICATION_ARTIFACTS):
         raise ValueError("qualification artifact set/order mismatch")
     index = QualificationArtifactIndexV1.model_validate_json(publication.artifact_bytes[QUALIFICATION_INDEX_PATH])
@@ -956,7 +1056,7 @@ def _read_published_root(root: Path, expected: Mapping[str, bytes]) -> Mapping[s
     publication = QualificationPublicationV1(
         RELEASE_ID, root, actual, _sha256(actual[QUALIFICATION_INDEX_PATH])
     )
-    return verify_qualification_artifact_bytes_v1(publication).artifact_bytes
+    return _verify_qualification_artifact_bytes_v1(publication).artifact_bytes
 
 
 def _cleanup_verified_stage(
@@ -1102,5 +1202,5 @@ __all__ = [
     "QualificationReleaseConfigV1", "QualificationReleaseError", "UnsafeQualificationPathError",
     "NoReplacePrimitiveUnavailableError", "CommittedQualificationReleaseError",
     "build_qualification_release_v1", "load_qualification_release_config_v1",
-    "publish_qualification_release_v1", "verify_qualification_release_v1", "verify_qualification_artifact_bytes_v1",
+    "publish_qualification_release_v1", "verify_qualification_release_v1",
 ]

@@ -39,7 +39,7 @@ from mub.vnext.post_core.qualification_release_v1 import (
     load_qualification_release_config_v1,
     publish_qualification_release_v1,
     verify_qualification_release_v1,
-    verify_qualification_artifact_bytes_v1,
+    _verify_qualification_artifact_bytes_v1,
 )
 
 
@@ -52,7 +52,11 @@ def _source_inputs(tmp_path: Path) -> tuple[dict[str, Path], Path]:
     hashes: dict[str, str] = {}
     for index, source_id in enumerate(source_ids):
         path = tmp_path / f"{source_id}.blob"
-        raw = f"source-{index}".encode()
+        raw = (
+            (Path(__file__).resolve().parents[2] / "configs" / "vnext" / "post_core" / "official_identity_evidence_v1.json").read_bytes()
+            if source_id == "identity_evidence"
+            else f"source-{index}".encode()
+        )
         path.write_bytes(raw)
         paths[source_id] = path
         hashes[source_id] = hashlib.sha256(raw).hexdigest()
@@ -77,20 +81,15 @@ def _source_inputs(tmp_path: Path) -> tuple[dict[str, Path], Path]:
 
 
 def _smoke_budget() -> CapabilityBudgetV1:
-    return CapabilityBudgetV1(
-        max_calls=1, max_prompt_tokens=8, max_output_tokens=8,
-        estimated_cost=Decimal("0"), hard_max_cost=Decimal("0"), price_version="unpriced",
-        max_retries=0, timeout_seconds=1,
-    )
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_budget_v1
+
+    return build_capability_budget_v1()
 
 
 def _fixtures() -> tuple[CapabilityFixtureV1, ...]:
-    return (
-        CapabilityFixtureV1(fixture_id="exact_ok_1", category="EXACT_OUTPUT", prompt_sha256="a" * 64, parser_sha256="b" * 64, max_prompt_tokens=8, max_output_tokens=8),
-        CapabilityFixtureV1(fixture_id="exact_ok_2", category="EXACT_OUTPUT", prompt_sha256="c" * 64, parser_sha256="d" * 64, max_prompt_tokens=8, max_output_tokens=8),
-        CapabilityFixtureV1(fixture_id="parser_city_1", category="CHAT_TEMPLATE_PARSER", prompt_sha256="e" * 64, parser_sha256="f" * 64, max_prompt_tokens=8, max_output_tokens=8),
-        CapabilityFixtureV1(fixture_id="parser_city_2", category="CHAT_TEMPLATE_PARSER", prompt_sha256="0" * 64, parser_sha256="1" * 64, max_prompt_tokens=8, max_output_tokens=8),
-    )
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_fixtures_v1
+
+    return build_capability_fixtures_v1()
 
 
 def _identity_bundle() -> IdentityEvidenceBundleV1:
@@ -121,10 +120,17 @@ def _decisions(release_id: str, keys: tuple[str, ...]) -> QualificationDecisionB
 def _inputs(tmp_path: Path) -> dict[str, object]:
     paths, config_path = _source_inputs(tmp_path)
     config = load_qualification_release_config_v1(config_path)
+    provider_path = tmp_path / "provider.jsonl"
+    runtime_path = tmp_path / "runtime.jsonl"
+    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in provider_attestations()))
+    runtime_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in open_runtime_receipts()))
     return {
-        "config": config, "source_paths": paths,
-        "provider_attestations": provider_attestations(), "runtime_receipts": open_runtime_receipts(),
-        "capability_fixtures": _fixtures(), "capability_budget": _smoke_budget(),
+        "config": config,
+        "source_paths": paths,
+        "provider_attestations_path": provider_path,
+        "runtime_receipts_path": runtime_path,
+        "capability_fixtures": _fixtures(),
+        "capability_budget": _smoke_budget(),
         "smoke_plan": _smoke_plan(config.release_id, config.registry_keys),
         "identity_bundle": _identity_bundle(),
     }
@@ -139,8 +145,65 @@ def test_builder_emits_exact_deterministic_artifacts_and_zero_counters(tmp_path:
     assert dict(left.artifact_bytes) == dict(right.artifact_bytes)
     assert left.index_sha256 == right.index_sha256
     assert (left.provider_calls, left.model_loads, left.network_calls, left.credential_reads, left.benchmark_generations) == (0, 0, 0, 0, 0)
-    verify_qualification_artifact_bytes_v1(left)
+    _verify_qualification_artifact_bytes_v1(left)
     assert "stale_copied" not in left.artifact_bytes["qualification_validation_receipt.json"].decode()
+
+
+def test_release_requires_source_backed_provider_and_runtime_evidence(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    assert build_qualification_release_v1(
+        **{**inputs, "provider_attestations": provider_attestations(), "runtime_receipts": open_runtime_receipts()}
+    )
+    typed_only = dict(inputs)
+    typed_only.pop("provider_attestations_path")
+    typed_only.pop("runtime_receipts_path")
+    typed_only["provider_attestations"] = provider_attestations()
+    typed_only["runtime_receipts"] = open_runtime_receipts()
+    with pytest.raises(ValueError, match="provider attestations path"):
+        build_qualification_release_v1(**typed_only)
+
+
+def test_release_binds_dynamic_evidence_hashes_and_rejects_forged_identity(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    publication = build_qualification_release_v1(**inputs)
+    source_bundle = qualification_release_v1.SourceBindingBundleV1.model_validate_json(
+        publication.artifact_bytes["source_bindings.json"]
+    )
+    bindings = {item.source_id: item for item in source_bundle.sources}
+    assert bindings["provider_attestations"].sha256 == hashlib.sha256(
+        inputs["provider_attestations_path"].read_bytes()
+    ).hexdigest()
+    assert bindings["runtime_receipts"].sha256 == hashlib.sha256(
+        inputs["runtime_receipts_path"].read_bytes()
+    ).hexdigest()
+    assert {"qualification_config", "capability_fixtures", "capability_parser_contract", "qualification_planner"} <= set(bindings)
+    manifest = qualification_release_v1.QualificationReleaseManifestV1.model_validate_json(
+        publication.artifact_bytes["qualification_release_manifest.json"]
+    )
+    assert dict(manifest.source_hashes) == {source_id: binding.sha256 for source_id, binding in bindings.items()}
+
+    bundle = _identity_bundle()
+    forged_record = type(bundle.records[-1]).model_construct(**{
+        **bundle.records[-1].model_dump(mode="python"), "official_model_id": "gpt-5.5",
+    })
+    forged = IdentityEvidenceBundleV1.model_construct(**{
+        **bundle.model_dump(mode="python"), "records": (*bundle.records[:-1], forged_record),
+    })
+    with pytest.raises(ValueError, match="identity bundle"):
+        build_qualification_release_v1(**{**inputs, "identity_bundle": forged})
+
+
+def test_release_rejects_dangling_decision_evidence_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inputs = _inputs(tmp_path)
+    original = qualification_release_v1.derive_qualification_decisions_v1
+
+    def forged(*args: object):
+        decisions = original(*args)
+        return (decisions[0].model_copy(update={"evidence_binding_ids": ("missing_binding",)}), *decisions[1:])
+
+    monkeypatch.setattr(qualification_release_v1, "derive_qualification_decisions_v1", forged)
+    with pytest.raises(ValueError, match="decision evidence binding"):
+        build_qualification_release_v1(**inputs)
 
 
 def test_builder_rejects_source_substitution_and_missing_source(tmp_path: Path) -> None:
@@ -165,10 +228,11 @@ def test_builder_rejects_secret_like_and_metric_fields_before_exposing_bytes(tmp
         )
 
 
-def test_builder_rejects_caller_selected_decisions_plan_and_receipt(tmp_path: Path) -> None:
+def test_builder_uses_source_identity_without_compatibility_input(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
-    with pytest.raises(ValueError, match="identity"):
-        build_qualification_release_v1(**{key: value for key, value in inputs.items() if key != "identity_bundle"})
+    without_compatibility_input = {key: value for key, value in inputs.items() if key != "identity_bundle"}
+    publication = build_qualification_release_v1(**without_compatibility_input)
+    assert publication.release_id == inputs["config"].release_id
 
 
 def test_builder_rejects_file_backed_config_without_its_snapshot(tmp_path: Path) -> None:
@@ -225,9 +289,8 @@ def test_publish_rejects_file_backed_config_mutation_before_commit(tmp_path: Pat
 
 def test_publish_rejects_provider_receipt_mutation_before_commit(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
-    provider_path = tmp_path / "provider.jsonl"
-    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
-    inputs["provider_attestations_path"] = provider_path
+    provider_path = inputs["provider_attestations_path"]
+    assert isinstance(provider_path, Path)
     def mutate_provider() -> None:
         provider_path.write_bytes(b"changed")
     with pytest.raises(ValueError, match="provider attestations"):
@@ -309,9 +372,8 @@ def test_publish_revalidates_sources_after_final_collective_check(tmp_path: Path
 
 def test_publish_resolves_provider_jsonl_once_before_final_revalidation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inputs = _inputs(tmp_path)
-    provider_path = tmp_path / "provider.jsonl"
-    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
-    inputs["provider_attestations_path"] = provider_path
+    provider_path = inputs["provider_attestations_path"]
+    assert isinstance(provider_path, Path)
     original = qualification_release_v1._load_provider_rows
     calls = 0
     def count_provider(path: Path):
@@ -325,9 +387,8 @@ def test_publish_resolves_provider_jsonl_once_before_final_revalidation(tmp_path
 
 def test_build_and_verify_resolve_provider_jsonl_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inputs = _inputs(tmp_path)
-    provider_path = tmp_path / "provider.jsonl"
-    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs.pop("provider_attestations")))
-    inputs["provider_attestations_path"] = provider_path
+    provider_path = inputs["provider_attestations_path"]
+    assert isinstance(provider_path, Path)
     original = qualification_release_v1._load_provider_rows
     calls = 0
     def count_provider(path: Path):
@@ -365,14 +426,16 @@ def test_resolver_rejects_conflicting_input_forms(tmp_path: Path) -> None:
     replacement.write_bytes(b"different")
     with pytest.raises(ValueError, match="conflicting source path"):
         build_qualification_release_v1(**inputs, workflow_source_path=replacement)
-    provider_path = tmp_path / "provider.jsonl"
-    provider_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs["provider_attestations"]))
     with pytest.raises(ValueError, match="provider attestations"):
-        build_qualification_release_v1(**inputs, provider_attestations_path=provider_path)
-    runtime_path = tmp_path / "runtime.jsonl"
-    runtime_path.write_bytes(b"".join(canonical_bytes(row) + b"\n" for row in inputs["runtime_receipts"]))
+        build_qualification_release_v1(
+            **inputs,
+            provider_attestations=(provider_attestations()[0],),
+        )
     with pytest.raises(ValueError, match="runtime receipts"):
-        build_qualification_release_v1(**inputs, runtime_receipts_path=runtime_path)
+        build_qualification_release_v1(
+            **inputs,
+            runtime_receipts=(open_runtime_receipts()[0],),
+        )
 
 
 def test_source_hardlink_is_rejected_when_host_supports_it(tmp_path: Path) -> None:
