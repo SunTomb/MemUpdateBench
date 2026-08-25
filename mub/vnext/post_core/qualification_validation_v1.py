@@ -12,6 +12,14 @@ from typing import Any
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes, canonical_hash
+from mub.vnext.post_core.qualification_planning_v1 import (
+    CapabilitySmokePlanConfigV1,
+    _EXPECTED_REGISTRY_KEYS,
+    _EXPECTED_RELEASE_ID,
+    build_capability_budget_v1,
+    build_capability_fixtures_v1,
+    build_capability_smoke_plan_v1,
+)
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
@@ -27,6 +35,13 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
 )
 
 
+_EXPECTED_CAPABILITY_RESPONSE_MODELS = {
+    "claude_sonnet_4_6": "claude-sonnet-4-6",
+    "claude_opus_4_8": "claude-opus-4-8",
+    "gemini_3_6_flash": "Gemini 3.6 Flash (Low)",
+    "grok_4_5": "grok-4.5",
+    "gpt_5_5": "gpt-5.5",
+}
 _EXPECTED_PROVIDER_ROWS = (
     ("claude_sonnet_4_6", "claude-sonnet-4-6", 2),
     ("claude_opus_4_8", "claude-opus-4-8", 2),
@@ -423,9 +438,27 @@ def _load_canonical_json_model_v1(path: Path, model_type: type[Any], *, label: s
     return model
 
 
+def validate_canonical_capability_smoke_plan_v1(
+    plan: CapabilitySmokePlanV1,
+) -> CapabilitySmokePlanV1:
+    if type(plan) is not CapabilitySmokePlanV1:
+        raise TypeError("capability smoke plan must use CapabilitySmokePlanV1")
+    expected = build_capability_smoke_plan_v1(
+        CapabilitySmokePlanConfigV1(
+            release_id=_EXPECTED_RELEASE_ID,
+            registry_keys=_EXPECTED_REGISTRY_KEYS,
+            budget=build_capability_budget_v1(),
+        ),
+        build_capability_fixtures_v1(),
+    )
+    if canonical_bytes(plan) != canonical_bytes(expected):
+        raise ValueError("capability smoke plan differs from the canonical planner-derived plan")
+    return plan
+
+
 def load_capability_smoke_plan_v1(path: Path) -> CapabilitySmokePlanV1:
-    return _load_canonical_json_model_v1(
-        path, CapabilitySmokePlanV1, label="capability smoke plan"
+    return validate_canonical_capability_smoke_plan_v1(
+        _load_canonical_json_model_v1(path, CapabilitySmokePlanV1, label="capability smoke plan")
     )
 
 
@@ -534,6 +567,12 @@ def validate_escalation_anomaly_evidence_v1(
         "base receipts must exactly cover anomaly base call IDs",
     )
     attempts_by_id = {attempt.call_id: attempt for attempt in plan.attempts}
+    base_attempts: list[CapabilityAttemptPlanV1] = []
+    for row in rows:
+        attempt = attempts_by_id.get(row.call_id)
+        _require(attempt is not None, "base receipt call ID is not in plan")
+        base_attempts.append(attempt)
+    validate_capability_attempt_receipts_v1(tuple(base_attempts), rows)
     for row in rows:
         attempt = attempts_by_id.get(row.call_id)
         _require(attempt is not None, "base receipt call ID is not in plan")
@@ -653,8 +692,8 @@ def validate_capability_attempt_receipts_v1(
                     "closed PASS receipt response format mismatch",
                 )
                 _require(
-                    receipt.response_model is not None and receipt.response_model.strip(),
-                    "closed PASS receipt requires a nonblank response model",
+                    receipt.response_model == _EXPECTED_CAPABILITY_RESPONSE_MODELS.get(attempt.registry_key),
+                    "closed PASS receipt response model mismatch",
                 )
                 _require(
                     receipt.stop_reason is not None and receipt.stop_reason.strip(),
@@ -666,6 +705,7 @@ def validate_capability_attempt_receipts_v1(
                     receipt.response_format == "LOCAL_TEXT",
                     "local PASS receipt response format mismatch",
                 )
+                _require(receipt.response_model is None, "local PASS receipt must not carry a response model")
                 _require(receipt.latency_ms is not None, "local PASS receipt requires latency")
         elif receipt.status in {GateStatus.FAIL, GateStatus.BLOCKED}:
             _require(receipt.error_class is not None and receipt.error_class.strip(), "non-PASS capability receipt requires error class")
@@ -893,6 +933,7 @@ __all__ = [
     "load_canonical_jsonl_v1",
     "load_execution_authorization_v1",
     "validate_capability_attempt_receipts_v1",
+    "validate_canonical_capability_smoke_plan_v1",
     "validate_escalation_anomaly_evidence_v1",
     "validate_escalation_anomaly_receipt_v1",
     "validate_provider_attestations_v1",

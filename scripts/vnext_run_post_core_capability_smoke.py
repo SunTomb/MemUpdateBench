@@ -9,7 +9,7 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
+import threading
 from typing import Any
 
 
@@ -45,6 +45,13 @@ EXIT_OUTPUT = 13
 EXIT_ADAPTER = 14
 _MAX_CAPTURE_BYTES = 4 * 1024 * 1024
 _OS_ENVIRONMENT_ALLOWLIST = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+_EXPECTED_RESPONSE_MODELS = {
+    "claude_sonnet_4_6": "claude-sonnet-4-6",
+    "claude_opus_4_8": "claude-opus-4-8",
+    "gemini_3_6_flash": "Gemini 3.6 Flash (Low)",
+    "grok_4_5": "grok-4.5",
+    "gpt_5_5": "gpt-5.5",
+}
 
 
 class _ArgumentUsageError(Exception):
@@ -129,72 +136,101 @@ def _adapter_environment() -> dict[str, str]:
     return {key: value for key in _OS_ENVIRONMENT_ALLOWLIST if (value := os.environ.get(key)) is not None}
 
 
+def _run_python_adapter_bounded(
+    source_text: str, payload: bytes, timeout_seconds: int
+) -> tuple[int, bytes, bytes]:
+    if len(payload) > _MAX_CAPTURE_BYTES:
+        raise _AdapterProtocolError
+    process = subprocess.Popen(
+        [sys.executable, "-c", source_text, "--jsonl-protocol-v1"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        env=_adapter_environment(),
+    )
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    overflow = threading.Event()
+
+    def read_pipe(name: str, stream: Any) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    return
+                buffer = captured[name]
+                remaining = _MAX_CAPTURE_BYTES + 1 - len(buffer)
+                if remaining > 0:
+                    buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    overflow.set()
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(target=read_pipe, args=("stdout", process.stdout), daemon=True)
+    stderr_thread = threading.Thread(target=read_pipe, args=("stderr", process.stderr), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        try:
+            if process.stdin is None:
+                raise _AdapterProtocolError
+            _write_all(process.stdin.fileno(), payload)
+        except (OSError, _AdapterProtocolError):
+            pass
+        finally:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait()
+            raise _AdapterProtocolError from exc
+    finally:
+        if process.poll() is None:
+            process.kill()
+        stdout_thread.join()
+        stderr_thread.join()
+    if overflow.is_set():
+        raise _AdapterProtocolError
+    return returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
+
+
 def _selected_attempts(plan: Any, authorization: Any) -> tuple[Any, ...]:
     allowed = set(authorization.authorized_call_ids)
     return tuple(attempt for attempt in plan.attempts if attempt.call_id in allowed)
 
 
-def _pin_adapter(path: Path) -> tuple[Path, Path]:
+def _capture_python_adapter(path: Path) -> tuple[Path, bytes, str]:
+    """Capture the only v1 adapter form: bounded UTF-8 Python source."""
     adapter = _regular_single_link(path, "adapter executable")
+    if adapter.suffix.lower() != ".py":
+        raise ValueError("adapter executable must be a Python source file in v1")
     raw = _read_regular_single_link(adapter, "adapter executable")
-    private_dir = Path(tempfile.mkdtemp(prefix="mub-capability-smoke-"))
-    os.chmod(private_dir, 0o700)
-    private_path = private_dir / ("adapter.py" if adapter.suffix.lower() == ".py" else "adapter.bin")
-    descriptor: int | None = None
+    if len(raw) > _MAX_CAPTURE_BYTES:
+        raise ValueError("adapter source exceeds the v1 size limit")
     try:
-        descriptor = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o700)
-        _write_all(descriptor, raw)
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        if _read_regular_single_link(private_path, "pinned adapter") != raw:
-            raise ValueError("pinned adapter changed")
-        return private_dir, private_path
-    except Exception:
-        if descriptor is not None:
-            os.close(descriptor)
-        try:
-            private_path.unlink(missing_ok=True)
-            private_dir.rmdir()
-        except OSError:
-            pass
-        raise
+        source_text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("adapter source must use UTF-8") from exc
+    return adapter, raw, source_text
 
 
-def _after_adapter_pinned(original: Path, pinned: Path) -> None:
+def _after_adapter_pinned(original: Path, captured: Path) -> None:
     return None
 
 
 def _before_adapter_run(output: Path) -> None:
     return None
-
-
-def _pinned_adapter_stable(
-    private_dir: Path,
-    private_path: Path,
-    directory_identity: tuple[int, int],
-    adapter_identity: tuple[int, int],
-    adapter_sha256: str,
-) -> bool:
-    try:
-        return (
-            _identity(private_dir.stat()) == directory_identity
-            and _identity(private_path.lstat()) == adapter_identity
-            and hashlib.sha256(_read_regular_single_link(private_path, "pinned adapter")).hexdigest()
-            == adapter_sha256
-        )
-    except (OSError, ValueError):
-        return False
-
-
-def _clean_pinned_adapter(private_dir: Path, private_path: Path) -> None:
-    try:
-        metadata = private_path.lstat()
-        if stat.S_ISREG(metadata.st_mode) and getattr(metadata, "st_nlink", 1) == 1 and not _is_reparse(private_path):
-            private_path.unlink()
-        private_dir.rmdir()
-    except OSError:
-        pass
 
 
 def _reserve_output(path: Path) -> tuple[Path, int, tuple[int, int], tuple[int, int]]:
@@ -246,7 +282,7 @@ def _reserved_output_stable(
             and path_metadata.st_size == expected_size
             and descriptor_metadata.st_size == expected_size
         )
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -255,26 +291,22 @@ def _discard_reserved_output(path: Path, descriptor: int, parent_identity: tuple
         expected_size = os.fstat(descriptor).st_size
     except OSError:
         expected_size = -1
-    stable = _reserved_output_stable(
-        path, descriptor, parent_identity, output_identity, expected_size
-    )
+    _reserved_output_stable(path, descriptor, parent_identity, output_identity, expected_size)
     try:
         os.close(descriptor)
     finally:
-        if stable:
-            try:
-                metadata = path.lstat()
-                if (
-                    _identity(path.parent.stat()) == parent_identity
-                    and _identity(metadata) == output_identity
-                    and stat.S_ISREG(metadata.st_mode)
-                    and not _is_reparse(path)
-                    and getattr(metadata, "st_nlink", 1) == 1
-                    and metadata.st_size == expected_size
-                ):
-                    path.unlink()
-            except OSError:
-                pass
+        try:
+            _reject_reparse_components(path.parent)
+            metadata = path.lstat()
+            if (
+                _identity(path.parent.stat()) == parent_identity
+                and _identity(metadata) == output_identity
+                and stat.S_ISREG(metadata.st_mode)
+                and not _is_reparse(path)
+            ):
+                path.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 def _finalize_reserved_output(path: Path, descriptor: int, parent_identity: tuple[int, int], output_identity: tuple[int, int], raw: bytes) -> None:
@@ -365,13 +397,16 @@ def _transport_result_is_complete(attempt: Any, result: CapabilityAdapterResultV
     if attempt.runtime_or_endpoint_class == "api_transfer_station":
         return bool(
             result.response_format in {"ANTHROPIC_MESSAGE_JSON", "SSE"}
-            and result.response_model is not None
-            and result.response_model.strip()
+            and result.response_model == _EXPECTED_RESPONSE_MODELS.get(attempt.registry_key)
             and result.stop_reason is not None
             and result.stop_reason.strip()
             and result.usage_present is not None
         )
-    return result.response_format == "LOCAL_TEXT" and result.latency_ms is not None
+    return (
+        result.response_format == "LOCAL_TEXT"
+        and result.response_model is None
+        and result.latency_ms is not None
+    )
 
 
 def _projection_matches_fixture(attempt: Any, projection: str) -> bool:
@@ -414,14 +449,17 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     except SystemExit as exception:
         return EXIT_SUCCESS if exception.code == 0 else EXIT_USAGE
-    if not args.authorization_receipt:
-        print("capability smoke blocked: missing execution authorization", file=sys.stderr)
-        return EXIT_BLOCKED
     if not args.execute:
+        if not args.authorization_receipt:
+            print("capability smoke blocked: missing execution authorization", file=sys.stderr)
+            return EXIT_BLOCKED
         print("capability smoke requires explicit --execute", file=sys.stderr)
         return EXIT_USAGE
     try:
         plan = load_capability_smoke_plan_v1(Path(args.plan))
+        if not args.authorization_receipt:
+            print("capability smoke blocked: missing execution authorization", file=sys.stderr)
+            return EXIT_BLOCKED
         authorization = load_execution_authorization_v1(Path(args.authorization_receipt), plan)
         selected = _selected_attempts(plan, authorization)
         escalated = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
@@ -457,51 +495,39 @@ def main(argv: list[str] | None = None) -> int:
         print("capability smoke contract/usage rejected", file=sys.stderr)
         return EXIT_USAGE
     try:
-        private_dir, pinned_adapter = _pin_adapter(Path(args.adapter_executable))
-        pinned_dir_identity = _identity(private_dir.stat())
-        pinned_adapter_identity = _identity(pinned_adapter.lstat())
-        pinned_adapter_sha256 = hashlib.sha256(
-            _read_regular_single_link(pinned_adapter, "pinned adapter")
-        ).hexdigest()
-        _after_adapter_pinned(Path(args.adapter_executable), pinned_adapter)
+        adapter, adapter_raw, adapter_source = _capture_python_adapter(Path(args.adapter_executable))
+        if hashlib.sha256(adapter_raw).hexdigest() != authorization.adapter_sha256:
+            raise ValueError("adapter source hash mismatch")
+        _after_adapter_pinned(adapter, adapter)
     except (ValueError, OSError):
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
         return EXIT_ADAPTER
     try:
         output, output_fd, parent_identity, output_identity = _reserve_output(Path(args.output))
     except FileExistsError:
-        _clean_pinned_adapter(private_dir, pinned_adapter)
         print("capability smoke rejected: output path is unavailable", file=sys.stderr)
         return EXIT_OUTPUT
     except (ValueError, OSError):
-        _clean_pinned_adapter(private_dir, pinned_adapter)
         print("capability smoke rejected: unsafe output path", file=sys.stderr)
         return EXIT_OUTPUT
 
-    command = [sys.executable, str(pinned_adapter), "--jsonl-protocol-v1"] if pinned_adapter.suffix.lower() == ".py" else [str(pinned_adapter), "--jsonl-protocol-v1"]
     payload = b"".join(canonical_bytes(attempt) + b"\n" for attempt in selected)
     timeout_seconds = min(300, max(attempt.budget.timeout_seconds for attempt in selected))
     finalized = False
     try:
         _before_adapter_run(output)
-        if not _pinned_adapter_stable(
-            private_dir,
-            pinned_adapter,
-            pinned_dir_identity,
-            pinned_adapter_identity,
-            pinned_adapter_sha256,
-        ):
+        returncode, stdout, stderr = _run_python_adapter_bounded(
+            adapter_source, payload, timeout_seconds
+        )
+        if returncode != 0 or stderr:
             raise _AdapterProtocolError
-        completed = subprocess.run(command, input=payload, capture_output=True, timeout=timeout_seconds, shell=False, env=_adapter_environment())
-        if completed.returncode != 0 or completed.stderr or len(completed.stdout) > _MAX_CAPTURE_BYTES or len(completed.stderr) > _MAX_CAPTURE_BYTES:
-            raise _AdapterProtocolError
-        adapter_results = _parse_adapter_stdout(completed.stdout)
+        adapter_results = _parse_adapter_stdout(stdout)
         receipts = _adapter_results_to_receipts(selected, adapter_results)
         validate_capability_attempt_receipts_v1(selected, receipts)
         receipt_raw = b"".join(canonical_bytes(receipt) + b"\n" for receipt in receipts)
         _finalize_reserved_output(output, output_fd, parent_identity, output_identity, receipt_raw)
         finalized = True
-    except (subprocess.TimeoutExpired, OSError, ValueError, _AdapterProtocolError):
+    except (OSError, ValueError, _AdapterProtocolError):
         if not finalized:
             _discard_reserved_output(output, output_fd, parent_identity, output_identity)
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
@@ -511,8 +537,6 @@ def main(argv: list[str] | None = None) -> int:
             _discard_reserved_output(output, output_fd, parent_identity, output_identity)
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
         return EXIT_ADAPTER
-    finally:
-        _clean_pinned_adapter(private_dir, pinned_adapter)
     print(_summary(output, selected))
     return EXIT_SUCCESS
 

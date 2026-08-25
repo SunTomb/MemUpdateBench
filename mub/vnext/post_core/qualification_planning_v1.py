@@ -78,6 +78,7 @@ def _reject_forbidden_object_fields(value: object) -> None:
             raise ValueError(f"planner input cannot carry {name}")
 
 
+_EXPECTED_RELEASE_ID = "memupdatebench.post-core.qualification.v1"
 _EXPECTED_REGISTRY_KEYS = (
     "qwen35_9b_bf16",
     "meta_muse_glimmer_30b_int4",

@@ -411,6 +411,7 @@ class ExecutionAuthorizationV1(ImmutableContractModel):
     issued_at: StrictStr
     issuer: StrictStr
     authorization_attestation_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    adapter_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
     escalation_anomaly_receipt_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
 
     @field_validator("issued_at")
@@ -459,7 +460,12 @@ class CapabilityAdapterResultV1(ImmutableContractModel):
     stop_reason: StrictStr | None = None
     usage_present: StrictBool | None = None
     latency_ms: StrictInt | None = Field(default=None, ge=0)
-    error_class: StrictStr | None = None
+    error_class: Literal[
+        "ADAPTER_TIMEOUT",
+        "ADAPTER_FAILURE",
+        "FORMAT_ERROR",
+        "STABILITY_MISMATCH",
+    ] | None = None
 
 
 class CapabilityAttemptReceiptV1(ImmutableContractModel):
