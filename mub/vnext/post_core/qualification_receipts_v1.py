@@ -361,6 +361,54 @@ class CapabilitySmokePlanV1(ImmutableContractModel):
         return self
 
 
+class ExecutionAuthorizationV1(ImmutableContractModel):
+    schema_version: Literal["qualification-execution-authorization.v1"] = (
+        "qualification-execution-authorization.v1"
+    )
+    release_id: StrictStr
+    plan_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    scope: Literal[DecisionScope.CAPABILITY_SMOKE]
+    authorized_call_ids: tuple[StrictStr, ...]
+    max_calls: StrictInt = Field(gt=0)
+    issued_at: StrictStr
+    issuer: StrictStr
+    authorization_attestation_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    escalation_anomaly_receipt_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+
+    @field_validator("issued_at")
+    @classmethod
+    def _utc_timestamp(cls, value: StrictStr) -> StrictStr:
+        from datetime import datetime
+
+        if not value.strip() or not value.endswith("Z"):
+            raise ValueError("issued_at must be a nonblank UTC timestamp")
+        try:
+            datetime.fromisoformat(f"{value[:-1]}+00:00")
+        except ValueError as exc:
+            raise ValueError("issued_at must be an ISO8601-ish UTC timestamp") from exc
+        return value
+
+    @field_validator("issuer")
+    @classmethod
+    def _nonblank_issuer(cls, value: StrictStr) -> StrictStr:
+        if not value.strip():
+            raise ValueError("issuer must be nonblank")
+        return value
+
+    @model_validator(mode="after")
+    def _authorized_call_shape(self) -> "ExecutionAuthorizationV1":
+        if not self.authorized_call_ids:
+            raise ValueError("authorized call IDs must be nonempty")
+        if len(self.authorized_call_ids) != len(set(self.authorized_call_ids)):
+            raise ValueError("authorized call IDs must be unique")
+        if any(
+            len(call_id) != 64 or any(char not in "0123456789abcdef" for char in call_id)
+            for call_id in self.authorized_call_ids
+        ):
+            raise ValueError("authorized call IDs must be lowercase SHA-256")
+        return self
+
+
 class CapabilityAttemptReceiptV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.post-core.capability-attempt-receipt.v1"] = (
         "memupdatebench.post-core.capability-attempt-receipt.v1"
@@ -470,6 +518,7 @@ __all__ = [
     "CapabilityFixtureV1",
     "CapabilitySmokePlanV1",
     "DecisionScope",
+    "ExecutionAuthorizationV1",
     "GateStatus",
     "OpenRuntimeReceiptV1",
     "ProviderCapabilityAttestationV1",

@@ -10,9 +10,14 @@ import stat
 from typing import Any
 from urllib.parse import unquote_to_bytes, urlsplit
 
-from mub.vnext.post_core.contracts_v1 import canonical_bytes
+from mub.vnext.post_core.contracts_v1 import canonical_bytes, canonical_hash
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
 from mub.vnext.post_core.qualification_receipts_v1 import (
+    AttemptPhase,
+    CapabilityAttemptPlanV1,
+    CapabilityAttemptReceiptV1,
+    CapabilitySmokePlanV1,
+    ExecutionAuthorizationV1,
     GateStatus,
     OpenRuntimeReceiptV1,
     ProviderCapabilityAttestationV1,
@@ -112,7 +117,12 @@ _ASSIGNMENT = re.compile(r"^\s*([^=]+?)\s*=", re.DOTALL)
 _IDENTIFIER_SHAPED = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_SAFE_CONTRACT_KEYS = frozenset({"registry_key", "generated_token_count"})
+_SAFE_CONTRACT_KEYS = frozenset({
+    "registry_key",
+    "generated_token_count",
+    "authorization_attestation_sha256",
+    "escalation_anomaly_receipt_sha256",
+})
 
 
 def _normalized_key(value: object) -> str:
@@ -369,9 +379,162 @@ def load_canonical_jsonl_v1(path: Path, model_type: type[Any], *, label: str) ->
     return result, raw
 
 
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def _plan_payload_without_computed_call_ids(payload: object) -> object:
+    if not isinstance(payload, Mapping):
+        return payload
+    normalized = dict(payload)
+    attempts = normalized.get("attempts")
+    if isinstance(attempts, list):
+        normalized["attempts"] = [
+            {key: value for key, value in row.items() if key != "call_id"}
+            if isinstance(row, Mapping)
+            else row
+            for row in attempts
+        ]
+    return normalized
+
+
+def _load_canonical_json_model_v1(path: Path, model_type: type[Any], *, label: str) -> Any:
+    raw = _read_regular_single_link(Path(path), label)
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} contains invalid JSON") from exc
+    validate_qualification_secret_free(payload)
+    try:
+        model = model_type.model_validate(
+            _plan_payload_without_computed_call_ids(payload)
+            if model_type is CapabilitySmokePlanV1
+            else payload
+        )
+    except Exception as exc:
+        raise ValueError(f"{label} does not satisfy its contract") from exc
+    if canonical_bytes(model) != raw:
+        raise ValueError(f"{label} is not canonical")
+    validate_qualification_secret_free(model.model_dump(mode="json"))
+    return model
+
+
+def load_capability_smoke_plan_v1(path: Path) -> CapabilitySmokePlanV1:
+    return _load_canonical_json_model_v1(
+        path, CapabilitySmokePlanV1, label="capability smoke plan"
+    )
+
+
+def _coerce_capability_smoke_plan_v1(plan_raw: object) -> CapabilitySmokePlanV1:
+    if isinstance(plan_raw, CapabilitySmokePlanV1):
+        plan = plan_raw
+    elif isinstance(plan_raw, (bytes, bytearray)):
+        try:
+            payload = json.loads(bytes(plan_raw))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("capability smoke plan contains invalid JSON") from exc
+        validate_qualification_secret_free(payload)
+        try:
+            plan = CapabilitySmokePlanV1.model_validate(
+                _plan_payload_without_computed_call_ids(payload)
+            )
+        except Exception as exc:
+            raise ValueError("capability smoke plan does not satisfy its contract") from exc
+        if canonical_bytes(plan) != bytes(plan_raw):
+            raise ValueError("capability smoke plan is not canonical")
+    else:
+        raise TypeError("plan_raw must be CapabilitySmokePlanV1 or canonical JSON bytes")
+    validate_qualification_secret_free(plan.model_dump(mode="json"))
+    return plan
+
+
+def load_execution_authorization_v1(
+    path: Path, plan_raw: CapabilitySmokePlanV1 | bytes | bytearray
+) -> ExecutionAuthorizationV1:
+    plan = _coerce_capability_smoke_plan_v1(plan_raw)
+    authorization = _load_canonical_json_model_v1(
+        path, ExecutionAuthorizationV1, label="execution authorization"
+    )
+    _require(authorization.release_id == plan.release_id, "authorization release ID mismatch")
+    _require(authorization.plan_sha256 == canonical_hash(plan), "authorization plan hash mismatch")
+    _require(authorization.max_calls >= len(authorization.authorized_call_ids), "authorization max calls is below selected calls")
+    _require(authorization.max_calls <= len(plan.attempts), "authorization max calls exceeds plan calls")
+    plan_call_ids = {attempt.call_id for attempt in plan.attempts}
+    _require(
+        set(authorization.authorized_call_ids).issubset(plan_call_ids),
+        "authorization contains an unknown call ID",
+    )
+    selected = tuple(
+        attempt for attempt in plan.attempts if attempt.call_id in set(authorization.authorized_call_ids)
+    )
+    has_escalation = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
+    _require(
+        (has_escalation and authorization.escalation_anomaly_receipt_sha256 is not None)
+        or (not has_escalation and authorization.escalation_anomaly_receipt_sha256 is None),
+        "authorization escalation anomaly receipt does not match selected phases",
+    )
+    return authorization
+
+
+def validate_capability_attempt_receipts_v1(
+    selected_attempts: Sequence[CapabilityAttemptPlanV1],
+    receipts: Sequence[CapabilityAttemptReceiptV1],
+) -> tuple[CapabilityAttemptReceiptV1, ...]:
+    _require(not isinstance(selected_attempts, (str, bytes)), "selected attempts must be a sequence")
+    _require(not isinstance(receipts, (str, bytes)), "capability receipts must be a sequence")
+    selected = tuple(selected_attempts)
+    result = tuple(receipts)
+    _require(selected, "selected attempts must be nonempty")
+    _require(len(selected) == len(result), "capability receipt count mismatch")
+    _require(
+        all(isinstance(attempt, CapabilityAttemptPlanV1) for attempt in selected),
+        "selected attempts must use CapabilityAttemptPlanV1",
+    )
+    _require(
+        all(isinstance(receipt, CapabilityAttemptReceiptV1) for receipt in result),
+        "capability receipts must use CapabilityAttemptReceiptV1",
+    )
+    selected_call_ids = tuple(attempt.call_id for attempt in selected)
+    _require(len(selected_call_ids) == len(set(selected_call_ids)), "selected call IDs must be unique")
+    _require(
+        tuple(receipt.call_id for receipt in result) == selected_call_ids,
+        "capability receipt call IDs or order mismatch",
+    )
+    validate_qualification_secret_free(tuple(receipt.model_dump(mode="json") for receipt in result))
+    for attempt, receipt in zip(selected, result):
+        _require(receipt.registry_key == attempt.registry_key, "capability receipt registry mismatch")
+        _require(receipt.retry_count == 0, "capability receipt retries must be zero")
+        if receipt.status is GateStatus.PASS:
+            _require(receipt.error_class is None, "PASS capability receipt cannot carry an error")
+            _require(receipt.redacted_response_sha256 is not None, "PASS capability receipt requires a response hash")
+            if attempt.runtime_or_endpoint_class == "api_transfer_station":
+                _require(
+                    receipt.response_format in {"ANTHROPIC_MESSAGE_JSON", "SSE"},
+                    "closed PASS receipt response format mismatch",
+                )
+                _require(
+                    receipt.response_model is not None and receipt.response_model.strip(),
+                    "closed PASS receipt requires a nonblank response model",
+                )
+                _require(
+                    receipt.stop_reason is not None and receipt.stop_reason.strip(),
+                    "closed PASS receipt requires a nonblank stop reason",
+                )
+                _require(receipt.usage_present is not None, "closed PASS receipt requires usage evidence")
+            else:
+                _require(
+                    receipt.response_format == "LOCAL_TEXT",
+                    "local PASS receipt response format mismatch",
+                )
+                _require(receipt.latency_ms is not None, "local PASS receipt requires latency")
+        elif receipt.status in {GateStatus.FAIL, GateStatus.BLOCKED}:
+            _require(receipt.error_class is not None and receipt.error_class.strip(), "non-PASS capability receipt requires error class")
+            _require(receipt.redacted_response_sha256 is None, "non-PASS capability receipt cannot carry a response hash")
+        else:
+            raise ValueError("capability receipt status must be PASS, FAIL, or BLOCKED")
+    return result
 
 
 def validate_provider_attestations_v1(
@@ -589,6 +752,8 @@ def validate_runtime_receipts_v1(
 
 __all__ = [
     "load_canonical_jsonl_v1",
+    "load_execution_authorization_v1",
+    "validate_capability_attempt_receipts_v1",
     "validate_provider_attestations_v1",
     "validate_qualification_secret_free",
     "validate_runtime_receipts_v1",

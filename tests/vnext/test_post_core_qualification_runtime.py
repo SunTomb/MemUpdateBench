@@ -188,6 +188,8 @@ def test_runtime_validation_exports_exactly_four_public_functions() -> None:
 
     assert validation.__all__ == [
         "load_canonical_jsonl_v1",
+        "load_execution_authorization_v1",
+        "validate_capability_attempt_receipts_v1",
         "validate_provider_attestations_v1",
         "validate_qualification_secret_free",
         "validate_runtime_receipts_v1",
