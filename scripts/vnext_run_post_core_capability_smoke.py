@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
 import sys
 import threading
+import time
 from typing import Any
 
 
@@ -44,6 +46,8 @@ EXIT_STALE_SOURCE = 12
 EXIT_OUTPUT = 13
 EXIT_ADAPTER = 14
 _MAX_CAPTURE_BYTES = 4 * 1024 * 1024
+_READER_JOIN_SECONDS = 1
+_MAX_ADAPTER_WALL_TIMEOUT_SECONDS = 3600
 _OS_ENVIRONMENT_ALLOWLIST = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
 _EXPECTED_RESPONSE_MODELS = {
     "claude_sonnet_4_6": "claude-sonnet-4-6",
@@ -136,11 +140,62 @@ def _adapter_environment() -> dict[str, str]:
     return {key: value for key in _OS_ENVIRONMENT_ALLOWLIST if (value := os.environ.get(key)) is not None}
 
 
+def _terminate_adapter_process_group(process: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt":
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            subprocess.Popen(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except OSError:
+            pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _close_reader_stream(stream: Any) -> None:
+    try:
+        os.close(stream.fileno())
+    except (OSError, ValueError):
+        pass
+
+
+def _aggregate_adapter_timeout_seconds(selected: tuple[Any, ...]) -> int:
+    timeout_seconds = 0
+    for attempt in selected:
+        value = attempt.budget.timeout_seconds
+        if type(value) is not int or value <= 0:
+            raise ValueError("adapter attempt timeout must be a positive integer")
+        timeout_seconds += value
+    if timeout_seconds <= 0:
+        raise ValueError("adapter batch timeout must be positive")
+    return min(_MAX_ADAPTER_WALL_TIMEOUT_SECONDS, timeout_seconds)
+
+
 def _run_python_adapter_bounded(
     source_text: str, payload: bytes, timeout_seconds: int
 ) -> tuple[int, bytes, bytes]:
     if len(payload) > _MAX_CAPTURE_BYTES:
         raise _AdapterProtocolError
+    popen_options: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_options["start_new_session"] = True
     process = subprocess.Popen(
         [sys.executable, "-c", source_text, "--jsonl-protocol-v1"],
         stdin=subprocess.PIPE,
@@ -148,6 +203,7 @@ def _run_python_adapter_bounded(
         stderr=subprocess.PIPE,
         shell=False,
         env=_adapter_environment(),
+        **popen_options,
     )
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     overflow = threading.Event()
@@ -155,7 +211,7 @@ def _run_python_adapter_bounded(
     def read_pipe(name: str, stream: Any) -> None:
         try:
             while True:
-                chunk = stream.read(64 * 1024)
+                chunk = os.read(stream.fileno(), 64 * 1024)
                 if not chunk:
                     return
                 buffer = captured[name]
@@ -164,18 +220,21 @@ def _run_python_adapter_bounded(
                     buffer.extend(chunk[:remaining])
                 if len(chunk) > remaining:
                     overflow.set()
-                    try:
-                        process.kill()
-                    except OSError:
-                        pass
+                    _terminate_adapter_process_group(process)
                     return
+        except OSError:
+            return
         finally:
-            stream.close()
+            try:
+                stream.close()
+            except OSError:
+                pass
 
     stdout_thread = threading.Thread(target=read_pipe, args=("stdout", process.stdout), daemon=True)
     stderr_thread = threading.Thread(target=read_pipe, args=("stderr", process.stderr), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
+    reader_hung = False
     try:
         try:
             if process.stdin is None:
@@ -189,18 +248,32 @@ def _run_python_adapter_bounded(
                     process.stdin.close()
                 except OSError:
                     pass
-        try:
-            returncode = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            process.wait()
-            raise _AdapterProtocolError from exc
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if time.monotonic() >= deadline:
+                _terminate_adapter_process_group(process)
+                try:
+                    process.wait(timeout=_READER_JOIN_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise _AdapterProtocolError
+            time.sleep(0.01)
     finally:
         if process.poll() is None:
-            process.kill()
-        stdout_thread.join()
-        stderr_thread.join()
-    if overflow.is_set():
+            _terminate_adapter_process_group(process)
+        stdout_thread.join(_READER_JOIN_SECONDS)
+        stderr_thread.join(_READER_JOIN_SECONDS)
+        if stdout_thread.is_alive() or stderr_thread.is_alive():
+            reader_hung = True
+            _terminate_adapter_process_group(process)
+            _close_reader_stream(process.stdout)
+            _close_reader_stream(process.stderr)
+            stdout_thread.join(_READER_JOIN_SECONDS)
+            stderr_thread.join(_READER_JOIN_SECONDS)
+    if reader_hung or overflow.is_set():
         raise _AdapterProtocolError
     return returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
 
@@ -514,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OUTPUT
 
     payload = b"".join(canonical_bytes(attempt) + b"\n" for attempt in selected)
-    timeout_seconds = min(300, max(attempt.budget.timeout_seconds for attempt in selected))
+    timeout_seconds = _aggregate_adapter_timeout_seconds(selected)
     finalized = False
     try:
         _before_adapter_run(output)

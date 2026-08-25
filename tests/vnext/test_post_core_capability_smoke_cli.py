@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1102,6 +1103,87 @@ def test_summary_blocks_when_persisted_receipts_include_failures() -> None:
 def test_execution_authorization_rejects_non_rfc3339_utc_timestamp(issued_at: str) -> None:
     with pytest.raises(ValidationError):
         _authorization(issued_at=issued_at)
+
+
+def test_bounded_adapter_reader_rejects_child_that_holds_output_pipes_open() -> None:
+    import runpy
+
+    module = runpy.run_path(str(CLI))
+    source = (
+        "import os, sys, time\n"
+        "child = os.spawnv(os.P_NOWAIT, sys.executable, [sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "time.sleep(30)\n"
+    )
+
+    started = time.monotonic()
+    with pytest.raises(module["_AdapterProtocolError"]):
+        module["_run_python_adapter_bounded"](source, b"", 1)
+
+    assert time.monotonic() - started < 6
+
+
+def test_adapter_batch_timeout_sums_attempt_budgets_and_caps() -> None:
+    import runpy
+    from types import SimpleNamespace
+
+    module = runpy.run_path(str(CLI))
+    attempts = (
+        SimpleNamespace(budget=SimpleNamespace(timeout_seconds=20)),
+        SimpleNamespace(budget=SimpleNamespace(timeout_seconds=21)),
+        SimpleNamespace(budget=SimpleNamespace(timeout_seconds=22)),
+    )
+
+    assert module["_aggregate_adapter_timeout_seconds"](attempts) == 63
+    assert module["_aggregate_adapter_timeout_seconds"](
+        (SimpleNamespace(budget=SimpleNamespace(timeout_seconds=3601)),)
+    ) == 3600
+    with pytest.raises(ValueError, match="positive"):
+        module["_aggregate_adapter_timeout_seconds"](
+            (SimpleNamespace(budget=SimpleNamespace(timeout_seconds=0)),)
+        )
+
+
+@pytest.mark.parametrize(
+    ("anomaly_type", "error_class"),
+    [
+        ("FORMAT", "NOT_FORMAT"),
+        ("FORMAT", "MALFORMATTED"),
+        ("STABILITY", "UNSTABLE_STABILITY"),
+    ],
+)
+def test_anomaly_evidence_rejects_substring_matched_error_classes(
+    anomaly_type: str, error_class: str
+) -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+    from mub.vnext.post_core.qualification_validation_v1 import validate_escalation_anomaly_evidence_v1
+
+    plan = _plan()
+    escalation = next(
+        row for row in plan.attempts
+        if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION"
+    )
+    base_attempts = tuple(
+        row for row in plan.attempts
+        if row.registry_key == escalation.registry_key and row.phase.value == "BASE"
+    )
+    rows = tuple(
+        CapabilityAttemptReceiptV1(
+            call_id=attempt.call_id,
+            registry_key=attempt.registry_key,
+            status="FAIL",
+            error_class=error_class if index == 0 else "BASE_FAILURE",
+        )
+        for index, attempt in enumerate(base_attempts)
+    )
+    raw = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    anomaly = _anomaly(
+        plan,
+        tuple(row.call_id for row in base_attempts),
+        hashlib.sha256(raw).hexdigest(),
+    ).model_copy(update={"anomaly_types": (anomaly_type,)})
+
+    with pytest.raises(ValueError, match="declared anomaly type"):
+        validate_escalation_anomaly_evidence_v1(anomaly, rows, raw, plan, (escalation,))
 
 
 @pytest.mark.parametrize("injected_field", ["status", "redacted_response_sha256"])

@@ -622,8 +622,8 @@ def validate_escalation_anomaly_evidence_v1(
     )
     checks = {
         "PARSER": lambda value: value == "PARSER_MISMATCH",
-        "FORMAT": lambda value: value is not None and "FORMAT" in value,
-        "STABILITY": lambda value: value is not None and "STABILITY" in value,
+        "FORMAT": lambda value: value in {"FORMAT_ERROR", "FORMAT_MISMATCH"},
+        "STABILITY": lambda value: value in {"STABILITY_ERROR", "STABILITY_MISMATCH"},
     }
     matches_declared_type = lambda row: any(
         checks[anomaly_type](row.error_class) for anomaly_type in receipt.anomaly_types
