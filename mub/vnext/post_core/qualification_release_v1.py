@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import stat
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -60,6 +61,10 @@ from mub.vnext.post_core.qualification_validation_v1 import (
 
 RELEASE_ID = "memupdatebench.post-core.qualification.v1"
 BASE_COMMIT = "a56857431023d2af1a392c75c5575316a916c174"
+_SOURCE_SECRET_VALUE = re.compile(
+    r"(?:Bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)",
+    re.IGNORECASE,
+)
 REQUIRED_SOURCE_IDS = (
     "core_manifest",
     "handoff_source",
@@ -258,6 +263,12 @@ def _read_source(source_id: str, path: Path) -> _SourceSnapshot:
         or len(raw) != before.st_size
     ):
         raise ValueError(f"source {source_id} changed while being read")
+    try:
+        source_text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"source {source_id} must use UTF-8 text in qualification v1") from exc
+    if _SOURCE_SECRET_VALUE.search(source_text):
+        raise ValueError(f"source {source_id} contains secret or credential material")
     return _SourceSnapshot(
         source_id,
         selected,

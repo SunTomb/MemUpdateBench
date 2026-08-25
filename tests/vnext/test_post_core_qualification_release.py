@@ -250,6 +250,15 @@ def test_builder_rejects_secret_like_and_metric_fields_before_exposing_bytes(tmp
         )
 
 
+def test_source_reader_rejects_secret_bearing_text_before_binding(tmp_path: Path) -> None:
+    source = tmp_path / "secret-source.txt"
+    source.write_text("Authorization: Bearer synthetic-secret-value", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="secret|credential"):
+        qualification_release_v1._read_source("secret-source", source)
+
+
+
 def test_builder_uses_source_identity_without_compatibility_input(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     without_compatibility_input = {key: value for key, value in inputs.items() if key != "identity_bundle"}
