@@ -935,6 +935,42 @@ def test_adapter_result_binds_closed_registry_response_model() -> None:
         module["_adapter_results_to_receipts"]((local_attempt,), (local_result,))
 
 
+def test_mixed_typed_failure_and_success_preserves_both_attempt_receipts() -> None:
+    import runpy
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAdapterResultV1
+
+    pair = tuple(
+        attempt
+        for attempt in _plan().attempts
+        if attempt.registry_key == "qwen35_9b_bf16"
+        and attempt.fixture_id == "exact_ok_1"
+        and attempt.phase.value == "BASE"
+    )
+    assert len(pair) == 2
+    results = (
+        CapabilityAdapterResultV1(
+            call_id=pair[0].call_id,
+            registry_key=pair[0].registry_key,
+            request_sha256=hashlib.sha256(canonical_bytes(pair[0])).hexdigest(),
+            error_class="ADAPTER_TIMEOUT",
+        ),
+        CapabilityAdapterResultV1(
+            call_id=pair[1].call_id,
+            registry_key=pair[1].registry_key,
+            request_sha256=hashlib.sha256(canonical_bytes(pair[1])).hexdigest(),
+            response_projection="READY",
+            response_format="LOCAL_TEXT",
+            latency_ms=1,
+        ),
+    )
+
+    receipts = runpy.run_path(str(CLI))["_adapter_results_to_receipts"](pair, results)
+
+    assert [receipt.status.value for receipt in receipts] == ["FAIL", "PASS"]
+    assert receipts[0].error_class == "ADAPTER_TIMEOUT"
+    assert receipts[1].error_class is None
+
+
 def test_adapter_result_rejects_unredacted_error_prose() -> None:
     from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAdapterResultV1
 

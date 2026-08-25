@@ -62,7 +62,11 @@ from mub.vnext.post_core.qualification_validation_v1 import (
 RELEASE_ID = "memupdatebench.post-core.qualification.v1"
 BASE_COMMIT = "a56857431023d2af1a392c75c5575316a916c174"
 _SOURCE_SECRET_VALUE = re.compile(
-    r"(?:Bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)",
+    r"(?:Authorization[ \t]*:[ \t]*(?:Basic|Bearer)[ \t]+\S+|"
+    r"Bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|"
+    r"(?:OPENAI|ANTHROPIC|GEMINI|GOOGLE|XAI)_API_KEY[ \t]*=[ \t]*[^\s#]+|"
+    r"(?:ACCESS|AUTH|REFRESH)_TOKEN[ \t]*=[ \t]*[^\s#]+|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)",
     re.IGNORECASE,
 )
 REQUIRED_SOURCE_IDS = (

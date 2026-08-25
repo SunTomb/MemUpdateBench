@@ -470,24 +470,22 @@ def _adapter_results_to_receipts(
             raise _AdapterProtocolError
         parsed.append((attempt, result, projection))
 
-    successful = [item for item in parsed if item[2] is not None]
-    groups: dict[tuple[str, str, AttemptPhase], list[tuple[Any, CapabilityAdapterResultV1, str]]] = {}
-    for attempt, result, projection in successful:
-        if projection is None:
-            raise _AdapterProtocolError
-        groups.setdefault((attempt.registry_key, attempt.fixture_id, attempt.phase), []).append(
-            (attempt, result, projection)
-        )
+    groups: dict[
+        tuple[str, str, AttemptPhase],
+        list[tuple[Any, CapabilityAdapterResultV1, str | None]],
+    ] = {}
+    for item in parsed:
+        attempt = item[0]
+        groups.setdefault((attempt.registry_key, attempt.fixture_id, attempt.phase), []).append(item)
     for group in groups.values():
         if {attempt.repetition for attempt, _, _ in group} != {1, 2}:
             raise _AdapterProtocolError
 
-    stability_failures = {
-        item[0].call_id
-        for group in groups.values()
-        if len({projection for _, _, projection in group}) != 1
-        for item in group
-    }
+    stability_failures: set[str] = set()
+    for group in groups.values():
+        successful = [item for item in group if item[2] is not None]
+        if len(successful) == 2 and len({projection for _, _, projection in successful}) != 1:
+            stability_failures.update(attempt.call_id for attempt, _, _ in successful)
     receipts: list[CapabilityAttemptReceiptV1] = []
     for attempt, result, projection in parsed:
         if result.error_class is not None:
