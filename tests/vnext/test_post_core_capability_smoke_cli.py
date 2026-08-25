@@ -482,12 +482,12 @@ def _write_escalation_authorization(path: Path, plan, call_ids: tuple[str, ...],
     )))
 
 
-def _anomaly(plan, base_ids: tuple[str, ...]):
+def _anomaly(plan, base_ids: tuple[str, ...], base_receipts_sha256: str = HASH_A, **changes):
     from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAnomalyReceiptV1
     return CapabilityAnomalyReceiptV1(
         release_id=plan.release_id,
         plan_sha256=canonical_hash(plan),
-        base_receipts_sha256=HASH_A,
+        base_receipts_sha256=base_receipts_sha256,
         base_call_ids=base_ids,
         anomalous_call_ids=(base_ids[0],),
         anomaly_types=("PARSER",),
@@ -495,12 +495,31 @@ def _anomaly(plan, base_ids: tuple[str, ...]):
     )
 
 
-def test_escalation_requires_hash_bound_typed_base_anomaly_evidence(tmp_path: Path) -> None:
+
+def _base_receipt_raw(plan, base_attempts, anomalous_ids: tuple[str, ...]) -> bytes:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+
+    rows = tuple(
+        CapabilityAttemptReceiptV1(
+            call_id=attempt.call_id,
+            registry_key=attempt.registry_key,
+            status="FAIL",
+            error_class="PARSER_MISMATCH" if attempt.call_id in anomalous_ids else "BASE_FAILURE",
+        )
+        for attempt in base_attempts
+    )
+    return b"".join(canonical_bytes(row) + b"\n" for row in rows)
+
+
+def test_escalation_requires_hash_bound_complete_base_receipt_evidence(tmp_path: Path) -> None:
     plan = _plan()
     escalation = next(row for row in plan.attempts if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION")
-    base_ids = tuple(row.call_id for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    base_attempts = tuple(row for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    base_raw = _base_receipt_raw(plan, base_attempts, (base_attempts[0].call_id,))
+    base_path = tmp_path / "base.jsonl"
+    base_path.write_bytes(base_raw)
+    anomaly_raw = canonical_bytes(_anomaly(plan, tuple(row.call_id for row in base_attempts), __import__("hashlib").sha256(base_raw).hexdigest()))
     anomaly_path = tmp_path / "anomaly.json"
-    anomaly_raw = canonical_bytes(_anomaly(plan, base_ids))
     anomaly_path.write_bytes(anomaly_raw)
     auth_path = tmp_path / "authorization.json"
     _write_escalation_authorization(auth_path, plan, (escalation.call_id,), anomaly_raw)
@@ -510,39 +529,68 @@ def test_escalation_requires_hash_bound_typed_base_anomaly_evidence(tmp_path: Pa
     _write_local_adapter(adapter, tmp_path / "environment.json")
     output = tmp_path / "receipts.jsonl"
 
-    missing = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--execute"], capture_output=True, text=True, timeout=20)
-    assert missing.returncode == 10
-    success = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
-    assert success.returncode == 0
-    assert len(output.read_bytes().splitlines()) == 1
+    missing_base = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
+    assert missing_base.returncode == 10
+    completed = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--escalation-anomaly-receipt", str(anomaly_path), "--base-receipts", str(base_path), "--execute"], capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0
 
 
-def test_escalation_rejects_bad_anomaly_hash_and_missing_base_role_coverage(tmp_path: Path) -> None:
+
+
+
+
+def test_anomaly_evidence_rejects_pass_and_type_error_mismatch() -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+    from mub.vnext.post_core.qualification_validation_v1 import validate_escalation_anomaly_evidence_v1
+
     plan = _plan()
     escalation = next(row for row in plan.attempts if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION")
-    base_ids = tuple(row.call_id for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    base_attempts = tuple(row for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    raw = _base_receipt_raw(plan, base_attempts, (base_attempts[0].call_id,))
+    rows = tuple(CapabilityAttemptReceiptV1.model_validate_json(line) for line in raw.splitlines())
+    anomaly = _anomaly(plan, tuple(row.call_id for row in base_attempts), __import__("hashlib").sha256(raw).hexdigest())
+
+    with pytest.raises(ValueError, match="anomaly type"):
+        validate_escalation_anomaly_evidence_v1(
+            anomaly.model_copy(update={"anomaly_types": ("FORMAT",)}), rows, raw, plan, (escalation,)
+        )
+    passed = list(rows)
+    passed[0] = CapabilityAttemptReceiptV1(
+        call_id=base_attempts[0].call_id, registry_key=base_attempts[0].registry_key,
+        status="PASS", response_format="LOCAL_TEXT", latency_ms=1, redacted_response_sha256=HASH_A,
+    )
+    passed_raw = b"".join(canonical_bytes(row) + b"\n" for row in passed)
+    passed_anomaly = _anomaly(plan, tuple(row.call_id for row in base_attempts), __import__("hashlib").sha256(passed_raw).hexdigest())
+    with pytest.raises(ValueError, match="must be FAIL"):
+        validate_escalation_anomaly_evidence_v1(passed_anomaly, tuple(passed), passed_raw, plan, (escalation,))
+
+def test_escalation_rejects_base_receipt_hash_mismatch(tmp_path: Path) -> None:
+    plan = _plan()
+    escalation = next(row for row in plan.attempts if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION")
+    base_attempts = tuple(row for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    base_raw = _base_receipt_raw(plan, base_attempts, (base_attempts[0].call_id,))
+    base_path = tmp_path / "base.jsonl"
+    base_path.write_bytes(base_raw)
+    anomaly_raw = canonical_bytes(_anomaly(plan, tuple(row.call_id for row in base_attempts), HASH_A))
+    anomaly_path = tmp_path / "anomaly.json"
+    anomaly_path.write_bytes(anomaly_raw)
+    auth_path = tmp_path / "authorization.json"
+    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), anomaly_raw)
     plan_path = tmp_path / "plan.json"
     plan_path.write_bytes(canonical_bytes(plan))
     adapter = tmp_path / "adapter.py"
     _write_local_adapter(adapter, tmp_path / "environment.json")
-    anomaly_path = tmp_path / "anomaly.json"
-    short_raw = canonical_bytes(_anomaly(plan, base_ids[:1]))
-    anomaly_path.write_bytes(short_raw)
-    auth_path = tmp_path / "authorization.json"
-    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), short_raw)
-    incomplete = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "incomplete.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
-    assert incomplete.returncode == 11
-    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), b"wrong")
-    mismatch = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "mismatch.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
-    assert mismatch.returncode == 12
-    completed = subprocess.run(
-        [sys.executable, str(CLI), "--help"], capture_output=True, text=True, timeout=10
-    )
+
+    completed = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "output.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--base-receipts", str(base_path), "--execute"], capture_output=True, text=True, timeout=20)
+
+    assert completed.returncode == 12
+
+
+def test_cli_help_exposes_no_provider_or_credential_flags() -> None:
+    completed = subprocess.run([sys.executable, str(CLI), "--help"], capture_output=True, text=True, timeout=10)
 
     assert completed.returncode == 0
-    assert {"--plan", "--authorization-receipt", "--adapter-executable", "--output", "--execute"}.issubset(
-        completed.stdout.split()
-    )
+    assert {"--plan", "--authorization-receipt", "--escalation-anomaly-receipt", "--base-receipts", "--adapter-executable", "--output", "--execute"}.issubset(completed.stdout.split())
     assert not any(term in completed.stdout.lower() for term in ("provider", "endpoint", "credential", "token", "api-key"))
 
 

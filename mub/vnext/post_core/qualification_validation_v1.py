@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
 import ipaddress
 import json
 import os
@@ -508,6 +509,75 @@ def validate_escalation_anomaly_receipt_v1(
     return receipt
 
 
+def validate_escalation_anomaly_evidence_v1(
+    receipt: CapabilityAnomalyReceiptV1,
+    base_receipts: Sequence[CapabilityAttemptReceiptV1],
+    base_receipts_raw: bytes,
+    plan_raw: CapabilitySmokePlanV1 | bytes | bytearray,
+    selected_attempts: Sequence[CapabilityAttemptPlanV1],
+) -> CapabilityAnomalyReceiptV1:
+    plan = _coerce_capability_smoke_plan_v1(plan_raw)
+    rows = tuple(base_receipts)
+    _require(
+        hashlib.sha256(base_receipts_raw).hexdigest() == receipt.base_receipts_sha256,
+        "anomaly receipt base receipt hash mismatch",
+    )
+    _require(rows, "base receipts must be nonempty")
+    _require(
+        all(isinstance(row, CapabilityAttemptReceiptV1) for row in rows),
+        "base receipts must use CapabilityAttemptReceiptV1",
+    )
+    receipt_ids = tuple(row.call_id for row in rows)
+    _require(len(receipt_ids) == len(set(receipt_ids)), "base receipt call IDs must be unique")
+    _require(
+        set(receipt_ids) == set(receipt.base_call_ids),
+        "base receipts must exactly cover anomaly base call IDs",
+    )
+    attempts_by_id = {attempt.call_id: attempt for attempt in plan.attempts}
+    for row in rows:
+        attempt = attempts_by_id.get(row.call_id)
+        _require(attempt is not None, "base receipt call ID is not in plan")
+        _require(attempt.phase is AttemptPhase.BASE, "base receipt must bind a BASE plan attempt")
+        _require(row.registry_key == attempt.registry_key, "base receipt registry mismatch")
+        _require(row.retry_count == 0, "base receipt retries must be zero")
+    selected = tuple(selected_attempts)
+    escalation_keys = {
+        attempt.registry_key for attempt in selected if attempt.phase is AttemptPhase.ESCALATION
+    }
+    _require(escalation_keys, "anomaly evidence requires selected escalation attempts")
+    required_base_ids = {
+        attempt.call_id for attempt in plan.attempts
+        if attempt.phase is AttemptPhase.BASE and attempt.registry_key in escalation_keys
+    }
+    _require(
+        required_base_ids.issubset(receipt.base_call_ids),
+        "anomaly receipt lacks complete base receipts for selected escalation roles",
+    )
+    receipt_by_id = {row.call_id: row for row in rows}
+    anomalous_rows = tuple(receipt_by_id[call_id] for call_id in receipt.anomalous_call_ids)
+    _require(
+        all(row.status is GateStatus.FAIL for row in anomalous_rows),
+        "anomalous base receipts must be FAIL",
+    )
+    for registry_key in escalation_keys:
+        _require(
+            any(row.registry_key == registry_key for row in anomalous_rows),
+            "each selected escalation role requires an anomalous base receipt",
+        )
+    checks = {
+        "PARSER": lambda value: value == "PARSER_MISMATCH",
+        "FORMAT": lambda value: value is not None and "FORMAT" in value,
+        "STABILITY": lambda value: value is not None and "STABILITY" in value,
+    }
+    for anomaly_type in receipt.anomaly_types:
+        _require(
+            any(checks[anomaly_type](row.error_class) for row in anomalous_rows),
+            "anomaly type does not match an anomalous receipt error class",
+        )
+    validate_qualification_secret_free(tuple(row.model_dump(mode="json") for row in rows))
+    return receipt
+
+
 def load_execution_authorization_v1(
     path: Path, plan_raw: CapabilitySmokePlanV1 | bytes | bytearray
 ) -> ExecutionAuthorizationV1:
@@ -813,6 +883,7 @@ __all__ = [
     "load_canonical_jsonl_v1",
     "load_execution_authorization_v1",
     "validate_capability_attempt_receipts_v1",
+    "validate_escalation_anomaly_evidence_v1",
     "validate_escalation_anomaly_receipt_v1",
     "validate_provider_attestations_v1",
     "validate_qualification_secret_free",

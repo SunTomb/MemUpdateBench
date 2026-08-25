@@ -28,8 +28,10 @@ from mub.vnext.post_core.qualification_validation_v1 import (
     _read_regular_single_link,
     load_capability_anomaly_receipt_v1,
     load_capability_smoke_plan_v1,
+    load_canonical_jsonl_v1,
     load_execution_authorization_v1,
     validate_capability_attempt_receipts_v1,
+    validate_escalation_anomaly_evidence_v1,
     validate_escalation_anomaly_receipt_v1,
     validate_qualification_secret_free,
 )
@@ -65,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan", required=True)
     parser.add_argument("--authorization-receipt")
     parser.add_argument("--escalation-anomaly-receipt")
+    parser.add_argument("--base-receipts")
     parser.add_argument("--adapter-executable", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--execute", action="store_true")
@@ -423,15 +426,27 @@ def main(argv: list[str] | None = None) -> int:
         selected = _selected_attempts(plan, authorization)
         escalated = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
         if escalated:
-            if not args.escalation_anomaly_receipt:
-                print("capability smoke blocked: missing escalation anomaly receipt", file=sys.stderr)
+            if not args.escalation_anomaly_receipt or not args.base_receipts:
+                print("capability smoke blocked: missing escalation anomaly evidence", file=sys.stderr)
                 return EXIT_BLOCKED
-            anomaly, anomaly_raw = load_capability_anomaly_receipt_v1(Path(args.escalation_anomaly_receipt), plan)
+            anomaly, anomaly_raw = load_capability_anomaly_receipt_v1(
+                Path(args.escalation_anomaly_receipt), plan
+            )
             if hashlib.sha256(anomaly_raw).hexdigest() != authorization.escalation_anomaly_receipt_sha256:
                 raise ValueError("escalation anomaly receipt hash mismatch")
             validate_escalation_anomaly_receipt_v1(anomaly, plan, selected)
-        elif authorization.escalation_anomaly_receipt_sha256 is not None or args.escalation_anomaly_receipt:
-            raise ValueError("base-only authorization cannot carry an anomaly receipt")
+            base_receipts, base_receipts_raw = load_canonical_jsonl_v1(
+                Path(args.base_receipts), CapabilityAttemptReceiptV1, label="base receipts"
+            )
+            validate_escalation_anomaly_evidence_v1(
+                anomaly, base_receipts, base_receipts_raw, plan, selected
+            )
+        elif (
+            authorization.escalation_anomaly_receipt_sha256 is not None
+            or args.escalation_anomaly_receipt
+            or args.base_receipts
+        ):
+            raise ValueError("base-only authorization cannot carry escalation evidence")
     except ValueError as exception:
         if _is_stale_source_rejection(exception):
             print("capability smoke stale source rejected", file=sys.stderr)
