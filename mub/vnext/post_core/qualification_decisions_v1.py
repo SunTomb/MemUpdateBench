@@ -1,3 +1,9 @@
+"""Derive current qualification decisions without elevating plans or preflights to smoke results.
+
+Capability smoke can become READY only in a future results-bearing release that imports
+validated CapabilityAttemptReceiptV1 evidence; this release deliberately accepts no such input.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -114,20 +120,19 @@ def _open_runtime_decisions(
         (short_reason,),
         evidence_ids,
     )
-    if short_status is QualificationStatus.READY:
-        smoke_status = QualificationStatus.READY
-        smoke_reason = "short generation gate is READY"
-    elif short_status is QualificationStatus.UNSUPPORTED:
-        smoke_status = QualificationStatus.UNSUPPORTED
-        smoke_reason = "short generation gate is UNSUPPORTED"
-    else:
-        smoke_status = QualificationStatus.BLOCKED
-        smoke_reason = "short generation gate is not READY"
+    smoke_gate_reason = (
+        "short generation gate passed"
+        if short_status is QualificationStatus.READY
+        else "short generation gate is not READY"
+    )
     smoke = _decision(
         identity_key,
         DecisionScope.CAPABILITY_SMOKE,
-        smoke_status,
-        (smoke_reason,),
+        QualificationStatus.BLOCKED,
+        (
+            f"uniform capability smoke is NOT_RUN; {smoke_gate_reason}",
+            "CapabilityAttemptReceiptV1 results are required in a future release",
+        ),
         evidence_ids,
     )
     benchmark = _decision(
@@ -168,14 +173,20 @@ def _closed_decisions(
         identity_key,
         DecisionScope.SHORT_GENERATION_GATE,
         QualificationStatus.BLOCKED,
-        ("closed provider uses capability smoke gate",),
+        ("not applicable: closed provider short-generation gate is not applicable",),
         evidence_ids,
     )
+    smoke_reasons = [
+        "uniform capability smoke is NOT_RUN; provider connectivity/interface preflight passed",
+        "CapabilityAttemptReceiptV1 results are required in a future release",
+    ]
+    if not authenticated_identity:
+        smoke_reasons.append("identity caveat blocks capability smoke")
     smoke = _decision(
         identity_key,
         DecisionScope.CAPABILITY_SMOKE,
-        QualificationStatus.READY,
-        ("provider capability attestation is validated",),
+        QualificationStatus.BLOCKED,
+        tuple(smoke_reasons),
         evidence_ids,
     )
     benchmark_reasons = ["benchmark execution remains NOT_RUN"]

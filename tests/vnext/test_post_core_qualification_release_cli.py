@@ -140,7 +140,7 @@ def test_prepare_cli_publishes_reopenable_fixture_root_with_canonical_stdout(
     assert summary == {
         "benchmark_generations": 0,
         "credential_reads_during_publication": 0,
-        "decision_counts": {"BLOCKED": 21, "READY": 11, "UNSUPPORTED": 0},
+        "decision_counts": {"BLOCKED": 26, "READY": 6, "UNSUPPORTED": 0},
         "index_sha256": summary["index_sha256"],
         "model_loads_during_publication": 0,
         "network_calls_during_publication": 0,

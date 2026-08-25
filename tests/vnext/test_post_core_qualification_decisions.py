@@ -7,6 +7,7 @@ import pytest
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
 from mub.vnext.post_core.qualification_receipts_v1 import (
     DecisionScope,
+    GateStatus,
     QualificationStatus,
 )
 from mub.vnext.post_core.qualification_validation_v1 import (
@@ -59,24 +60,70 @@ def test_public_surface_exposes_only_the_derivation_function() -> None:
     assert decisions.__all__ == ["derive_qualification_decisions_v1"]
 
 
-def test_sonnet_capability_is_ready_but_benchmark_admission_is_blocked() -> None:
+def test_closed_authenticated_provider_preflight_blocks_not_run_capability_smoke() -> None:
     decisions = decisions_by_key_scope()
     sonnet = {row.scope: row for row in decisions if row.registry_key == "claude_sonnet_4_6"}
 
-    assert sonnet[DecisionScope.CAPABILITY_SMOKE].status is QualificationStatus.READY
+    assert sonnet[DecisionScope.STORAGE_INPUT].status is QualificationStatus.READY
+    assert sonnet[DecisionScope.SHORT_GENERATION_GATE].status is QualificationStatus.BLOCKED
+    smoke = sonnet[DecisionScope.CAPABILITY_SMOKE]
+    assert smoke.status is QualificationStatus.BLOCKED
+    assert "uniform capability smoke is not_run" in " ".join(smoke.reasons).lower()
+    assert "connectivity/interface preflight passed" in " ".join(smoke.reasons).lower()
+    assert smoke.evidence_binding_ids == ("workflow_source", "handoff_source")
     assert sonnet[DecisionScope.BENCHMARK_ADMISSION].status is QualificationStatus.BLOCKED
     assert sonnet[DecisionScope.BENCHMARK_ADMISSION].scientific_status == "NOT_RUN"
 
 
-def test_grok_and_gpt_capability_can_be_ready_but_identity_caveat_blocks_benchmark() -> None:
+def test_grok_and_gpt_connectivity_preflight_cannot_overcome_identity_or_smoke_boundaries() -> None:
     decisions = decisions_by_key_scope()
 
     for key in ("grok_4_5", "gpt_5_5"):
         selected = {row.scope: row for row in decisions if row.registry_key == key}
-        assert selected[DecisionScope.CAPABILITY_SMOKE].status is QualificationStatus.READY
+        assert selected[DecisionScope.STORAGE_INPUT].status is QualificationStatus.BLOCKED
+        smoke = selected[DecisionScope.CAPABILITY_SMOKE]
+        assert smoke.status is QualificationStatus.BLOCKED
+        reasons = " ".join(smoke.reasons).lower()
+        assert "uniform capability smoke is not_run" in reasons
+        assert "connectivity/interface preflight passed" in reasons
+        assert "identity caveat" in reasons
         benchmark = selected[DecisionScope.BENCHMARK_ADMISSION]
         assert benchmark.status is QualificationStatus.BLOCKED
         assert "identity caveat" in " ".join(benchmark.reasons).lower()
+
+
+def test_all_current_capability_smoke_decisions_are_blocked_without_attempt_receipts() -> None:
+    decisions = decisions_by_key_scope()
+
+    smoke_decisions = [row for row in decisions if row.scope is DecisionScope.CAPABILITY_SMOKE]
+    assert len(smoke_decisions) == len(EXPECTED_KEYS)
+    assert all(row.status is QualificationStatus.BLOCKED for row in smoke_decisions)
+    assert all("uniform capability smoke is not_run" in " ".join(row.reasons).lower() for row in smoke_decisions)
+
+
+def test_all_pass_open_runtime_receipt_readies_short_generation_but_not_capability_smoke() -> None:
+    from mub.vnext.post_core.qualification_decisions_v1 import derive_qualification_decisions_v1
+
+    runtime_rows = list(open_runtime_receipts())
+    runtime_rows[0] = runtime_rows[0].model_copy(update={
+        "generation_status": GateStatus.PASS,
+        "determinism_status": GateStatus.PASS,
+        "prompt_fixture_sha256": "a" * 64,
+        "parser_sha256": "b" * 64,
+        "chat_template_sha256": "c" * 64,
+        "output_projection_sha256": "d" * 64,
+        "generated_token_count": 1,
+        "peak_memory_bytes": 1,
+    })
+
+    decisions = derive_qualification_decisions_v1(
+        identity_bundle(), provider_attestations(), tuple(runtime_rows)
+    )
+    qwen = {row.scope: row for row in decisions if row.registry_key == "qwen35_9b_bf16"}
+    assert qwen[DecisionScope.SHORT_GENERATION_GATE].status is QualificationStatus.READY
+    smoke = qwen[DecisionScope.CAPABILITY_SMOKE]
+    assert smoke.status is QualificationStatus.BLOCKED
+    assert "uniform capability smoke is not_run" in " ".join(smoke.reasons).lower()
 
 
 def test_qwen_load_only_receipt_allows_storage_but_blocks_short_and_smoke() -> None:
