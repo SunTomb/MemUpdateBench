@@ -3350,10 +3350,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
   tests/vnext/test_post_core_qualification_release.py \
   tests/vnext/test_post_core_qualification_release_cli.py \
   tests/vnext/test_post_core_capability_smoke_cli.py -q
-# 289 passed, 6 skipped, 0 failed
+# 299 passed, 6 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest tests/vnext/test_post_core_*.py -q
-# 354 passed, 7 skipped, 0 failed
+# 364 passed, 7 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python scripts/smoke_test.py
 # SMOKE TEST: 32/32 passed
@@ -3378,7 +3378,7 @@ The 13 Task 14 failures/errors are pre-existing worktree-fixture unavailability,
 
 The checked-in production qualification configuration remains `BLOCKED` and contract-invalid: its recorded `open_snapshot_audit_receipt` source string is 63 hexadecimal characters. No hash was invented or padded; authoritative receipt re-read is required before production publication.
 
-Validation performed zero model loads, provider calls, network calls, benchmark generations, and credential reads. Live short-generation and 8–16 smoke are `NOT_RUN` and require explicit authorization. The 320 canary, confirmatory, and full matrix are unauthorized.
+Validation performed zero model loads, provider calls, network calls, benchmark generations, and credential reads. Live short-generation and 8–16 smoke are `NOT_RUN` and require explicit authorization. All eight current `CAPABILITY_SMOKE` decisions remain `BLOCKED`; provider connectivity and open-model short-generation readiness cannot promote an unexecuted smoke to `READY`. The frozen zero-cost/PENDING budget also blocks all closed API attempts until an authorized price-version and nonzero hard cost ceiling are published. The 320 canary, confirmatory, and full matrix are unauthorized.
 
 `EXIT10` remains reserved. A `SUCCESS_WITH_BLOCKERS` metadata release returns `0`.
 
