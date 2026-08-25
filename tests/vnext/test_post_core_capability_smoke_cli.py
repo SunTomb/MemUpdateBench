@@ -197,7 +197,9 @@ def test_cli_executes_only_authorized_qwen_base_calls_and_sanitizes_adapter_envi
         "base_count": 8,
         "call_count": 8,
         "escalation_count": 0,
+        "fail_count": 0,
         "output": str(output),
+        "pass_count": 8,
         "retries": 0,
         "status": "SUCCESS",
     }
@@ -684,8 +686,17 @@ for line in sys.stdin:
         timeout=20,
     )
 
-    assert completed.returncode == 0
-    assert json.loads(completed.stdout)["status"] == "SUCCESS"
+    assert completed.returncode == 10
+    assert json.loads(completed.stdout) == {
+        "base_count": 8,
+        "call_count": 8,
+        "escalation_count": 0,
+        "fail_count": 4,
+        "output": str(output),
+        "pass_count": 4,
+        "retries": 0,
+        "status": "BLOCKED",
+    }
     persisted = tuple(json.loads(line) for line in output.read_bytes().splitlines())
     assert all("response_projection" not in row for row in persisted)
     for attempt, row in zip(plan.attempts[:8], persisted):
@@ -982,6 +993,115 @@ def test_cli_rejects_oversized_adapter_output_without_receipt(tmp_path: Path) ->
     assert completed.returncode == 14
     assert completed.stdout == ""
     assert not output.exists()
+
+
+def test_direct_anomaly_validator_binds_receipt_plan_and_selected_calls() -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+    from mub.vnext.post_core.qualification_validation_v1 import validate_escalation_anomaly_evidence_v1
+
+    plan = _plan()
+    escalation = next(
+        attempt for attempt in plan.attempts
+        if attempt.registry_key == "qwen35_9b_bf16" and attempt.phase.value == "ESCALATION"
+    )
+    base_attempts = tuple(
+        attempt for attempt in plan.attempts
+        if attempt.registry_key == escalation.registry_key and attempt.phase.value == "BASE"
+    )
+    raw = _base_receipt_raw(plan, base_attempts, (base_attempts[0].call_id,))
+    rows = tuple(CapabilityAttemptReceiptV1.model_validate_json(line) for line in raw.splitlines())
+    anomaly = _anomaly(
+        plan, tuple(attempt.call_id for attempt in base_attempts), hashlib.sha256(raw).hexdigest()
+    )
+
+    with pytest.raises(ValueError, match="release ID"):
+        validate_escalation_anomaly_evidence_v1(
+            anomaly.model_copy(update={"release_id": "forged-release"}),
+            rows,
+            raw,
+            plan,
+            (escalation,),
+        )
+    with pytest.raises(ValueError, match="plan hash"):
+        validate_escalation_anomaly_evidence_v1(
+            anomaly.model_copy(update={"plan_sha256": "0" * 64}),
+            rows,
+            raw,
+            plan,
+            (escalation,),
+        )
+
+    fake_escalation = type(escalation).model_construct(**{
+        **escalation.model_dump(mode="python", exclude={"call_id"}),
+        "budget": escalation.budget,
+        "prompt_sha256": "1" * 64,
+    })
+    with pytest.raises(ValueError, match="selected escalation"):
+        validate_escalation_anomaly_evidence_v1(anomaly, rows, raw, plan, (fake_escalation,))
+
+
+def test_direct_anomaly_validator_binds_base_receipt_rows_to_raw_bytes() -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+    from mub.vnext.post_core.qualification_validation_v1 import validate_escalation_anomaly_evidence_v1
+
+    plan = _plan()
+    escalation = next(
+        attempt for attempt in plan.attempts
+        if attempt.registry_key == "qwen35_9b_bf16" and attempt.phase.value == "ESCALATION"
+    )
+    base_attempts = tuple(
+        attempt for attempt in plan.attempts
+        if attempt.registry_key == escalation.registry_key and attempt.phase.value == "BASE"
+    )
+    raw = _base_receipt_raw(plan, base_attempts, (base_attempts[0].call_id,))
+    rows = tuple(CapabilityAttemptReceiptV1.model_validate_json(line) for line in raw.splitlines())
+    altered_rows = (
+        rows[0],
+        rows[1].model_copy(update={"error_class": "DIFFERENT_FAILURE"}),
+        *rows[2:],
+    )
+    anomaly = _anomaly(
+        plan, tuple(attempt.call_id for attempt in base_attempts), hashlib.sha256(raw).hexdigest()
+    )
+
+    with pytest.raises(ValueError, match="do not match supplied receipt rows"):
+        validate_escalation_anomaly_evidence_v1(anomaly, altered_rows, raw, plan, (escalation,))
+
+
+def test_summary_blocks_when_persisted_receipts_include_failures() -> None:
+    import runpy
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+
+    plan = _plan()
+    selected = plan.attempts[:2]
+    receipts = (
+        CapabilityAttemptReceiptV1(
+            call_id=selected[0].call_id,
+            registry_key=selected[0].registry_key,
+            status="PASS",
+            response_format="LOCAL_TEXT",
+            latency_ms=1,
+            redacted_response_sha256=HASH_A,
+        ),
+        CapabilityAttemptReceiptV1(
+            call_id=selected[1].call_id,
+            registry_key=selected[1].registry_key,
+            status="FAIL",
+            error_class="ADAPTER_TIMEOUT",
+        ),
+    )
+
+    summary = json.loads(
+        runpy.run_path(str(CLI))["_summary"](Path("receipts.jsonl"), selected, receipts)
+    )
+    assert summary["status"] == "BLOCKED"
+    assert (summary["pass_count"], summary["fail_count"]) == (1, 1)
+
+
+@pytest.mark.parametrize("issued_at", ["2026-08-24Z", "2026-08-24 00:00:00Z"])
+def test_execution_authorization_rejects_non_rfc3339_utc_timestamp(issued_at: str) -> None:
+    with pytest.raises(ValidationError):
+        _authorization(issued_at=issued_at)
 
 
 @pytest.mark.parametrize("injected_field", ["status", "redacted_response_sha256"])

@@ -183,6 +183,29 @@ def test_unsupported_runtime_gates_require_future_typed_proof() -> None:
                 _replace(rows, index, load_status=GateStatus.UNSUPPORTED, blocked_reasons=("GPU unavailable",))
             )
 
+def test_runtime_generation_pass_requires_positive_peak_memory_evidence() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_runtime_receipts_v1
+
+    rows = open_runtime_receipts()
+    qwen_index = next(index for index, row in enumerate(rows) if row.registry_key == "qwen35_9b_bf16")
+
+    with pytest.raises(ValueError, match="peak memory"):
+        validate_runtime_receipts_v1(
+            _replace(
+                rows,
+                qwen_index,
+                generation_status=GateStatus.PASS,
+                determinism_status=GateStatus.PASS,
+                prompt_fixture_sha256="a" * 64,
+                parser_sha256="b" * 64,
+                chat_template_sha256="c" * 64,
+                output_projection_sha256="d" * 64,
+                generated_token_count=1,
+                peak_memory_bytes=None,
+            )
+        )
+
+
 def test_runtime_validation_exports_exactly_four_public_functions() -> None:
     import mub.vnext.post_core.qualification_validation_v1 as validation
 

@@ -550,7 +550,15 @@ def validate_escalation_anomaly_evidence_v1(
     selected_attempts: Sequence[CapabilityAttemptPlanV1],
 ) -> CapabilityAnomalyReceiptV1:
     plan = _coerce_capability_smoke_plan_v1(plan_raw)
+    _require(receipt.release_id == plan.release_id, "anomaly receipt release ID mismatch")
+    _require(receipt.plan_sha256 == canonical_hash(plan), "anomaly receipt plan hash mismatch")
     rows = tuple(base_receipts)
+    _require(isinstance(base_receipts_raw, bytes), "base receipt bytes must be supplied")
+    expected_base_receipts_raw = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _require(
+        base_receipts_raw == expected_base_receipts_raw,
+        "base receipt bytes do not match supplied receipt rows",
+    )
     _require(
         hashlib.sha256(base_receipts_raw).hexdigest() == receipt.base_receipts_sha256,
         "anomaly receipt base receipt hash mismatch",
@@ -580,6 +588,20 @@ def validate_escalation_anomaly_evidence_v1(
         _require(row.registry_key == attempt.registry_key, "base receipt registry mismatch")
         _require(row.retry_count == 0, "base receipt retries must be zero")
     selected = tuple(selected_attempts)
+    _require(
+        all(isinstance(attempt, CapabilityAttemptPlanV1) for attempt in selected),
+        "selected attempts must use CapabilityAttemptPlanV1",
+    )
+    attempts_by_id = {attempt.call_id: attempt for attempt in plan.attempts}
+    _require(bool(selected), "anomaly evidence requires selected escalation attempts")
+    for selected_attempt in selected:
+        plan_attempt = attempts_by_id.get(selected_attempt.call_id)
+        _require(
+            plan_attempt is not None
+            and plan_attempt.phase is AttemptPhase.ESCALATION
+            and plan_attempt == selected_attempt,
+            "selected escalation attempt must exactly exist in the plan",
+        )
     escalation_keys = {
         attempt.registry_key for attempt in selected if attempt.phase is AttemptPhase.ESCALATION
     }
@@ -899,6 +921,10 @@ def validate_runtime_receipts_v1(
             _require(
                 all(getattr(row, field) is not None for field in _RUNTIME_EVIDENCE_FIELDS[:5]),
                 "generation evidence is incomplete",
+            )
+            _require(
+                row.peak_memory_bytes is not None and row.peak_memory_bytes > 0,
+                "generation requires positive peak memory evidence",
             )
         else:
             _require(

@@ -436,8 +436,10 @@ def _is_stale_source_rejection(exception: Exception) -> bool:
     )
 
 
-def _summary(output: Path, selected: tuple[Any, ...]) -> str:
-    return json.dumps({"status": "SUCCESS", "output": str(output), "call_count": len(selected), "base_count": sum(item.phase is AttemptPhase.BASE for item in selected), "escalation_count": sum(item.phase is AttemptPhase.ESCALATION for item in selected), "retries": 0}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def _summary(output: Path, selected: tuple[Any, ...], receipts: tuple[CapabilityAttemptReceiptV1, ...]) -> str:
+    pass_count = sum(receipt.status is GateStatus.PASS for receipt in receipts)
+    fail_count = len(receipts) - pass_count
+    return json.dumps({"status": "SUCCESS" if fail_count == 0 else "BLOCKED", "output": str(output), "call_count": len(selected), "base_count": sum(item.phase is AttemptPhase.BASE for item in selected), "escalation_count": sum(item.phase is AttemptPhase.ESCALATION for item in selected), "pass_count": pass_count, "fail_count": fail_count, "retries": 0}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -537,8 +539,8 @@ def main(argv: list[str] | None = None) -> int:
             _discard_reserved_output(output, output_fd, parent_identity, output_identity)
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
         return EXIT_ADAPTER
-    print(_summary(output, selected))
-    return EXIT_SUCCESS
+    print(_summary(output, selected, receipts))
+    return EXIT_SUCCESS if all(receipt.status is GateStatus.PASS for receipt in receipts) else EXIT_BLOCKED
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import Enum
+import re
 from typing import Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, computed_field, field_validator, model_validator
@@ -38,6 +39,9 @@ def _require_exact_bool_literal(value: object) -> object:
     if type(value) is not bool:
         raise ValueError("boolean literal fields require an exact bool input")
     return value
+
+
+_RFC3339_UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
 
 class QualificationStatus(str, Enum):
@@ -419,8 +423,8 @@ class ExecutionAuthorizationV1(ImmutableContractModel):
     def _utc_timestamp(cls, value: StrictStr) -> StrictStr:
         from datetime import datetime
 
-        if not value.strip() or not value.endswith("Z"):
-            raise ValueError("issued_at must be a nonblank UTC timestamp")
+        if not _RFC3339_UTC_TIMESTAMP.fullmatch(value):
+            raise ValueError("issued_at must be an RFC3339 UTC datetime")
         try:
             datetime.fromisoformat(f"{value[:-1]}+00:00")
         except ValueError as exc:
