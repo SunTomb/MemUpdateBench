@@ -35,6 +35,45 @@ def test_open_runtime_receipts_accept_load_only_qwen_and_blocked_bf16() -> None:
         ("open_snapshot_closure_receipt",),
     )
     assert rows[2].blocked_reasons == ("resource/runtime unavailable",)
+    assert tuple(
+        (
+            row.runtime.trust_remote_code,
+            row.runtime.compute_dtype,
+            row.runtime.attention_implementation,
+            row.runtime.seed,
+            row.runtime.sampling_mode,
+            row.runtime.timeout_seconds,
+            row.runtime.engine_args_sha256,
+        )
+        for row in rows
+    ) == (
+        (False, "bf16", "sdpa", 0, "greedy", 60, "a" * 64),
+        (False, "int4", "llama-cuda", 0, "greedy", 60, "b" * 64),
+        (False, "bf16", "eager", 0, "greedy", 60, "c" * 64),
+    )
+
+
+@pytest.mark.parametrize(
+    "index,changes",
+    [
+        (0, {"trust_remote_code": True}),
+        (0, {"compute_dtype": "fp16"}),
+        (0, {"attention_implementation": "flash_attention_2"}),
+        (0, {"seed": 1}),
+        (0, {"sampling_mode": "sample"}),
+        (0, {"timeout_seconds": 30}),
+        (1, {"compute_dtype": "bf16"}),
+        (1, {"attention_implementation": "eager"}),
+        (2, {"attention_implementation": "sdpa"}),
+    ],
+)
+def test_runtime_role_policy_rejects_noncanonical_reproducibility_settings(index: int, changes: dict[str, object]) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_runtime_receipts_v1
+
+    rows = open_runtime_receipts()
+    with pytest.raises(ValueError):
+        runtime = rows[index].runtime.model_copy(update=changes)
+        validate_runtime_receipts_v1(_replace(rows, index, runtime=runtime))
 
 
 def test_muse_gguf_requires_llama_commit_binary_build_and_speculative_off() -> None:

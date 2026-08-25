@@ -16,7 +16,12 @@ import uuid
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
-from mub.vnext.post_core import qualification_planning_v1
+from mub.vnext.post_core import (
+    qualification_decisions_v1,
+    qualification_planning_v1,
+    qualification_receipts_v1,
+    qualification_validation_v1,
+)
 from mub.vnext.post_core.qualification_planning_v1 import (
     CapabilitySmokePlanConfigV1,
     _canonical_fixture_bundle_bytes,
@@ -401,16 +406,35 @@ def _source_binding(
     )
 
 
+def _implementation_source_paths() -> dict[str, Path]:
+    modules = {
+        "qualification_receipts": qualification_receipts_v1,
+        "qualification_validation": qualification_validation_v1,
+        "qualification_decisions": qualification_decisions_v1,
+        "qualification_planner": qualification_planning_v1,
+        "qualification_release": None,
+    }
+    paths: dict[str, Path] = {}
+    for source_id, module in modules.items():
+        module_file = __file__ if module is None else getattr(module, "__file__", None)
+        if not isinstance(module_file, str) or not module_file:
+            raise ValueError(f"implementation source path is unavailable: {source_id}")
+        paths[source_id] = Path(module_file)
+    repository_root = Path(__file__).resolve().parents[3]
+    paths["capability_smoke_runner"] = repository_root / "scripts" / "vnext_run_post_core_capability_smoke.py"
+    return paths
+
+
 def _source_bindings(config: QualificationReleaseConfigV1, paths: Mapping[str, Path]) -> tuple[SourceBindingBundleV1, tuple[_SourceSnapshot, ...]]:
     snapshots = tuple(_read_source(source_id, paths[source_id]) for source_id in REQUIRED_SOURCE_IDS)
     for snapshot in snapshots:
         expected = config.required_source_sha256[snapshot.source_id]
         if snapshot.sha256 != expected:
             raise ValueError(f"source {snapshot.source_id} hash differs from the frozen config")
-    planner_file = qualification_planning_v1.__file__
-    if not isinstance(planner_file, str) or not planner_file:
-        raise ValueError("qualification planner source path is unavailable")
-    planner_snapshot = _read_source("qualification planner", Path(planner_file))
+    implementation_snapshots = tuple(
+        _read_source(source_id, path)
+        for source_id, path in _implementation_source_paths().items()
+    )
     bindings = (
         *(
             SourceBindingV1(
@@ -425,15 +449,22 @@ def _source_bindings(config: QualificationReleaseConfigV1, paths: Mapping[str, P
         _source_binding("qualification_config", config.config_raw, evidence_class="qualification_config"),
         _source_binding("capability_fixtures", _canonical_fixture_bundle_bytes(), evidence_class="capability_fixture_bundle"),
         _source_binding("capability_parser_contract", _canonical_parser_contract_bytes(), evidence_class="capability_parser_contract"),
-        SourceBindingV1(
-            source_id="qualification_planner",
-            evidence_class="planner_source",
-            sha256=planner_snapshot.sha256,
-            required=True,
-            byte_count=planner_snapshot.byte_count,
+        *(
+            SourceBindingV1(
+                source_id=s.source_id,
+                evidence_class=(
+                    "planner_source"
+                    if s.source_id == "qualification_planner"
+                    else "qualification_implementation_source"
+                ),
+                sha256=s.sha256,
+                required=True,
+                byte_count=s.byte_count,
+            )
+            for s in implementation_snapshots
         ),
     )
-    return SourceBindingBundleV1(release_id=config.release_id, sources=bindings), (*snapshots, planner_snapshot)
+    return SourceBindingBundleV1(release_id=config.release_id, sources=bindings), (*snapshots, *implementation_snapshots)
 
 
 def _jsonl_bytes(rows: Sequence[Any], label: str) -> bytes:
@@ -732,6 +763,7 @@ def _build_from_resolved(
         base_commit=config.base_commit,
         artifact_order=QUALIFICATION_ARTIFACT_ORDER,
         source_hashes={source.source_id: source.sha256 for source in source_bundle.sources},
+        source_byte_counts={source.source_id: source.byte_count for source in source_bundle.sources},
     )
     artifacts: dict[str, bytes] = {
         "qualification_release_manifest.json": canonical_bytes(manifest),
@@ -1104,7 +1136,7 @@ def _cleanup_verified_stage(
         _fsync_directory(stage.parent)
         stage.rmdir()
         _fsync_directory(stage.parent)
-    except OSError:
+    except (OSError, ValueError, QualificationReleaseError, UnsafeQualificationPathError):
         return
 
 

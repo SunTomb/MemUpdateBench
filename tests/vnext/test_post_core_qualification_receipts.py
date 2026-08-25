@@ -239,6 +239,7 @@ def test_source_hash_and_decision_count_maps_are_frozen_and_canonical() -> None:
         base_commit="a" * 40,
         artifact_order=QUALIFICATION_ARTIFACT_ORDER,
         source_hashes={"source": HASH_A},
+        source_byte_counts={"source": 1},
     )
     receipt = QualificationValidationReceiptV1(
         release_id="release",
@@ -249,6 +250,7 @@ def test_source_hash_and_decision_count_maps_are_frozen_and_canonical() -> None:
 
     for model, field, key, replacement in (
         (manifest, "source_hashes", "source", HASH_B),
+        (manifest, "source_byte_counts", "source", 2),
         (receipt, "decision_counts", "READY", 2),
     ):
         before = canonical_bytes(model)
@@ -323,20 +325,59 @@ def test_planned_fixture_attempt_receipt_and_decision_interfaces() -> None:
         )
 
 
-def test_runtime_requires_device_and_token_capacity_fields() -> None:
+def test_runtime_requires_explicit_reproducibility_fields() -> None:
     payload = {
         "engine": "transformers",
         "engine_version": "v1",
         "device_name": "A40",
         "context_tokens": 1,
         "max_output_tokens": 1,
+        "trust_remote_code": False,
+        "compute_dtype": "bf16",
+        "attention_implementation": "eager",
+        "seed": 0,
+        "sampling_mode": "greedy",
+        "timeout_seconds": 60,
+        "engine_args_sha256": HASH_A,
     }
     assert RuntimeManifestV1(**payload).device_name == "A40"
-    for required_field in ("device_name", "context_tokens", "max_output_tokens"):
+    for required_field in (
+        "device_name",
+        "context_tokens",
+        "max_output_tokens",
+        "trust_remote_code",
+        "compute_dtype",
+        "attention_implementation",
+        "seed",
+        "sampling_mode",
+        "timeout_seconds",
+        "engine_args_sha256",
+    ):
         incomplete = dict(payload)
         incomplete.pop(required_field)
         with pytest.raises(ValidationError):
             RuntimeManifestV1(**incomplete)
+
+
+@pytest.mark.parametrize("field,value", [("engine_version", " "), ("device_name", ""), ("attention_implementation", "\t")])
+def test_runtime_rejects_blank_reproducibility_strings(field: str, value: str) -> None:
+    payload = {
+        "engine": "transformers",
+        "engine_version": "v1",
+        "device_name": "A40",
+        "context_tokens": 1,
+        "max_output_tokens": 1,
+        "trust_remote_code": False,
+        "compute_dtype": "bf16",
+        "attention_implementation": "eager",
+        "seed": 0,
+        "sampling_mode": "greedy",
+        "timeout_seconds": 60,
+        "engine_args_sha256": HASH_A,
+    }
+    payload[field] = value
+    with pytest.raises(ValidationError):
+        RuntimeManifestV1(**payload)
 
 
 def test_attempt_receipt_accepts_non_end_turn_local_stop_reason() -> None:

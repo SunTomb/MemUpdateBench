@@ -90,6 +90,11 @@ _QWEN_PACKAGE_FIELDS = (
     "cuda_version",
     "driver_version",
 )
+_RUNTIME_REPRODUCIBILITY_POLICY = {
+    "qwen35_9b_bf16": ("bf16", frozenset({"eager", "sdpa"})),
+    "meta_muse_glimmer_30b_int4": ("int4", frozenset({"llama-cuda"})),
+    "meta_muse_glimmer_30b_bf16": ("bf16", frozenset({"eager"})),
+}
 _EXPECTED_SOURCE_BINDINGS = ("workflow_source", "handoff_source")
 _EXPECTED_IDENTITY_METADATA = {
     "claude_sonnet_4_6": ("claude-sonnet-4-6", None, None),
@@ -863,6 +868,21 @@ def validate_runtime_receipts_v1(
         )
         _require(isinstance(row.runtime, RuntimeManifestV1), "runtime manifest type mismatch")
         _require(row.runtime.engine == engine, "runtime engine mismatch")
+        _require(row.runtime.trust_remote_code is False, "runtime trust_remote_code must be false")
+        _require(row.runtime.seed == 0, "runtime seed must be zero")
+        _require(row.runtime.sampling_mode == "greedy", "runtime sampling mode must be greedy")
+        _require(row.runtime.timeout_seconds == 60, "runtime timeout must be sixty seconds")
+        _require(
+            isinstance(row.runtime.engine_args_sha256, str)
+            and _RUNTIME_SHA256.fullmatch(row.runtime.engine_args_sha256) is not None,
+            "runtime engine argument hash is required",
+        )
+        expected_dtype, allowed_attention = _RUNTIME_REPRODUCIBILITY_POLICY[registry_key]
+        _require(row.runtime.compute_dtype == expected_dtype, "runtime compute dtype mismatch")
+        _require(
+            row.runtime.attention_implementation in allowed_attention,
+            "runtime attention implementation mismatch",
+        )
 
         statuses = (
             row.load_status,

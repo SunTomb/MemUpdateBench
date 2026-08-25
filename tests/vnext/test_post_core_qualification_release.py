@@ -176,11 +176,26 @@ def test_release_binds_dynamic_evidence_hashes_and_rejects_forged_identity(tmp_p
     assert bindings["runtime_receipts"].sha256 == hashlib.sha256(
         inputs["runtime_receipts_path"].read_bytes()
     ).hexdigest()
-    assert {"qualification_config", "capability_fixtures", "capability_parser_contract", "qualification_planner"} <= set(bindings)
+    assert {
+        "qualification_config",
+        "capability_fixtures",
+        "capability_parser_contract",
+        "qualification_planner",
+        "qualification_receipts",
+        "qualification_validation",
+        "qualification_decisions",
+        "qualification_release",
+        "capability_smoke_runner",
+    } <= set(bindings)
+    implementation_paths = qualification_release_v1._implementation_source_paths()
+    for source_id, path in implementation_paths.items():
+        assert bindings[source_id].sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert bindings[source_id].byte_count == len(path.read_bytes())
     manifest = qualification_release_v1.QualificationReleaseManifestV1.model_validate_json(
         publication.artifact_bytes["qualification_release_manifest.json"]
     )
     assert dict(manifest.source_hashes) == {source_id: binding.sha256 for source_id, binding in bindings.items()}
+    assert dict(manifest.source_byte_counts) == {source_id: binding.byte_count for source_id, binding in bindings.items()}
 
     bundle = _identity_bundle()
     forged_record = type(bundle.records[-1]).model_construct(**{
@@ -588,6 +603,38 @@ def test_substituted_complete_stage_is_preserved_after_precommit_failure(tmp_pat
             shutil.copy2(member, stage / member.name)
         replacement.append(stage)
         raise RuntimeError("stop")
+
     with pytest.raises(RuntimeError, match="stop"):
         publish_qualification_release_v1(tmp_path / "complete-substitution", before_commit=substitute_stage, **inputs)
     assert replacement and replacement[0].exists()
+
+
+def test_runner_source_mutation_changes_release_artifact_bytes(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    runner = qualification_release_v1._implementation_source_paths()["capability_smoke_runner"]
+    original = runner.read_bytes()
+    baseline = build_qualification_release_v1(**inputs)
+    try:
+        runner.write_bytes(original + b"\n")
+        modified = build_qualification_release_v1(**inputs)
+    finally:
+        runner.write_bytes(original)
+
+    assert modified.artifact_bytes["source_bindings.json"] != baseline.artifact_bytes["source_bindings.json"]
+    assert modified.artifact_bytes["qualification_release_manifest.json"] != baseline.artifact_bytes["qualification_release_manifest.json"]
+
+
+
+def test_cleanup_does_not_mask_original_publish_error_when_member_capture_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _inputs(tmp_path)
+
+    def fail_precommit() -> None:
+        def fail_capture(_path: Path):
+            raise ValueError("capture failure")
+        monkeypatch.setattr(qualification_release_v1, "_capture_member", fail_capture)
+        raise RuntimeError("original publish error")
+
+    with pytest.raises(RuntimeError, match="original publish error"):
+        publish_qualification_release_v1(tmp_path / "cleanup-capture-failure", before_commit=fail_precommit, **inputs)

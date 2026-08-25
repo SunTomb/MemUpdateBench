@@ -268,6 +268,31 @@ class RuntimeManifestV1(ImmutableContractModel):
     context_tokens: StrictInt = Field(gt=0)
     max_output_tokens: StrictInt = Field(gt=0)
     build_options_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    trust_remote_code: StrictBool
+    compute_dtype: Literal["bf16", "fp16", "fp32", "int4"]
+    attention_implementation: StrictStr
+    seed: StrictInt = Field(ge=0)
+    sampling_mode: Literal["greedy"]
+    timeout_seconds: StrictInt = Field(gt=0)
+    engine_args_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+
+    @field_validator(
+        "engine_version",
+        "engine_commit",
+        "python_version",
+        "torch_version",
+        "transformers_version",
+        "accelerate_version",
+        "cuda_version",
+        "driver_version",
+        "device_name",
+        "attention_implementation",
+    )
+    @classmethod
+    def _nonblank_strings(cls, value: StrictStr | None) -> StrictStr | None:
+        if value is not None and not value.strip():
+            raise ValueError("runtime string fields must be nonblank")
+        return value
 
 
 class OpenRuntimeReceiptV1(ImmutableContractModel):
@@ -522,10 +547,16 @@ class QualificationReleaseManifestV1(ImmutableContractModel):
     base_commit: StrictStr = Field(pattern=r"^[0-9a-f]{40}$")
     artifact_order: tuple[StrictStr, ...]
     source_hashes: FrozenStringMap
+    source_byte_counts: FrozenNonnegativeIntMap
 
     @field_validator("source_hashes")
     @classmethod
     def _freeze_source_hashes(cls, value: FrozenStringMap) -> FrozenStringMap:
+        return freeze_mapping(value)
+
+    @field_validator("source_byte_counts")
+    @classmethod
+    def _freeze_source_byte_counts(cls, value: FrozenNonnegativeIntMap) -> FrozenNonnegativeIntMap:
         return freeze_mapping(value)
 
     @model_validator(mode="after")
@@ -537,6 +568,8 @@ class QualificationReleaseManifestV1(ImmutableContractModel):
             for value in self.source_hashes.values()
         ):
             raise ValueError("qualification manifest source hashes must be lowercase SHA-256")
+        if tuple(self.source_hashes) != tuple(self.source_byte_counts):
+            raise ValueError("qualification manifest source hash and byte-count IDs must match")
         return self
 
 
