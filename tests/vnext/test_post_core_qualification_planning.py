@@ -243,12 +243,27 @@ def test_planner_rejects_caller_substituted_fixture_hash_or_budget() -> None:
         )
 
 
-def test_exports_planner_owned_builders() -> None:
+def test_request_envelope_contains_hash_bound_prompt_and_parser_payloads() -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import (
+        build_capability_fixtures_v1,
+        build_capability_request_envelope_v1,
+        build_capability_smoke_plan_v1,
+    )
+
+    attempt = build_capability_smoke_plan_v1(_config(), build_capability_fixtures_v1()).attempts[0]
+    envelope = build_capability_request_envelope_v1(attempt)
+
+    assert envelope["prompt_payload"]["messages"][0]["role"] == "user"
+    assert envelope["prompt_payload"]["messages"][0]["content"] == "Reply with exactly READY."
+    assert envelope["parser_contract"]["projection"] == "literal_text"
+
+
     import mub.vnext.post_core.qualification_planning_v1 as planning
 
     assert planning.__all__ == [
         "CapabilitySmokePlanConfigV1",
         "build_capability_budget_v1",
         "build_capability_fixtures_v1",
+        "build_capability_request_envelope_v1",
         "build_capability_smoke_plan_v1",
     ]

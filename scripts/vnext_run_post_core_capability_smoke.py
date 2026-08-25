@@ -20,6 +20,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
+from mub.vnext.post_core.qualification_planning_v1 import build_capability_request_envelope_v1
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
     CapabilityAdapterResultV1,
@@ -458,6 +459,14 @@ def _parse_adapter_stdout(raw: bytes) -> tuple[CapabilityAdapterResultV1, ...]:
     return tuple(rows)
 
 
+def _request_envelope(attempt: Any) -> dict[str, Any]:
+    return build_capability_request_envelope_v1(attempt)
+
+
+def _request_sha256(attempt: Any) -> str:
+    return hashlib.sha256(canonical_bytes(_request_envelope(attempt))).hexdigest()
+
+
 def _fill_missing_adapter_results(
     selected: tuple[Any, ...], results: tuple[CapabilityAdapterResultV1, ...]
 ) -> tuple[CapabilityAdapterResultV1, ...]:
@@ -471,7 +480,7 @@ def _fill_missing_adapter_results(
             result = CapabilityAdapterResultV1(
                 call_id=attempt.call_id,
                 registry_key=attempt.registry_key,
-                request_sha256=hashlib.sha256(canonical_bytes(attempt)).hexdigest(),
+                request_sha256=_request_sha256(attempt),
                 error_class="ADAPTER_FAILURE",
             )
         filled.append(result)
@@ -488,7 +497,7 @@ def _adapter_results_to_receipts(
         if result.call_id != attempt.call_id or result.registry_key != attempt.registry_key:
             raise _AdapterProtocolError
         if (
-            result.request_sha256 != hashlib.sha256(canonical_bytes(attempt)).hexdigest()
+            result.request_sha256 != _request_sha256(attempt)
             or result.provider_call_count != 1
             or result.retry_count != 0
         ):
@@ -696,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
         print("capability smoke rejected: unsafe output path", file=sys.stderr)
         return EXIT_OUTPUT
 
-    payload = b"".join(canonical_bytes(attempt) + b"\n" for attempt in selected)
+    payload = b"".join(canonical_bytes(_request_envelope(attempt)) + b"\n" for attempt in selected)
     timeout_seconds = _aggregate_adapter_timeout_seconds(selected)
     finalized = False
     try:

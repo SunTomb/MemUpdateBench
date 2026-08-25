@@ -28,7 +28,7 @@ from mub.vnext.post_core.qualification_planning_v1 import (
     CapabilitySmokePlanConfigV1,
     build_capability_smoke_plan_v1,
 )
-from tests.vnext.qualification_fixtures import open_runtime_receipts, provider_attestations
+from tests.vnext.qualification_fixtures import failed_ssh_setup_event, open_runtime_receipts, provider_attestations
 from mub.vnext.post_core import qualification_release_v1
 from mub.vnext.post_core.qualification_release_v1 import (
     BASE_COMMIT,
@@ -136,7 +136,22 @@ def _inputs(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def test_builder_emits_exact_deterministic_artifacts_and_zero_counters(tmp_path: Path) -> None:
+def test_builder_preserves_typed_provider_setup_event_in_source_bound_jsonl(tmp_path: Path) -> None:
+    inputs = _inputs(tmp_path)
+    provider_path = inputs["provider_attestations_path"]
+    provider_path.write_bytes(
+        canonical_bytes(failed_ssh_setup_event())
+        + b"\n"
+        + provider_path.read_bytes()
+    )
+
+    publication = build_qualification_release_v1(**inputs)
+
+    assert canonical_bytes(failed_ssh_setup_event()) + b"\n" in publication.artifact_bytes[
+        "provider_capability_attestations.jsonl"
+    ]
+
+
     inputs = _inputs(tmp_path)
     left = build_qualification_release_v1(**inputs)
     right = build_qualification_release_v1(**inputs)

@@ -248,6 +248,29 @@ def _validate_inputs(
     return config
 
 
+def build_capability_request_envelope_v1(
+    attempt: CapabilityAttemptPlanV1,
+) -> dict[str, Any]:
+    if type(attempt) is not CapabilityAttemptPlanV1:
+        raise TypeError("attempt must be CapabilityAttemptPlanV1")
+    try:
+        prompt_payload = _CAPABILITY_PROMPT_PAYLOADS[attempt.fixture_id]
+        category = _EXPECTED_FIXTURE_CATEGORIES[attempt.fixture_id]
+    except KeyError as exc:
+        raise ValueError("attempt fixture is not part of the canonical capability bundle") from exc
+    parser_key = "exact_output" if category == "EXACT_OUTPUT" else "chat_template_parser"
+    parser_contract = _CAPABILITY_PARSER_CONTRACT[parser_key]
+    if attempt.prompt_sha256 != _sha256(prompt_payload):
+        raise ValueError("attempt prompt hash does not match the canonical prompt payload")
+    if attempt.parser_sha256 != _sha256(parser_contract):
+        raise ValueError("attempt parser hash does not match the canonical parser contract")
+    return {
+        **attempt.model_dump(mode="json"),
+        "prompt_payload": prompt_payload,
+        "parser_contract": parser_contract,
+    }
+
+
 def build_capability_smoke_plan_v1(
     config: CapabilitySmokePlanConfigV1 | Mapping[str, Any],
     fixtures: Sequence[CapabilityFixtureV1],
@@ -296,5 +319,6 @@ __all__ = [
     "CapabilitySmokePlanConfigV1",
     "build_capability_budget_v1",
     "build_capability_fixtures_v1",
+    "build_capability_request_envelope_v1",
     "build_capability_smoke_plan_v1",
 ]

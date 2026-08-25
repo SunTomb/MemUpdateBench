@@ -10,6 +10,7 @@ import time
 import pytest
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes, canonical_hash
+from mub.vnext.post_core.qualification_planning_v1 import build_capability_request_envelope_v1
 from pydantic import ValidationError
 
 from mub.vnext.post_core.qualification_receipts_v1 import (
@@ -20,6 +21,10 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
+
+
+def _request_sha256(attempt) -> str:
+    return hashlib.sha256(canonical_bytes(build_capability_request_envelope_v1(attempt))).hexdigest()
 
 
 def _authorization(**overrides: object) -> ExecutionAuthorizationV1:
@@ -915,7 +920,7 @@ def test_partial_adapter_results_are_filled_with_typed_failures() -> None:
     result = CapabilityAdapterResultV1(
         call_id=attempts[0].call_id,
         registry_key=attempts[0].registry_key,
-        request_sha256=hashlib.sha256(canonical_bytes(attempts[0])).hexdigest(),
+        request_sha256=_request_sha256(attempts[0]),
         response_projection="READY",
         response_format="LOCAL_TEXT",
         latency_ms=1,
@@ -938,7 +943,7 @@ def test_partial_adapter_results_are_filled_with_typed_failures() -> None:
     result = CapabilityAdapterResultV1(
         call_id=attempt.call_id,
         registry_key=attempt.registry_key,
-        request_sha256=hashlib.sha256(canonical_bytes(attempt)).hexdigest(),
+        request_sha256=_request_sha256(attempt),
         provider_call_count=1,
         retry_count=0,
         response_projection="READY",
@@ -960,7 +965,7 @@ def test_partial_adapter_results_are_filled_with_typed_failures() -> None:
     local_result = CapabilityAdapterResultV1(
         call_id=local_attempt.call_id,
         registry_key=local_attempt.registry_key,
-        request_sha256=hashlib.sha256(canonical_bytes(local_attempt)).hexdigest(),
+        request_sha256=_request_sha256(local_attempt),
         provider_call_count=1,
         retry_count=0,
         response_projection="READY",
@@ -988,13 +993,13 @@ def test_mixed_typed_failure_and_success_preserves_both_attempt_receipts() -> No
         CapabilityAdapterResultV1(
             call_id=pair[0].call_id,
             registry_key=pair[0].registry_key,
-            request_sha256=hashlib.sha256(canonical_bytes(pair[0])).hexdigest(),
+            request_sha256=_request_sha256(pair[0]),
             error_class="ADAPTER_TIMEOUT",
         ),
         CapabilityAdapterResultV1(
             call_id=pair[1].call_id,
             registry_key=pair[1].registry_key,
-            request_sha256=hashlib.sha256(canonical_bytes(pair[1])).hexdigest(),
+            request_sha256=_request_sha256(pair[1]),
             response_projection="READY",
             response_format="LOCAL_TEXT",
             latency_ms=1,

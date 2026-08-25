@@ -49,6 +49,7 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
     QUALIFICATION_ARTIFACT_ORDER,
     QUALIFICATION_INDEX_PATH,
     ProviderCapabilityAttestationV1,
+    ProviderSetupEventV1,
     OpenRuntimeReceiptV1,
 )
 from mub.vnext.post_core.qualification_validation_v1 import (
@@ -520,8 +521,33 @@ def _rows_from_snapshot(
 
 def _load_provider_rows(path: Path) -> tuple[tuple[ProviderCapabilityAttestationV1, ...], bytes, _SourceSnapshot]:
     snapshot = _read_source("provider attestations", path)
-    rows, raw = _rows_from_snapshot(snapshot, ProviderCapabilityAttestationV1, label="provider attestations")
-    return rows, raw, snapshot
+    raw = snapshot.raw
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError("provider attestations JSONL must be nonempty and LF-terminated")
+    providers: list[ProviderCapabilityAttestationV1] = []
+    setup_events: list[ProviderSetupEventV1] = []
+    for line in raw[:-1].split(b"\n"):
+        if not line:
+            raise ValueError("provider attestations JSONL contains an empty row")
+        try:
+            payload = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("provider attestations JSONL contains invalid JSON") from exc
+        validate_qualification_secret_free(payload)
+        try:
+            if payload.get("schema_version") == ProviderSetupEventV1.model_fields["schema_version"].default:
+                row = ProviderSetupEventV1.model_validate(payload)
+                setup_events.append(row)
+            else:
+                row = ProviderCapabilityAttestationV1.model_validate(payload)
+                providers.append(row)
+        except Exception as exc:
+            raise ValueError("provider attestations JSONL row does not satisfy its contract") from exc
+        if canonical_bytes(row) != line:
+            raise ValueError("provider attestations JSONL is not canonical")
+    if len(setup_events) > 1:
+        raise ValueError("provider attestations JSONL contains multiple setup events")
+    return tuple(providers), raw, snapshot
 
 
 def _load_runtime_rows(path: Path) -> tuple[tuple[OpenRuntimeReceiptV1, ...], bytes, _SourceSnapshot]:
