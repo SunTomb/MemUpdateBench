@@ -3279,10 +3279,29 @@ Task 10 registers the offline qualification contracts in the normal smoke path w
 
 The prior 12 calls are imported as source-bound aggregate connectivity/interface attestations in this qualification release. They are not benchmark/scientific accuracy or release-`READY` evidence.
 
-### Files changed
+### Files changed/generated
 
 ```text
+configs/vnext/post_core/qualification_release_v1.json
+mub/vnext/post_core/qualification_receipts_v1.py
+mub/vnext/post_core/qualification_validation_v1.py
+mub/vnext/post_core/qualification_planning_v1.py
+mub/vnext/post_core/qualification_decisions_v1.py
+mub/vnext/post_core/qualification_release_v1.py
+scripts/vnext_prepare_post_core_qualification_release.py
+scripts/vnext_run_post_core_capability_smoke.py
 scripts/smoke_test.py
+tests/vnext/qualification_fixtures.py
+tests/vnext/test_post_core_qualification_receipts.py
+tests/vnext/test_post_core_qualification_validation.py
+tests/vnext/test_post_core_qualification_runtime.py
+tests/vnext/test_post_core_qualification_planning.py
+tests/vnext/test_post_core_qualification_decisions.py
+tests/vnext/test_post_core_qualification_release.py
+tests/vnext/test_post_core_qualification_release_cli.py
+tests/vnext/test_post_core_capability_smoke_cli.py
+docs/superpowers/specs/2026-08-24-memupdatebench-post-core-phase12-qualification-design.md
+docs/superpowers/plans/2026-08-24-memupdatebench-post-core-phase12-qualification.md
 WORKFLOW.md
 ```
 
@@ -3305,6 +3324,13 @@ No real adapter is invoked.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -m py_compile \
+  scripts/prepare_data.py \
+  scripts/eval_evomemory.py \
+  scripts/generate_constrained_sft.py \
+  scripts/train_constrained_sft.py \
+  scripts/analyze_ood_errors.py \
+  scripts/summarize_update_frequency.py \
+  scripts/smoke_test.py \
   mub/vnext/post_core/qualification_v1.py \
   mub/vnext/post_core/qualification_receipts_v1.py \
   mub/vnext/post_core/qualification_validation_v1.py \
@@ -3312,8 +3338,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m py_compile \
   mub/vnext/post_core/qualification_decisions_v1.py \
   mub/vnext/post_core/qualification_release_v1.py \
   scripts/vnext_prepare_post_core_qualification_release.py \
-  scripts/vnext_run_post_core_capability_smoke.py \
-  scripts/smoke_test.py
+  scripts/vnext_run_post_core_capability_smoke.py
 # PASS: exit 0, no output
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
@@ -3325,10 +3350,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
   tests/vnext/test_post_core_qualification_release.py \
   tests/vnext/test_post_core_qualification_release_cli.py \
   tests/vnext/test_post_core_capability_smoke_cli.py -q
-# 237 passed, 5 skipped, 0 failed
+# 289 passed, 6 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest tests/vnext/test_post_core_*.py -q
-# 302 passed, 6 skipped, 0 failed
+# 354 passed, 7 skipped, 0 failed
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python scripts/smoke_test.py
 # SMOKE TEST: 32/32 passed
@@ -3337,7 +3362,7 @@ git diff --check
 # PASS
 ```
 
-The targeted-test skips are documented Windows host limitations: unavailable symlink creation, Windows descriptor sharing for the concurrent replacement probe, and unavailable directory `fsync`; they are not counted as passes. The Post-Core regression suite adds one unavailable symlink-creation skip.
+The targeted-test skips are documented Windows host limitations: unavailable symlink creation, Windows descriptor sharing for the concurrent replacement probe, unavailable directory `fsync`, and a controlled output-parent replacement that Windows denies while the reserved file handle is open; they are not counted as passes. The full Post-Core regression suite adds one unavailable identity-evidence symlink-creation skip.
 
 The planned combined Post-Core plus frozen Task 14 regression command was also attempted:
 
