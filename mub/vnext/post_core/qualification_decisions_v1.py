@@ -78,7 +78,7 @@ def _open_runtime_decisions(
     identity_key: str,
     runtime: OpenRuntimeReceiptV1,
 ) -> tuple[QualificationDecisionV1, ...]:
-    evidence_ids = runtime.source_binding_ids
+    evidence_ids = tuple(dict.fromkeys((*runtime.source_binding_ids, "identity_evidence")))
     storage = _decision(
         identity_key,
         DecisionScope.STORAGE_INPUT,

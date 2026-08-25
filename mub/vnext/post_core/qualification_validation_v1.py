@@ -74,6 +74,15 @@ _EXPECTED_RUNTIME_ROWS = (
 )
 _RUNTIME_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_RUNTIME_GENERATION_FIXTURE = build_capability_fixtures_v1()[0]
+_RUNTIME_GENERATION_PROMPT_SHA256 = _RUNTIME_GENERATION_FIXTURE.prompt_sha256
+_RUNTIME_GENERATION_PARSER_SHA256 = _RUNTIME_GENERATION_FIXTURE.parser_sha256
+_RUNTIME_GENERATION_OUTPUT_SHA256 = canonical_hash(
+    {"fixture_id": _RUNTIME_GENERATION_FIXTURE.fixture_id, "projection": "READY"}
+)
+_API_KEY_SHAPED = re.compile(
+    r"(?:AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,})"
+)
 _RUNTIME_EVIDENCE_FIELDS = (
     "prompt_fixture_sha256",
     "parser_sha256",
@@ -212,7 +221,7 @@ def _strict_unquote(value: str) -> str:
 
 
 def _scan_decoded_query_value(value: str) -> None:
-    if _PRIVATE_KEY_BLOCK.search(value):
+    if _PRIVATE_KEY_BLOCK.search(value) or _API_KEY_SHAPED.search(value):
         raise ValueError("URL query contains sensitive material")
     assignment = _ASSIGNMENT.match(value)
     if assignment and _is_sensitive_identifier(assignment.group(1)):
@@ -262,6 +271,8 @@ def _post_scan(value: Any) -> None:
     elif isinstance(value, str):
         if _PRIVATE_KEY_BLOCK.search(value):
             raise ValueError("private key block rejected")
+        if _API_KEY_SHAPED.search(value):
+            raise ValueError("API-key-shaped value rejected")
         if _IDENTIFIER_SHAPED.fullmatch(value) and _is_sensitive_identifier(value):
             raise ValueError("credential-like identifier rejected")
         assignment = _ASSIGNMENT.match(value)
@@ -690,7 +701,12 @@ def load_execution_authorization_v1(
         ),
         "authorization must select complete role-phase batches",
     )
-    has_escalation = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
+    selected_phases = {attempt.phase for attempt in selected}
+    _require(
+        len(selected_phases) == 1,
+        "authorization must select exactly one execution phase",
+    )
+    has_escalation = AttemptPhase.ESCALATION in selected_phases
     _require(
         (has_escalation and authorization.escalation_anomaly_receipt_sha256 is not None)
         or (not has_escalation and authorization.escalation_anomaly_receipt_sha256 is None),
@@ -744,6 +760,7 @@ def validate_capability_attempt_receipts_v1(
                     "closed PASS receipt requires a nonblank stop reason",
                 )
                 _require(receipt.usage_present is not None, "closed PASS receipt requires usage evidence")
+                _require(receipt.latency_ms is not None, "closed PASS receipt requires latency")
             else:
                 _require(
                     receipt.response_format == "LOCAL_TEXT",
@@ -751,6 +768,11 @@ def validate_capability_attempt_receipts_v1(
                 )
                 _require(receipt.response_model is None, "local PASS receipt must not carry a response model")
                 _require(receipt.latency_ms is not None, "local PASS receipt requires latency")
+            _require(
+                receipt.latency_ms is not None
+                and receipt.latency_ms <= attempt.budget.timeout_seconds * 1000,
+                "PASS receipt latency exceeds the attempt timeout",
+            )
         elif receipt.status in {GateStatus.FAIL, GateStatus.BLOCKED}:
             _require(receipt.error_class is not None and receipt.error_class.strip(), "non-PASS capability receipt requires error class")
             _require(receipt.redacted_response_sha256 is None, "non-PASS capability receipt cannot carry a response hash")
@@ -967,6 +989,16 @@ def validate_runtime_receipts_v1(
                     )
                 ),
                 "generation evidence is incomplete",
+            )
+            _require(
+                row.prompt_fixture_sha256 == _RUNTIME_GENERATION_PROMPT_SHA256
+                and row.parser_sha256 == _RUNTIME_GENERATION_PARSER_SHA256
+                and row.output_projection_sha256 == _RUNTIME_GENERATION_OUTPUT_SHA256,
+                "generation evidence does not match the canonical exact-output fixture",
+            )
+            _require(
+                row.generated_token_count is not None and row.generated_token_count > 0,
+                "generation requires a positive generated token count",
             )
             _require(
                 row.peak_memory_bytes is not None and row.peak_memory_bytes > 0,

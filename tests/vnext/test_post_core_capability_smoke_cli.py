@@ -363,6 +363,7 @@ def test_closed_receipt_requirements_and_public_exports_are_exact() -> None:
         response_format="SSE",
         stop_reason="end_turn",
         usage_present=True,
+        latency_ms=1,
         redacted_response_sha256=HASH_A,
     )
 
@@ -909,7 +910,7 @@ def test_adapter_result_binds_closed_registry_response_model() -> None:
         response_format="SSE",
         stop_reason="end_turn",
         usage_present=True,
-        latency_ms=None,
+        latency_ms=1,
     )
 
     module = runpy.run_path(str(CLI))

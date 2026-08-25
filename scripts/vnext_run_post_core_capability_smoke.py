@@ -535,6 +535,10 @@ def _adapter_results_to_receipts(
 
 
 def _transport_result_is_complete(attempt: Any, result: CapabilityAdapterResultV1) -> bool:
+    latency_is_bounded = (
+        result.latency_ms is not None
+        and result.latency_ms <= attempt.budget.timeout_seconds * 1000
+    )
     if attempt.runtime_or_endpoint_class == "api_transfer_station":
         return bool(
             result.response_format in {"ANTHROPIC_MESSAGE_JSON", "SSE"}
@@ -542,11 +546,12 @@ def _transport_result_is_complete(attempt: Any, result: CapabilityAdapterResultV
             and result.stop_reason is not None
             and result.stop_reason.strip()
             and result.usage_present is not None
+            and latency_is_bounded
         )
     return (
         result.response_format == "LOCAL_TEXT"
         and result.response_model is None
-        and result.latency_ms is not None
+        and latency_is_bounded
     )
 
 

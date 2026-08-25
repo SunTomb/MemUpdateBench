@@ -115,6 +115,8 @@ def test_failed_ssh_setup_event_has_zero_provider_calls_and_setup_stage() -> Non
         {"Authorization": "Bearer opaque-value"},
         {"value": "api_key=opaque-value"},
         {"value": "-----BEGIN PRIVATE KEY-----\nopaque\n-----END PRIVATE KEY-----"},
+        {"value": "AIzaSyA123456789012345678901234567890"},
+        {"value": "AKIAIOSFODNN7EXAMPLE"},
         {"endpoint": "https://user:pass@example.test/api"},
         {"endpoint": "http://example.test/api"},
         {"endpoint": "not-a-url"},

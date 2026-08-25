@@ -2,8 +2,20 @@ from __future__ import annotations
 
 import pytest
 
+from mub.vnext.post_core.contracts_v1 import canonical_hash
+from mub.vnext.post_core.qualification_planning_v1 import build_capability_fixtures_v1
 from mub.vnext.post_core.qualification_receipts_v1 import GateStatus
 from tests.vnext.qualification_fixtures import open_runtime_receipts
+
+
+_RUNTIME_FIXTURE = build_capability_fixtures_v1()[0]
+_RUNTIME_EVIDENCE = {
+    "prompt_fixture_sha256": _RUNTIME_FIXTURE.prompt_sha256,
+    "parser_sha256": _RUNTIME_FIXTURE.parser_sha256,
+    "output_projection_sha256": canonical_hash(
+        {"fixture_id": _RUNTIME_FIXTURE.fixture_id, "projection": "READY"}
+    ),
+}
 
 
 def _replace(rows, index: int, **changes):
@@ -235,10 +247,8 @@ def test_runtime_generation_pass_requires_positive_peak_memory_evidence() -> Non
                 qwen_index,
                 generation_status=GateStatus.PASS,
                 determinism_status=GateStatus.PASS,
-                prompt_fixture_sha256="a" * 64,
-                parser_sha256="b" * 64,
+                **_RUNTIME_EVIDENCE,
                 chat_template_sha256="c" * 64,
-                output_projection_sha256="d" * 64,
                 generated_token_count=1,
                 peak_memory_bytes=None,
             )
@@ -271,11 +281,9 @@ def test_generation_determinism_pass_requires_matching_repeat_projection_hash() 
         "determinism_status": GateStatus.PASS,
         "load_status": GateStatus.PASS,
         "unload_status": GateStatus.PASS,
-        "prompt_fixture_sha256": "a" * 64,
-        "parser_sha256": "b" * 64,
+        **_RUNTIME_EVIDENCE,
         "chat_template_sha256": "c" * 64,
-        "output_projection_sha256": "d" * 64,
-        "repeat_output_projection_sha256": "d" * 64,
+        "repeat_output_projection_sha256": _RUNTIME_EVIDENCE["output_projection_sha256"],
         "generated_token_count": 1,
         "peak_memory_bytes": 1,
     }

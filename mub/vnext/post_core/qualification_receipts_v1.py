@@ -313,7 +313,7 @@ class OpenRuntimeReceiptV1(ImmutableContractModel):
     chat_template_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     output_projection_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     repeat_output_projection_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
-    generated_token_count: StrictInt | None = Field(default=None, ge=0)
+    generated_token_count: StrictInt | None = Field(default=None, gt=0)
     peak_memory_bytes: StrictInt | None = Field(default=None, ge=0)
     blocked_reasons: tuple[StrictStr, ...] = ()
     source_binding_ids: tuple[StrictStr, ...]

@@ -1027,6 +1027,10 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
             renameat2.restype = ctypes.c_int
             result = renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
         else:
+            if platform.system() != "Linux":
+                raise NoReplacePrimitiveUnavailableError(
+                    "renameat2 syscall fallback is supported only on Linux"
+                )
             syscall = getattr(libc, "syscall", None)
             if syscall is None:
                 raise NoReplacePrimitiveUnavailableError("POSIX renameat2 is unavailable")

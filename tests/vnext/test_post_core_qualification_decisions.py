@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from mub.vnext.post_core.contracts_v1 import canonical_hash
 from mub.vnext.post_core.identity_v1 import IdentityEvidenceBundleV1
+from mub.vnext.post_core.qualification_planning_v1 import build_capability_fixtures_v1
 from mub.vnext.post_core.qualification_receipts_v1 import (
     DecisionScope,
     GateStatus,
@@ -40,6 +42,14 @@ EXPECTED_SCOPES = (
     DecisionScope.CAPABILITY_SMOKE,
     DecisionScope.BENCHMARK_ADMISSION,
 )
+_RUNTIME_FIXTURE = build_capability_fixtures_v1()[0]
+_RUNTIME_EVIDENCE = {
+    "prompt_fixture_sha256": _RUNTIME_FIXTURE.prompt_sha256,
+    "parser_sha256": _RUNTIME_FIXTURE.parser_sha256,
+    "output_projection_sha256": canonical_hash(
+        {"fixture_id": _RUNTIME_FIXTURE.fixture_id, "projection": "READY"}
+    ),
+}
 
 
 def identity_bundle() -> IdentityEvidenceBundleV1:
@@ -108,11 +118,9 @@ def test_all_pass_open_runtime_receipt_readies_short_generation_but_not_capabili
     runtime_rows[0] = runtime_rows[0].model_copy(update={
         "generation_status": GateStatus.PASS,
         "determinism_status": GateStatus.PASS,
-        "prompt_fixture_sha256": "a" * 64,
-        "parser_sha256": "b" * 64,
+        **_RUNTIME_EVIDENCE,
         "chat_template_sha256": "c" * 64,
-        "output_projection_sha256": "d" * 64,
-        "repeat_output_projection_sha256": "d" * 64,
+        "repeat_output_projection_sha256": _RUNTIME_EVIDENCE["output_projection_sha256"],
         "generated_token_count": 1,
         "peak_memory_bytes": 1,
     })
