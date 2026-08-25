@@ -14,6 +14,7 @@ from mub.vnext.post_core.contracts_v1 import canonical_bytes, canonical_hash
 from mub.vnext.post_core.provenance_v1 import validate_secret_free
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
+    CapabilityAnomalyReceiptV1,
     CapabilityAttemptPlanV1,
     CapabilityAttemptReceiptV1,
     CapabilitySmokePlanV1,
@@ -450,6 +451,63 @@ def _coerce_capability_smoke_plan_v1(plan_raw: object) -> CapabilitySmokePlanV1:
     return plan
 
 
+
+def load_capability_anomaly_receipt_v1(
+    path: Path, plan_raw: CapabilitySmokePlanV1 | bytes | bytearray
+) -> tuple[CapabilityAnomalyReceiptV1, bytes]:
+    plan = _coerce_capability_smoke_plan_v1(plan_raw)
+    raw = _read_regular_single_link(Path(path), "capability anomaly receipt")
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("capability anomaly receipt contains invalid JSON") from exc
+    validate_qualification_secret_free(payload)
+    try:
+        receipt = CapabilityAnomalyReceiptV1.model_validate(payload)
+    except Exception as exc:
+        raise ValueError("capability anomaly receipt does not satisfy its contract") from exc
+    if canonical_bytes(receipt) != raw:
+        raise ValueError("capability anomaly receipt is not canonical")
+    _require(receipt.release_id == plan.release_id, "anomaly receipt release ID mismatch")
+    _require(receipt.plan_sha256 == canonical_hash(plan), "anomaly receipt plan hash mismatch")
+    base_call_ids = {
+        attempt.call_id for attempt in plan.attempts if attempt.phase is AttemptPhase.BASE
+    }
+    _require(
+        set(receipt.base_call_ids).issubset(base_call_ids),
+        "anomaly receipt base call IDs must be base plan calls",
+    )
+    validate_qualification_secret_free(receipt.model_dump(mode="json"))
+    return receipt, raw
+
+
+def validate_escalation_anomaly_receipt_v1(
+    receipt: CapabilityAnomalyReceiptV1,
+    plan_raw: CapabilitySmokePlanV1 | bytes | bytearray,
+    selected_attempts: Sequence[CapabilityAttemptPlanV1],
+) -> CapabilityAnomalyReceiptV1:
+    plan = _coerce_capability_smoke_plan_v1(plan_raw)
+    selected = tuple(selected_attempts)
+    _require(
+        all(isinstance(attempt, CapabilityAttemptPlanV1) for attempt in selected),
+        "selected attempts must use CapabilityAttemptPlanV1",
+    )
+    escalation_keys = {
+        attempt.registry_key for attempt in selected if attempt.phase is AttemptPhase.ESCALATION
+    }
+    _require(escalation_keys, "anomaly receipt requires selected escalation attempts")
+    required_base_call_ids = {
+        attempt.call_id
+        for attempt in plan.attempts
+        if attempt.phase is AttemptPhase.BASE and attempt.registry_key in escalation_keys
+    }
+    _require(
+        required_base_call_ids.issubset(receipt.base_call_ids),
+        "anomaly receipt lacks base coverage for selected escalation roles",
+    )
+    return receipt
+
+
 def load_execution_authorization_v1(
     path: Path, plan_raw: CapabilitySmokePlanV1 | bytes | bytearray
 ) -> ExecutionAuthorizationV1:
@@ -751,9 +809,11 @@ def validate_runtime_receipts_v1(
 
 
 __all__ = [
+    "load_capability_anomaly_receipt_v1",
     "load_canonical_jsonl_v1",
     "load_execution_authorization_v1",
     "validate_capability_attempt_receipts_v1",
+    "validate_escalation_anomaly_receipt_v1",
     "validate_provider_attestations_v1",
     "validate_qualification_secret_free",
     "validate_runtime_receipts_v1",

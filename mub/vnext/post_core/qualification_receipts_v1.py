@@ -361,6 +361,44 @@ class CapabilitySmokePlanV1(ImmutableContractModel):
         return self
 
 
+class CapabilityAnomalyReceiptV1(ImmutableContractModel):
+    schema_version: Literal["qualification-capability-anomaly-receipt.v1"] = (
+        "qualification-capability-anomaly-receipt.v1"
+    )
+    release_id: StrictStr
+    plan_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    base_receipts_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    base_call_ids: tuple[StrictStr, ...]
+    anomalous_call_ids: tuple[StrictStr, ...]
+    anomaly_types: tuple[Literal["PARSER", "FORMAT", "STABILITY"], ...]
+    summary_class: StrictStr
+
+    @field_validator("summary_class")
+    @classmethod
+    def _nonblank_summary_class(cls, value: StrictStr) -> StrictStr:
+        if not value.strip():
+            raise ValueError("summary class must be nonblank")
+        return value
+
+    @model_validator(mode="after")
+    def _anomaly_shape(self) -> "CapabilityAnomalyReceiptV1":
+        for name, values in (
+            ("base call IDs", self.base_call_ids),
+            ("anomalous call IDs", self.anomalous_call_ids),
+            ("anomaly types", self.anomaly_types),
+        ):
+            if not values or len(values) != len(set(values)):
+                raise ValueError(f"{name} must be nonempty and unique")
+        if any(
+            len(call_id) != 64 or any(char not in "0123456789abcdef" for char in call_id)
+            for call_id in (*self.base_call_ids, *self.anomalous_call_ids)
+        ):
+            raise ValueError("anomaly receipt call IDs must be lowercase SHA-256")
+        if not set(self.anomalous_call_ids).issubset(self.base_call_ids):
+            raise ValueError("anomalous call IDs must be a subset of base call IDs")
+        return self
+
+
 class ExecutionAuthorizationV1(ImmutableContractModel):
     schema_version: Literal["qualification-execution-authorization.v1"] = (
         "qualification-execution-authorization.v1"
@@ -512,6 +550,7 @@ class QualificationValidationReceiptV1(ImmutableContractModel):
 __all__ = [
     "ArtifactBindingV1",
     "AttemptPhase",
+    "CapabilityAnomalyReceiptV1",
     "CapabilityAttemptPlanV1",
     "CapabilityAttemptReceiptV1",
     "CapabilityBudgetV1",

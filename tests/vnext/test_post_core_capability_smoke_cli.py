@@ -49,6 +49,30 @@ def test_execution_authorization_contract_is_strict_and_immutable() -> None:
         _authorization(authorized_call_ids=(HASH_B, HASH_B))
 
 
+
+def test_capability_anomaly_receipt_contract_is_immutable_and_rejects_invalid_shape() -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAnomalyReceiptV1
+
+    receipt = CapabilityAnomalyReceiptV1(
+        release_id="release",
+        plan_sha256=HASH_A,
+        base_receipts_sha256=HASH_B,
+        base_call_ids=("c" * 64,),
+        anomalous_call_ids=("c" * 64,),
+        anomaly_types=("PARSER",),
+        summary_class="base-parser-anomaly",
+    )
+    assert receipt.schema_version == "qualification-capability-anomaly-receipt.v1"
+    with pytest.raises(ValidationError):
+        receipt.summary_class = "changed"
+    with pytest.raises(ValidationError):
+        CapabilityAnomalyReceiptV1(
+            release_id="release", plan_sha256=HASH_A, base_receipts_sha256=HASH_B,
+            base_call_ids=("c" * 64,), anomalous_call_ids=("d" * 64,),
+            anomaly_types=("PARSER",), summary_class="bad-subset",
+        )
+
+
 def _plan():
     from mub.vnext.post_core.qualification_planning_v1 import (
         CapabilitySmokePlanConfigV1,
@@ -113,9 +137,9 @@ def _write_local_adapter(path: Path, env_record: Path) -> None:
         """import hashlib, json, os, sys
 
 assert sys.argv[1:] == ['--jsonl-protocol-v1']
-open(sys.argv[0] + '.env', 'w', encoding='utf-8').write(json.dumps(sorted(os.environ)))
+open(%r, 'w', encoding='utf-8').write(json.dumps(sorted(os.environ)))
 for line in sys.stdin:
-    attempt = json.loads(line)
+""" % str(env_record) + """    attempt = json.loads(line)
     receipt = {
         'schema_version': 'memupdatebench.post-core.capability-attempt-receipt.v1',
         'call_id': attempt['call_id'],
@@ -145,7 +169,8 @@ def test_cli_executes_only_authorized_qwen_base_calls_and_sanitizes_adapter_envi
     selected = tuple(row.call_id for row in plan.attempts[:8])
     _write_authorization(authorization_path, plan, selected)
     adapter = tmp_path / "adapter.py"
-    _write_local_adapter(adapter, tmp_path / "ignored")
+    environment_record = tmp_path / "adapter-environment.json"
+    _write_local_adapter(adapter, environment_record)
     output = tmp_path / "receipts.jsonl"
     environment = dict(os.environ)
     environment.update({"OPENAI_API_KEY": "test-secret", "CUSTOM_AUTH_TOKEN": "test-secret"})
@@ -178,7 +203,7 @@ def test_cli_executes_only_authorized_qwen_base_calls_and_sanitizes_adapter_envi
     rows = output.read_bytes().splitlines()
     assert len(rows) == 8
     assert all(json.loads(row)["retry_count"] == 0 for row in rows)
-    adapter_environment = json.loads((Path(str(adapter) + ".env")).read_text(encoding="utf-8"))
+    adapter_environment = json.loads(environment_record.read_text(encoding="utf-8"))
     assert not any("api" in key.lower() or "token" in key.lower() or "auth" in key.lower() for key in adapter_environment)
 
 
@@ -342,7 +367,146 @@ def test_closed_receipt_requirements_and_public_exports_are_exact() -> None:
         _authorization(issued_at="not-a-utc-time")
 
 
-def test_cli_help_exposes_no_provider_or_credential_flags() -> None:
+
+
+def test_adapter_replacement_after_pin_cannot_change_executed_bytes(tmp_path: Path) -> None:
+    import runpy
+
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    auth_path = tmp_path / "authorization.json"
+    _write_authorization(auth_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    adapter = tmp_path / "adapter.py"
+    _write_local_adapter(adapter, tmp_path / "environment.json")
+    module = runpy.run_path(str(CLI))
+
+    def replace_original(original: Path, pinned: Path) -> None:
+        original.write_text("raise AssertionError('replacement must not execute')", encoding="utf-8")
+
+    module["main"].__globals__["_after_adapter_pinned"] = replace_original
+    result = module["main"]([
+        "--plan", str(plan_path), "--authorization-receipt", str(auth_path),
+        "--adapter-executable", str(adapter), "--output", str(tmp_path / "receipts.jsonl"), "--execute",
+    ])
+
+    assert result == 0
+    assert (tmp_path / "receipts.jsonl").exists()
+
+
+def test_adapter_failure_removes_stably_reserved_output(tmp_path: Path) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    auth_path = tmp_path / "authorization.json"
+    _write_authorization(auth_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text("raise SystemExit(3)", encoding="utf-8")
+    output = tmp_path / "receipts.jsonl"
+
+    result = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--execute"], capture_output=True, text=True, timeout=20)
+
+    assert result.returncode == 14
+    assert not output.exists()
+
+def test_output_parent_replacement_cannot_redirect_receipt_bytes(tmp_path: Path) -> None:
+    import runpy
+
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    auth_path = tmp_path / "authorization.json"
+    _write_authorization(auth_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    adapter = tmp_path / "adapter.py"
+    _write_local_adapter(adapter, tmp_path / "environment.json")
+    parent = tmp_path / "requested-parent"
+    replacement = tmp_path / "replacement-parent"
+    old_parent = tmp_path / "old-parent"
+    parent.mkdir()
+    replacement.mkdir()
+    output = parent / "receipts.jsonl"
+    module = runpy.run_path(str(CLI))
+
+    def replace_parent(reserved_output: Path) -> None:
+        try:
+            os.replace(parent, old_parent)
+            os.replace(replacement, parent)
+        except OSError as exc:
+            pytest.skip(f"host prevents controlled parent replacement: {exc}")
+
+    module["main"].__globals__["_before_adapter_run"] = replace_parent
+    result = module["main"]([
+        "--plan", str(plan_path), "--authorization-receipt", str(auth_path),
+        "--adapter-executable", str(adapter), "--output", str(output), "--execute",
+    ])
+
+    assert result == 14
+    assert not (parent / "receipts.jsonl").exists()
+
+
+def _write_escalation_authorization(path: Path, plan, call_ids: tuple[str, ...], anomaly_raw: bytes) -> None:
+    path.write_bytes(canonical_bytes(_authorization(
+        release_id=plan.release_id,
+        plan_sha256=canonical_hash(plan),
+        authorized_call_ids=call_ids,
+        max_calls=len(call_ids),
+        escalation_anomaly_receipt_sha256=__import__("hashlib").sha256(anomaly_raw).hexdigest(),
+    )))
+
+
+def _anomaly(plan, base_ids: tuple[str, ...]):
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAnomalyReceiptV1
+    return CapabilityAnomalyReceiptV1(
+        release_id=plan.release_id,
+        plan_sha256=canonical_hash(plan),
+        base_receipts_sha256=HASH_A,
+        base_call_ids=base_ids,
+        anomalous_call_ids=(base_ids[0],),
+        anomaly_types=("PARSER",),
+        summary_class="parser-anomaly",
+    )
+
+
+def test_escalation_requires_hash_bound_typed_base_anomaly_evidence(tmp_path: Path) -> None:
+    plan = _plan()
+    escalation = next(row for row in plan.attempts if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION")
+    base_ids = tuple(row.call_id for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    anomaly_path = tmp_path / "anomaly.json"
+    anomaly_raw = canonical_bytes(_anomaly(plan, base_ids))
+    anomaly_path.write_bytes(anomaly_raw)
+    auth_path = tmp_path / "authorization.json"
+    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), anomaly_raw)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    adapter = tmp_path / "adapter.py"
+    _write_local_adapter(adapter, tmp_path / "environment.json")
+    output = tmp_path / "receipts.jsonl"
+
+    missing = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--execute"], capture_output=True, text=True, timeout=20)
+    assert missing.returncode == 10
+    success = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
+    assert success.returncode == 0
+    assert len(output.read_bytes().splitlines()) == 1
+
+
+def test_escalation_rejects_bad_anomaly_hash_and_missing_base_role_coverage(tmp_path: Path) -> None:
+    plan = _plan()
+    escalation = next(row for row in plan.attempts if row.registry_key == "qwen35_9b_bf16" and row.phase.value == "ESCALATION")
+    base_ids = tuple(row.call_id for row in plan.attempts if row.registry_key == escalation.registry_key and row.phase.value == "BASE")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    adapter = tmp_path / "adapter.py"
+    _write_local_adapter(adapter, tmp_path / "environment.json")
+    anomaly_path = tmp_path / "anomaly.json"
+    short_raw = canonical_bytes(_anomaly(plan, base_ids[:1]))
+    anomaly_path.write_bytes(short_raw)
+    auth_path = tmp_path / "authorization.json"
+    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), short_raw)
+    incomplete = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "incomplete.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
+    assert incomplete.returncode == 11
+    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), b"wrong")
+    mismatch = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "mismatch.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
+    assert mismatch.returncode == 12
     completed = subprocess.run(
         [sys.executable, str(CLI), "--help"], capture_output=True, text=True, timeout=10
     )
