@@ -449,7 +449,7 @@ def test_production_config_is_canonical_and_has_complete_frozen_payload() -> Non
             "core_manifest": "dd5ea033fd1bb7353f4c7f443c6a1e14ed44fb9e8641f8e05838b4147d3ec13b",
             "handoff_source": "4c1424bd2da72e9ed1042f091256fc55484c2f04cfdc0f6a0b4cf731eb5519a2",
             "identity_evidence": "9e3780ed3d4303bda7bbd27865df89fcb384041da64af56107c8c5b7abf0a4f0",
-            "open_snapshot_audit_receipt": "0b146bd8dc04e334d899801f4746bee0ae69635f1ace3f4c92ada8f32819940",
+            "open_snapshot_audit_receipt": "0b146bd8dc04e3343d899801f4746bee0ae69635f1ace3f4c92ada8f32819940",
             "open_snapshot_closure_receipt": "77a69e02a8b092b7e1bf5e89ff9a5f69b449c89a1c2cd319f9c48edd3e2f4645",
             "phase0_index": "e0b08cf0752798b55388c16f176af88a7a6a25a6facf29d6fa4100348ac199fd",
             "qwen_load_receipt": "fd4e47d75d86efdbe9add3cc469017b9aef23bb05bc4d03b74877bfbe289f6b7",

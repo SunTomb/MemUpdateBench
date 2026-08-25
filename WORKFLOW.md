@@ -3376,7 +3376,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest \
 
 The 13 Task 14 failures/errors are pre-existing worktree-fixture unavailability, not qualification-code failures: `data/vnext/core/v3` is absent, so strict Task 14 source loading raises `FileNotFoundError [WinError 3]`. The focused Post-Core suite passes independently. Frozen Task 14 code and sources were not modified.
 
-The checked-in production qualification configuration remains `BLOCKED` and contract-invalid: its recorded `open_snapshot_audit_receipt` source string is 63 hexadecimal characters. No hash was invented or padded; authoritative receipt re-read is required before production publication.
+The authoritative open-snapshot audit receipt was reread on Tang-2 from `/NAS/yesh/MemUpdateBench/external/post_core_public_open_models_20260822_audit.json`. A fresh remote `sha256sum` recovered the exact 64-character SHA-256 `0b146bd8dc04e3343d899801f4746bee0ae69635f1ace3f4c92ada8f32819940`; the checked-in qualification configuration had omitted the seventeenth character (`3`) and is now corrected. No hash was guessed or padded. This removes the malformed-hash configuration blocker but does not authorize publication, model/provider execution, or capability smoke.
 
 Validation performed zero model loads, provider calls, network calls, benchmark generations, and credential reads. The capability adapter transport now carries the canonical prompt payload and parser contract in each hash-bound request envelope, and the provider source-bound JSONL can preserve the typed zero-call pre-provider setup failure alongside the five capability attestations. Live short-generation and 8–16 smoke are `NOT_RUN` and require explicit authorization. All eight current `CAPABILITY_SMOKE` decisions remain `BLOCKED`; provider connectivity and open-model short-generation readiness cannot promote an unexecuted smoke to `READY`. The frozen zero-cost/PENDING budget also blocks all closed API attempts until an authorized price-version and nonzero hard cost ceiling are published. The 320 canary, confirmatory, and full matrix are unauthorized.
 
@@ -3384,4 +3384,4 @@ Validation performed zero model loads, provider calls, network calls, benchmark 
 
 ### Conclusion
 
-The offline/source-bound/no-replace qualification-release implementation is complete and registered in the smoke path, but it is not release `READY`. The production configuration blocker prevents publication until the authoritative open-snapshot audit receipt is reread and its exact frozen hash is recorded.
+The offline/source-bound/no-replace qualification-release implementation is complete and registered in the smoke path. The malformed audit-hash configuration blocker is resolved from an authoritative remote rehash, but no publication or execution is authorized by that correction. Live short-generation, capability smoke, canary, confirmatory, and benchmark evidence remain `NOT_RUN`/`BLOCKED` under their separate gates.
