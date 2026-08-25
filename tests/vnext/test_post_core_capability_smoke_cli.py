@@ -394,6 +394,28 @@ def test_adapter_replacement_after_pin_cannot_change_executed_bytes(tmp_path: Pa
     assert (tmp_path / "receipts.jsonl").exists()
 
 
+
+def test_pinned_adapter_identity_is_revalidated_before_execution(tmp_path: Path) -> None:
+    import runpy
+
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    auth_path = tmp_path / "authorization.json"
+    _write_authorization(auth_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text("raise AssertionError('adapter must not execute')", encoding="utf-8")
+    module = runpy.run_path(str(CLI))
+    module["main"].__globals__["_pinned_adapter_stable"] = lambda *args: False
+
+    result = module["main"]([
+        "--plan", str(plan_path), "--authorization-receipt", str(auth_path),
+        "--adapter-executable", str(adapter), "--output", str(tmp_path / "receipts.jsonl"), "--execute",
+    ])
+
+    assert result == 14
+    assert not (tmp_path / "receipts.jsonl").exists()
+
 def test_adapter_failure_removes_stably_reserved_output(tmp_path: Path) -> None:
     plan = _plan()
     plan_path = tmp_path / "plan.json"

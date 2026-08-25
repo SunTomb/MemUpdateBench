@@ -160,6 +160,24 @@ def _before_adapter_run(output: Path) -> None:
     return None
 
 
+def _pinned_adapter_stable(
+    private_dir: Path,
+    private_path: Path,
+    directory_identity: tuple[int, int],
+    adapter_identity: tuple[int, int],
+    adapter_sha256: str,
+) -> bool:
+    try:
+        return (
+            _identity(private_dir.stat()) == directory_identity
+            and _identity(private_path.lstat()) == adapter_identity
+            and hashlib.sha256(_read_regular_single_link(private_path, "pinned adapter")).hexdigest()
+            == adapter_sha256
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _clean_pinned_adapter(private_dir: Path, private_path: Path) -> None:
     try:
         metadata = private_path.lstat()
@@ -305,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     try:
         private_dir, pinned_adapter = _pin_adapter(Path(args.adapter_executable))
+        pinned_dir_identity = _identity(private_dir.stat())
+        pinned_adapter_identity = _identity(pinned_adapter.lstat())
+        pinned_adapter_sha256 = hashlib.sha256(
+            _read_regular_single_link(pinned_adapter, "pinned adapter")
+        ).hexdigest()
         _after_adapter_pinned(Path(args.adapter_executable), pinned_adapter)
     except (ValueError, OSError):
         print("capability smoke adapter/runtime/protocol rejected", file=sys.stderr)
@@ -326,6 +349,14 @@ def main(argv: list[str] | None = None) -> int:
     finalized = False
     try:
         _before_adapter_run(output)
+        if not _pinned_adapter_stable(
+            private_dir,
+            pinned_adapter,
+            pinned_dir_identity,
+            pinned_adapter_identity,
+            pinned_adapter_sha256,
+        ):
+            raise _AdapterProtocolError
         completed = subprocess.run(command, input=payload, capture_output=True, timeout=timeout_seconds, shell=False, env=_adapter_environment())
         if completed.returncode != 0 or completed.stderr or len(completed.stdout) > _MAX_CAPTURE_BYTES or len(completed.stderr) > _MAX_CAPTURE_BYTES:
             raise _AdapterProtocolError
