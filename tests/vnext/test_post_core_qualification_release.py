@@ -253,6 +253,39 @@ def test_builder_revalidates_source_after_artifact_construction(tmp_path: Path, 
         build_qualification_release_v1(**inputs)
 
 
+def test_source_reader_rejects_same_inode_same_size_timestamp_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"same-size")
+    before = source.stat()
+    original_read = qualification_release_v1.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        raw = original_read(descriptor, size)
+        if not mutated:
+            mutated = True
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        return raw
+
+    monkeypatch.setattr(qualification_release_v1.os, "read", mutate_after_read)
+    with pytest.raises(ValueError, match="changed while being read"):
+        qualification_release_v1._read_source("stable-times", source)
+
+
+def test_source_revalidation_rejects_same_inode_same_size_timestamp_mutation(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"same-size")
+    snapshot = qualification_release_v1._read_source("stable-times", source)
+    before = source.stat()
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    with pytest.raises(ValueError, match="changed after validation"):
+        qualification_release_v1._revalidate_source(snapshot)
+
+
 def test_publish_reopens_exact_artifacts_and_refuses_clobber(tmp_path: Path) -> None:
     inputs = _inputs(tmp_path)
     output = tmp_path / "published"

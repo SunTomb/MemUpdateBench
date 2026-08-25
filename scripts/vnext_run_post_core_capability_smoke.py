@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -17,7 +18,12 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from mub.vnext.post_core.contracts_v1 import canonical_bytes
-from mub.vnext.post_core.qualification_receipts_v1 import AttemptPhase, CapabilityAttemptReceiptV1
+from mub.vnext.post_core.qualification_receipts_v1 import (
+    AttemptPhase,
+    CapabilityAdapterResultV1,
+    CapabilityAttemptReceiptV1,
+    GateStatus,
+)
 from mub.vnext.post_core.qualification_validation_v1 import (
     _read_regular_single_link,
     load_capability_anomaly_receipt_v1,
@@ -213,59 +219,173 @@ def _reserve_output(path: Path) -> tuple[Path, int, tuple[int, int], tuple[int, 
         raise
 
 
-def _reserved_output_stable(path: Path, descriptor: int, parent_identity: tuple[int, int], output_identity: tuple[int, int]) -> bool:
+def _reserved_output_stable(
+    path: Path,
+    descriptor: int,
+    parent_identity: tuple[int, int],
+    output_identity: tuple[int, int],
+    expected_size: int,
+) -> bool:
     try:
         _reject_reparse_components(path.parent)
-        return (
+        path_metadata = path.lstat()
+        descriptor_metadata = os.fstat(descriptor)
+        return bool(
             _identity(path.parent.stat()) == parent_identity
-            and _identity(path.lstat()) == output_identity
-            and _identity(os.fstat(descriptor)) == output_identity
+            and _identity(path_metadata) == output_identity
+            and _identity(descriptor_metadata) == output_identity
+            and stat.S_ISREG(path_metadata.st_mode)
+            and stat.S_ISREG(descriptor_metadata.st_mode)
             and not _is_reparse(path)
+            and not (getattr(descriptor_metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            and getattr(path_metadata, "st_nlink", 1) == 1
+            and getattr(descriptor_metadata, "st_nlink", 1) == 1
+            and path_metadata.st_size == expected_size
+            and descriptor_metadata.st_size == expected_size
         )
     except OSError:
         return False
 
 
 def _discard_reserved_output(path: Path, descriptor: int, parent_identity: tuple[int, int], output_identity: tuple[int, int]) -> None:
-    stable = _reserved_output_stable(path, descriptor, parent_identity, output_identity)
+    try:
+        expected_size = os.fstat(descriptor).st_size
+    except OSError:
+        expected_size = -1
+    stable = _reserved_output_stable(
+        path, descriptor, parent_identity, output_identity, expected_size
+    )
     try:
         os.close(descriptor)
     finally:
         if stable:
             try:
-                if _identity(path.parent.stat()) == parent_identity and _identity(path.lstat()) == output_identity:
+                metadata = path.lstat()
+                if (
+                    _identity(path.parent.stat()) == parent_identity
+                    and _identity(metadata) == output_identity
+                    and stat.S_ISREG(metadata.st_mode)
+                    and not _is_reparse(path)
+                    and getattr(metadata, "st_nlink", 1) == 1
+                    and metadata.st_size == expected_size
+                ):
                     path.unlink()
             except OSError:
                 pass
 
 
 def _finalize_reserved_output(path: Path, descriptor: int, parent_identity: tuple[int, int], output_identity: tuple[int, int], raw: bytes) -> None:
-    if not _reserved_output_stable(path, descriptor, parent_identity, output_identity):
+    if not _reserved_output_stable(path, descriptor, parent_identity, output_identity, 0):
         raise _AdapterProtocolError
     _write_all(descriptor, raw)
     os.fsync(descriptor)
-    if not _reserved_output_stable(path, descriptor, parent_identity, output_identity):
+    if not _reserved_output_stable(path, descriptor, parent_identity, output_identity, len(raw)):
         raise _AdapterProtocolError
     os.close(descriptor)
 
 
-def _parse_adapter_stdout(raw: bytes) -> tuple[CapabilityAttemptReceiptV1, ...]:
+_SINGLE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def _parse_adapter_stdout(raw: bytes) -> tuple[CapabilityAdapterResultV1, ...]:
     if not raw or len(raw) > _MAX_CAPTURE_BYTES or not raw.endswith(b"\n"):
         raise _AdapterProtocolError
-    rows: list[CapabilityAttemptReceiptV1] = []
+    rows: list[CapabilityAdapterResultV1] = []
     for line in raw[:-1].split(b"\n"):
         if not line:
             raise _AdapterProtocolError
         try:
             payload = json.loads(line)
             validate_qualification_secret_free(payload)
-            receipt = CapabilityAttemptReceiptV1.model_validate(payload)
+            result = CapabilityAdapterResultV1.model_validate(payload)
         except Exception as exc:
             raise _AdapterProtocolError from exc
-        if canonical_bytes(receipt) != line:
+        if canonical_bytes(result) != line:
             raise _AdapterProtocolError
-        rows.append(receipt)
+        rows.append(result)
     return tuple(rows)
+
+
+def _adapter_results_to_receipts(
+    selected: tuple[Any, ...], results: tuple[CapabilityAdapterResultV1, ...]
+) -> tuple[CapabilityAttemptReceiptV1, ...]:
+    if len(results) != len(selected):
+        raise _AdapterProtocolError
+    receipts: list[CapabilityAttemptReceiptV1] = []
+    for attempt, result in zip(selected, results):
+        if result.call_id != attempt.call_id or result.registry_key != attempt.registry_key:
+            raise _AdapterProtocolError
+        if result.error_class is not None:
+            if not result.error_class.strip() or result.response_projection is not None:
+                raise _AdapterProtocolError
+            receipts.append(
+                CapabilityAttemptReceiptV1(
+                    call_id=attempt.call_id,
+                    registry_key=attempt.registry_key,
+                    status=GateStatus.FAIL,
+                    error_class=result.error_class,
+                )
+            )
+            continue
+        projection = result.response_projection
+        if projection is None or not _transport_result_is_complete(attempt, result):
+            raise _AdapterProtocolError
+        if _projection_matches_fixture(attempt, projection):
+            receipts.append(
+                CapabilityAttemptReceiptV1(
+                    call_id=attempt.call_id,
+                    registry_key=attempt.registry_key,
+                    status=GateStatus.PASS,
+                    response_model=result.response_model,
+                    response_format=result.response_format,
+                    stop_reason=result.stop_reason,
+                    usage_present=result.usage_present,
+                    latency_ms=result.latency_ms,
+                    redacted_response_sha256=hashlib.sha256(
+                        canonical_bytes({"fixture_id": attempt.fixture_id, "projection": projection})
+                    ).hexdigest(),
+                )
+            )
+        else:
+            receipts.append(
+                CapabilityAttemptReceiptV1(
+                    call_id=attempt.call_id,
+                    registry_key=attempt.registry_key,
+                    status=GateStatus.FAIL,
+                    error_class="PARSER_MISMATCH",
+                )
+            )
+    return tuple(receipts)
+
+
+def _transport_result_is_complete(attempt: Any, result: CapabilityAdapterResultV1) -> bool:
+    if attempt.runtime_or_endpoint_class == "api_transfer_station":
+        return bool(
+            result.response_format in {"ANTHROPIC_MESSAGE_JSON", "SSE"}
+            and result.response_model is not None
+            and result.response_model.strip()
+            and result.stop_reason is not None
+            and result.stop_reason.strip()
+            and result.usage_present is not None
+        )
+    return result.response_format == "LOCAL_TEXT" and result.latency_ms is not None
+
+
+def _projection_matches_fixture(attempt: Any, projection: str) -> bool:
+    if attempt.fixture_id == "exact_ok_1":
+        return projection.strip() == "READY"
+    if attempt.fixture_id == "exact_ok_2":
+        return projection == "ACK"
+    if attempt.fixture_id in {"parser_city_1", "parser_city_2"}:
+        return bool(
+            projection == projection.strip()
+            and projection
+            and len(projection) <= attempt.budget.max_output_tokens
+            and "\n" not in projection
+            and "\r" not in projection
+            and _SINGLE_IDENTIFIER.fullmatch(projection)
+        )
+    return False
 
 
 def _is_stale_source_rejection(exception: Exception) -> bool:
@@ -360,9 +480,11 @@ def main(argv: list[str] | None = None) -> int:
         completed = subprocess.run(command, input=payload, capture_output=True, timeout=timeout_seconds, shell=False, env=_adapter_environment())
         if completed.returncode != 0 or completed.stderr or len(completed.stdout) > _MAX_CAPTURE_BYTES or len(completed.stderr) > _MAX_CAPTURE_BYTES:
             raise _AdapterProtocolError
-        receipts = _parse_adapter_stdout(completed.stdout)
+        adapter_results = _parse_adapter_stdout(completed.stdout)
+        receipts = _adapter_results_to_receipts(selected, adapter_results)
         validate_capability_attempt_receipts_v1(selected, receipts)
-        _finalize_reserved_output(output, output_fd, parent_identity, output_identity, completed.stdout)
+        receipt_raw = b"".join(canonical_bytes(receipt) + b"\n" for receipt in receipts)
+        _finalize_reserved_output(output, output_fd, parent_identity, output_identity, receipt_raw)
         finalized = True
     except (subprocess.TimeoutExpired, OSError, ValueError, _AdapterProtocolError):
         if not finalized:

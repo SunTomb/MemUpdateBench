@@ -1,4 +1,5 @@
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -134,27 +135,25 @@ def _write_authorization(path: Path, plan, call_ids: tuple[str, ...]) -> None:
 
 def _write_local_adapter(path: Path, env_record: Path) -> None:
     path.write_text(
-        """import hashlib, json, os, sys
+        """import json, os, sys
 
 assert sys.argv[1:] == ['--jsonl-protocol-v1']
 open(%r, 'w', encoding='utf-8').write(json.dumps(sorted(os.environ)))
 for line in sys.stdin:
 """ % str(env_record) + """    attempt = json.loads(line)
-    receipt = {
-        'schema_version': 'memupdatebench.post-core.capability-attempt-receipt.v1',
+    result = {
+        'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
         'call_id': attempt['call_id'],
         'registry_key': attempt['registry_key'],
-        'status': 'PASS',
-        'retry_count': 0,
+        'response_projection': {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'Paris'),
         'response_model': None,
         'response_format': 'LOCAL_TEXT',
         'stop_reason': None,
         'usage_present': None,
         'latency_ms': 1,
-        'redacted_response_sha256': hashlib.sha256(attempt['call_id'].encode()).hexdigest(),
         'error_class': None,
     }
-    sys.stdout.buffer.write(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode('utf-8') + b'\\n')
+    sys.stdout.buffer.write(json.dumps(result, sort_keys=True, separators=(',', ':')).encode('utf-8') + b'\\n')
     sys.stdout.buffer.flush()
 """,
         encoding="utf-8",
@@ -203,6 +202,13 @@ def test_cli_executes_only_authorized_qwen_base_calls_and_sanitizes_adapter_envi
     rows = output.read_bytes().splitlines()
     assert len(rows) == 8
     assert all(json.loads(row)["retry_count"] == 0 for row in rows)
+    assert all(json.loads(row)["status"] == "PASS" for row in rows)
+    assert all("response_projection" not in json.loads(row) for row in rows)
+    for attempt, row in zip(plan.attempts[:8], rows):
+        projection = {"exact_ok_1": "READY", "exact_ok_2": "ACK"}.get(attempt.fixture_id, "Paris")
+        assert json.loads(row)["redacted_response_sha256"] == hashlib.sha256(
+            canonical_bytes({"fixture_id": attempt.fixture_id, "projection": projection})
+        ).hexdigest()
     adapter_environment = json.loads(environment_record.read_text(encoding="utf-8"))
     assert not any("api" in key.lower() or "token" in key.lower() or "auth" in key.lower() for key in adapter_environment)
 
@@ -538,3 +544,150 @@ def test_escalation_rejects_bad_anomaly_hash_and_missing_base_role_coverage(tmp_
         completed.stdout.split()
     )
     assert not any(term in completed.stdout.lower() for term in ("provider", "endpoint", "credential", "token", "api-key"))
+
+
+def test_cli_preserves_empty_reserved_output_when_adapter_adds_hardlink(tmp_path: Path) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    authorization_path = tmp_path / "authorization.json"
+    _write_authorization(authorization_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    output = tmp_path / "receipts.jsonl"
+    alias = tmp_path / "receipt-alias.jsonl"
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(
+        """import json, os, sys
+
+for line in sys.stdin:
+    attempt = json.loads(line)
+    if not os.path.exists(%r):
+        os.link(%r, %r)
+    result = {
+        'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
+        'call_id': attempt['call_id'],
+        'registry_key': attempt['registry_key'],
+        'response_projection': {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'Paris'),
+        'response_model': None,
+        'response_format': 'LOCAL_TEXT',
+        'stop_reason': None,
+        'usage_present': None,
+        'latency_ms': 1,
+        'error_class': None,
+    }
+    sys.stdout.buffer.write(json.dumps(result, sort_keys=True, separators=(',', ':')).encode() + b'\\n')
+""" % (str(alias), str(output), str(alias)),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization_path, adapter, output), "--execute"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    if not alias.exists() and completed.returncode == 14:
+        pytest.skip("host does not permit hardlink creation during adapter execution")
+    assert completed.returncode in {13, 14}
+    assert output.read_bytes() == b""
+    assert alias.read_bytes() == b""
+
+
+def test_cli_persists_adapter_error_and_parser_mismatch_as_typed_failures(tmp_path: Path) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    authorization_path = tmp_path / "authorization.json"
+    selected = tuple(row.call_id for row in plan.attempts[:8])
+    _write_authorization(authorization_path, plan, selected)
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(
+        """import json, sys
+
+for line in sys.stdin:
+    attempt = json.loads(line)
+    result = {
+        'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
+        'call_id': attempt['call_id'],
+        'registry_key': attempt['registry_key'],
+        'response_projection': None if attempt['fixture_id'] == 'exact_ok_1' else 'WRONG' if attempt['fixture_id'].startswith('exact_') else 'Paris',
+        'response_model': None,
+        'response_format': 'LOCAL_TEXT',
+        'stop_reason': None,
+        'usage_present': None,
+        'latency_ms': 1,
+        'error_class': 'ADAPTER_TIMEOUT' if attempt['fixture_id'] == 'exact_ok_1' else None,
+    }
+    sys.stdout.buffer.write(json.dumps(result, sort_keys=True, separators=(',', ':')).encode() + b'\\n')
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipts.jsonl"
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization_path, adapter, output), "--execute"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout)["status"] == "SUCCESS"
+    persisted = tuple(json.loads(line) for line in output.read_bytes().splitlines())
+    assert all("response_projection" not in row for row in persisted)
+    for attempt, row in zip(plan.attempts[:8], persisted):
+        if attempt.fixture_id == "exact_ok_1":
+            assert row["status"] == "FAIL"
+            assert row["error_class"] == "ADAPTER_TIMEOUT"
+            assert row["redacted_response_sha256"] is None
+        elif attempt.fixture_id == "exact_ok_2":
+            assert row["status"] == "FAIL"
+            assert row["error_class"] == "PARSER_MISMATCH"
+            assert row["redacted_response_sha256"] is None
+        else:
+            assert row["status"] == "PASS"
+
+
+@pytest.mark.parametrize("injected_field", ["status", "redacted_response_sha256"])
+def test_cli_rejects_adapter_verdict_or_hash_injection(
+    tmp_path: Path, injected_field: str
+) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    authorization_path = tmp_path / "authorization.json"
+    _write_authorization(authorization_path, plan, tuple(row.call_id for row in plan.attempts[:8]))
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(
+        """import json, sys
+
+for line in sys.stdin:
+    attempt = json.loads(line)
+    result = {
+        'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
+        'call_id': attempt['call_id'],
+        'registry_key': attempt['registry_key'],
+        'response_projection': {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'Paris'),
+        'response_model': None,
+        'response_format': 'LOCAL_TEXT',
+        'stop_reason': None,
+        'usage_present': None,
+        'latency_ms': 1,
+        'error_class': None,
+        %r: %r,
+    }
+    sys.stdout.buffer.write(json.dumps(result, sort_keys=True, separators=(',', ':')).encode() + b'\\n')
+""" % (injected_field, "PASS" if injected_field == "status" else "a" * 64),
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipts.jsonl"
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization_path, adapter, output), "--execute"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 14
+    assert not output.exists()

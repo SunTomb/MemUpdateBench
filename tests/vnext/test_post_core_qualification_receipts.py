@@ -9,6 +9,7 @@ from mub.vnext.post_core.contracts_v1 import canonical_bytes, canonical_hash
 from mub.vnext.post_core.qualification_receipts_v1 import (
     ArtifactBindingV1,
     AttemptPhase,
+    CapabilityAdapterResultV1,
     CapabilityAttemptPlanV1,
     CapabilityAttemptReceiptV1,
     CapabilityBudgetV1,
@@ -417,3 +418,29 @@ def test_production_config_is_canonical_and_has_complete_frozen_payload() -> Non
         "schema_version": "memupdatebench.post-core.qualification-config.v1",
         "scientific_execution_allowed": False,
     }
+
+
+def test_capability_adapter_result_is_immutable_and_cannot_declare_a_verdict() -> None:
+    result = CapabilityAdapterResultV1(
+        call_id=HASH_A,
+        registry_key="role",
+        response_projection="READY",
+        response_format="LOCAL_TEXT",
+        latency_ms=1,
+    )
+
+    assert result.schema_version == "memupdatebench.post-core.capability-adapter-result.v1"
+    assert "CapabilityAdapterResultV1" in __import__(
+        "mub.vnext.post_core.qualification_receipts_v1", fromlist=["__all__"]
+    ).__all__
+    assert tuple(CapabilityAdapterResultV1.model_fields) == (
+        "schema_version", "call_id", "registry_key", "response_projection",
+        "response_model", "response_format", "stop_reason", "usage_present", "latency_ms",
+        "error_class",
+    )
+    with pytest.raises(ValidationError):
+        CapabilityAdapterResultV1.model_validate({**result.model_dump(mode="json"), "status": "PASS"})
+    with pytest.raises(ValidationError):
+        CapabilityAdapterResultV1.model_validate({**result.model_dump(mode="json"), "redacted_response_sha256": HASH_B})
+    with pytest.raises(ValidationError):
+        result.response_projection = "ACK"

@@ -100,6 +100,7 @@ class _SourceSnapshot:
     identity: tuple[int, int]
     byte_count: int
     sha256: str
+    stable_times: tuple[int, int]
     raw: bytes
 
 
@@ -205,6 +206,10 @@ def _regular_single_link(metadata: os.stat_result) -> bool:
     )
 
 
+def _stable_times(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_mtime_ns, metadata.st_ctime_ns
+
+
 def _read_source(source_id: str, path: Path) -> _SourceSnapshot:
     selected = _absolute(path)
     _reject_reparse_components(selected)
@@ -218,7 +223,10 @@ def _read_source(source_id: str, path: Path) -> _SourceSnapshot:
         descriptor = os.open(selected, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
         try:
             opened = os.fstat(descriptor)
-            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or opened.st_size != before.st_size:
+            if (
+                (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                or opened.st_size != before.st_size
+            ):
                 raise ValueError(f"source {source_id} changed while being read")
             chunks: list[bytes] = []
             while True:
@@ -240,16 +248,26 @@ def _read_source(source_id: str, path: Path) -> _SourceSnapshot:
         or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
         or after_open.st_size != before.st_size
         or after.st_size != before.st_size
+        or _stable_times(after_open) != _stable_times(opened)
+        or _stable_times(after) != _stable_times(before)
         or len(raw) != before.st_size
     ):
         raise ValueError(f"source {source_id} changed while being read")
-    return _SourceSnapshot(source_id, selected, (before.st_dev, before.st_ino), len(raw), _sha256(raw), raw)
+    return _SourceSnapshot(
+        source_id,
+        selected,
+        (before.st_dev, before.st_ino),
+        len(raw),
+        _sha256(raw),
+        _stable_times(before),
+        raw,
+    )
 
 
 def _revalidate_source(snapshot: _SourceSnapshot) -> None:
     current = _read_source(snapshot.source_id, snapshot.path)
-    if (current.identity, current.byte_count, current.sha256) != (
-        snapshot.identity, snapshot.byte_count, snapshot.sha256
+    if (current.identity, current.byte_count, current.sha256, current.stable_times) != (
+        snapshot.identity, snapshot.byte_count, snapshot.sha256, snapshot.stable_times
     ):
         raise ValueError(f"source {snapshot.source_id} changed after validation")
 

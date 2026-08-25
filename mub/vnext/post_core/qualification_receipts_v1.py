@@ -447,6 +447,21 @@ class ExecutionAuthorizationV1(ImmutableContractModel):
         return self
 
 
+class CapabilityAdapterResultV1(ImmutableContractModel):
+    schema_version: Literal["memupdatebench.post-core.capability-adapter-result.v1"] = (
+        "memupdatebench.post-core.capability-adapter-result.v1"
+    )
+    call_id: StrictStr = Field(pattern=SHA256_PATTERN)
+    registry_key: StrictStr
+    response_projection: StrictStr | None = None
+    response_model: StrictStr | None = None
+    response_format: Literal["ANTHROPIC_MESSAGE_JSON", "SSE", "LOCAL_TEXT"] | None = None
+    stop_reason: StrictStr | None = None
+    usage_present: StrictBool | None = None
+    latency_ms: StrictInt | None = Field(default=None, ge=0)
+    error_class: StrictStr | None = None
+
+
 class CapabilityAttemptReceiptV1(ImmutableContractModel):
     schema_version: Literal["memupdatebench.post-core.capability-attempt-receipt.v1"] = (
         "memupdatebench.post-core.capability-attempt-receipt.v1"
@@ -551,6 +566,7 @@ __all__ = [
     "ArtifactBindingV1",
     "AttemptPhase",
     "CapabilityAnomalyReceiptV1",
+    "CapabilityAdapterResultV1",
     "CapabilityAttemptPlanV1",
     "CapabilityAttemptReceiptV1",
     "CapabilityBudgetV1",
