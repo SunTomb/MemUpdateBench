@@ -696,6 +696,54 @@ for line in sys.stdin:
             assert row["status"] == "PASS"
 
 
+
+def test_anomaly_evidence_requires_type_matched_failure_per_selected_role() -> None:
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAttemptReceiptV1
+    from mub.vnext.post_core.qualification_validation_v1 import validate_escalation_anomaly_evidence_v1
+
+    plan = _plan()
+    roles = ("qwen35_9b_bf16", "meta_muse_glimmer_30b_int4")
+    base_attempts = tuple(row for row in plan.attempts if row.registry_key in roles and row.phase.value == "BASE")
+    selected = tuple(next(row for row in plan.attempts if row.registry_key == role and row.phase.value == "ESCALATION") for role in roles)
+    anomalous_ids = (base_attempts[0].call_id, next(row.call_id for row in base_attempts if row.registry_key == roles[1]))
+    rows = tuple(
+        CapabilityAttemptReceiptV1(
+            call_id=attempt.call_id, registry_key=attempt.registry_key, status="FAIL",
+            error_class="PARSER_MISMATCH" if attempt.call_id == anomalous_ids[0] else "NETWORK_ERROR" if attempt.call_id == anomalous_ids[1] else "BASE_FAILURE",
+        ) for attempt in base_attempts
+    )
+    raw = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAnomalyReceiptV1
+    anomaly = CapabilityAnomalyReceiptV1(
+        release_id=plan.release_id, plan_sha256=canonical_hash(plan),
+        base_receipts_sha256=__import__("hashlib").sha256(raw).hexdigest(),
+        base_call_ids=tuple(row.call_id for row in base_attempts), anomalous_call_ids=anomalous_ids,
+        anomaly_types=("PARSER",), summary_class="two-role",
+    )
+
+    with pytest.raises(ValueError, match="declared anomaly type"):
+        validate_escalation_anomaly_evidence_v1(anomaly, rows, raw, plan, selected)
+    format_rows = tuple(row.model_copy(update={"error_class": "FORMAT_MISMATCH"}) if row.call_id == anomalous_ids[1] else row for row in rows)
+    format_raw = b"".join(canonical_bytes(row) + b"\n" for row in format_rows)
+    format_anomaly = anomaly.model_copy(update={
+        "base_receipts_sha256": __import__("hashlib").sha256(format_raw).hexdigest(),
+        "anomaly_types": ("PARSER", "FORMAT"),
+    })
+    assert validate_escalation_anomaly_evidence_v1(format_anomaly, format_rows, format_raw, plan, selected) == format_anomaly
+
+def test_exact_fixtures_reject_leading_or_trailing_projection_whitespace() -> None:
+    import runpy
+
+    module = runpy.run_path(str(CLI))
+    plan = _plan()
+    exact_one = next(row for row in plan.attempts if row.fixture_id == "exact_ok_1")
+    exact_two = next(row for row in plan.attempts if row.fixture_id == "exact_ok_2")
+
+    assert module["_projection_matches_fixture"](exact_one, "READY") is True
+    assert module["_projection_matches_fixture"](exact_two, "ACK") is True
+    for attempt, projection in ((exact_one, " READY"), (exact_one, "READY "), (exact_two, " ACK"), (exact_two, "ACK ")):
+        assert module["_projection_matches_fixture"](attempt, projection) is False
+
 @pytest.mark.parametrize("injected_field", ["status", "redacted_response_sha256"])
 def test_cli_rejects_adapter_verdict_or_hash_injection(
     tmp_path: Path, injected_field: str

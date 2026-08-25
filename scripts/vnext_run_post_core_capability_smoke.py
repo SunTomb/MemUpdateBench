@@ -376,7 +376,7 @@ def _transport_result_is_complete(attempt: Any, result: CapabilityAdapterResultV
 
 def _projection_matches_fixture(attempt: Any, projection: str) -> bool:
     if attempt.fixture_id == "exact_ok_1":
-        return projection.strip() == "READY"
+        return projection == "READY"
     if attempt.fixture_id == "exact_ok_2":
         return projection == "ACK"
     if attempt.fixture_id in {"parser_city_1", "parser_city_2"}:

@@ -559,16 +559,26 @@ def validate_escalation_anomaly_evidence_v1(
         all(row.status is GateStatus.FAIL for row in anomalous_rows),
         "anomalous base receipts must be FAIL",
     )
-    for registry_key in escalation_keys:
-        _require(
-            any(row.registry_key == registry_key for row in anomalous_rows),
-            "each selected escalation role requires an anomalous base receipt",
-        )
     checks = {
         "PARSER": lambda value: value == "PARSER_MISMATCH",
         "FORMAT": lambda value: value is not None and "FORMAT" in value,
         "STABILITY": lambda value: value is not None and "STABILITY" in value,
     }
+    matches_declared_type = lambda row: any(
+        checks[anomaly_type](row.error_class) for anomaly_type in receipt.anomaly_types
+    )
+    _require(
+        all(matches_declared_type(row) for row in anomalous_rows),
+        "every anomalous base receipt must match a declared anomaly type",
+    )
+    for registry_key in escalation_keys:
+        _require(
+            any(
+                row.registry_key == registry_key and matches_declared_type(row)
+                for row in anomalous_rows
+            ),
+            "each selected escalation role requires a matching anomaly type",
+        )
     for anomaly_type in receipt.anomaly_types:
         _require(
             any(checks[anomaly_type](row.error_class) for row in anomalous_rows),
