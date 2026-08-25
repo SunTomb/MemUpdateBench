@@ -24,29 +24,15 @@ FROZEN_REGISTRY_KEYS = (
 
 
 def _budget() -> CapabilityBudgetV1:
-    return CapabilityBudgetV1(
-        max_prompt_tokens=256,
-        max_output_tokens=64,
-        estimated_cost=Decimal("0"),
-        hard_max_cost=Decimal("0"),
-        price_version="offline-v1",
-        timeout_seconds=30,
-    )
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_budget_v1
+
+    return build_capability_budget_v1()
 
 
 def _fixtures() -> tuple[CapabilityFixtureV1, ...]:
-    fixture_ids = ("exact_ok_1", "exact_ok_2", "parser_city_1", "parser_city_2")
-    return tuple(
-        CapabilityFixtureV1(
-            fixture_id=fixture_ids[index],
-            category="EXACT_OUTPUT" if index < 2 else "CHAT_TEMPLATE_PARSER",
-            prompt_sha256=f"{index + 1:064x}",
-            parser_sha256=f"{index + 11:064x}",
-            max_prompt_tokens=128,
-            max_output_tokens=32,
-        )
-        for index in range(4)
-    )
+    from mub.vnext.post_core.qualification_planning_v1 import build_capability_fixtures_v1
+
+    return build_capability_fixtures_v1()
 
 
 def _config(**changes):
@@ -101,7 +87,7 @@ def test_plan_is_canonical_and_does_not_accept_caller_call_ids() -> None:
     from mub.vnext.post_core.qualification_planning_v1 import build_capability_smoke_plan_v1
 
     first = build_capability_smoke_plan_v1(_config(), _fixtures())
-    second = build_capability_smoke_plan_v1(_config(), tuple(reversed(_fixtures())))
+    second = build_capability_smoke_plan_v1(_config(), _fixtures())
     assert canonical_bytes(first) == canonical_bytes(second)
     assert len({row.call_id for row in first.attempts}) == 128
     assert all("call_id" not in row.model_fields_set for row in first.attempts)
@@ -172,7 +158,7 @@ def test_rejects_swapped_fixture_categories() -> None:
     fixtures = list(_fixtures())
     fixtures[0] = fixtures[0].model_copy(update={"category": "CHAT_TEMPLATE_PARSER"})
     fixtures[2] = fixtures[2].model_copy(update={"category": "EXACT_OUTPUT"})
-    with pytest.raises(ValueError, match="exact fixture category"):
+    with pytest.raises(ValueError, match="canonical fixture"):
         build_capability_smoke_plan_v1(_config(), tuple(fixtures))
 
 
@@ -181,7 +167,7 @@ def test_rejects_balanced_categories_with_substituted_fixture_id() -> None:
 
     fixtures = list(_fixtures())
     fixtures[0] = fixtures[0].model_copy(update={"fixture_id": "exact_ok_wrong"})
-    with pytest.raises(ValueError, match="exact fixture"):
+    with pytest.raises(ValueError, match="canonical fixture"):
         build_capability_smoke_plan_v1(_config(), tuple(fixtures))
 
 
@@ -216,10 +202,51 @@ def test_contract_rejects_duplicate_attempt_coordinate() -> None:
         )
 
 
-def test_exports_only_planner_public_api() -> None:
+def test_canonical_planner_owned_fixtures_budget_and_hashes_are_deterministic() -> None:
+    from mub.vnext.post_core.contracts_v1 import canonical_bytes
+    from mub.vnext.post_core.qualification_planning_v1 import (
+        build_capability_budget_v1,
+        build_capability_fixtures_v1,
+    )
+
+    fixtures = build_capability_fixtures_v1()
+    assert fixtures == build_capability_fixtures_v1()
+    assert len(fixtures) == 4
+    assert all(fixture.prompt_sha256 != "0" * 64 for fixture in fixtures)
+    assert all(fixture.parser_sha256 != "0" * 64 for fixture in fixtures)
+    assert canonical_bytes(tuple(fixture.model_dump(mode="json") for fixture in fixtures)) == canonical_bytes(
+        tuple(fixture.model_dump(mode="json") for fixture in build_capability_fixtures_v1())
+    )
+    budget = build_capability_budget_v1()
+    assert (budget.max_calls, budget.max_retries, budget.timeout_seconds) == (1, 0, 60)
+    assert budget.estimated_cost == budget.hard_max_cost == Decimal("0")
+
+
+def test_planner_rejects_caller_substituted_fixture_hash_or_budget() -> None:
+    from mub.vnext.post_core.qualification_planning_v1 import (
+        build_capability_budget_v1,
+        build_capability_fixtures_v1,
+        build_capability_smoke_plan_v1,
+    )
+
+    fixtures = build_capability_fixtures_v1()
+    substituted = (fixtures[0].model_copy(update={"prompt_sha256": "0" * 64}), *fixtures[1:])
+    config = _config(budget=build_capability_budget_v1())
+    with pytest.raises(ValueError, match="canonical fixture"):
+        build_capability_smoke_plan_v1(config, substituted)
+    with pytest.raises(ValueError, match="canonical capability budget"):
+        build_capability_smoke_plan_v1(
+            _config(budget=build_capability_budget_v1().model_copy(update={"timeout_seconds": 59})),
+            fixtures,
+        )
+
+
+def test_exports_planner_owned_builders() -> None:
     import mub.vnext.post_core.qualification_planning_v1 as planning
 
     assert planning.__all__ == [
         "CapabilitySmokePlanConfigV1",
+        "build_capability_budget_v1",
+        "build_capability_fixtures_v1",
         "build_capability_smoke_plan_v1",
     ]

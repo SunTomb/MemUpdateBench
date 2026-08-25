@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
+import hashlib
 from typing import Any, Mapping, Sequence
 
 
+from mub.vnext.post_core.contracts_v1 import canonical_bytes
 from mub.vnext.post_core.qualification_receipts_v1 import (
     AttemptPhase,
     CapabilityAttemptPlanV1,
@@ -91,6 +94,71 @@ _EXPECTED_FIXTURE_CATEGORIES = {
     "parser_city_1": "CHAT_TEMPLATE_PARSER",
     "parser_city_2": "CHAT_TEMPLATE_PARSER",
 }
+_EXACT_OUTPUT_PARSER_CONTRACT_VERSION = "memupdatebench.post-core.capability-parser.exact-output.v1"
+_CHAT_TEMPLATE_PARSER_CONTRACT_VERSION = "memupdatebench.post-core.capability-parser.chat-template.v1"
+_CAPABILITY_PROMPT_PAYLOADS = {
+    "exact_ok_1": {"messages": ({"content": "Reply with exactly READY.", "role": "user"},), "version": "v1"},
+    "exact_ok_2": {"messages": ({"content": "Reply with exactly ACK.", "role": "user"},), "version": "v1"},
+    "parser_city_1": {"messages": ({"content": "Reply with one concise label.", "role": "user"},), "version": "v1"},
+    "parser_city_2": {"messages": ({"content": "Reply with one concise identifier.", "role": "user"},), "version": "v1"},
+}
+_CAPABILITY_PARSER_CONTRACT = {
+    "exact_output": {"version": _EXACT_OUTPUT_PARSER_CONTRACT_VERSION, "projection": "literal_text"},
+    "chat_template_parser": {"version": _CHAT_TEMPLATE_PARSER_CONTRACT_VERSION, "projection": "single_assistant_text"},
+}
+_CAPABILITY_FIXTURE_LIMITS = {
+    "exact_ok_1": (128, 32),
+    "exact_ok_2": (128, 32),
+    "parser_city_1": (128, 32),
+    "parser_city_2": (128, 32),
+}
+
+
+def _sha256(value: object) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def build_capability_fixtures_v1() -> tuple[CapabilityFixtureV1, ...]:
+    fixtures: list[CapabilityFixtureV1] = []
+    for fixture_id, category in _EXPECTED_FIXTURE_CATEGORIES.items():
+        parser_key = "exact_output" if category == "EXACT_OUTPUT" else "chat_template_parser"
+        max_prompt_tokens, max_output_tokens = _CAPABILITY_FIXTURE_LIMITS[fixture_id]
+        fixtures.append(
+            CapabilityFixtureV1(
+                fixture_id=fixture_id,
+                category=category,
+                prompt_sha256=_sha256(_CAPABILITY_PROMPT_PAYLOADS[fixture_id]),
+                parser_sha256=_sha256(_CAPABILITY_PARSER_CONTRACT[parser_key]),
+                max_prompt_tokens=max_prompt_tokens,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+    return tuple(fixtures)
+
+
+def build_capability_budget_v1() -> CapabilityBudgetV1:
+    return CapabilityBudgetV1(
+        max_calls=1,
+        max_prompt_tokens=128,
+        max_output_tokens=32,
+        estimated_cost=Decimal("0"),
+        hard_max_cost=Decimal("0"),
+        price_version="LOCAL_UNPRICED/PENDING qualification",
+        max_retries=0,
+        timeout_seconds=60,
+    )
+
+
+def _fixture_bundle_bytes(fixtures: Sequence[CapabilityFixtureV1]) -> bytes:
+    return canonical_bytes(tuple(fixture.model_dump(mode="json") for fixture in fixtures))
+
+
+def _canonical_fixture_bundle_bytes() -> bytes:
+    return _fixture_bundle_bytes(build_capability_fixtures_v1())
+
+
+def _canonical_parser_contract_bytes() -> bytes:
+    return canonical_bytes(_CAPABILITY_PARSER_CONTRACT)
 
 
 _RUNTIME_CLASSES = {
@@ -148,8 +216,10 @@ def _validate_inputs(
         if type(key) is not str or not key:
             raise ValueError("registry keys must be nonempty strings")
         _runtime_class(key)
-    if config.budget.max_calls != 1 or config.budget.max_retries != 0:
-        raise ValueError("per-attempt budget must allow one call and zero retries")
+    canonical_budget = build_capability_budget_v1()
+    if canonical_bytes(config.budget) != canonical_bytes(canonical_budget):
+        raise ValueError("planner requires the canonical capability budget")
+    canonical_fixtures = build_capability_fixtures_v1()
     if len(fixtures) != 4:
         raise ValueError("planner requires exactly four fixtures")
     _reject_forbidden_mapping(fixtures)
@@ -166,6 +236,8 @@ def _validate_inputs(
         category = _fixture_category(fixture)
         fixture_categories[fixture_id] = category
         _fixture_values(fixture)
+    if _fixture_bundle_bytes(tuple(fixtures)) != _fixture_bundle_bytes(canonical_fixtures):
+        raise ValueError("planner requires the canonical fixture bundle")
     if fixture_categories != _EXPECTED_FIXTURE_CATEGORIES:
         raise ValueError("fixtures must use the exact fixture category mapping")
     if len(fixture_categories) != 4:
@@ -219,4 +291,9 @@ def build_capability_smoke_plan_v1(
     )
 
 
-__all__ = ["CapabilitySmokePlanConfigV1", "build_capability_smoke_plan_v1"]
+__all__ = [
+    "CapabilitySmokePlanConfigV1",
+    "build_capability_budget_v1",
+    "build_capability_fixtures_v1",
+    "build_capability_smoke_plan_v1",
+]

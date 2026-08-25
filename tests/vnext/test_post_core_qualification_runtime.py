@@ -30,9 +30,9 @@ def test_open_runtime_receipts_accept_load_only_qwen_and_blocked_bf16() -> None:
         "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
     )
     assert tuple(row.source_binding_ids for row in rows) == (
-        ("qwen_snapshot_closure",),
-        ("muse_gguf_snapshot_closure",),
-        ("muse_bf16_snapshot_closure",),
+        ("open_snapshot_closure_receipt", "qwen_load_receipt"),
+        ("open_snapshot_closure_receipt",),
+        ("open_snapshot_closure_receipt",),
     )
     assert rows[2].blocked_reasons == ("resource/runtime unavailable",)
 
@@ -137,7 +137,7 @@ def test_runtime_identity_order_revision_and_source_bindings_are_exact() -> None
         validate_runtime_receipts_v1(_replace(rows, 0, source_binding_ids=()))
     with pytest.raises(ValueError):
         validate_runtime_receipts_v1(
-            _replace(rows, 0, source_binding_ids=("muse_gguf_snapshot_closure",))
+            _replace(rows, 0, source_binding_ids=("open_snapshot_closure_receipt",))
         )
     with pytest.raises(ValueError):
         validate_runtime_receipts_v1(
@@ -172,6 +172,16 @@ def test_fail_gate_requires_nonempty_blocked_reasons() -> None:
             _replace(open_runtime_receipts(), 0, load_status=GateStatus.FAIL)
         )
 
+
+def test_unsupported_runtime_gates_require_future_typed_proof() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_runtime_receipts_v1
+
+    rows = open_runtime_receipts()
+    for index in range(3):
+        with pytest.raises(ValueError, match="UNSUPPORTED"):
+            validate_runtime_receipts_v1(
+                _replace(rows, index, load_status=GateStatus.UNSUPPORTED, blocked_reasons=("GPU unavailable",))
+            )
 
 def test_runtime_validation_exports_exactly_four_public_functions() -> None:
     import mub.vnext.post_core.qualification_validation_v1 as validation

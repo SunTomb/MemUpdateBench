@@ -33,21 +33,21 @@ _EXPECTED_RUNTIME_ROWS = (
         "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
         "transformers",
         "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db",
-        ("qwen_snapshot_closure",),
+        ("open_snapshot_closure_receipt", "qwen_load_receipt"),
     ),
     (
         "meta_muse_glimmer_30b_int4",
         "70bf1b61ac09f91b24d39038091b41c582bc5d7a",
         "llama.cpp",
         "55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f",
-        ("muse_gguf_snapshot_closure",),
+        ("open_snapshot_closure_receipt",),
     ),
     (
         "meta_muse_glimmer_30b_bf16",
         "a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
         "transformers",
         "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
-        ("muse_bf16_snapshot_closure",),
+        ("open_snapshot_closure_receipt",),
     ),
 )
 _RUNTIME_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -511,6 +511,10 @@ def validate_runtime_receipts_v1(
         _require(
             all(isinstance(status, str) and status in {item.value for item in GateStatus} for status in status_values),
             "runtime gate status invalid",
+        )
+        _require(
+            GateStatus.UNSUPPORTED.value not in status_values,
+            "UNSUPPORTED runtime gates require a future typed incompatibility proof contract",
         )
         if registry_key == "meta_muse_glimmer_30b_bf16":
             _require(

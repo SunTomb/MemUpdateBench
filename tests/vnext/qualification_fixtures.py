@@ -13,9 +13,9 @@ from mub.vnext.post_core.qualification_receipts_v1 import (
 SOURCE_BINDING_IDS = ("workflow_source", "handoff_source")
 
 RUNTIME_SOURCE_BINDINGS = {
-    "qwen35_9b_bf16": ("qwen_snapshot_closure",),
-    "meta_muse_glimmer_30b_int4": ("muse_gguf_snapshot_closure",),
-    "meta_muse_glimmer_30b_bf16": ("muse_bf16_snapshot_closure",),
+    "qwen35_9b_bf16": ("open_snapshot_closure_receipt", "qwen_load_receipt"),
+    "meta_muse_glimmer_30b_int4": ("open_snapshot_closure_receipt",),
+    "meta_muse_glimmer_30b_bf16": ("open_snapshot_closure_receipt",),
 }
 
 _RUNTIME_TREE_HASHES = {
