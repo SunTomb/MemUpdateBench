@@ -207,6 +207,8 @@ def _run_python_adapter_bounded(
     )
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     overflow = threading.Event()
+    writer_done = threading.Event()
+    writer_failed = threading.Event()
 
     def read_pipe(name: str, stream: Any) -> None:
         try:
@@ -230,40 +232,56 @@ def _run_python_adapter_bounded(
             except OSError:
                 pass
 
+    def write_stdin(stream: Any) -> None:
+        try:
+            _write_all(stream.fileno(), payload)
+        except OSError:
+            writer_failed.set()
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+            writer_done.set()
+
     stdout_thread = threading.Thread(target=read_pipe, args=("stdout", process.stdout), daemon=True)
     stderr_thread = threading.Thread(target=read_pipe, args=("stderr", process.stderr), daemon=True)
+    if process.stdin is None:
+        _terminate_adapter_process_group(process)
+        raise _AdapterProtocolError
+    writer_thread = threading.Thread(target=write_stdin, args=(process.stdin,), daemon=True)
+    deadline = time.monotonic() + timeout_seconds
     stdout_thread.start()
     stderr_thread.start()
+    writer_thread.start()
     reader_hung = False
+    writer_hung = False
+    timed_out = False
     try:
-        try:
-            if process.stdin is None:
-                raise _AdapterProtocolError
-            _write_all(process.stdin.fileno(), payload)
-        except (OSError, _AdapterProtocolError):
-            pass
-        finally:
-            if process.stdin is not None:
-                try:
-                    process.stdin.close()
-                except OSError:
-                    pass
-        deadline = time.monotonic() + timeout_seconds
         while True:
             returncode = process.poll()
             if returncode is not None:
                 break
             if time.monotonic() >= deadline:
+                timed_out = True
                 _terminate_adapter_process_group(process)
                 try:
                     process.wait(timeout=_READER_JOIN_SECONDS)
                 except subprocess.TimeoutExpired:
                     pass
-                raise _AdapterProtocolError
+                break
             time.sleep(0.01)
     finally:
         if process.poll() is None:
             _terminate_adapter_process_group(process)
+        if not writer_done.is_set():
+            _close_reader_stream(process.stdin)
+        remaining = max(0.0, deadline - time.monotonic())
+        writer_thread.join(min(_READER_JOIN_SECONDS, remaining))
+        if writer_thread.is_alive():
+            writer_hung = True
+            _close_reader_stream(process.stdin)
+            writer_thread.join(_READER_JOIN_SECONDS)
         stdout_thread.join(_READER_JOIN_SECONDS)
         stderr_thread.join(_READER_JOIN_SECONDS)
         if stdout_thread.is_alive() or stderr_thread.is_alive():
@@ -273,7 +291,7 @@ def _run_python_adapter_bounded(
             _close_reader_stream(process.stderr)
             stdout_thread.join(_READER_JOIN_SECONDS)
             stderr_thread.join(_READER_JOIN_SECONDS)
-    if reader_hung or overflow.is_set():
+    if timed_out or writer_hung or writer_failed.is_set() or not writer_done.is_set() or reader_hung or overflow.is_set():
         raise _AdapterProtocolError
     return returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
 
@@ -281,6 +299,18 @@ def _run_python_adapter_bounded(
 def _selected_attempts(plan: Any, authorization: Any) -> tuple[Any, ...]:
     allowed = set(authorization.authorized_call_ids)
     return tuple(attempt for attempt in plan.attempts if attempt.call_id in allowed)
+
+
+def _closed_api_budget_blocked(selected: tuple[Any, ...]) -> bool:
+    return any(
+        attempt.runtime_or_endpoint_class == "api_transfer_station"
+        and (
+            attempt.budget.hard_max_cost == 0
+            or "PENDING" in attempt.budget.price_version.upper()
+            or "UNPRICED" in attempt.budget.price_version.upper()
+        )
+        for attempt in selected
+    )
 
 
 def _capture_python_adapter(path: Path) -> tuple[Path, bytes, str]:
@@ -295,6 +325,7 @@ def _capture_python_adapter(path: Path) -> tuple[Path, bytes, str]:
         source_text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise ValueError("adapter source must use UTF-8") from exc
+    validate_qualification_secret_free({"adapter_source": source_text})
     return adapter, raw, source_text
 
 
@@ -419,13 +450,47 @@ def _adapter_results_to_receipts(
 ) -> tuple[CapabilityAttemptReceiptV1, ...]:
     if len(results) != len(selected):
         raise _AdapterProtocolError
-    receipts: list[CapabilityAttemptReceiptV1] = []
+    parsed: list[tuple[Any, CapabilityAdapterResultV1, str | None]] = []
     for attempt, result in zip(selected, results):
         if result.call_id != attempt.call_id or result.registry_key != attempt.registry_key:
+            raise _AdapterProtocolError
+        if (
+            result.request_sha256 != hashlib.sha256(canonical_bytes(attempt)).hexdigest()
+            or result.provider_call_count != 1
+            or result.retry_count != 0
+        ):
             raise _AdapterProtocolError
         if result.error_class is not None:
             if not result.error_class.strip() or result.response_projection is not None:
                 raise _AdapterProtocolError
+            parsed.append((attempt, result, None))
+            continue
+        projection = result.response_projection
+        if projection is None or not _transport_result_is_complete(attempt, result):
+            raise _AdapterProtocolError
+        parsed.append((attempt, result, projection))
+
+    successful = [item for item in parsed if item[2] is not None]
+    groups: dict[tuple[str, str, AttemptPhase], list[tuple[Any, CapabilityAdapterResultV1, str]]] = {}
+    for attempt, result, projection in successful:
+        if projection is None:
+            raise _AdapterProtocolError
+        groups.setdefault((attempt.registry_key, attempt.fixture_id, attempt.phase), []).append(
+            (attempt, result, projection)
+        )
+    for group in groups.values():
+        if {attempt.repetition for attempt, _, _ in group} != {1, 2}:
+            raise _AdapterProtocolError
+
+    stability_failures = {
+        item[0].call_id
+        for group in groups.values()
+        if len({projection for _, _, projection in group}) != 1
+        for item in group
+    }
+    receipts: list[CapabilityAttemptReceiptV1] = []
+    for attempt, result, projection in parsed:
+        if result.error_class is not None:
             receipts.append(
                 CapabilityAttemptReceiptV1(
                     call_id=attempt.call_id,
@@ -434,11 +499,16 @@ def _adapter_results_to_receipts(
                     error_class=result.error_class,
                 )
             )
-            continue
-        projection = result.response_projection
-        if projection is None or not _transport_result_is_complete(attempt, result):
-            raise _AdapterProtocolError
-        if _projection_matches_fixture(attempt, projection):
+        elif attempt.call_id in stability_failures:
+            receipts.append(
+                CapabilityAttemptReceiptV1(
+                    call_id=attempt.call_id,
+                    registry_key=attempt.registry_key,
+                    status=GateStatus.FAIL,
+                    error_class="STABILITY_MISMATCH",
+                )
+            )
+        elif projection is not None and _projection_matches_fixture(attempt, projection):
             receipts.append(
                 CapabilityAttemptReceiptV1(
                     call_id=attempt.call_id,
@@ -537,6 +607,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_BLOCKED
         authorization = load_execution_authorization_v1(Path(args.authorization_receipt), plan)
         selected = _selected_attempts(plan, authorization)
+        if _closed_api_budget_blocked(selected):
+            print("capability smoke blocked: closed API budget is unpriced or zero", file=sys.stderr)
+            return EXIT_BLOCKED
         escalated = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
         if escalated:
             if not args.escalation_anomaly_receipt or not args.base_receipts:

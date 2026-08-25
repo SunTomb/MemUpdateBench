@@ -196,6 +196,13 @@ def test_release_binds_dynamic_evidence_hashes_and_rejects_forged_identity(tmp_p
     )
     assert dict(manifest.source_hashes) == {source_id: binding.sha256 for source_id, binding in bindings.items()}
     assert dict(manifest.source_byte_counts) == {source_id: binding.byte_count for source_id, binding in bindings.items()}
+    decisions = qualification_release_v1.QualificationDecisionBundleV1.model_validate_json(
+        publication.artifact_bytes["qualification_decisions.json"]
+    )
+    assert all(
+        set(decision.evidence_binding_ids).issubset(bindings)
+        for decision in decisions.decisions
+    )
 
     bundle = _identity_bundle()
     forged_record = type(bundle.records[-1]).model_construct(**{

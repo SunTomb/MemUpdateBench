@@ -465,6 +465,9 @@ def test_capability_adapter_result_is_immutable_and_cannot_declare_a_verdict() -
     result = CapabilityAdapterResultV1(
         call_id=HASH_A,
         registry_key="role",
+        request_sha256=HASH_B,
+        provider_call_count=1,
+        retry_count=0,
         response_projection="READY",
         response_format="LOCAL_TEXT",
         latency_ms=1,
@@ -475,8 +478,8 @@ def test_capability_adapter_result_is_immutable_and_cannot_declare_a_verdict() -
         "mub.vnext.post_core.qualification_receipts_v1", fromlist=["__all__"]
     ).__all__
     assert tuple(CapabilityAdapterResultV1.model_fields) == (
-        "schema_version", "call_id", "registry_key", "response_projection",
-        "response_model", "response_format", "stop_reason", "usage_present", "latency_ms",
+        "schema_version", "call_id", "registry_key", "request_sha256", "provider_call_count", "retry_count",
+        "response_projection", "response_model", "response_format", "stop_reason", "usage_present", "latency_ms",
         "error_class",
     )
     with pytest.raises(ValidationError):
@@ -485,3 +488,31 @@ def test_capability_adapter_result_is_immutable_and_cannot_declare_a_verdict() -
         CapabilityAdapterResultV1.model_validate({**result.model_dump(mode="json"), "redacted_response_sha256": HASH_B})
     with pytest.raises(ValidationError):
         result.response_projection = "ACK"
+
+
+def test_adapter_result_requires_exact_request_hash_and_single_dispatched_call_attestation() -> None:
+    result = CapabilityAdapterResultV1(
+        call_id=HASH_A,
+        registry_key="role",
+        request_sha256=HASH_B,
+        provider_call_count=1,
+        retry_count=0,
+        response_projection="READY",
+        response_format="LOCAL_TEXT",
+        latency_ms=1,
+    )
+
+    assert result.request_sha256 == HASH_B
+    assert result.provider_call_count == 1
+    assert result.retry_count == 0
+    for field, value in (
+        ("request_sha256", "A" * 64),
+        ("provider_call_count", 0),
+        ("provider_call_count", True),
+        ("retry_count", 1),
+        ("retry_count", False),
+    ):
+        payload = result.model_dump(mode="json")
+        payload[field] = value
+        with pytest.raises(ValidationError):
+            CapabilityAdapterResultV1.model_validate(payload)

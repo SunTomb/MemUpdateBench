@@ -138,16 +138,19 @@ def _write_authorization(path: Path, plan, call_ids: tuple[str, ...], adapter: P
 
 def _write_local_adapter(path: Path, env_record: Path) -> None:
     path.write_text(
-        """import json, os, sys
+        """import hashlib, json, os, sys
 
 assert sys.argv[1:] == ['--jsonl-protocol-v1']
 open(%r, 'w', encoding='utf-8').write(json.dumps(sorted(os.environ)))
-for line in sys.stdin:
+for line in sys.stdin.buffer:
 """ % str(env_record) + """    attempt = json.loads(line)
     result = {
         'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
         'call_id': attempt['call_id'],
         'registry_key': attempt['registry_key'],
+        'request_sha256': hashlib.sha256(line.rstrip(b'\\n')).hexdigest(),
+        'provider_call_count': 1,
+        'retry_count': 0,
         'response_projection': {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'Paris'),
         'response_model': None,
         'response_format': 'LOCAL_TEXT',
@@ -534,7 +537,16 @@ def test_escalation_requires_hash_bound_complete_base_receipt_evidence(tmp_path:
     plan_path.write_bytes(canonical_bytes(plan))
     adapter = tmp_path / "adapter.py"
     _write_local_adapter(adapter, tmp_path / "environment.json")
-    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), anomaly_raw, adapter)
+    _write_escalation_authorization(
+        auth_path,
+        plan,
+        tuple(
+            row.call_id for row in plan.attempts
+            if row.registry_key == escalation.registry_key and row.phase.value == "ESCALATION"
+        ),
+        anomaly_raw,
+        adapter,
+    )
     output = tmp_path / "receipts.jsonl"
 
     missing_base = subprocess.run([*_cli_args(plan_path, auth_path, adapter, output), "--escalation-anomaly-receipt", str(anomaly_path), "--execute"], capture_output=True, text=True, timeout=20)
@@ -587,7 +599,16 @@ def test_escalation_rejects_base_receipt_hash_mismatch(tmp_path: Path) -> None:
     plan_path.write_bytes(canonical_bytes(plan))
     adapter = tmp_path / "adapter.py"
     _write_local_adapter(adapter, tmp_path / "environment.json")
-    _write_escalation_authorization(auth_path, plan, (escalation.call_id,), anomaly_raw, adapter)
+    _write_escalation_authorization(
+        auth_path,
+        plan,
+        tuple(
+            row.call_id for row in plan.attempts
+            if row.registry_key == escalation.registry_key and row.phase.value == "ESCALATION"
+        ),
+        anomaly_raw,
+        adapter,
+    )
 
     completed = subprocess.run([*_cli_args(plan_path, auth_path, adapter, tmp_path / "output.jsonl"), "--escalation-anomaly-receipt", str(anomaly_path), "--base-receipts", str(base_path), "--execute"], capture_output=True, text=True, timeout=20)
 
@@ -657,7 +678,7 @@ def test_cli_persists_adapter_error_and_parser_mismatch_as_typed_failures(tmp_pa
     selected = tuple(row.call_id for row in plan.attempts[:8])
     adapter = tmp_path / "adapter.py"
     adapter.write_text(
-        """import json, sys
+        """import hashlib, json, sys
 
 for line in sys.stdin:
     attempt = json.loads(line)
@@ -665,6 +686,9 @@ for line in sys.stdin:
         'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
         'call_id': attempt['call_id'],
         'registry_key': attempt['registry_key'],
+        'request_sha256': hashlib.sha256(line.rstrip('\\n').encode('utf-8')).hexdigest(),
+        'provider_call_count': 1,
+        'retry_count': 0,
         'response_projection': None if attempt['fixture_id'] == 'exact_ok_1' else 'WRONG' if attempt['fixture_id'].startswith('exact_') else 'Paris',
         'response_model': None,
         'response_format': 'LOCAL_TEXT',
@@ -877,6 +901,9 @@ def test_adapter_result_binds_closed_registry_response_model() -> None:
     result = CapabilityAdapterResultV1(
         call_id=attempt.call_id,
         registry_key=attempt.registry_key,
+        request_sha256=hashlib.sha256(canonical_bytes(attempt)).hexdigest(),
+        provider_call_count=1,
+        retry_count=0,
         response_projection="READY",
         response_model="gpt-5.5",
         response_format="SSE",
@@ -896,6 +923,9 @@ def test_adapter_result_binds_closed_registry_response_model() -> None:
     local_result = CapabilityAdapterResultV1(
         call_id=local_attempt.call_id,
         registry_key=local_attempt.registry_key,
+        request_sha256=hashlib.sha256(canonical_bytes(local_attempt)).hexdigest(),
+        provider_call_count=1,
+        retry_count=0,
         response_projection="READY",
         response_model="forged-local-model",
         response_format="LOCAL_TEXT",
@@ -1196,7 +1226,7 @@ def test_cli_rejects_adapter_verdict_or_hash_injection(
     authorization_path = tmp_path / "authorization.json"
     adapter = tmp_path / "adapter.py"
     adapter.write_text(
-        """import json, sys
+        """import hashlib, json, sys
 
 for line in sys.stdin:
     attempt = json.loads(line)
@@ -1204,6 +1234,9 @@ for line in sys.stdin:
         'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
         'call_id': attempt['call_id'],
         'registry_key': attempt['registry_key'],
+        'request_sha256': hashlib.sha256(line.rstrip('\\n').encode('utf-8')).hexdigest(),
+        'provider_call_count': 1,
+        'retry_count': 0,
         'response_projection': {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'Paris'),
         'response_model': None,
         'response_format': 'LOCAL_TEXT',
@@ -1229,3 +1262,185 @@ for line in sys.stdin:
 
     assert completed.returncode == 14
     assert not output.exists()
+
+
+def test_authorization_requires_complete_role_phase_batches(tmp_path: Path) -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import load_execution_authorization_v1
+
+    plan = _plan()
+    qwen_base = tuple(
+        attempt.call_id for attempt in plan.attempts
+        if attempt.registry_key == "qwen35_9b_bf16" and attempt.phase.value == "BASE"
+    )
+    claude_base = tuple(
+        attempt.call_id for attempt in plan.attempts
+        if attempt.registry_key == "claude_opus_4_8" and attempt.phase.value == "BASE"
+    )
+    path = tmp_path / "authorization.json"
+    for selected in (qwen_base[:1], qwen_base[:7]):
+        authorization = _authorization(
+            release_id=plan.release_id,
+            plan_sha256=canonical_hash(plan),
+            authorized_call_ids=selected,
+            max_calls=len(selected),
+        )
+        path.write_bytes(canonical_bytes(authorization))
+        with pytest.raises(ValueError, match="complete role-phase batch"):
+            load_execution_authorization_v1(path, plan)
+
+    selected = (*qwen_base, *claude_base)
+    authorization = _authorization(
+        release_id=plan.release_id,
+        plan_sha256=canonical_hash(plan),
+        authorized_call_ids=selected,
+        max_calls=len(selected),
+    )
+    path.write_bytes(canonical_bytes(authorization))
+    assert load_execution_authorization_v1(path, plan) == authorization
+
+
+def _write_attested_local_adapter(path: Path, marker: Path | None = None, *, unstable: bool = False) -> None:
+    path.write_text(
+        """import hashlib, json, sys
+
+for line in sys.stdin.buffer:
+    attempt = json.loads(line)
+    %s
+    projection = {'exact_ok_1': 'READY', 'exact_ok_2': 'ACK'}.get(attempt['fixture_id'], 'London' if %s and attempt['repetition'] == 2 else 'Paris')
+    result = {
+        'schema_version': 'memupdatebench.post-core.capability-adapter-result.v1',
+        'call_id': attempt['call_id'],
+        'registry_key': attempt['registry_key'],
+        'request_sha256': hashlib.sha256(line.rstrip(b'\\n')).hexdigest(),
+        'provider_call_count': 1,
+        'retry_count': 0,
+        'response_projection': projection,
+        'response_model': None,
+        'response_format': 'LOCAL_TEXT',
+        'stop_reason': None,
+        'usage_present': None,
+        'latency_ms': 1,
+        'error_class': None,
+    }
+    sys.stdout.buffer.write(json.dumps(result, sort_keys=True, separators=(',', ':')).encode() + b'\\n')
+""" % (
+            "open(%r, 'w', encoding='utf-8').write('executed')" % str(marker) if marker else "pass",
+            repr(unstable),
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_closed_api_budget_gate_blocks_complete_claude_batch_before_adapter(tmp_path: Path) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    selected = tuple(
+        attempt.call_id for attempt in plan.attempts
+        if attempt.registry_key == "claude_opus_4_8" and attempt.phase.value == "BASE"
+    )
+    adapter = tmp_path / "adapter.py"
+    marker = tmp_path / "adapter-executed"
+    _write_attested_local_adapter(adapter, marker)
+    authorization = tmp_path / "authorization.json"
+    _write_authorization(authorization, plan, selected, adapter)
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization, adapter, tmp_path / "receipts.jsonl"), "--execute"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+    assert completed.returncode == 10
+    assert completed.stderr == "capability smoke blocked: closed API budget is unpriced or zero\n"
+    assert not marker.exists()
+
+
+def test_cli_rejects_secret_bearing_adapter_source_before_execution(tmp_path: Path) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    adapter = tmp_path / "adapter.py"
+    marker = tmp_path / "adapter-executed"
+    adapter.write_text("# sk-SECRET_TEST_VALUE\nopen(%r, 'w').write('executed')\n" % str(marker), encoding="utf-8")
+    authorization = tmp_path / "authorization.json"
+    qwen_base = tuple(attempt.call_id for attempt in plan.attempts[:8])
+    _write_authorization(authorization, plan, qwen_base, adapter)
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization, adapter, tmp_path / "receipts.jsonl"), "--execute"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+    assert completed.returncode == 14
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(("unstable", "expected_status"), [(False, "PASS"), (True, "FAIL")])
+def test_cli_requires_repetition_stability_before_fixture_verdict(
+    tmp_path: Path, unstable: bool, expected_status: str
+) -> None:
+    plan = _plan()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(canonical_bytes(plan))
+    adapter = tmp_path / "adapter.py"
+    _write_attested_local_adapter(adapter, unstable=unstable)
+    authorization = tmp_path / "authorization.json"
+    selected = tuple(attempt.call_id for attempt in plan.attempts[:8])
+    _write_authorization(authorization, plan, selected, adapter)
+    output = tmp_path / "receipts.jsonl"
+
+    completed = subprocess.run(
+        [*_cli_args(plan_path, authorization, adapter, output), "--execute"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+    assert completed.returncode == (10 if unstable else 0)
+    rows = tuple(json.loads(line) for line in output.read_bytes().splitlines())
+    if unstable:
+        unstable_rows = tuple(
+            row for attempt, row in zip(plan.attempts[:8], rows)
+            if attempt.fixture_id.startswith("parser_city")
+        )
+        assert {row["status"] for row in unstable_rows} == {"FAIL"}
+        assert {row["error_class"] for row in unstable_rows} == {"STABILITY_MISMATCH"}
+        assert all(row["redacted_response_sha256"] is None for row in unstable_rows)
+    else:
+        assert {row["status"] for row in rows} == {expected_status}
+
+
+def test_bounded_adapter_writer_times_out_when_child_never_reads_large_payload() -> None:
+    import runpy
+
+    module = runpy.run_path(str(CLI))
+    source = "import time; time.sleep(30)\n"
+    payload = b"x" * (128 * 1024)
+
+    started = time.monotonic()
+    with pytest.raises(module["_AdapterProtocolError"]):
+        module["_run_python_adapter_bounded"](source, payload, 1)
+
+    assert time.monotonic() - started < 6
+
+
+def test_adapter_result_request_hash_mismatch_is_rejected_before_receipt_persistence() -> None:
+    import runpy
+    from mub.vnext.post_core.qualification_receipts_v1 import CapabilityAdapterResultV1
+
+    plan = _plan()
+    selected = tuple(plan.attempts[:8])
+    results = tuple(
+        CapabilityAdapterResultV1(
+            call_id=attempt.call_id,
+            registry_key=attempt.registry_key,
+            request_sha256="0" * 64,
+            provider_call_count=1,
+            retry_count=0,
+            response_projection={"exact_ok_1": "READY", "exact_ok_2": "ACK"}.get(attempt.fixture_id, "Paris"),
+            response_format="LOCAL_TEXT",
+            latency_ms=1,
+        )
+        for attempt in selected
+    )
+
+    with pytest.raises(Exception):
+        runpy.run_path(str(CLI))["_adapter_results_to_receipts"](selected, results)

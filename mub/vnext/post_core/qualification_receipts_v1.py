@@ -312,6 +312,7 @@ class OpenRuntimeReceiptV1(ImmutableContractModel):
     parser_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     chat_template_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     output_projection_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
+    repeat_output_projection_sha256: StrictStr | None = Field(default=None, pattern=SHA256_PATTERN)
     generated_token_count: StrictInt | None = Field(default=None, ge=0)
     peak_memory_bytes: StrictInt | None = Field(default=None, ge=0)
     blocked_reasons: tuple[StrictStr, ...] = ()
@@ -483,6 +484,9 @@ class CapabilityAdapterResultV1(ImmutableContractModel):
     )
     call_id: StrictStr = Field(pattern=SHA256_PATTERN)
     registry_key: StrictStr
+    request_sha256: StrictStr = Field(pattern=SHA256_PATTERN)
+    provider_call_count: Literal[1] = 1
+    retry_count: Literal[0] = 0
     response_projection: StrictStr | None = None
     response_model: StrictStr | None = None
     response_format: Literal["ANTHROPIC_MESSAGE_JSON", "SSE", "LOCAL_TEXT"] | None = None
@@ -495,6 +499,11 @@ class CapabilityAdapterResultV1(ImmutableContractModel):
         "FORMAT_ERROR",
         "STABILITY_MISMATCH",
     ] | None = None
+
+    @field_validator("provider_call_count", "retry_count", mode="before")
+    @classmethod
+    def _strict_numeric_literals(cls, value: object) -> object:
+        return _require_exact_int_literal(value)
 
 
 class CapabilityAttemptReceiptV1(ImmutableContractModel):

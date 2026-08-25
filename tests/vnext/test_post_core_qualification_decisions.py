@@ -70,7 +70,7 @@ def test_closed_authenticated_provider_preflight_blocks_not_run_capability_smoke
     assert smoke.status is QualificationStatus.BLOCKED
     assert "uniform capability smoke is not_run" in " ".join(smoke.reasons).lower()
     assert "connectivity/interface preflight passed" in " ".join(smoke.reasons).lower()
-    assert smoke.evidence_binding_ids == ("workflow_source", "handoff_source")
+    assert smoke.evidence_binding_ids == ("workflow_source", "handoff_source", "provider_attestations")
     assert sonnet[DecisionScope.BENCHMARK_ADMISSION].status is QualificationStatus.BLOCKED
     assert sonnet[DecisionScope.BENCHMARK_ADMISSION].scientific_status == "NOT_RUN"
 
@@ -112,6 +112,7 @@ def test_all_pass_open_runtime_receipt_readies_short_generation_but_not_capabili
         "parser_sha256": "b" * 64,
         "chat_template_sha256": "c" * 64,
         "output_projection_sha256": "d" * 64,
+        "repeat_output_projection_sha256": "d" * 64,
         "generated_token_count": 1,
         "peak_memory_bytes": 1,
     })

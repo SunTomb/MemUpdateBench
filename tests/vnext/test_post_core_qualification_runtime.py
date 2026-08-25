@@ -30,9 +30,9 @@ def test_open_runtime_receipts_accept_load_only_qwen_and_blocked_bf16() -> None:
         "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
     )
     assert tuple(row.source_binding_ids for row in rows) == (
-        ("open_snapshot_closure_receipt", "qwen_load_receipt"),
-        ("open_snapshot_closure_receipt",),
-        ("open_snapshot_closure_receipt",),
+        ("open_snapshot_closure_receipt", "qwen_load_receipt", "runtime_receipts"),
+        ("open_snapshot_closure_receipt", "runtime_receipts"),
+        ("open_snapshot_closure_receipt", "runtime_receipts"),
     )
     assert rows[2].blocked_reasons == ("resource/runtime unavailable",)
     assert tuple(
@@ -260,3 +260,28 @@ def test_runtime_validation_exports_exactly_four_public_functions() -> None:
         "validate_qualification_secret_free",
         "validate_runtime_receipts_v1",
     ]
+
+
+def test_generation_determinism_pass_requires_matching_repeat_projection_hash() -> None:
+    from mub.vnext.post_core.qualification_validation_v1 import validate_runtime_receipts_v1
+
+    rows = open_runtime_receipts()
+    complete = {
+        "generation_status": GateStatus.PASS,
+        "determinism_status": GateStatus.PASS,
+        "load_status": GateStatus.PASS,
+        "unload_status": GateStatus.PASS,
+        "prompt_fixture_sha256": "a" * 64,
+        "parser_sha256": "b" * 64,
+        "chat_template_sha256": "c" * 64,
+        "output_projection_sha256": "d" * 64,
+        "repeat_output_projection_sha256": "d" * 64,
+        "generated_token_count": 1,
+        "peak_memory_bytes": 1,
+    }
+    assert validate_runtime_receipts_v1(_replace(rows, 0, **complete))[0].determinism_status is GateStatus.PASS
+    for repeat_hash in (None, "e" * 64):
+        with pytest.raises(ValueError, match="repeat projection"):
+            validate_runtime_receipts_v1(
+                _replace(rows, 0, **{**complete, "repeat_output_projection_sha256": repeat_hash})
+            )

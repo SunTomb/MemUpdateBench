@@ -55,21 +55,21 @@ _EXPECTED_RUNTIME_ROWS = (
         "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
         "transformers",
         "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db",
-        ("open_snapshot_closure_receipt", "qwen_load_receipt"),
+        ("open_snapshot_closure_receipt", "qwen_load_receipt", "runtime_receipts"),
     ),
     (
         "meta_muse_glimmer_30b_int4",
         "70bf1b61ac09f91b24d39038091b41c582bc5d7a",
         "llama.cpp",
         "55357aa0a0a9dfe738725f864eb4183e9aa2a0a84da1245b13c47bd85ce9f90f",
-        ("open_snapshot_closure_receipt",),
+        ("open_snapshot_closure_receipt", "runtime_receipts"),
     ),
     (
         "meta_muse_glimmer_30b_bf16",
         "a4e59da52a7bc87ae7251dd5545c0dd437c44b68",
         "transformers",
         "7a90420d22f8c98737f15bc31473bbe8a3579ee95f9bf2237172679709877782",
-        ("open_snapshot_closure_receipt",),
+        ("open_snapshot_closure_receipt", "runtime_receipts"),
     ),
 )
 _RUNTIME_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -79,6 +79,7 @@ _RUNTIME_EVIDENCE_FIELDS = (
     "parser_sha256",
     "chat_template_sha256",
     "output_projection_sha256",
+    "repeat_output_projection_sha256",
     "generated_token_count",
     "peak_memory_bytes",
 )
@@ -95,7 +96,7 @@ _RUNTIME_REPRODUCIBILITY_POLICY = {
     "meta_muse_glimmer_30b_int4": ("int4", frozenset({"llama-cuda"})),
     "meta_muse_glimmer_30b_bf16": ("bf16", frozenset({"eager"})),
 }
-_EXPECTED_SOURCE_BINDINGS = ("workflow_source", "handoff_source")
+_EXPECTED_SOURCE_BINDINGS = ("workflow_source", "handoff_source", "provider_attestations")
 _EXPECTED_IDENTITY_METADATA = {
     "claude_sonnet_4_6": ("claude-sonnet-4-6", None, None),
     "claude_opus_4_8": ("claude-opus-4-8", None, None),
@@ -666,12 +667,28 @@ def load_execution_authorization_v1(
     _require(authorization.max_calls >= len(authorization.authorized_call_ids), "authorization max calls is below selected calls")
     _require(authorization.max_calls <= len(plan.attempts), "authorization max calls exceeds plan calls")
     plan_call_ids = {attempt.call_id for attempt in plan.attempts}
+    authorized_call_ids = set(authorization.authorized_call_ids)
     _require(
-        set(authorization.authorized_call_ids).issubset(plan_call_ids),
+        authorized_call_ids.issubset(plan_call_ids),
         "authorization contains an unknown call ID",
     )
     selected = tuple(
-        attempt for attempt in plan.attempts if attempt.call_id in set(authorization.authorized_call_ids)
+        attempt for attempt in plan.attempts if attempt.call_id in authorized_call_ids
+    )
+    selected_ids_by_batch: dict[tuple[str, AttemptPhase], set[str]] = {}
+    plan_ids_by_batch: dict[tuple[str, AttemptPhase], set[str]] = {}
+    for attempt in plan.attempts:
+        coordinate = (attempt.registry_key, attempt.phase)
+        plan_ids_by_batch.setdefault(coordinate, set()).add(attempt.call_id)
+        if attempt.call_id in authorized_call_ids:
+            selected_ids_by_batch.setdefault(coordinate, set()).add(attempt.call_id)
+    _require(selected_ids_by_batch, "authorization must select at least one complete role-phase batch")
+    _require(
+        all(
+            selected_ids == plan_ids_by_batch[coordinate]
+            for coordinate, selected_ids in selected_ids_by_batch.items()
+        ),
+        "authorization must select complete role-phase batches",
     )
     has_escalation = any(attempt.phase is AttemptPhase.ESCALATION for attempt in selected)
     _require(
@@ -939,7 +956,16 @@ def validate_runtime_receipts_v1(
             )
             _require(determinism_pass, "generation requires determinism PASS")
             _require(
-                all(getattr(row, field) is not None for field in _RUNTIME_EVIDENCE_FIELDS[:5]),
+                all(
+                    getattr(row, field) is not None
+                    for field in (
+                        "prompt_fixture_sha256",
+                        "parser_sha256",
+                        "chat_template_sha256",
+                        "output_projection_sha256",
+                        "generated_token_count",
+                    )
+                ),
                 "generation evidence is incomplete",
             )
             _require(
@@ -958,6 +984,12 @@ def validate_runtime_receipts_v1(
             )
         if determinism_pass:
             _require(generation_pass, "determinism requires generation PASS")
+            _require(
+                row.output_projection_sha256 is not None
+                and row.repeat_output_projection_sha256 is not None
+                and row.output_projection_sha256 == row.repeat_output_projection_sha256,
+                "determinism PASS requires matching repeat projection hashes",
+            )
         if _gate_value(row.load_status) == GateStatus.BLOCKED:
             _require(
                 all(_gate_value(status) != GateStatus.PASS.value for status in statuses[1:]),
