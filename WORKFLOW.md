@@ -3385,3 +3385,88 @@ Validation performed zero model loads, provider calls, network calls, benchmark 
 ### Conclusion
 
 The offline/source-bound/no-replace qualification-release implementation is complete and registered in the smoke path. The malformed audit-hash configuration blocker is resolved from an authoritative remote rehash, but no publication or execution is authorized by that correction. Live short-generation, capability smoke, canary, confirmatory, and benchmark evidence remain `NOT_RUN`/`BLOCKED` under their separate gates.
+
+## Post-Core Phase 1–2 qualification publication and Tang-1 runtime gates (2026-08-26)
+
+### Boundary
+
+PR #1 was merged into `master` at `0981a384262bdfbd2c52d5aa8aed64861a6d342b`. The user authorized only Qwen/Muse runtime qualification on Tang-1-Wu GPU3. This did not authorize closed-provider API calls, capability smoke, the 320-generation canary, confirmatory conditions, or benchmark execution. No other user's process was terminated or altered; every model command had a hard timeout and Muse speculative decoding stayed off.
+
+### Source recovery
+
+The immutable input bundle is `D:/USTC/2026Winter/MemUpdateBench_qualification_inputs/phase12_0981a38_v1`. Frozen inputs were recovered without regeneration: the Core manifest came from the authenticated NAS Core release; the exact workflow blob came from `a568574:WORKFLOW.md` with its original CRLF bytes; the handoff source came from `docs/handoffs/2026-08-23-post-core-provider-probes-next-window-prompt.md`; and the open-snapshot closure/audit plus Qwen load-only receipts were recopied from their authenticated NAS paths and rehashed.
+
+The provider JSONL retains one typed zero-call setup failure and exactly five aggregate connectivity/interface attestations: 12 historical calls, zero retries, zero benchmark generations, Gemini's canonical/request/tier triplet, and GPT-5.5's SSE-to-JSON sequence. It contains no credentials, raw provider responses, invented request IDs, or benchmark metrics.
+
+### Qwen3.5-9B
+
+```text
+model: Qwen/Qwen3.5-9B
+revision: c202236235762e1c871ad0ccb60c8ee5ba337b9a
+snapshot tree: e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db
+runtime: Python 3.10.20 / Torch 2.5.1+cu121 / Transformers 5.9.0 / Accelerate 1.13.0
+attention: eager
+trust_remote_code: false
+device: Tang-1-Wu GPU3 / NVIDIA A40
+```
+
+The canonical exact-output prompt produced `READY` twice under greedy seed-0 generation. Each repetition generated four tokens. Peak allocated memory was `17,963,988,992` bytes. A process-exit wrapper verified unload closure at 3 MiB and zero compute processes; the earlier in-process CUDA-context reading was not used as unload evidence.
+
+```text
+load: PASS
+generation: PASS
+determinism: PASS
+unload: PASS
+provider calls: 0
+network calls: 0
+```
+
+Source receipt: `/NAS/yesh/MemUpdateBench/external/post_core_qwen35_tang1_gpu3_runtime_gate_20260826_v2.json`, SHA-256 `5d06cb1cbacd43beb0b0a2aaafd1bd7a5b75e8f6d283f5dbbd899b8429ff202f`.
+
+### Muse Glimmer GGUF
+
+Official llama.cpp was frozen at release `v0.3.0`, commit `c1d0e7a004015f23bc0233470b747b596f29b264`. A project-local CMake 3.31.6 toolchain built a CUDA 12.0/A40 architecture-8.6 Release binary with no curl, tests, or speculative drafter:
+
+```text
+/NAS/yesh/MemUpdateBench/external/llama_cpp_v0.3.0_c1d0e7a/build-cuda-tang1/bin/llama
+SHA-256 feab512b206b6a5e1714f8099dfaca62ad62a92c5353f2fd522a1890f6a3f3d2
+```
+
+The authenticated snapshot contains the 19GB `Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf`; the README-mentioned 17GB Q4_K_M file was not present and was not substituted. Two 128-token greedy seed-0 repetitions produced identical thinking traces, and the parser extracted exact `READY` after `[End thinking]`. A third identical run measured peak memory.
+
+```text
+load: PASS
+generation: PASS
+determinism: PASS
+unload: PASS
+parsed projection: READY
+generated token count: 106
+peak memory: 18,803 MiB / 19,716,374,528 bytes
+post-process GPU memory: 3 MiB
+post-process compute processes: 0
+speculative decoding: off
+provider calls: 0
+network calls: 0
+```
+
+Source receipt: `/NAS/yesh/MemUpdateBench/external/post_core_muse_glimmer_tang1_gpu3_runtime_gate_20260826_v1.json`, SHA-256 `3bae8741362aafe9d3ff11e2535c898c55ce1bcadf5112efde49de470e81acfe`.
+
+Muse BF16 remains typed `BLOCKED`: its 59.6 GB snapshot exceeds the A40 capacity, so no load was attempted and no missing value was converted to zero or `UNSUPPORTED`.
+
+### Qualification release
+
+The no-replace local root is `D:/USTC/2026Winter/MemUpdateBench_releases/post_core_qualification_0981a38_v1`.
+
+```text
+status: SUCCESS_WITH_BLOCKERS
+qualification index SHA-256: 872b3e55cb5322883b5dfacf2e5962bc6b1561f94bf23c8704b43e16436302bd
+release tree SHA-256: fa2df961831ca045d6a402908238c2301a5a20facfe2ae34e8061538ba2aa833
+READY/BLOCKED/UNSUPPORTED: 8 / 24 / 0
+publication model loads/provider calls/network calls/credential reads/benchmark generations: 0 / 0 / 0 / 0 / 0
+```
+
+The release was rebuilt from the frozen source bundle and compared byte-for-byte after publication. Closure receipt: `/NAS/yesh/MemUpdateBench/external/post_core_phase12_qualification_closure_20260826_v1.json`, SHA-256 `616789469753b2fb1585706fb8ec02c0e6bc365e03b9c18d39628db5bf640880`, payload self-hash `d579b7da0c0b163037548aa7718084b89c9d26c5eade36ae44d54e51fcc9069a`.
+
+### Conclusion
+
+Qwen3.5-9B and Muse GGUF are READY only for the uniform capability-smoke gate. Muse BF16 remains resource-blocked. All capability-smoke decisions remain `BLOCKED/NOT_RUN`; closed-provider smoke requires explicit API/budget authorization and open-model smoke requires separate GPU authorization. Canary, confirmatory, and benchmark stages remain `NOT_RUN`.
