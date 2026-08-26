@@ -1,6 +1,6 @@
 # P8.0 Results Section Draft
 
-This section is a paper-facing draft for moving the P8.0 analysis results into LaTeX. It is not a standalone result artifact; the source metrics remain the `results/p80_*` directories and the notes under `paper/p80_*.md`.
+This section is a paper-facing draft for moving the P8.0 analysis results into LaTeX. It is not a standalone result artifact; the source metrics remain the `results/p80_*` directories and the notes under `paper/p80_*.md`. The bounded post-Core Qwen3.5 boundary check is sourced from `results/post_core_qwen35_full_matrix_analysis/analysis.json` (SHA-256 `9b1dd2066c6d2300a9f0af305a24d32c510c04186f8612fca78e51a813de474f`) and is deliberately separated from the earlier P8.0 mechanism panel.
 
 ## Suggested placement
 
@@ -10,12 +10,13 @@ Use this material after the main tradeoff table and before the broader discussio
 Why Does Stale Context Break Answering?
 ```
 
-The narrative should make four claims:
+The narrative should make five bounded claims:
 
-1. stale filtering recovers each tested model to approximately its own zero-stale ceiling;
-2. stale exposure has a dose-response relationship with answer collapse;
+1. stale filtering recovers the three earlier answer-model controls to approximately their own zero-stale ceilings;
+2. stale exposure has a dose-response relationship with answer collapse in the tested raw-append settings;
 3. collapse is not explained by one simple mechanism, because value conflict, order, version labels, and repetition each matter;
-4. stale susceptibility transfers across Qwen, Llama3.1-8B, and Mistral-7B, while absolute recovery levels reflect model-specific clean-context ceilings.
+4. answer-model behavior is heterogeneous: earlier Qwen2.5, Llama3.1-8B, and Mistral-7B controls show stale susceptibility, whereas the qualified Qwen3.5-9B full matrix does not reproduce reverse-order high-k collapse;
+5. Qwen3.5's remaining three errors form a small chronological/no-label k=4 positional/retrieval tail, not gold-not-retrieved evidence.
 
 ## Generated figure artifacts
 
@@ -104,7 +105,7 @@ Current last & 0.040 & 0.080 & 0.040 & 0.360 & 4.040 \\
 
 > Synthetic same-slot probes isolate gold-present answer behavior by controlling stale count, value conflict, order, and explicit version labels. Conflict plus reverse chronological order collapses immediately without labels (EM 0.188 with one stale value and near zero with two or more), while latest/outdated labels almost fully repair the failure. Chronological conflict contexts remain much more robust even with many stale values, ruling out a simple majority-vote-only account. Same-value repetition still reduces exact EM at high stale counts despite answer-value-present staying 1.000, suggesting a separate repetition or formatting-dilution effect.
 
-### Table 4: Multi-model ceiling recovery
+### Table 4: Ceiling recovery in earlier answer-model controls
 
 ```latex
 \begin{table}[t]
@@ -119,16 +120,43 @@ Llama3.1-8B & 0.060 & 0.290 & 0.270 & +0.020 \\
 Mistral-7B & 0.080 & 0.720 & 0.720 & 0.000 \\
 \bottomrule
 \end{tabular}
-\caption{Ceiling recovery across answer models on P6.3 hard k=16 dev. Normal raw-add retrieval collapses for all three models under stale-contaminated top-k contexts. Latest-per-slot filtering removes stale retrieved entries and recovers each model to approximately its own zero-stale constrained CRUD slot-prompt ceiling. Absolute EM levels differ mostly because models have different clean-context slot-prompt ceilings.}
+\caption{Ceiling recovery in three earlier answer-model controls on P6.3 hard k=16 dev. Normal raw-add retrieval collapses for Qwen2.5-7B, Llama3.1-8B, and Mistral-7B under stale-contaminated top-k contexts. Latest-per-slot filtering removes stale retrieved entries and recovers each to approximately its own zero-stale constrained CRUD slot-prompt ceiling. This bounded panel motivates, but does not establish, a universal answer-model effect.}
 \label{tab:ceiling-recovery}
 \end{table}
 ```
 
 **Main text draft:**
 
-> Multi-model evaluation rules out a Qwen-only failure story and clarifies the role of model differences. Raw append under normal top-k5 retrieval collapses for Qwen, Llama, and Mistral, with stale retrieved rate 1.000 in each run. Removing stale retrieved entries with latest-per-slot improves Qwen to EM 0.690, Llama to 0.290, and Mistral to 0.720. The crucial comparison is each model's own zero-stale constrained CRUD ceiling: approximately 0.700 for Qwen, 0.270 for Llama, and 0.720 for Mistral. Thus stale filtering recovers every tested model to its clean-memory ceiling; absolute recovery differences reflect model-specific slot-prompt / instruction-following capacity rather than differential stale-mechanism susceptibility.
+> In three earlier answer-model controls, raw append under normal top-k5 retrieval collapses for Qwen2.5-7B, Llama3.1-8B, and Mistral-7B, with stale retrieved rate 1.000 in each run. Removing stale retrieved entries with latest-per-slot improves Qwen2.5 to EM 0.690, Llama to 0.290, and Mistral to 0.720. Each is close to its own zero-stale constrained CRUD ceiling (0.700, 0.270, and 0.720, respectively). This identifies a stale-sensitive regime in the tested controls, while the Qwen3.5 matrix below shows that it is not a universal answer-model response.
 
-### Table 5: Expanded latest-per-slot all-k
+### Table 5: Qwen3.5 full matrix boundary check
+
+```latex
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Condition & k & EM & Stale copies \\
+\midrule
+Chronological, no label & 4 & 0.98125 & 3/160 \\
+Chronological, no label & 8/16 & 1.00000 & 0/320 \\
+Reverse, no label & 4/8/16 & 1.00000 & 0/480 \\
+Reverse, latest/outdated & 4/8/16 & 1.00000 & 0/480 \\
+\midrule
+All cells & -- & 0.9979167 & 3/1,440 \\
+\bottomrule
+\end{tabular}
+\caption{Qualified Qwen3.5-9B answer model on frozen Raw Append Family-A contexts. Eight of nine condition-by-k cells are perfect. The only tail is chronological/no-label k=4: one semantic core has EM 0.625, producing a clustered core bootstrap CI of [0.94375, 1.00000] for the cell. Reverse/no-label does not reproduce the earlier reverse-order high-k collapse.}
+\label{tab:qwen35-full-matrix}
+\end{table}
+```
+
+**Main text draft:**
+
+> Qwen3.5-9B sets a deliberate boundary on the order-and-metadata mechanism. The canary (320/320) and preregistered confirmatory subset (480/480) are perfect on frozen Raw Append contexts. The full 1,440-generation matrix remains nearly perfect (EM 0.9979167), including reverse/no-label at k=4, 8, and 16. Its three failures all occur in chronological/no-label k=4, in `core_c40d565fabd02e01`. In two surface tasks the model predicts `ALPHA-01` rather than gold `CORE-04` after retrieving `GAMMA-01`, `CORE-15`, `ALPHA-01`, `CORE-04`; because gold is retrieved and last, this is a positional low-k tail rather than gold-not-retrieved failure. The paired reverse/no-label minus chronological/no-label k=4 core contrast is +0.01875 (CI [0.00000, 0.05625]), not evidence of a reverse-order penalty. We therefore report version arbitration as model-dependent answer-layer behavior, not broad memory-system robustness.
+
+### Table 6: Expanded latest-per-slot all-k
 
 ```latex
 \begin{table}[t]
@@ -156,4 +184,4 @@ k & EM & F1 & Ans. val. & Gold ret. & Stale ret. \\
 
 ## Recommended final narrative paragraph
 
-> Together, these analyses shift the paper from a descriptive benchmark result to a mechanistic benchmark story. Append-only memory fails not merely because it stores too much, but because retrieved stale same-slot evidence creates version ambiguity, order-sensitive conflict, and repetition-induced answer instability. Slot-aware retrieval can remove much of this failure, but residual gaps remain when the latest value is not surfaced or when the answer model uses context poorly. This is why MemUpdateBench reports state reliability, stale burden, compactness, and answer robustness separately.
+> Together, these analyses move the paper from a descriptive benchmark result to a bounded mechanism story. In the tested earlier controls, retrieved stale same-slot evidence creates version ambiguity, order-sensitive conflict, and repetition-induced answer instability; slot-aware retrieval removes much of that failure. The Qwen3.5 full matrix adds a necessary boundary: it remains nearly perfect on frozen Raw Append contexts, including reverse/no-label high-k cells, and shows only a small chronological k=4 positional/retrieval tail. Residual errors can arise when the latest value is not surfaced or when an answer model uses context poorly. MemUpdateBench therefore reports state reliability, stale burden, compactness, and answer robustness separately, and treats order/metadata arbitration as answer-model dependent rather than a universal response to stale memory.

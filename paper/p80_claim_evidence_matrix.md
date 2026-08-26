@@ -191,3 +191,40 @@ paper/p70_external_baseline_text_backend_probe.md
 ```
 
 **Caveat:** do not put Mem0 in main leaderboard unless extraction compatibility is fixed and a fair text-backed run completes.
+
+## Claim 10: Order- and metadata-sensitive version arbitration is answer-model dependent
+
+**Evidence:**
+
+- The completed Qwen3.5-9B frozen Raw Append full matrix has 1,440/1,440 format-valid rows, 1,437/1,440 exact matches, EM 0.9979167, and three stale copies.
+- Eight of nine condition-by-k cells are perfect. The lone non-perfect cell, chronological/no-label k=4, has EM 0.98125 and clustered semantic-core bootstrap CI [0.94375, 1.00000]. Reverse/no-label is perfect at k=4/8/16, as are all reverse-labeled cells.
+- The three errors occur in one semantic core (`core_c40d565fabd02e01`), with core EM 0.625. In two surface tasks the model copies `ALPHA-01` rather than gold `CORE-04` although the retrieved sequence ends in the gold value (`GAMMA-01`, `CORE-15`, `ALPHA-01`, `CORE-04`).
+- The paired core contrast, reverse/no-label minus chronological/no-label at k=4, is +0.01875 with CI [0.00000, 0.05625]. This does not reproduce the earlier reverse-order high-k collapse.
+
+**Artifacts:**
+
+```text
+results/post_core_qwen35_full_matrix_analysis/analysis.json
+results/post_core_qwen35_full_matrix_analysis/analysis.sha256
+results/post_core_qwen35_full_matrix_analysis/qwen35_full_matrix_paper_table.md
+paper/p80_qwen35_full_matrix_note.md
+paper/p80_canonical_main_number_ledger.md
+```
+
+**Caveat:** this is bounded answer-model evidence over frozen Raw Append Family-A contexts, not evidence that an external-memory system is broadly robust. Qwen3.5-9B's result defines a model-dependent boundary on the version-arbitration mechanism; it does not invalidate the earlier controlled probes or establish universality for either pattern.
+
+## Claim 11: Capability smoke establishes interface scope, not benchmark performance
+
+**Evidence:**
+
+- The corrected formal BASE smoke has 56 attempts: Qwen3.5-9B 8/8, GPT-5.5 route 8/8, Grok-4.5 route 8/8, Gemini 3.6 Flash 7/8, Claude Sonnet 4.6 4/8, Claude Opus 4.8 0/8 (HTTP 400), and Muse Glimmer GGUF 0/8 (parser mismatch).
+- Sixty-four wrong-provider diagnostic HTTP 404 calls are separately accounted for and excluded from the formal outcome; the campaign has 40 formal provider calls and 104 total real provider calls.
+
+**Artifacts:**
+
+```text
+D:/USTC/2026Winter/MemUpdateBench_qualification_inputs/phase12_0981a38_v1/post_core_capability_smoke_base_20260826_v2.json
+paper/p80_qwen35_full_matrix_note.md
+```
+
+**Caveat:** the smoke contains zero canary and zero benchmark generations, so it is operational qualification rather than scientific evidence. Route success does not authenticate mutable upstream identities: GPT-5.5 and Grok-4.5 retain their identity caveats; document-verified Claude identities are not promoted by a partial or failed route result.
