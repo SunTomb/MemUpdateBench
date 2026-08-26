@@ -1978,6 +1978,38 @@ semantic matrix:       3a73ffb5555e4049800ce247bcbfe39596cfc2d8bc804d6a1bd6983d3
 plan fingerprint:      b17306163b932c8a228211f0f28e0a206b304ae8a98853b781731987aac323cf
 ```
 
+## Post-Core Qwen3.5-9B 320-generation canary (2026-08-26)
+
+The user authorized Tang-1-Wu GPU3 for the separate Qwen canary only. The canary reuses the authenticated Core Task 12 Family-A 80-task view and raw-append/retrieval semantics without relabeling the historical Task 12 answer-model slot. It freezes `normal_topk`, `k=16`, seeds `0` and `1` as greedy deterministic repetitions, and two conditions: `reverse-none` and `reverse-labeled` (`reverse_chronological` with and without `latest_outdated_label`).
+
+The source-bound plan passed deterministic preflight with 80 tasks, 20 semantic cores, four tasks per core, 320 unique call IDs, identical retrieved semantic-entry multisets across paired conditions, and no-label/label metadata checks. The canary root is:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/post_core_qwen35_canary_13983f4_v1
+```
+
+Execution used the authenticated Qwen3.5-9B snapshot on Tang-1-Wu physical GPU3 with offline flags, BF16, eager attention, `trust_remote_code=false`, `enable_thinking=false`, greedy decoding, `num_beams=1`, and `max_new_tokens=64`. Each seed ran 160 calls with model load once, incremental terminal-row persistence, and process-exit GPU cleanup. No other process was terminated or altered.
+
+```text
+seed 0: 160/160 PASS, 160/160 exact match, stale copied 0
+seed 1: 160/160 PASS, 160/160 exact match, stale copied 0
+reverse-none:    160/160 PASS, exact match mean 1.000
+reverse-labeled: 160/160 PASS, exact match mean 1.000
+format-valid: 320/320
+retries: 0
+failures: 0
+```
+
+The finalized canary artifacts were reopened and checked: 320 terminal rows match the 320-call plan, the artifact index excludes itself and includes progress, and GPU3 returned to 3 MiB with no compute processes after each seed.
+
+```text
+canary receipt payload SHA-256: d763661bc3e4e65a1652dbd732bf7a4f7929ec8c8f479f076ea19ff1a304480
+seed 0 attempts SHA-256:        8f7808f2fb8e5c60f99b18534d6fefb6eca70748d34ff1967c5043f4810c684c
+seed 1 attempts SHA-256:        7f7d405b23f8dbfb95f2f4bebfb51e8cd8589ee9215f733c2c35b8445010f39c
+```
+
+This is `CANARY_ONLY` evidence. It does not execute or admit the three-condition confirmatory subset, full benchmark matrix, closed-provider calls, or scientific publication claims. The canary's perfect result is a bounded answer-model check on frozen Raw Append contexts, not evidence that every external memory system succeeds.
+
 The external output leaf remained absent after both admission invocations. Therefore this is authenticated preparation evidence only: no model/provider was loaded, no prompted answer was generated, no Task 12 execution/result/score was created, and Task 13 statistics, claim ledgers, and overall Core `FINAL_APPROVED` remain not started.
 
 A subsequent reproducibility and evidence-integrity audit rebuilt the bundle from the same immutable Core and approved Task 10/11 inputs. The manifest hash remained `7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542`, the trajectory hash remained `c615ee14b556faab566dd9b902c56b5b3cf793f0e4c0426ef3ddd94398245d0a`, and the dry-run receipt hash remained `73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd`. A clean-worktree admission rerun again produced 240/80/2,400 scopes, 9 cells, 18 answer-run bindings, `execution_authorized=false`, and no output leaf. All 15 uniquely bound Core/evidence artifacts matched their declared SHA-256 values, NDJSON record counts matched, and the evidence-root secret scan found zero findings. This audit remains pre-execution preparation and does not authorize Task 12 answer runs.
