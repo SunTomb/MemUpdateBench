@@ -2010,6 +2010,49 @@ seed 1 attempts SHA-256:        7f7d405b23f8dbfb95f2f4bebfb51e8cd8589ee9215f733c
 
 This is `CANARY_ONLY` evidence. It does not execute or admit the three-condition confirmatory subset, full benchmark matrix, closed-provider calls, or scientific publication claims. The canary's perfect result is a bounded answer-model check on frozen Raw Append contexts, not evidence that every external memory system succeeds.
 
+## Post-Core Qwen3.5-9B three-condition confirmatory hard subset (2026-08-26)
+
+The user separately authorized the preregistered three-condition Qwen confirmatory subset on Tang-1-Wu GPU3. It reuses the authenticated Family-A 80-task view, `normal_topk` k=16, Qwen3.5 BF16/eager offline runtime, and greedy deterministic repetitions 0/1. The conditions are exactly:
+
+```text
+chronological / no label / k=16
+reverse / no label / k=16
+reverse / latest-outdated label / k=16
+```
+
+The independent confirmatory runner validated 20 semantic cores ×4 tasks, identical retrieved semantic-entry multisets across all three presentation conditions, correct ascending/descending order, no label leakage in the two no-label conditions, complete labels in the third condition, and 480 unique call IDs before model inference.
+
+The no-replace result root is:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/post_core_qwen35_confirmatory_13983f4_v1
+```
+
+Each seed loaded Qwen once, emitted one append-only terminal row for each of 240 coordinates, and unloaded without terminating the pre-existing external GPU3 process. The runner used offline flags, `trust_remote_code=false`, BF16, eager attention, `enable_thinking=false`, greedy decoding, `num_beams=1`, `max_new_tokens=64`, and zero retries.
+
+```text
+seed 0: 240/240 PASS, exact match mean 1.000
+seed 1: 240/240 PASS, exact match mean 1.000
+chronological-none: 160/160 PASS, exact match 1.000, stale copied 0.000
+reverse-none:       160/160 PASS, exact match 1.000, stale copied 0.000
+reverse-labeled:    160/160 PASS, exact match 1.000, stale copied 0.000
+format-valid: 480/480
+failures: 0
+retries: 0
+```
+
+Final verification reopened the 480-row plan and attempts, confirmed 480 unique call IDs, and confirmed the artifact index excludes itself.
+
+```text
+confirmatory receipt payload SHA-256: 9551a992c7b47505878bb6df71d4625714c5985219acc1ddedef30e5d43b7ae5
+confirmatory receipt file SHA-256:    1ee0ce9210158426c598471747428c7889150bb03a72a47d0e57164e7f6f96fa
+seed 0 attempts SHA-256:              280ff51de38931b828b802ee3efb3f66e0864661df24e30868ea60696c31811c
+seed 1 attempts SHA-256:              23ee4b5905da41b35c859ea43d985ab485b09153fc04a287d199031f95d358c3
+artifact index SHA-256:               be4c0baadf8a3652b8104d8f8a4db963d0d98000ec30434bba8ff36685d86bdc
+```
+
+This result is bounded to Qwen3.5 answering over frozen Raw Append Family-A contexts. It shows no order- or metadata-sensitive degradation for this qualified model and prompt/parser configuration. It does not establish external-memory-system breadth or authorize the full benchmark matrix.
+
 The external output leaf remained absent after both admission invocations. Therefore this is authenticated preparation evidence only: no model/provider was loaded, no prompted answer was generated, no Task 12 execution/result/score was created, and Task 13 statistics, claim ledgers, and overall Core `FINAL_APPROVED` remain not started.
 
 A subsequent reproducibility and evidence-integrity audit rebuilt the bundle from the same immutable Core and approved Task 10/11 inputs. The manifest hash remained `7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542`, the trajectory hash remained `c615ee14b556faab566dd9b902c56b5b3cf793f0e4c0426ef3ddd94398245d0a`, and the dry-run receipt hash remained `73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd`. A clean-worktree admission rerun again produced 240/80/2,400 scopes, 9 cells, 18 answer-run bindings, `execution_authorized=false`, and no output leaf. All 15 uniquely bound Core/evidence artifacts matched their declared SHA-256 values, NDJSON record counts matched, and the evidence-root secret scan found zero findings. This audit remains pre-execution preparation and does not authorize Task 12 answer runs.
