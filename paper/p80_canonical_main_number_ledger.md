@@ -150,3 +150,31 @@ Paper wording: report as separate checkpoint families; do not call the gap pure 
 | Mem0 Qwen2.5-VL dev20 | runnable but qualitative/unfair; EM/F1 0.00/0.05 after value extraction | `paper/p70_external_baseline_fairness_note.md` |
 | Mem0 Qwen2.5-7B text backend | queryable server and CPU MiniLM work, but structured extraction fails before dev3 completes | `paper/p70_external_baseline_text_backend_probe.md` |
 | Original Memory-R1 | unavailable; project-local approximation must not be reported as original | `paper/p70_external_baseline_fairness_note.md` |
+
+## Post-Core Qwen3.5 frozen Raw Append answer-model matrix
+
+| Claim row | Scope | Key numbers | Source |
+| --- | --- | --- | --- |
+| Canary | 80 Family-A tasks; reverse none/labeled k=16; two repetitions | 320/320 exact match; 0 stale copies | receipt payload SHA-256 `d763661bc3e4e65a1652dbd732bf7a4f7929ec8c8f479f076ea19ff1a304480` |
+| Confirmatory subset | 80 Family-A tasks; chronological none, reverse none, reverse labeled k=16; two repetitions | 480/480 exact match; 0 stale copies | receipt file SHA-256 `1ee0ce9210158426c598471747428c7889150bb03a72a47d0e57164e7f6f96fa` |
+| Full matrix overall | 80 tasks x 3 conditions x k={4,8,16} x 2 repetitions | 1,440 rows; EM 0.9979167; 3 stale copies; 8/9 cells perfect | `results/post_core_qwen35_full_matrix_analysis/analysis.json`; source receipt SHA-256 `529ec8511e574ab6b92f369bd4b4d9007013b426868fd6fe99c7856405d9b5f6` |
+| Chronological none k=4 | 160 rows, 20 semantic cores | EM 0.98125; clustered core bootstrap CI [0.94375, 1.00000]; one affected core with EM 0.625 | same analysis JSON, SHA-256 `9b1dd2066c6d2300a9f0af305a24d32c510c04186f8612fca78e51a813de474f` |
+| Reverse none minus chronological none k=4 | paired semantic-core contrast | +0.01875; clustered core bootstrap CI [0.00000, 0.05625] | same |
+
+**Paper wording:** Qwen3.5-9B is bounded answer-model evidence over frozen Raw Append contexts. It does not reproduce reverse-order high-k collapse; its only observed tail is a small chronological/no-label k=4 positional/retrieval error pattern. Do not turn this into a broad external-memory-system robustness claim.
+
+## Post-Core BASE capability smoke (operational qualification only)
+
+| Role | Formal outcome | Interpretation |
+| --- | ---: | --- |
+| Qwen3.5-9B | 8/8 | qualified at this smoke scope |
+| GPT-5.5 transfer route | 8/8 | mutable route capability only; not immutable upstream identity evidence |
+| Grok-4.5 transfer route | 8/8 | mutable route capability only; not immutable upstream identity evidence |
+| Gemini 3.6 Flash | 7/8 | one parser/binding mismatch |
+| Claude Sonnet 4.6 | 4/8 | four parser/binding mismatches |
+| Claude Opus 4.8 | 0/8 | HTTP 400 x8 |
+| Muse Glimmer GGUF | 0/8 | parser mismatch x8 |
+
+Formal campaign: 56 attempts, 35 pass, 21 fail, 40 formal provider calls, zero canary generations, and zero benchmark generations. The separate wrong-provider diagnostic made 64 HTTP 404 calls; it is excluded from the formal outcome but included in total accounting (104 real provider calls). Source: `D:/USTC/2026Winter/MemUpdateBench_qualification_inputs/phase12_0981a38_v1/post_core_capability_smoke_base_20260826_v2.json`, payload SHA-256 `1006bd7da2cded78a19e9d42a1a7a3cffc406a4fc6fa9e3e1f312b62bced7cfe`.
+
+**Paper status:** qualification evidence only, not answer-model, manager, or external-system performance evidence.
