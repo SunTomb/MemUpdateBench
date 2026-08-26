@@ -1,0 +1,5 @@
+# LangMem profile-only isolated overlay lock
+# Target: CPython 3.10+, no model, API, GPU, or credential dependency.
+# Install the pinned package artifact with:
+#   pip install --no-deps --require-hashes -r requirements/external/langmem-0.0.30-py310.lock
+langmem==0.0.30 --hash=sha256:142f040014493eebd67e1055c0642f9ab38868b5b1fde5c8f2d39add57f4ba5b

@@ -3671,3 +3671,41 @@ Final campaign counts are 56 attempts, 16 passes, 40 failures, 40 provider calls
 ### Consequence for the next phase
 
 Only Qwen3.5-9B and the GPT-5.5 transfer route pass this exact uniform BASE smoke. Muse GGUF and the other four closed routes remain typed `BLOCKED`. The planned 320-generation Qwen canary may proceed only under a separate GPU authorization; no failed or identity-blocked route is admitted to that canary.
+
+## Post-Core LangMem 0.0.30 profile admission (2026-08-26)
+
+### Scope and verified boundary
+
+LangMem is the first independent external-memory provider admitted after Core. This is a bounded capability/admission result only, not a benchmark run or accuracy claim. The implementation uses LangMem's local `InMemoryStore` native create, update, delete, and search operations through the visible-only JSONL bridge. It runs no LLM, API, GPU, network credential, or model input.
+
+The admitted surface is explicitly **profile/single-record only**: one declared target object per adapter and one native record per runtime namespace. Collection mode, multi-object queries, scoped delete, historical query, native answering, LLM enrichment, and semantic embedding search are all typed unsupported. Retrieval is native in-memory enumeration followed by deterministic local token-overlap ranking.
+
+### Identity and installation checks
+
+The frozen identity is `langchain-ai/langmem` package `0.0.30`, source commit `29cbe41e58528f92e9efa773c12e15c47be3808c`, MIT. The isolated project-local installation reported package version `0.0.30`, `Requires-Python >=3.10`, and MIT license text; its installed LangMem content digest was `3e6d6cf4d81a1cd77ebc2b98b68b17043841b34239a2499c3a91a3cdc601847a` over 27 tracked files. The pinned wheel SHA-256 is `142f040014493eebd67e1055c0642f9ab38868b5b1fde5c8f2d39add57f4ba5b`. The public source commit was separately checked to carry version `0.0.30`; the installed wheel does not itself carry a VCS direct-URL record, so the receipt preserves the explicit pinned source lock rather than claiming an embedded wheel commit.
+
+Any mismatch in package version, installed content, source lock, or MIT license is fail-closed as `BLOCKED`.
+
+### Commands and results
+
+```text
+python -m pytest tests/vnext/test_langmem_configuration_v1.py tests/vnext/test_langmem_worker_protocol.py tests/vnext/test_langmem_adapter_v3.py tests/vnext/test_langmem_preflight_cli.py tests/vnext/test_langmem_admission_receipt.py -q
+13 passed
+
+python scripts/vnext_preflight_langmem.py --python-executable <isolated-python> --output <no-replace-preflight> --run-prefix langmem-0-0-30-admission --timeout-seconds 30.0
+python scripts/vnext_admit_langmem_profile.py --preflight <no-replace-preflight> --output <no-replace-receipt>
+```
+
+The real isolated-package preflight passed the exact `ADD → UPDATE → NOOP → DELETE` lifecycle. The profile record ID was stable across add/update, exported the native current value `Lyon`, returned the same value under `slot_direct`, and was absent after delete. The 20-trial fresh-namespace reset probe passed completely, including target/control isolation and post-reset control preservation. No private filesystem path appears in either published artifact.
+
+### No-replace evidence
+
+```text
+results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/preflight.json
+SHA-256 3d9b4628e0a1f8226eedda8d1f65abdbf76e71e0b95ce5b6594d5b25b374c1fa
+
+results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/admission_receipt.json
+SHA-256 6fcf89b8c69ba68f65103a16a4402b293c33dff488062be9dfd022dd1480fe8f
+```
+
+The receipt outcome is `pass` for `profile_single_record_only`. It must not be interpreted as collection-mode admission, prompted-answer evidence, a full benchmark result, or a modification of Mem0/Core evidence.

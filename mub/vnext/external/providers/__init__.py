@@ -17,6 +17,20 @@ from mub.vnext.external.providers.mem0_adapter import (
     Mem0AdapterError,
     Mem0ExternalAdapterV3,
 )
+from mub.vnext.external.providers.langmem import (
+    LANGMEM_PACKAGE_VERSION,
+    LangMemAdapterConfigurationV1,
+    LangMemPackageProvenanceV1,
+    build_langmem_adapter_configuration,
+    compute_langmem_configuration_hash,
+    fixed_langmem_package_provenance,
+    validate_langmem_package_provenance,
+)
+from mub.vnext.external.providers.langmem_adapter import (
+    LANGMEM_ADAPTER_VERSION,
+    LangMemAdapterError,
+    LangMemExternalAdapterV3,
+)
 
 __all__ = [
     "MEM0_PACKAGE_VERSION",
@@ -34,4 +48,14 @@ __all__ = [
     "fixed_mem0_package_provenance",
     "validate_mem0_package_provenance",
     "validate_mem0_worker_configuration",
+    "LANGMEM_PACKAGE_VERSION",
+    "LANGMEM_ADAPTER_VERSION",
+    "LangMemAdapterError",
+    "LangMemExternalAdapterV3",
+    "LangMemAdapterConfigurationV1",
+    "LangMemPackageProvenanceV1",
+    "build_langmem_adapter_configuration",
+    "compute_langmem_configuration_hash",
+    "fixed_langmem_package_provenance",
+    "validate_langmem_package_provenance",
 ]
