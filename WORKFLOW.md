@@ -3470,3 +3470,78 @@ The release was rebuilt from the frozen source bundle and compared byte-for-byte
 ### Conclusion
 
 Qwen3.5-9B and Muse GGUF are READY only for the uniform capability-smoke gate. Muse BF16 remains resource-blocked. All capability-smoke decisions remain `BLOCKED/NOT_RUN`; closed-provider smoke requires explicit API/budget authorization and open-model smoke requires separate GPU authorization. Canary, confirmatory, and benchmark stages remain `NOT_RUN`.
+
+## Post-Core uniform BASE capability smoke (2026-08-26)
+
+### Scope and explicit exclusions
+
+The user authorized Tang-1-Wu GPU3 for Qwen/Muse open-model smoke and five closed transfer routes for one complete eight-call BASE batch each. The campaign used the frozen four qualification fixtures with two repetitions per fixture:
+
+```text
+7 roles × 4 fixtures × 2 repetitions = 56 attempts
+open-model generations: 16
+provider calls: 40
+retries: 0
+escalations: 0
+canary generations: 0
+benchmark generations: 0
+```
+
+No pricing or cost-accounting subsystem was added to MemUpdateBench. External API spending was monitored by the user and remains outside benchmark semantics. No raw provider response, endpoint, token, Authorization value, or provider configuration was persisted.
+
+### Qwen3.5-9B
+
+Qwen ran on Tang-1-Wu GPU3 from the authenticated snapshot and the already-qualified private Transformers 5.9 runtime. The adapter loaded the model once, executed the exact eight BASE attempts, and unloaded.
+
+```text
+attempts: 8
+PASS: 8
+FAIL: 0
+retries: 0
+status: READY at capability-smoke scope
+```
+
+A first controller invocation failed before model loading because the runner intentionally strips `PYTHONPATH` and `CUDA_VISIBLE_DEVICES`; it produced zero model generations and no result receipts. A replacement authorization bound a corrected adapter that explicitly selected physical GPU3 and its private dependency directory. This technical pre-dispatch event is retained in the closure receipt and is not counted as a model attempt or retry.
+
+### Muse Glimmer GGUF
+
+Muse used the pinned CUDA llama.cpp runtime and authenticated Dynamic Q4_K_XL snapshot on Tang-1-Wu GPU3, with speculative decoding off. It executed the frozen fixture limit of 32 generated tokens per attempt without extension or retry.
+
+```text
+attempts: 8
+PASS: 0
+FAIL: 8
+error class: PARSER_MISMATCH × 8
+retries: 0
+status: BLOCKED at capability-smoke scope
+```
+
+The earlier 128-token runtime gate showed that Muse can deterministically produce a final `READY`, but the frozen 32-token smoke fixture ends during the model's thinking trace. The smoke result is therefore preserved as a parser/capability mismatch rather than repaired by increasing the token limit.
+
+### Closed transfer routes
+
+Each route received exactly eight Anthropic Messages-compatible BASE requests with `stream=false`, `max_tokens=32`, and zero retries. Credentials and base URL were read from the current CC Switch provider record into process memory only. Receipts retain typed status, request/projection hashes, returned model, response format, usage counts when present, latency, and HTTP status; raw responses are absent.
+
+```text
+claude-sonnet-4-6:      0 PASS / 8 FAIL / HTTP 404 × 8
+claude-opus-4-8:        0 PASS / 8 FAIL / HTTP 404 × 8
+Gemini 3.6 Flash Low:   0 PASS / 8 FAIL / HTTP 404 × 8
+grok-4.5:               0 PASS / 8 FAIL / HTTP 404 × 8
+gpt-5.5:                8 PASS / 0 FAIL / HTTP 200 × 8
+```
+
+The four 404 route batches are retained as current transfer-route capability failures. They were not retried or replaced with aliases. GPT-5.5 returned standard Anthropic Message JSON, exact route-name binding, normal stop reason, and valid fixture projections for all eight calls. This establishes only the mutable transfer route's current capability; it does not authenticate GPT-5.5 as an immutable official upstream identity or unblock benchmark admission.
+
+### Closure receipt
+
+```text
+/NAS/yesh/MemUpdateBench/external/post_core_capability_smoke_base_20260826_v1.json
+SHA-256 8943b7a734dc2b38381818cad9b53821512e0e5db3bd7f1bb3a6e3efd3b2bcb9
+payload self-hash 8e9d117de0660b9c81a4a6e92c2a7c63db52bcaf727dedfb7747e21eb5104d5e
+```
+
+Final campaign counts are 56 attempts, 16 passes, 40 failures, 40 provider calls, 16 open-model generations, zero retries, zero escalation, zero canary generation, and zero benchmark generation.
+
+### Consequence for the next phase
+
+Only Qwen3.5-9B and the GPT-5.5 transfer route pass this exact uniform BASE smoke. Muse GGUF and the other four closed routes remain typed `BLOCKED`. The planned 320-generation Qwen canary may proceed only under a separate GPU authorization; no failed or identity-blocked route is admitted to that canary.
