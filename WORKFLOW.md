@@ -2053,6 +2053,57 @@ artifact index SHA-256:               be4c0baadf8a3652b8104d8f8a4db963d0d98000ec
 
 This result is bounded to Qwen3.5 answering over frozen Raw Append Family-A contexts. It shows no order- or metadata-sensitive degradation for this qualified model and prompt/parser configuration. It does not establish external-memory-system breadth or authorize the full benchmark matrix.
 
+## Post-Core Qwen3.5-9B full 18-cell matrix (2026-08-26)
+
+The user authorized the complete Task12-shaped Qwen matrix after the canary and confirmatory gates. The source-bound runner expanded the same authenticated 80-task Family-A view over three context conditions, retrieval k values 4/8/16, and deterministic repetitions 0/1:
+
+```text
+80 tasks × 3 conditions × 3 k values × 2 repetitions = 1,440 generations
+```
+
+The no-replace result root is:
+
+```text
+/NAS/yesh/MemUpdateBench/results/vnext/post_core_qwen35_full_matrix_46e1e1f_v1
+```
+
+The preflight validated 1,440 unique call IDs and same-k retrieved semantic-entry multiset equality across all three presentation conditions. Both repetitions loaded Qwen once and persisted 720 terminal rows incrementally. GPU3 was shared with one pre-existing ~16 GiB process; no external process was altered or terminated. Qwen exited cleanly after each repetition.
+
+Final overall result:
+
+```text
+terminal rows: 1,440/1,440
+format-valid: 1,440/1,440
+exact matches: 1,437/1,440
+EM: 0.9979167
+stale copied: 3/1,440
+stale copied mean: 0.0020833
+failures: 0
+retries: 0
+```
+
+Eight of nine condition×k cells achieved 160/160 exact match. The only non-perfect cell was chronological/no-label at k=4:
+
+```text
+chronological-none-k04: EM 0.98125, stale copied 0.01875
+chronological-none-k08: EM 1.00000, stale copied 0.00000
+chronological-none-k16: EM 1.00000, stale copied 0.00000
+reverse-none-k04/k08/k16: all EM 1.00000
+reverse-labeled-k04/k08/k16: all EM 1.00000
+```
+
+Repetition 0 had one stale-copy error in chronological-none/k4; repetition 1 had two. This is a small but repeat-observed low-k retrieval/context failure, not the previously hypothesized reverse-order high-k collapse. Reverse/no-label remained perfect at every k.
+
+```text
+full-matrix receipt payload SHA-256: c9108a1aa8f06b8da98bc8b9d1f87cda7ebae1b06ab5b6752635ca242f604f6c
+full-matrix receipt file SHA-256:    529ec8511e574ab6b92f369bd4b4d9007013b426868fd6fe99c7856405d9b5f6
+seed 0 attempts SHA-256:             47c292e4d6d0e317b971e025e6cd55fa4a1b0304811da8ddf9ea4e35fe4611f2
+seed 1 attempts SHA-256:             130c28fa3e8b5cf8aca9cacdb7125a767b710a7122edefc1d10a40eaed0b1722
+artifact index SHA-256:              6d01cab144caff7532ff5e39f42ea012542ec0f0416a4eac58764ff0a95c29c3
+```
+
+This is a full Qwen answer-model matrix on frozen Raw Append Family-A contexts. It does not add manager diversity or external-system evidence. The dominant conclusion remains model-sensitive: Qwen3.5 is highly robust to reverse order and absent version labels in this matrix, with only a small chronological k=4 stale-copy tail.
+
 The external output leaf remained absent after both admission invocations. Therefore this is authenticated preparation evidence only: no model/provider was loaded, no prompted answer was generated, no Task 12 execution/result/score was created, and Task 13 statistics, claim ledgers, and overall Core `FINAL_APPROVED` remain not started.
 
 A subsequent reproducibility and evidence-integrity audit rebuilt the bundle from the same immutable Core and approved Task 10/11 inputs. The manifest hash remained `7ab4af67e3cf84e2fcba9baa9b7ea6ee9a768cf4c3defcdc36dea78c0278e542`, the trajectory hash remained `c615ee14b556faab566dd9b902c56b5b3cf793f0e4c0426ef3ddd94398245d0a`, and the dry-run receipt hash remained `73725e8d2718449bf3438aa7e99c99783dab21bc74f9cef5cb1c533ec50a00bd`. A clean-worktree admission rerun again produced 240/80/2,400 scopes, 9 cells, 18 answer-run bindings, `execution_authorized=false`, and no output leaf. All 15 uniquely bound Core/evidence artifacts matched their declared SHA-256 values, NDJSON record counts matched, and the evidence-root secret scan found zero findings. This audit remains pre-execution preparation and does not authorize Task 12 answer runs.
