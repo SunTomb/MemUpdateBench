@@ -172,7 +172,7 @@ class LettaWorkerServiceV1:
 
 
 class LettaBlockProfileBackendV1:
-    """Adapter-facing direct block profile over an isolated Letta-compatible client."""
+    """Protocol-test backend only; cannot authenticate an official Letta runtime."""
 
     def __init__(self, *, client: LettaBlockClientV1, configuration: LettaAdapterConfigurationV1) -> None:
         if type(configuration) is not LettaAdapterConfigurationV1:
@@ -182,10 +182,10 @@ class LettaBlockProfileBackendV1:
 
     def health(self) -> LettaWorkerHealthV1:
         return LettaWorkerHealthV1(
-            package_name="letta",
-            package_version=LETTA_PACKAGE_VERSION,
-            source_commit=LETTA_SOURCE_COMMIT,
-            license_id="Apache-2.0",
+            package_name="letta-protocol-fake",
+            package_version="0",
+            source_commit="0" * 40,
+            license_id="test-only",
             configuration_hash=compute_letta_configuration_hash(self._configuration),
         )
 
@@ -276,6 +276,8 @@ class LettaBlockProfileBackendV1:
         if operation == "add":
             if existing is not None:
                 return LettaWorkerMutationResultV1(event_id=event.event_id, effective_operation="noop")
+            if self._client.search_blocks(native_namespace):
+                raise ValueError("Letta profile mode rejects collection inserts")
             self._client.create_block(native_namespace, block_id, self._stored_value(event, object_id, value))
         elif operation == "update":
             if existing is None:

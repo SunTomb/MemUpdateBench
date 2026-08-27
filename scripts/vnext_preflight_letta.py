@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_IMMUTABLE_CORE_ROOT = PROJECT_ROOT / "data" / "vnext" / "core" / "v3"
+
 from mub.vnext.external.artifacts import assert_no_reparse_components
 from mub.vnext.external.providers.letta import build_letta_adapter_configuration, compute_letta_configuration_hash
 from mub.vnext.external.security import redact_sensitive_text, scan_for_secrets
@@ -85,6 +88,24 @@ def run_preflight(*, run_prefix: str) -> dict:
     }
 
 
+def _contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_evidence(path: Path, payload: dict) -> None:
     if not path.is_absolute():
         raise ValueError("Letta preflight output path must be absolute")
@@ -92,12 +113,17 @@ def _write_evidence(path: Path, payload: dict) -> None:
     parent = path.parent.resolve(strict=True)
     if not parent.is_dir() or parent.is_symlink():
         raise ValueError("Letta preflight output parent must be a real directory")
+    if _IMMUTABLE_CORE_ROOT.exists():
+        immutable = _IMMUTABLE_CORE_ROOT.resolve(strict=True)
+        if _contains(immutable, parent) or _contains(parent, immutable):
+            raise ValueError("Letta preflight output must be outside immutable Core")
     if scan_for_secrets(payload):
         raise ValueError("Letta preflight evidence failed security scan")
     with path.open("xb") as handle:
         handle.write(_canonical_object_bytes(payload))
         handle.flush()
         os.fsync(handle.fileno())
+    _fsync_directory(parent)
 
 
 def main(argv: list[str] | None = None) -> int:

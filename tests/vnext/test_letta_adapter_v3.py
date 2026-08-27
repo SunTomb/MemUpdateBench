@@ -57,42 +57,20 @@ def _adapter():
     return LettaExternalAdapterV3(bridge=bridge, configuration=configuration, target_objects=(_key(),)), bridge
 
 
-def test_letta_adapter_reports_truthful_direct_block_profile_capabilities() -> None:
-    adapter, bridge = _adapter()
-    adapter.reset(ResetRequestV3(namespace="letta-adapter-namespace"))
-    add = adapter.ingest_event(_event("add", 0, 'Add default|alice|city| with value "Paris".'))
-    update = adapter.ingest_event(_event("update", 1, 'Update default|alice|city| with value "Lyon".'))
-    noop = adapter.ingest_event(_event("noop", 2, "No memory object changes."))
-    entries = adapter.export_entries()
-    retrieval = adapter.retrieve(RetrievalRequestV3(query=_query(), k=1))
+def test_letta_adapter_rejects_protocol_fake_identity() -> None:
+    import pytest
+    from mub.vnext.external.providers.letta_adapter import LettaAdapterError
 
-    assert add.execution_status.value == update.execution_status.value == noop.execution_status.value == "executed"
-    assert entries.entries[0].value_candidate == "Lyon"
-    assert retrieval.trace.retrieved_entries[0].entry_id == entries.entries[0].entry_id
-    assert adapter.capabilities().supports_add is True
-    assert adapter.capabilities().supports_update is True
-    assert adapter.capabilities().supports_noop is True
-    assert adapter.capabilities().supports_delete is True
-    assert adapter.capabilities().exports_entries is True
-    assert adapter.capabilities().exports_values is True
-    assert adapter.capabilities().supports_native_answer is False
-    assert adapter.capabilities().supports_multi_object_query is False
-    assert adapter.answer(_query(), "slot_prompt").prediction.error_flags == ("answer_mode_not_supported",)
-    request_text = str([request.payload for request in bridge.requests])
-    assert "hidden-action" not in request_text
-    assert "hidden" not in request_text
+    with pytest.raises(LettaAdapterError):
+        _adapter()
 
 
-def test_letta_adapter_runs_twenty_isolated_reset_trials() -> None:
-    from mub.vnext.external.probe_v3 import run_namespace_reset_probe
+def test_letta_protocol_fake_cannot_run_authenticated_reset_probe() -> None:
+    import pytest
+    from mub.vnext.external.providers.letta_adapter import LettaAdapterError
 
-    adapter, _ = _adapter()
-    report = run_namespace_reset_probe(
-        adapter, candidate_id="letta_0_16_8_block_profile", run_prefix="letta-reset"
-    )
-
-    assert report.passed is True
-    assert len(report.trials) == 20
+    with pytest.raises(LettaAdapterError):
+        _adapter()
 
 
 def test_letta_provider_facade_exposes_sdk_free_adapter() -> None:

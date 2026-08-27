@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_IMMUTABLE_CORE_ROOT = PROJECT_ROOT / "data" / "vnext" / "core" / "v3"
+
 from mub.vnext.external.artifacts import assert_no_reparse_components
 from mub.vnext.external.security import scan_for_secrets
 
@@ -56,7 +59,9 @@ def build_admission_receipt(preflight: dict) -> dict:
         reasons.append("forbidden_execution_boundary")
     if not unsupported_explicit:
         reasons.append("unsupported_surface_not_explicit")
-    admitted = not reasons
+    admitted = False
+    if not reasons:
+        reasons.append("official_letta_bootstrap_not_implemented")
     return {
         "schema_version": "memupdatebench.external.letta.admission.v1",
         "candidate_id": "letta_0_16_8_block_profile",
@@ -91,6 +96,24 @@ def _read_canonical_json(path: Path) -> dict:
     return value
 
 
+def _contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _publish_no_replace(path: Path, receipt: dict) -> None:
     if not path.is_absolute():
         raise ValueError("Letta receipt output must be absolute")
@@ -98,12 +121,17 @@ def _publish_no_replace(path: Path, receipt: dict) -> None:
     parent = path.parent.resolve(strict=True)
     if not parent.is_dir() or parent.is_symlink():
         raise ValueError("Letta receipt output parent must be a real directory")
+    if _IMMUTABLE_CORE_ROOT.exists():
+        immutable = _IMMUTABLE_CORE_ROOT.resolve(strict=True)
+        if _contains(immutable, parent) or _contains(parent, immutable):
+            raise ValueError("Letta receipt output must be outside immutable Core")
     if scan_for_secrets(receipt):
         raise ValueError("Letta receipt failed security scan")
     with path.open("xb") as handle:
         handle.write(_canonical_object_bytes(receipt))
         handle.flush()
         os.fsync(handle.fileno())
+    _fsync_directory(parent)
 
 
 def main(argv: list[str] | None = None) -> int:

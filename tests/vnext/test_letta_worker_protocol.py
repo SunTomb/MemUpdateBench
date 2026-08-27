@@ -84,7 +84,7 @@ def test_block_profile_uses_direct_create_update_delete_with_stable_id() -> None
 
     assert add.status.value == update.status.value == delete.status.value == "ok"
     assert add.payload["entry_id"] == update.payload["entry_id"] == delete.payload["entry_id"]
-    assert [call[0] for call in client.calls] == ["get", "create", "get", "update", "get", "delete"]
+    assert [call[0] for call in client.calls] == ["get", "search", "create", "get", "update", "get", "delete"]
 
 
 def test_block_profile_noop_touches_no_client_and_namespaces_are_isolated() -> None:

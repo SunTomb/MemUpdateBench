@@ -3779,3 +3779,18 @@ results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/canary_receip
 Two earlier execution roots are superseded diagnostics: Tang-1 lacked sufficient free memory at model load, and Song-1 initially exposed an incompatible optional sklearn/pyarrow import from the shared environment. Both stopped before task extraction. The final Song-1 runtime used a source-bound optional sklearn stub only to prevent importing the unused incompatible pyarrow path; no sklearn functionality was invoked.
 
 This is the first genuine external manager-quality state/retrieval row. Prompted answering and the complete 80-task Family-A matrix remain separate later gates. Unsupported multi-object work is not pooled as zero.
+
+## Letta 0.16.8 direct-block candidate gate (2026-08-27)
+
+Letta 0.16.8 is frozen as an Apache-2.0 external-system candidate, but remains `BLOCKED`. No Letta package/server/model was started and no runtime capability is claimed. The metadata-only preflight reports `letta_package_not_installed`; official direct-block bootstrap is intentionally unimplemented.
+
+The checked-in protocol fake exists only for adapter/CRUD contract tests. It uses a non-Letta health identity and cannot authenticate through the production adapter. The profile backend rejects a second distinct block in one namespace. Preflight and receipt writers reject immutable-Core destinations, use create-exclusive writes, fsync files and POSIX parent directories, and scan evidence for secrets. Admission v1 is fail-closed even if a hand-authored object claims all runtime booleans passed: official bootstrap remains a blocker.
+
+```text
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/preflight.json
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/admission_receipt.json
+outcome: BLOCKED
+runtime/accuracy/prompted-answer evidence: NOT_RUN
+```
+
+The next valid step is an isolated Python 3.11–3.13 Letta installation and authenticated source/content check, followed by a real CPU-only direct-block client bootstrap. Until then Letta must not appear as an admitted capability or accuracy row.
