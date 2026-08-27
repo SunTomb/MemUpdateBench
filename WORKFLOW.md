@@ -3709,3 +3709,32 @@ SHA-256 6fcf89b8c69ba68f65103a16a4402b293c33dff488062be9dfd022dd1480fe8f
 ```
 
 The receipt outcome is `pass` for `profile_single_record_only`. It must not be interpreted as collection-mode admission, prompted-answer evidence, a full benchmark result, or a modification of Mem0/Core evidence.
+
+## LangMem 0.0.30 profile Family-A canary (2026-08-26)
+
+After profile-mode admission, a manager-only canary requested 32 authenticated Family-A tasks covering eight semantic cores and four surfaces per core. No LLM, API, GPU, embedding service, or prompted-answer model was used.
+
+The admitted LangMem configuration is explicitly `profile_single_record_only`. Eight requested tasks from one multi-object semantic core were therefore emitted as `NOT_SUPPORTED` rather than zero-valued failures. The remaining 24 single-object tasks reached the visible external boundary, but all natural-language `raw_text` events were rejected before state creation because the bounded no-LLM worker accepts only explicit CRUD action surfaces. The benchmark's compiled `normalized_text` was not substituted because doing so would expose structured action information that a genuine external manager must infer from raw text.
+
+```text
+requested tasks: 32
+supported-scope tasks: 24
+NOT_SUPPORTED multi-object tasks: 8
+PASS: 0
+FAIL: 24
+failure class: VISIBLE_SURFACE_UNSUPPORTED × 24
+prompted answering: BLOCKED_BY_INGEST
+state/retrieval metrics: typed null, not zero
+LLM/API/GPU use: false / false / false
+```
+
+Evidence:
+
+```text
+results/vnext/post_core_langmem_family_a_canary_20260826/rows.jsonl
+  SHA-256 1c1eded0602260c1f09be2ecfde8f9427288ac13e7da18198c186c2027cf0c36
+results/vnext/post_core_langmem_family_a_canary_20260826/canary_receipt.json
+  payload SHA-256 60cdf6adfda75d45ca083dab4454dd9ff507cf3a7c4826fb904448b57ae6f842
+```
+
+This is a genuine external-system result: LangMem's native profile store passes explicit CRUD admission but cannot consume the benchmark's natural update surface without an extraction/enrichment model. A manager-quality LangMem row requires a separately qualified LLM extraction configuration; the direct profile result must not be reported as accuracy zero or silently repaired with normalized gold-derived actions.
