@@ -163,6 +163,20 @@ Paper wording: report as separate checkpoint families; do not call the gap pure 
 
 **Paper wording:** Qwen3.5-9B is bounded answer-model evidence over frozen Raw Append contexts. It does not reproduce reverse-order high-k collapse; its only observed tail is a small chronological/no-label k=4 positional/retrieval error pattern. Do not turn this into a broad external-memory-system robustness claim.
 
+## Post-Core external-system evidence: LangMem and Letta
+
+Coverage and performance are separate ledger dimensions. Unsupported tasks remain typed unsupported/null and are not scored as zero.
+
+| System/configuration | Scope and coverage | Supported-scope performance | Evidence |
+| --- | --- | --- | --- |
+| LangMem 0.0.30 direct profile admission | Explicit native CRUD admission passed; profile/single-record only | Admission only; not benchmark accuracy | `results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/preflight.json` SHA-256 `3d9b4628e0a1f8226eedda8d1f65abdbf76e71e0b95ce5b6594d5b25b374c1fa`; `admission_receipt.json` SHA-256 `6fcf89b8c69ba68f65103a16a4402b293c33dff488062be9dfd022dd1480fe8f` |
+| LangMem no-LLM raw-text canary | 32 requested; 24 single-object visible-surface tasks; 8 multi-object `NOT_SUPPORTED` | 24 `VISIBLE_SURFACE_UNSUPPORTED`; state/retrieval metrics null, not zero | `results/vnext/post_core_langmem_family_a_canary_20260826/rows.jsonl` SHA-256 `1c1eded0602260c1f09be2ecfde8f9427288ac13e7da18198c186c2027cf0c36`; receipt payload SHA-256 `60cdf6adfda75d45ca083dab4454dd9ff507cf3a7c4826fb904448b57ae6f842` |
+| LangMem + Qwen3.5 extraction canary v3 | 32 requested; 24 supported (75%); 8 multi-object `NOT_SUPPORTED` | 24/24 pass; state acc 1.000; k=16 gold retrieval 1.000; avg final memory size 1.000 | `results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/rows.jsonl` SHA-256 `7e266b6926954c9ce9b6c537a3ee70093bce4ae8bef673ed4669b6152ceb3b67`; receipt payload SHA-256 `a582c0e42e73a3d83d4a5e44279dd3651aba6a5c3b086650d78e24a2c6dbd4a5` |
+| LangMem + Qwen3.5 full Family-A | 80 requested; 52 supported (65%); 28 multi-object `NOT_SUPPORTED` | 52/52 pass; state acc 1.000; k=16 gold retrieval 1.000; avg final memory size 1.000; prompted EM 1.000 | `results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/rows.jsonl` SHA-256 `0560fd3915cce125d0039d40a87898369eb90f15a10cd6abfb91e3027108ef07`; receipt SHA-256 `c7e2e89e5cb518b7d101cf5146be6c77f898cd7581b07d888960a49ad75da59b`; payload SHA-256 `5f4551783c816f4325463903803c7f1116d400d792ab02e7160667ba4b2953ea` |
+| Letta 0.16.8 direct-block candidate | Runtime not verified; `BLOCKED`; no supported benchmark row | No accuracy or prompted-answer metric; protocol fake is not runtime evidence | `results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/preflight.json` SHA-256 `d92006e22fb08c19584fde37cc675321cf1ff6ae0d88462ee46f07bb13965170`; `admission_receipt.json` SHA-256 `851be3e0d5f2d5283e8477e89691aeb57fcc7a35b30964e3defebf5a164f0f87` |
+
+**Interpretation boundary:** LangMem's full supported-scope row is a genuine external-manager result within a single-record profile envelope, but Qwen3.5 supplies both extraction and answer generation. It must be contrasted with Raw append and exact CRUD only as a bounded coverage-plus-layer comparison, not as a broad system ranking. Letta remains blocked and contributes no zero-valued accuracy row.
+
 ## Post-Core BASE capability smoke (operational qualification only)
 
 | Role | Formal outcome | Interpretation |
