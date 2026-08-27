@@ -213,7 +213,52 @@ paper/p80_canonical_main_number_ledger.md
 
 **Caveat:** this is bounded answer-model evidence over frozen Raw Append Family-A contexts, not evidence that an external-memory system is broadly robust. Qwen3.5-9B's result defines a model-dependent boundary on the version-arbitration mechanism; it does not invalidate the earlier controlled probes or establish universality for either pattern.
 
-## Claim 11: Capability smoke establishes interface scope, not benchmark performance
+## Claim 11: LangMem external-system evidence must separate coverage from performance
+
+**Evidence:**
+
+- LangMem 0.0.30 direct profile admission passes explicit native CRUD, but admission is profile/single-record capability evidence rather than benchmark accuracy.
+- The no-LLM natural raw-text canary requests 32 tasks: 24 single-object tasks fail as `VISIBLE_SURFACE_UNSUPPORTED`, eight multi-object tasks are `NOT_SUPPORTED`; state/retrieval metrics are typed null, not zero.
+- LangMem+Qwen extraction canary v3 supports 24/32 tasks, with eight multi-object tasks unsupported; all 24 supported tasks pass, state accuracy and k=16 gold retrieval are 1.000.
+- The full Family-A result requests 80 tasks, supports 52 (65%), leaves 28 multi-object tasks `NOT_SUPPORTED`, and passes all 52 supported tasks with state accuracy 1.000, k=16 gold retrieval 1.000, average final memory size 1.000, and prompted EM 1.000.
+
+**Artifacts:**
+
+```text
+results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/preflight.json
+results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/admission_receipt.json
+results/vnext/post_core_langmem_family_a_canary_20260826/rows.jsonl
+results/vnext/post_core_langmem_family_a_canary_20260826/canary_receipt.json
+results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/rows.jsonl
+results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/canary_receipt.json
+results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/rows.jsonl
+results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.json
+```
+
+**Hashes:** direct admission preflight `3d9b4628e0a1f8226eedda8d1f65abdbf76e71e0b95ce5b6594d5b25b374c1fa`, admission receipt `6fcf89b8c69ba68f65103a16a4402b293c33dff488062be9dfd022dd1480fe8f`; no-LLM rows `1c1eded0602260c1f09be2ecfde8f9427288ac13e7da18198c186c2027cf0c36`, receipt payload `60cdf6adfda75d45ca083dab4454dd9ff507cf3a7c4826fb904448b57ae6f842`; extraction rows `7e266b6926954c9ce9b6c537a3ee70093bce4ae8bef673ed4669b6152ceb3b67`, receipt payload `a582c0e42e73a3d83d4a5e44279dd3651aba6a5c3b086650d78e24a2c6dbd4a5`; full rows `0560fd3915cce125d0039d40a87898369eb90f15a10cd6abfb91e3027108ef07`, receipt file `c7e2e89e5cb518b7d101cf5146be6c77f898cd7581b07d888960a49ad75da59b`, receipt payload `5f4551783c816f4325463903803c7f1116d400d792ab02e7160667ba4b2953ea`.
+
+**Caveat:** Coverage is not performance. Unsupported tasks are never pooled as zero. LangMem shares Qwen3.5 for extraction and answering, and its single-record profile envelope is not directly comparable to Raw append or exact CRUD as a broad leaderboard row.
+
+## Claim 12: Letta remains fail-closed blocked and has no accuracy row
+
+**Evidence:**
+
+- Letta 0.16.8 reports `letta_package_not_installed`; no package, server, or model was started.
+- The checked-in protocol fake is test-only and is not runtime evidence.
+- The admission receipt remains `BLOCKED` with runtime/accuracy/prompted-answer evidence `NOT_RUN`.
+
+**Artifacts and hashes:**
+
+```text
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/preflight.json
+  d92006e22fb08c19584fde37cc675321cf1ff6ae0d88462ee46f07bb13965170
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/admission_receipt.json
+  851be3e0d5f2d5283e8477e89691aeb57fcc7a35b30964e3defebf5a164f0f87
+```
+
+**Caveat:** The protocol fake must not be described as Letta runtime evidence; no accuracy row exists and blocked/null is not zero.
+
+## Claim 13: Capability smoke establishes interface scope, not benchmark performance
 
 **Evidence:**
 
