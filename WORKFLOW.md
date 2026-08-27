@@ -3823,3 +3823,18 @@ results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.js
 ```
 
 This establishes a genuine external manager-quality row within LangMem's admitted single-record profile envelope. Coverage is 65% of the Family-A view; the remaining 35% is explicit multi-object unsupported work and is not scored as zero. The result still shares Qwen3.5 for extraction and answering, so manager comparison must separate state/retrieval behavior from answer-model effects.
+
+## Letta 0.16.8 real-package/server preflight update (2026-08-27)
+
+The pinned Letta package was installed into an isolated Python 3.13 project overlay. Package metadata matched version `0.16.8`, Apache license metadata and the declared Python range; 568 installed files produced content SHA-256 `ff3b8f431407d886088ee53e61a80c8ad03f581597627f5112e0c691b55e675f`. The installed content is not yet cryptographically bound to the pinned source commit, so source identity remains incomplete.
+
+A localhost-only server bootstrap on a verified free port imported the package successfully but failed before listening because Letta selected PostgreSQL and authentication for the default Letta database user failed. No agent model, LLM, external API, GPU or provider credential was used. An earlier probe on port 8899 contacted an unrelated pre-existing HTTP server and is discarded as a port-collision diagnostic.
+
+```text
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/preflight.json
+  SHA-256 89cc8ce890929a3b3710f50b1238b40865676288fdd3aff1257a896724778fbf
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/admission_receipt.json
+  SHA-256 fbf9f7cdf2e80549f93f519a360beda3a076aab0ee54fcbd724f678aef935a9e
+```
+
+Letta remains `BLOCKED`; its exact blockers are now installed-content/source binding and unavailable or unauthorized PostgreSQL runtime. No runtime lifecycle or accuracy row is claimed.
