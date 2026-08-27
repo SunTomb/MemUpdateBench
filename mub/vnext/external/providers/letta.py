@@ -13,6 +13,8 @@ from mub.vnext.io import canonical_json_bytes
 LETTA_PACKAGE_VERSION = "0.16.8"
 LETTA_SOURCE_COMMIT = "1131535716e8a31c9a437f8695e25ac98f203a24"
 LETTA_PROVIDER_CONTRACT_VERSION = "memupdatebench.external.letta.v1"
+LETTA_INSTALLED_CONTENT_SHA256: str | None = None
+LETTA_INSTALLED_CONTENT_FILE_COUNT: int | None = None
 StrictSha256 = Annotated[str, Field(pattern=SHA256_PATTERN, strict=True)]
 StrictCommit = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$", strict=True)]
 
@@ -163,6 +165,8 @@ def compute_letta_configuration_hash(
 
 
 __all__ = [
+    "LETTA_INSTALLED_CONTENT_FILE_COUNT",
+    "LETTA_INSTALLED_CONTENT_SHA256",
     "LETTA_PACKAGE_VERSION",
     "LETTA_PROVIDER_CONTRACT_VERSION",
     "LETTA_SOURCE_COMMIT",

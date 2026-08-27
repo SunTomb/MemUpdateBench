@@ -30,6 +30,7 @@ from mub.vnext.external.providers.letta_protocol import (
     LettaWorkerCloseResultV1,
     LettaWorkerEntryListV1,
     LettaWorkerEntryV1,
+    LettaWorkerHealthV2,
     LettaWorkerHealthV1,
     LettaWorkerMutationResultV1,
     LettaWorkerResetResultV1,
@@ -101,9 +102,31 @@ class LettaExternalAdapterV3:
             raise LettaAdapterError("Letta worker response payload is invalid") from None
 
     def _authenticate_worker(self) -> None:
-        health = self._response_model(self._request(WorkerOperation.HEALTH), LettaWorkerHealthV1)
-        if (health.package_name, health.package_version, health.source_commit, health.license_id, health.configuration_hash) != (
-            "letta", LETTA_PACKAGE_VERSION, "1131535716e8a31c9a437f8695e25ac98f203a24", "Apache-2.0", self._configuration_hash
+        response = self._request(WorkerOperation.HEALTH)
+        try:
+            health = self._response_model(response, LettaWorkerHealthV2)
+        except LettaAdapterError:
+            # V1 is retained for protocol-test fakes, but is never an
+            # authenticated identity for this external adapter.
+            raise LettaAdapterError("Letta worker health identity is invalid") from None
+        if (
+            health.package_name,
+            health.package_version,
+            health.source_commit,
+            health.license_id,
+            health.configuration_hash,
+            health.identity_verified,
+            health.installed_content_verified,
+            health.source_binding_status,
+        ) != (
+            "letta",
+            LETTA_PACKAGE_VERSION,
+            "1131535716e8a31c9a437f8695e25ac98f203a24",
+            "Apache-2.0",
+            self._configuration_hash,
+            True,
+            True,
+            "verified",
         ):
             raise LettaAdapterError("Letta worker health identity is invalid")
 
