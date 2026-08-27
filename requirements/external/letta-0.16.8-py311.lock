@@ -1,0 +1,4 @@
+# Letta 0.16.8 metadata-only qualification lock
+# This lock does not authorize installation, server startup, model loading, API calls,
+# credential use, or benchmark execution. Install only in a separately approved overlay.
+letta==0.16.8 --hash=sha256:2d200cd13212c9232650c7efa16c0a4682ce5e89af8a0e53f3fbd09fc34091d3
