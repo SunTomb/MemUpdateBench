@@ -392,8 +392,21 @@ def _deterministic_score(query_text: str, entry: LettaWorkerEntryV1) -> float:
     return len(query_tokens & entry_tokens) / len(query_tokens | entry_tokens)
 
 
+def _trusted_generated_console_script_path(name: str, path: Path) -> bool:
+    """Recognize pip's generated wrapper only when it stays in this prefix's bin."""
+    parts = tuple(part for part in name.split("/") if part)
+    if len(parts) < 3 or parts[-2] != "bin" or any(part != ".." for part in parts[:-2]):
+        return False
+    try:
+        prefix_bin = (Path(sys.prefix) / "bin").resolve()
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved.parent == prefix_bin and resolved.is_file() and not path.is_symlink()
+
+
 def _installed_letta_content_digest(distribution) -> tuple[str, int]:
-    """Hash the installed distribution without following links or exposing content."""
+    """Hash installed package content, excluding explicit generated/cache metadata."""
     files = distribution.files
     if files is None:
         raise LettaDependencyUnavailable("letta_installed_manifest_missing")
@@ -402,11 +415,14 @@ def _installed_letta_content_digest(distribution) -> tuple[str, int]:
     for item in files:
         name = str(item).replace(chr(92), "/")
         parts = Path(name).parts
+        path = Path(distribution.locate_file(item))
         if name.startswith("/") or ".." in parts:
-            raise LettaDependencyUnavailable("letta_installed_manifest_invalid")
+            if not _trusted_generated_console_script_path(name, path):
+                raise LettaDependencyUnavailable("letta_installed_manifest_invalid")
+            # pip-generated console wrappers are environment metadata, not package content.
+            continue
         if name.endswith(excluded_suffixes) or "/__pycache__/" in f"/{name}/" or name.startswith("__pycache__/"):
             continue
-        path = Path(distribution.locate_file(item))
         if path.is_symlink() or not path.is_file():
             raise LettaDependencyUnavailable("letta_installed_content_unavailable")
         rows.append((name, path.read_bytes()))

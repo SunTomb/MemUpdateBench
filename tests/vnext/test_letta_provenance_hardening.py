@@ -60,11 +60,60 @@ def test_installed_content_digest_rejects_symlink(tmp_path: Path) -> None:
         _installed_letta_content_digest(distribution)
 
 
+def test_installed_content_digest_excludes_trusted_external_console_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prefix = tmp_path / "prefix"
+    package_root = prefix / "lib" / "python" / "site-packages"
+    package_root.mkdir(parents=True)
+    package = package_root / "letta"
+    package.mkdir()
+    (package / "__init__.py").write_bytes(b"stable")
+    script = prefix / "bin" / "letta"
+    script.parent.mkdir()
+    script.write_bytes(b"generated wrapper")
+    from mub.vnext.external.workers import letta_worker
+
+    monkeypatch.setattr(letta_worker.sys, "prefix", str(prefix))
+    distribution = SimpleNamespace(
+        files=(Path("letta/__init__.py"), Path("../../../bin/letta")),
+        locate_file=lambda value: package_root / value,
+    )
+    digest, count = _installed_letta_content_digest(distribution)
+    assert digest
+    assert count == 1
+    script.write_bytes(b"regenerated wrapper")
+    unchanged, unchanged_count = _installed_letta_content_digest(distribution)
+    assert unchanged_count == count
+    assert unchanged == digest
+
+
+def test_installed_content_digest_rejects_untrusted_traversal(tmp_path: Path) -> None:
+    root = tmp_path / "site-packages"
+    package = root / "letta"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_bytes(b"stable")
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"secret")
+    distribution = SimpleNamespace(
+        files=(Path("../../outside"),),
+        locate_file=lambda value: root / value,
+    )
+    with pytest.raises(Exception, match="letta_installed_manifest_invalid"):
+        _installed_letta_content_digest(distribution)
+
+
 def test_source_binding_is_explicitly_verified_or_blocked(tmp_path: Path) -> None:
     distribution = _distribution(tmp_path, commit="1131535716e8a31c9a437f8695e25ac98f203a24")
     assert verify_letta_source_binding(distribution)
     unbound = _distribution(tmp_path / "other")
     assert not verify_letta_source_binding(unbound)
+
+
+def test_source_binding_rejects_malformed_direct_url(tmp_path: Path) -> None:
+    distribution = _distribution(tmp_path)
+    distribution.read_text = lambda _: "{not-json"
+    assert not verify_letta_source_binding(distribution)
 
 
 def test_inspection_distinguishes_version_and_license(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
