@@ -3738,3 +3738,44 @@ results/vnext/post_core_langmem_family_a_canary_20260826/canary_receipt.json
 ```
 
 This is a genuine external-system result: LangMem's native profile store passes explicit CRUD admission but cannot consume the benchmark's natural update surface without an extraction/enrichment model. A manager-quality LangMem row requires a separately qualified LLM extraction configuration; the direct profile result must not be reported as accuracy zero or silently repaired with normalized gold-derived actions.
+
+## LangMem 0.0.30 + Qwen3.5 extraction Family-A canary (2026-08-27)
+
+The direct no-LLM LangMem profile configuration could not ingest natural benchmark `raw_text`, so a separate manager-quality configuration was qualified with Qwen3.5 as a visible-event CRUD extractor. The extractor sees only the raw event and the single allowed profile attribute; it returns strict JSON with `operation` and scalar `value`. The controller binds the one admitted object ID. LangMem remains responsible for native create/update/noop/delete, state export and search. Empty-store UPDATE is reconciled to CREATE as part of the explicitly versioned manager configuration.
+
+A four-step admission sequence passed:
+
+```text
+Alice moved to Paris.        -> ADD scalar "Paris"
+Alice now lives in Lyon.     -> UPDATE scalar "Lyon"
+No memory object changes.    -> NOOP, value remains "Lyon"
+Delete Alice city.           -> DELETE, store empty
+```
+
+The 32-task Family-A canary ran on Song-1-Wu GPU3 using the authenticated Qwen3.5 snapshot. Eight multi-object tasks remained explicit `NOT_SUPPORTED` under profile-single-record scope. All 24 supported single-object tasks completed successfully.
+
+```text
+requested tasks: 32
+supported tasks: 24
+NOT_SUPPORTED: 8
+PASS: 24
+FAIL: 0
+state accuracy: 1.000
+gold retrieval rate k16: 1.000
+average final memory size: 1.000
+provider/API calls: 0
+retries: 0
+```
+
+Evidence:
+
+```text
+results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/rows.jsonl
+  SHA-256 7e266b6926954c9ce9b6c537a3ee70093bce4ae8bef673ed4669b6152ceb3b67
+results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/canary_receipt.json
+  payload SHA-256 a582c0e42e73a3d83d4a5e44279dd3651aba6a5c3b086650d78e24a2c6dbd4a5
+```
+
+Two earlier execution roots are superseded diagnostics: Tang-1 lacked sufficient free memory at model load, and Song-1 initially exposed an incompatible optional sklearn/pyarrow import from the shared environment. Both stopped before task extraction. The final Song-1 runtime used a source-bound optional sklearn stub only to prevent importing the unused incompatible pyarrow path; no sklearn functionality was invoked.
+
+This is the first genuine external manager-quality state/retrieval row. Prompted answering and the complete 80-task Family-A matrix remain separate later gates. Unsupported multi-object work is not pooled as zero.
