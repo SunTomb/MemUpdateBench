@@ -217,7 +217,7 @@ paper/p80_canonical_main_number_ledger.md
 
 **Evidence:**
 
-- LangMem 0.0.30 direct profile admission passes explicit native CRUD, but admission is profile/single-record capability evidence rather than benchmark accuracy.
+- LangMem 0.0.30 direct profile admission passes the bounded profile protocol through the LangGraph-store/custom-adapter path; native LangMem CRUD/retrieval APIs are not invoked, so this is profile capability evidence rather than benchmark accuracy.
 - The no-LLM natural raw-text canary requests 32 tasks: 24 single-object tasks fail as `VISIBLE_SURFACE_UNSUPPORTED`, eight multi-object tasks are `NOT_SUPPORTED`; state/retrieval metrics are typed null, not zero.
 - LangMem+Qwen extraction canary v3 supports 24/32 tasks, with eight multi-object tasks unsupported; all 24 supported tasks pass, state accuracy and k=16 gold retrieval are 1.000.
 - The full Family-A result requests 80 tasks, supports 52 (65%), leaves 28 multi-object tasks `NOT_SUPPORTED`, and passes all 52 supported tasks with state accuracy 1.000, k=16 gold retrieval 1.000, average final memory size 1.000, and prompted EM 1.000.
@@ -250,10 +250,10 @@ results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.js
 **Artifacts and hashes:**
 
 ```text
-results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/preflight.json
-  d92006e22fb08c19584fde37cc675321cf1ff6ae0d88462ee46f07bb13965170
-results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v3/admission_receipt.json
-  851be3e0d5f2d5283e8477e89691aeb57fcc7a35b30964e3defebf5a164f0f87
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/preflight.json
+  89cc8ce890929a3b3710f50b1238b40865676288fdd3aff1257a896724778fbf
+results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/admission_receipt.json
+  fbf9f7cdf2e80549f93f519a360beda3a076aab0ee54fcbd724f678aef935a9e
 ```
 
 **Caveat:** The protocol fake must not be described as Letta runtime evidence; no accuracy row exists and blocked/null is not zero.
@@ -273,3 +273,8 @@ paper/p80_qwen35_full_matrix_note.md
 ```
 
 **Caveat:** the smoke contains zero canary and zero benchmark generations, so it is operational qualification rather than scientific evidence. Route success does not authenticate mutable upstream identities: GPT-5.5 and Grok-4.5 retain their identity caveats; document-verified Claude identities are not promoted by a partial or failed route result.
+
+
+## Corrected external-system evidence boundary
+
+The LangMem-labeled result uses LangGraph `InMemoryStore` and custom adapter semantics; the installed LangMem package is identity-gated but its native runtime APIs are not invoked for CRUD/retrieval. Qwen extraction is target-conditioned (admitted attribute supplied; sole object ID controller-bound) and empty-store UPDATE is reconciled to CREATE. Report this as an external LangGraph-store/custom-adapter pipeline, not native LangMem or isolated storage-policy evidence. The no-LLM canary has 0/24 raw-text ingests and 8 explicit multi-object unsupported rows; per-row false flags are operational failures, while aggregate metrics are null. The Qwen-assisted full Family-A row has 52/80 supported tasks (65%), 28 unsupported, and supported state/retrieval/prompt EM 1.0. Closure hashes bind task-view and Qwen snapshot/runtime: canary `18d2a2816694d8c0749b5244b4f3a3d6b7413b7bdc75df9e86f7a3eb5506b6b7`; full `159bb5c36f516c5e3a5f030faf4c88bde72af5c1355a930ff5f0c819c8ee8383`. Letta remains blocked with no accuracy row.

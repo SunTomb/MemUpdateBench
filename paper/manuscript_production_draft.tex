@@ -171,7 +171,7 @@ The \texttt{slot\_direct} metric is oracle-like and should not be interpreted as
 
 The current main result stops at \(k=16\) because \(k=16\) already separates oracle recoverability from slot-conditioned answer robustness decisively. We do not add \(k=32\) by default; a higher-frequency stress point should be added only if figure design, advisor feedback, or reviewer concerns require a longer tail.
 
-The current comparison does not include a fair external SDK leaderboard row for systems such as Mem0, Letta, MemGPT, or original Memory-R1 \citep{mem0,letta,memgpt,memoryr1}. Instead, we include a transparent extract-then-store diagnostic pipeline with inspectable records: append storage reproduces stale collapse, while slot overwrite removes stale same-slot burden and reaches high slot-prompt EM. This supports diagnostic utility but should not be overclaimed as an ecosystem benchmark. The Mem0 probe shows that a real SDK can be run with inspectable memory state, but the completed off-the-shelf row is only a qualitative dev20 probe. A later text-backend attempt found local Qwen2.5-7B-Instruct and Llama3.1-8B-Instruct weights and fixed the MiniLM embedding device issue, but Mem0's structured extraction parser repeatedly rejected the lightweight server responses before dev3 completed. The repository also contains only a project-local Memory-R1-style approximation, not the original Memory-R1 code/checkpoint.
+The current comparison does not include a fair external SDK leaderboard row for systems such as Mem0, Letta, MemGPT, or original Memory-R1 \citep{mem0,letta,memgpt,memoryr1}. We do, however, include a bounded external LangGraph \texttt{InMemoryStore} plus custom MemUpdateBench adapter pipeline whose LangMem package dependency is identity-checked but whose native LangMem CRUD/retrieval APIs are not invoked. With target-conditioned Qwen extraction and answering, this pipeline supports 52/80 Family-A tasks; the remaining 28 multi-object tasks are explicitly unsupported. This is external-system coverage and supported-scope evidence, not native LangMem or isolated storage-policy evidence, and it does not replace an ecosystem benchmark. Letta remains fail-closed blocked because its installed content is not bound to the pinned source commit and its localhost server requires an unavailable or unauthorized PostgreSQL runtime. The Mem0 probe likewise remains a qualitative capability/admission result rather than a fair accuracy row.
 
 We also do not start repair training in this paper phase. The present contribution is the benchmark, diagnostic decomposition, and manuscript-ready evidence chain rather than a repaired method result. Long25 should therefore be read as a learned compact manager checkpoint, not as evidence that repair training has solved repeated same-slot updates.
 
@@ -191,6 +191,8 @@ The source-of-truth chain for the current manuscript is:
 \begin{tabular}{l}
 \texttt{results/*/evomemory\_results.json} \\
 \(\rightarrow\) \texttt{results/p80\_evidence\_manifest/evidence\_manifest.\{json,csv,md\}} \\
+\(\rightarrow\) \texttt{results/post\_core\_qwen35\_full\_matrix\_analysis/analysis.json} \\
+\(\rightarrow\) \texttt{results/vnext/post\_core\_langmem\_*/} \\
 \(\rightarrow\) \texttt{paper/p80\_canonical\_main\_number\_ledger.md} \\
 \(\rightarrow\) \texttt{paper/p80\_claim\_evidence\_matrix.md} \\
 \(\rightarrow\) \texttt{paper/p80\_paper\_tables.md} and \texttt{paper/figures/p80\_figure\_manifest.json}
