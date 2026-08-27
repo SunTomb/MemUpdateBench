@@ -31,6 +31,20 @@ from mub.vnext.external.providers.langmem_adapter import (
     LangMemAdapterError,
     LangMemExternalAdapterV3,
 )
+from mub.vnext.external.providers.letta import (
+    LETTA_PACKAGE_VERSION,
+    LettaAdapterConfigurationV1,
+    LettaPackageProvenanceV1,
+    build_letta_adapter_configuration,
+    compute_letta_configuration_hash,
+    fixed_letta_package_provenance,
+    validate_letta_package_provenance,
+)
+from mub.vnext.external.providers.letta_adapter import (
+    LETTA_ADAPTER_VERSION,
+    LettaAdapterError,
+    LettaExternalAdapterV3,
+)
 
 __all__ = [
     "MEM0_PACKAGE_VERSION",
@@ -58,4 +72,14 @@ __all__ = [
     "compute_langmem_configuration_hash",
     "fixed_langmem_package_provenance",
     "validate_langmem_package_provenance",
+    "LETTA_PACKAGE_VERSION",
+    "LETTA_ADAPTER_VERSION",
+    "LettaAdapterError",
+    "LettaExternalAdapterV3",
+    "LettaAdapterConfigurationV1",
+    "LettaPackageProvenanceV1",
+    "build_letta_adapter_configuration",
+    "compute_letta_configuration_hash",
+    "fixed_letta_package_provenance",
+    "validate_letta_package_provenance",
 ]
