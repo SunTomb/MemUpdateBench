@@ -5,6 +5,7 @@ from collections.abc import Mapping
 import hashlib
 import importlib.metadata
 import json
+import os
 import re
 from pathlib import Path
 import sys
@@ -521,6 +522,18 @@ def build_official_letta_backend(
     if inspection["identity_verified"] is not True:
         raise LettaDependencyUnavailable(str(inspection["blocker"]))
     factory = _unverified_letta_native_client_factory if client_factory is None else client_factory
+    if client_factory is None and os.environ.get("LETTA_NATIVE_API_BASE_URL"):
+        from mub.vnext.external.workers.letta_rest import build_rest_letta_block_client
+
+        def factory(config: LettaAdapterConfigurationV1) -> LettaBlockClientV1:
+            try:
+                return build_rest_letta_block_client(config)
+            except Exception as exc:
+                code = str(exc)
+                if re.fullmatch(r"[a-z0-9_]+", code):
+                    raise LettaDependencyUnavailable(code) from None
+                raise LettaDependencyUnavailable("letta_native_client_unavailable") from None
+
     if not callable(factory):
         raise LettaDependencyUnavailable("letta_native_client_factory_invalid")
     try:
