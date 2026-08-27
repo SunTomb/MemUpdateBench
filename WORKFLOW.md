@@ -3794,3 +3794,32 @@ runtime/accuracy/prompted-answer evidence: NOT_RUN
 ```
 
 The next valid step is an isolated Python 3.11–3.13 Letta installation and authenticated source/content check, followed by a real CPU-only direct-block client bootstrap. Until then Letta must not appear as an admitted capability or accuracy row.
+
+## LangMem 0.0.30 + Qwen3.5 full Family-A supported matrix (2026-08-27)
+
+The manager-quality LangMem configuration was extended from the 32-task canary to the complete authenticated 80-task Family-A view. Qwen3.5 performs visible raw-event CRUD extraction and the fixed prompted-answer layer; LangMem performs native profile create/update/noop/delete, state export and deterministic search. The controller binds the single admitted object ID and requests a scalar attribute value, never compiled `normalized_text` or gold actions.
+
+```text
+requested tasks: 80
+supported single-object tasks: 52
+NOT_SUPPORTED multi-object tasks: 28
+PASS on supported tasks: 52/52
+state accuracy: 1.000
+k16 gold retrieval rate: 1.000
+average final memory size: 1.000
+prompted-answer EM: 1.000
+provider/API calls: 0
+retries: 0
+```
+
+Evidence:
+
+```text
+results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/rows.jsonl
+  SHA-256 0560fd3915cce125d0039d40a87898369eb90f15a10cd6abfb91e3027108ef07
+results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.json
+  file SHA-256 c7e2e89e5cb518b7d101cf5146be6c77f898cd7581b07d888960a49ad75da59b
+  payload SHA-256 5f4551783c816f4325463903803c7f1116d400d792ab02e7160667ba4b2953ea
+```
+
+This establishes a genuine external manager-quality row within LangMem's admitted single-record profile envelope. Coverage is 65% of the Family-A view; the remaining 35% is explicit multi-object unsupported work and is not scored as zero. The result still shares Qwen3.5 for extraction and answering, so manager comparison must separate state/retrieval behavior from answer-model effects.
