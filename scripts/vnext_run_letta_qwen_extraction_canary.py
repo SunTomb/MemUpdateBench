@@ -175,6 +175,8 @@ _BINDING_AUDIT_FIELDS = frozenset({
     "removed_logical_bytes",
 })
 _BINDING_ENTRY_FIELDS = frozenset({"path", "sha256", "bytes"})
+_BINDING_ENTRY_AUDIT_FIELDS = frozenset({"source_digest", "source_digest_kind"})
+_SOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -220,6 +222,24 @@ def _validate_binding_audit_fields(binding: dict) -> None:
             _binding_audit_path(root, "remaining_stage_roots")
     if "removed_duplicate_path" in binding:
         _binding_audit_path(binding["removed_duplicate_path"], "removed_duplicate_path", allow_none=True)
+
+
+def _validate_binding_entry_fields(entry: dict) -> None:
+    entry_fields = set(entry)
+    allowed_fields = _BINDING_ENTRY_FIELDS | _BINDING_ENTRY_AUDIT_FIELDS
+    if not _BINDING_ENTRY_FIELDS <= entry_fields or entry_fields - allowed_fields:
+        raise ValueError("snapshot binding entry fields mismatch")
+    has_source_digest = "source_digest" in entry
+    has_source_kind = "source_digest_kind" in entry
+    if has_source_digest != has_source_kind:
+        raise ValueError("snapshot binding source digest fields must be provided together")
+    if has_source_digest:
+        source_digest = entry["source_digest"]
+        if type(source_digest) is not str or _SOURCE_DIGEST_PATTERN.fullmatch(source_digest) is None:
+            raise ValueError("snapshot binding source_digest must be lowercase 40-64 hex")
+        source_digest_kind = entry["source_digest_kind"]
+        if type(source_digest_kind) is not str or source_digest_kind not in {"git", "sha256"}:
+            raise ValueError("snapshot binding source_digest_kind is invalid")
 
 
 def _binding_snapshot_root(snapshot: Path) -> Path:
@@ -318,8 +338,9 @@ def validate_snapshot_binding(
     snapshot_root = _binding_snapshot_root(snapshot)
     declared: dict[str, dict[str, object]] = {}
     for entry in entries:
-        if type(entry) is not dict or set(entry) != _BINDING_ENTRY_FIELDS:
+        if type(entry) is not dict:
             raise ValueError("snapshot binding entry fields mismatch")
+        _validate_binding_entry_fields(entry)
         entry_path = entry["path"]
         candidate = _binding_entry_path(snapshot_root, entry_path)
         digest = _binding_sha256(entry["sha256"], "entry sha256")

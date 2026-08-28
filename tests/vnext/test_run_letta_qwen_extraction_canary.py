@@ -227,6 +227,53 @@ def test_snapshot_binding_rejects_audit_metadata_path_traversal(tmp_path: Path, 
         module.validate_snapshot_binding(snapshot, binding)
 
 
+def test_snapshot_binding_accepts_authoritative_entry_source_metadata(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["entries"][0].update(
+        {
+            "source_digest": "a" * 40,
+            "source_digest_kind": "git",
+        }
+    )
+    binding["receipt_payload_sha256"] = module.sha256_bytes(
+        module.canonical_json_bytes(
+            {key: value for key, value in binding.items() if key != "receipt_payload_sha256"}
+        )
+    )
+
+    assert module.validate_snapshot_binding(snapshot, binding)["file_count"] == 1
+
+
+def test_snapshot_binding_rejects_invalid_entry_source_metadata(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["entries"][0].update(
+        {
+            "source_digest": "a" * 40,
+            "source_digest_kind": [],
+        }
+    )
+    binding["receipt_payload_sha256"] = module.sha256_bytes(
+        module.canonical_json_bytes(
+            {key: value for key, value in binding.items() if key != "receipt_payload_sha256"}
+        )
+    )
+
+    with pytest.raises(ValueError, match="source_digest_kind"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+
 def test_snapshot_binding_receipt_validates_authoritative_entries_shape(tmp_path: Path, monkeypatch) -> None:
     import scripts.vnext_run_letta_qwen_extraction_canary as module
 
