@@ -152,48 +152,180 @@ def stable_tree_sha256(root: Path) -> str:
     return snapshot_tree_sha256_v3(snapshot_path=root, model_id=MODEL_ID, revision=MODEL_REVISION)
 
 
-def validate_snapshot_binding(snapshot: Path, binding: dict) -> dict:
-    if not isinstance(binding, dict) or binding.get("schema_version") != "memupdatebench.post-core.shared-snapshot-binding.v1":
-        raise ValueError("snapshot binding schema mismatch")
-    if binding.get("repository") != MODEL_ID or binding.get("revision") != MODEL_REVISION or binding.get("snapshot_path") != MODEL_SNAPSHOT_PATH:
-        raise ValueError("snapshot binding identity mismatch")
-    files = binding.get("files")
-    if not isinstance(files, list) or binding.get("tree_sha256") != MODEL_TREE_SHA256 or type(binding.get("file_count")) is not int or type(binding.get("total_bytes")) is not int:
-        raise ValueError("snapshot binding metadata mismatch")
-    if "payload_sha256" in binding:
-        payload = dict(binding); payload.pop("payload_sha256")
-        if binding["payload_sha256"] != sha256_bytes(canonical_json_bytes(payload)):
-            raise ValueError("snapshot binding payload hash mismatch")
-    if "binding_sha256" in binding:
-        payload = dict(binding); payload.pop("binding_sha256")
-        if binding["binding_sha256"] != sha256_bytes(canonical_json_bytes(payload)):
-            raise ValueError("snapshot binding self hash mismatch")
-    assert_no_reparse_components(snapshot)
-    if not snapshot.is_dir() or _is_reparse(snapshot):
+_BINDING_FIELDS = frozenset({
+    "schema_version",
+    "repo",
+    "revision",
+    "shared_snapshot_path",
+    "tree_sha256",
+    "file_count",
+    "total_bytes",
+    "entries",
+    "receipt_payload_sha256",
+})
+_BINDING_ENTRY_FIELDS = frozenset({"path", "sha256", "bytes"})
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _binding_sha256(value: object, label: str) -> str:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"snapshot binding {label} must be lowercase SHA-256")
+    return value
+
+
+def _binding_snapshot_root(snapshot: Path) -> Path:
+    selected = Path(snapshot)
+    assert_no_reparse_components(selected)
+    if not selected.is_absolute():
+        selected = Path.cwd() / selected
+    if not selected.is_dir() or _is_reparse(selected):
         raise ValueError("snapshot binding path is unsafe")
-    observed = {}
-    for item in snapshot.rglob("*"):
+    resolved = selected.resolve(strict=True)
+    assert_no_reparse_components(resolved)
+    for item in resolved.rglob("*"):
         if _is_reparse(item):
             raise ValueError("snapshot binding contains symlink or reparse point")
-        if item.is_file():
-            rel = item.relative_to(snapshot).as_posix()
-            observed[rel] = {"sha256": sha256_bytes(item.read_bytes()), "size_bytes": item.stat().st_size}
-    declared = {item.get("path"): {"sha256": item.get("sha256"), "size_bytes": item.get("size_bytes")} for item in files if isinstance(item, dict)}
-    if len(declared) != len(files):
-        raise ValueError("snapshot binding file list has duplicates or malformed entries")
-    if observed != declared or len(observed) != binding["file_count"] or sum(item["size_bytes"] for item in observed.values()) != binding["total_bytes"]:
-        raise ValueError("snapshot binding file list mismatch")
-    return {"repository": MODEL_ID, "revision": MODEL_REVISION, "snapshot_path": binding["snapshot_path"], "tree_sha256": binding["tree_sha256"], "file_count": binding["file_count"], "total_bytes": binding["total_bytes"]}
+        if not item.is_dir() and not item.is_file():
+            raise ValueError("snapshot binding contains a non-file entry")
+    return resolved
 
 
-def verify_model_provenance(snapshot: Path, runtime_receipt: Path, binding: dict | None = None) -> dict:
-    if binding is not None:
-        validate_snapshot_binding(snapshot, binding)
-    if _is_reparse(snapshot):
-        raise ValueError("model snapshot must not be symlink or reparse")
-    tree_hash = stable_tree_sha256(snapshot)
+def _binding_entry_path(snapshot: Path, raw_path: object) -> Path:
+    if type(raw_path) is not str or not raw_path or "\\" in raw_path or any(ord(char) == 0 for char in raw_path):
+        raise ValueError("snapshot binding entry path is invalid")
+    parts = raw_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or raw_path.startswith("/"):
+        raise ValueError("snapshot binding entry path is not a normalized relative path")
+    candidate = snapshot.joinpath(*parts)
+    try:
+        candidate.relative_to(snapshot)
+    except ValueError as exc:
+        raise ValueError("snapshot binding entry path escapes snapshot") from exc
+    return candidate
+
+
+def _binding_receipt_bytes(
+    binding: dict,
+    *,
+    binding_raw: bytes | None,
+    binding_path: Path | None,
+) -> tuple[bytes, Path | None]:
+    if binding_raw is not None and type(binding_raw) is not bytes:
+        raise TypeError("snapshot binding receipt bytes must be bytes")
+    receipt_path = None
+    if binding_path is not None:
+        receipt_path = Path(binding_path)
+        assert_no_reparse_components(receipt_path)
+        if not receipt_path.is_absolute():
+            receipt_path = Path.cwd() / receipt_path
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            raise ValueError("snapshot binding receipt must be a real regular file")
+        receipt_path = receipt_path.resolve(strict=True)
+        file_raw = receipt_path.read_bytes()
+        if binding_raw is None:
+            binding_raw = file_raw
+        elif file_raw != binding_raw:
+            raise ValueError("snapshot binding receipt bytes changed while being read")
+    if binding_raw is None:
+        binding_raw = canonical_json_bytes(binding)
+    if canonical_json_bytes(binding) != binding_raw:
+        raise ValueError("snapshot binding receipt is not canonical")
+    return binding_raw, receipt_path
+
+
+def validate_snapshot_binding(
+    snapshot: Path,
+    binding: dict,
+    *,
+    binding_raw: bytes | None = None,
+    binding_path: Path | None = None,
+) -> dict:
+    if type(binding) is not dict or binding.get("schema_version") != "memupdatebench.post-core.shared-snapshot-binding.v1":
+        raise ValueError("snapshot binding schema mismatch")
+    if set(binding) != _BINDING_FIELDS:
+        raise ValueError("snapshot binding fields mismatch")
+    if binding["repo"] != MODEL_ID or binding["revision"] != MODEL_REVISION or binding["shared_snapshot_path"] != MODEL_SNAPSHOT_PATH:
+        raise ValueError("snapshot binding identity mismatch")
+    if type(binding["shared_snapshot_path"]) is not str or not binding["shared_snapshot_path"]:
+        raise ValueError("snapshot binding shared path is invalid")
+    tree_hash = _binding_sha256(binding["tree_sha256"], "tree_sha256")
     if tree_hash != MODEL_TREE_SHA256:
-        raise ValueError("model snapshot tree hash mismatch")
+        raise ValueError("snapshot binding tree identity mismatch")
+    if type(binding["file_count"]) is not int or binding["file_count"] < 0 or type(binding["total_bytes"]) is not int or binding["total_bytes"] < 0:
+        raise ValueError("snapshot binding aggregate metadata is invalid")
+    receipt_payload_sha256 = _binding_sha256(binding["receipt_payload_sha256"], "receipt_payload_sha256")
+    payload = dict(binding)
+    payload.pop("receipt_payload_sha256")
+    if receipt_payload_sha256 != sha256_bytes(canonical_json_bytes(payload)):
+        raise ValueError("snapshot binding receipt payload hash mismatch")
+    receipt_raw, receipt_path = _binding_receipt_bytes(binding, binding_raw=binding_raw, binding_path=binding_path)
+
+    entries = binding["entries"]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("snapshot binding entries must be a nonempty list")
+    snapshot_root = _binding_snapshot_root(snapshot)
+    declared: dict[str, dict[str, object]] = {}
+    for entry in entries:
+        if type(entry) is not dict or set(entry) != _BINDING_ENTRY_FIELDS:
+            raise ValueError("snapshot binding entry fields mismatch")
+        entry_path = entry["path"]
+        candidate = _binding_entry_path(snapshot_root, entry_path)
+        digest = _binding_sha256(entry["sha256"], "entry sha256")
+        size_bytes = entry["bytes"]
+        if type(size_bytes) is not int or size_bytes < 0:
+            raise ValueError("snapshot binding entry bytes must be a nonnegative int")
+        if entry_path in declared:
+            raise ValueError("snapshot binding entries contain duplicate paths")
+        if _is_reparse(candidate) or not candidate.is_file():
+            raise ValueError("snapshot binding entry path is not a regular file")
+        declared[entry_path] = {"sha256": digest, "bytes": size_bytes}
+
+    observed: dict[str, dict[str, object]] = {}
+    for item in snapshot_root.rglob("*"):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(snapshot_root).as_posix()
+        observed[rel] = {"sha256": sha256_bytes(item.read_bytes()), "bytes": item.stat().st_size}
+    if observed != declared:
+        raise ValueError("snapshot binding entries do not exactly match snapshot files")
+    if len(entries) != binding["file_count"] or len(observed) != binding["file_count"]:
+        raise ValueError("snapshot binding file count mismatch")
+    if sum(item["bytes"] for item in observed.values()) != binding["total_bytes"]:
+        raise ValueError("snapshot binding total bytes mismatch")
+    return {
+        "path": str(receipt_path) if receipt_path is not None else None,
+        "receipt_path": str(receipt_path) if receipt_path is not None else None,
+        "receipt_file_sha256": sha256_bytes(receipt_raw),
+        "receipt_payload_sha256": receipt_payload_sha256,
+        "snapshot_binding_receipt_sha256": sha256_bytes(receipt_raw),
+        "snapshot_binding_payload_sha256": receipt_payload_sha256,
+        "repo": binding["repo"],
+        "revision": binding["revision"],
+        "shared_snapshot_path": binding["shared_snapshot_path"],
+        "tree_sha256": tree_hash,
+        "file_count": binding["file_count"],
+        "total_bytes": binding["total_bytes"],
+    }
+
+
+def verify_model_provenance(
+    snapshot: Path,
+    runtime_receipt: Path,
+    binding: dict | None = None,
+    *,
+    binding_raw: bytes | None = None,
+    binding_path: Path | None = None,
+) -> dict:
+    if binding is None:
+        raise ValueError("authoritative snapshot binding is required")
+    binding_provenance = validate_snapshot_binding(
+        snapshot,
+        binding,
+        binding_raw=binding_raw,
+        binding_path=binding_path,
+    )
+    snapshot_root = _binding_snapshot_root(snapshot)
+    tree_hash = binding_provenance["tree_sha256"]
     runtime_receipt = runtime_receipt.resolve(strict=True)
     if _is_reparse(runtime_receipt) or not runtime_receipt.is_file():
         raise ValueError("runtime receipt must be a regular non-symlink file")
@@ -210,7 +342,21 @@ def verify_model_provenance(snapshot: Path, runtime_receipt: Path, binding: dict
         raise ValueError("runtime receipt affirmative fields mismatch")
     if type(value["gpu_index"]) is not int or value["gpu_index"] < 0 or type(value["node"]) is not str or not value["node"]:
         raise ValueError("runtime receipt execution identity mismatch")
-    return {"snapshot": str(snapshot), "tree_sha256": tree_hash, "runtime_receipt_sha256": sha256_bytes(raw), "runtime_identity": value["schema_version"], "runtime_receipt": value}
+    return {
+        "snapshot": str(snapshot_root),
+        "tree_sha256": tree_hash,
+        "snapshot_binding": binding_provenance,
+        "snapshot_binding_receipt_sha256": binding_provenance["snapshot_binding_receipt_sha256"],
+        "snapshot_binding_payload_sha256": binding_provenance["snapshot_binding_payload_sha256"],
+        "repo": binding_provenance["repo"],
+        "revision": binding_provenance["revision"],
+        "shared_snapshot_path": binding_provenance["shared_snapshot_path"],
+        "file_count": binding_provenance["file_count"],
+        "total_bytes": binding_provenance["total_bytes"],
+        "runtime_receipt_sha256": sha256_bytes(raw),
+        "runtime_identity": value["schema_version"],
+        "runtime_receipt": value,
+    }
 
 
 def validate_extraction(parsed: object) -> dict:
@@ -451,12 +597,18 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
     output = validate_output_root(Path(args.output_root), frozen_roots=(ROOT / "data" / "vnext" / "core", ROOT / "data" / "vnext" / "phase0", ROOT / "configs" / "vnext" / "post_core"))
     if output.exists():
         raise FileExistsError(output)
-    binding_path = Path(args.model_snapshot_binding).resolve(strict=True)
+    binding_path = _require_real_absolute_file(Path(args.model_snapshot_binding), "model snapshot binding receipt")
     binding_raw = binding_path.read_bytes()
     model_binding = json.loads(binding_raw)
     if canonical_json_bytes(model_binding) != binding_raw or scan_for_secrets(model_binding):
         raise ValueError("model snapshot binding must be canonical and secret-free")
-    model_provenance = verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt), model_binding)
+    model_provenance = verify_model_provenance(
+        Path(args.model_snapshot),
+        Path(args.model_runtime_receipt),
+        model_binding,
+        binding_raw=binding_raw,
+        binding_path=binding_path,
+    )
     qualification = validate_qualification_artifacts(Path(args.qualification_root))
     letta_binding = validate_worker_runtime_binding(
         args.letta_python_executable,
@@ -541,7 +693,7 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
     supported = [row for row in rows if row["status"] != "NOT_SUPPORTED"]
     passed = [row for row in supported if row["status"] == "PASS"]
     state_rows = [row for row in passed if row["state_accuracy"] is not None]
-    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_worker_runtime": {**letta_binding, "configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "cwd": letta_binding["project_root"], "environment": {"PYTHONPATH": letta_binding["project_root"], "HF_HUB_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
+    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_worker_runtime": {**letta_binding, "configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "cwd": letta_binding["project_root"], "environment": {"PYTHONPATH": letta_binding["project_root"], "HF_HUB_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "snapshot_binding": model_provenance["snapshot_binding"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
     if scan_for_secrets(summary):
         raise ValueError("canary receipt failed secret scan")
     summary["payload_sha256"] = sha256_bytes(canonical_json_bytes(summary))

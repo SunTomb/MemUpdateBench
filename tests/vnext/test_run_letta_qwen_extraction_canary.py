@@ -17,6 +17,22 @@ from scripts.vnext_run_letta_qwen_extraction_canary import (
 )
 
 
+def _binding_for_snapshot(module, snapshot: Path, *, tree_hash: str = "e" * 64) -> dict:
+    payload = (snapshot / "config.json").read_bytes()
+    binding = {
+        "schema_version": "memupdatebench.post-core.shared-snapshot-binding.v1",
+        "repo": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "shared_snapshot_path": "/NAS/HuggingFaceModels/Qwen3.5-9B",
+        "tree_sha256": tree_hash,
+        "file_count": 1,
+        "total_bytes": len(payload),
+        "entries": [{"path": "config.json", "sha256": module.sha256_bytes(payload), "bytes": len(payload)}],
+    }
+    binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes(binding))
+    return binding
+
+
 def test_extraction_prompt_contains_only_visible_text_and_admitted_attribute() -> None:
     prompt = build_extraction_prompt("Alice lives in Paris.", "city")
     assert "Alice lives in Paris." in prompt
@@ -93,24 +109,56 @@ def test_model_snapshot_requires_exact_tree_and_runtime_receipt(tmp_path: Path) 
     (snapshot / "config.json").write_text("{}")
     receipt = tmp_path / "runtime.json"
     receipt.write_bytes(canonical_json_bytes({"model_id": MODEL_ID, "revision": MODEL_REVISION, "tree_sha256": "bad", "runtime_identity": "qwen"}))
-    with pytest.raises(ValueError, match="tree|runtime"):
+    with pytest.raises(ValueError, match="binding"):
         verify_model_provenance(snapshot, receipt)
 
 
 def test_model_runtime_source_receipt_schema_is_accepted(tmp_path: Path, monkeypatch) -> None:
     import scripts.vnext_run_letta_qwen_extraction_canary as module
+
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
-    (snapshot / "config.json").write_text("{}")
+    payload = b"{}"
+    (snapshot / "config.json").write_bytes(payload)
     tree_hash = module.stable_tree_sha256(snapshot)
+    binding = {
+        "schema_version": "memupdatebench.post-core.shared-snapshot-binding.v1",
+        "repo": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "shared_snapshot_path": "/NAS/HuggingFaceModels/Qwen3.5-9B",
+        "tree_sha256": tree_hash,
+        "file_count": 1,
+        "total_bytes": len(payload),
+        "entries": [{"path": "config.json", "sha256": module.sha256_bytes(payload), "bytes": len(payload)}],
+    }
+    binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes(binding))
     receipt_value = {"schema_version":"memupdatebench.post-core.qwen-runtime-source-receipt.v1","load_status":"PASS","generation_status":"PASS","determinism_status":"PASS","unload_status":"PASS","provider_calls":0,"network_calls":0,"benchmark_generations":0,"gpu_index":3,"node":"Tang-1-Wu"}
     receipt = tmp_path / "runtime.json"
     receipt.write_bytes(canonical_json_bytes(receipt_value))
     monkeypatch.setattr(module, "MODEL_TREE_SHA256", tree_hash)
     monkeypatch.setattr(module, "MODEL_RUNTIME_RECEIPT_SHA256", module.sha256_bytes(receipt.read_bytes()))
-    result = module.verify_model_provenance(snapshot, receipt)
+    monkeypatch.setattr(module, "snapshot_tree_sha256_v3", lambda **_: pytest.fail("authoritative binding must supply tree hash"))
+    binding_raw = canonical_json_bytes(binding)
+    binding_receipt = tmp_path / "binding.json"
+    binding_receipt.write_bytes(binding_raw)
+    result = module.verify_model_provenance(
+        snapshot,
+        receipt,
+        binding,
+        binding_raw=binding_raw,
+        binding_path=binding_receipt,
+    )
     assert result["tree_sha256"] == tree_hash
     assert result["runtime_receipt_sha256"] == module.MODEL_RUNTIME_RECEIPT_SHA256
+    assert result["snapshot_binding"]["repo"] == MODEL_ID
+    assert result["snapshot_binding"]["receipt_payload_sha256"] == binding["receipt_payload_sha256"]
+    assert result["snapshot_binding_receipt_sha256"] == module.sha256_bytes(binding_raw)
+    assert result["snapshot_binding_payload_sha256"] == binding["receipt_payload_sha256"]
+    assert result["repo"] == MODEL_ID
+    assert result["revision"] == MODEL_REVISION
+    assert result["shared_snapshot_path"] == "/NAS/HuggingFaceModels/Qwen3.5-9B"
+    assert result["file_count"] == 1
+    assert result["total_bytes"] == len(payload)
 def test_snapshot_hash_delegates_to_canonical_helper(tmp_path: Path, monkeypatch) -> None:
     import scripts.vnext_run_letta_qwen_extraction_canary as module
     snapshot = tmp_path / "snapshot"
@@ -124,20 +172,89 @@ def test_snapshot_hash_delegates_to_canonical_helper(tmp_path: Path, monkeypatch
     assert observed["model_id"] == MODEL_ID and observed["revision"] == MODEL_REVISION
 
 
-def test_snapshot_binding_receipt_validates_authoritative_file_list(tmp_path: Path, monkeypatch) -> None:
+def test_snapshot_binding_receipt_validates_authoritative_entries_shape(tmp_path: Path, monkeypatch) -> None:
     import scripts.vnext_run_letta_qwen_extraction_canary as module
+
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     payload = b"model-bytes"
     (snapshot / "config.json").write_bytes(payload)
     digest = module.sha256_bytes(payload)
-    binding = {"schema_version":"memupdatebench.post-core.shared-snapshot-binding.v1","repository":"Qwen/Qwen3.5-9B","revision":MODEL_REVISION,"snapshot_path":"/approved/Qwen3.5-9B","tree_sha256":"e"*64,"file_count":1,"total_bytes":len(payload),"files":[{"path":"config.json","sha256":digest,"size_bytes":len(payload)}]}
-    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e"*64)
-    monkeypatch.setattr(module, "MODEL_SNAPSHOT_PATH", "/approved/Qwen3.5-9B")
+    binding = {
+        "schema_version": "memupdatebench.post-core.shared-snapshot-binding.v1",
+        "repo": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "shared_snapshot_path": "/NAS/HuggingFaceModels/Qwen3.5-9B",
+        "tree_sha256": "e" * 64,
+        "file_count": 1,
+        "total_bytes": len(payload),
+        "entries": [{"path": "config.json", "sha256": digest, "bytes": len(payload)}],
+    }
+    binding["receipt_payload_sha256"] = module.sha256_bytes(
+        module.canonical_json_bytes(binding)
+    )
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
     assert module.validate_snapshot_binding(snapshot, binding)["file_count"] == 1
 
 
-def test_output_root_rejects_frozen_or_symlink_paths(tmp_path: Path) -> None:
+def test_snapshot_binding_rejects_duplicate_entries_and_extra_snapshot_files(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["entries"].append(dict(binding["entries"][0]))
+    binding["file_count"] = 2
+    binding["total_bytes"] *= 2
+    binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes({key: value for key, value in binding.items() if key != "receipt_payload_sha256"}))
+    with pytest.raises(ValueError, match="duplicate"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+    binding = _binding_for_snapshot(module, snapshot)
+    (snapshot / "extra.json").write_bytes(b"extra")
+    with pytest.raises(ValueError, match="exactly match"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+
+def test_snapshot_binding_rejects_payload_and_entry_shape_tampering(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["receipt_payload_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="payload hash"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["entries"][0]["size_bytes"] = binding["entries"][0]["bytes"]
+    binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes({key: value for key, value in binding.items() if key != "receipt_payload_sha256"}))
+    with pytest.raises(ValueError, match="entry fields"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+
+def test_snapshot_binding_rejects_snapshot_symlink(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    target = tmp_path / "outside.bin"
+    target.write_bytes(b"outside")
+    link = snapshot / "link.bin"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(ValueError, match="symlink|reparse"):
+        module.validate_snapshot_binding(snapshot, _binding_for_snapshot(module, snapshot))
+
+
     from scripts.vnext_run_letta_qwen_extraction_canary import validate_output_root
     frozen = tmp_path / "core"
     frozen.mkdir()
