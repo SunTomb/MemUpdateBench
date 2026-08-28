@@ -3838,3 +3838,76 @@ results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/admissi
 ```
 
 Letta remains `BLOCKED`; its exact blockers are now installed-content/source binding and unavailable or unauthorized PostgreSQL runtime. No runtime lifecycle or accuracy row is claimed.
+
+## Letta 0.16.8 authenticated runtime qualification (2026-08-28)
+
+A new post-Core qualification run closes the two historical v4 blockers without rewriting that earlier evidence. Letta was installed from the pinned official source commit `1131535716e8a31c9a437f8695e25ac98f203a24`; two consecutive no-dependency reinstalls produced the same installed-content SHA-256 `12fd32f25e188754184584c182db6be788403f545c196216956acace93bd0ca9` over 569 authenticated files. The qualification runner and project code were executed from detached, user-owned git clones at project revision `7293f94482aeae89b1966fe24ba741a03308b55a`.
+
+The runtime used a temporary user-owned PostgreSQL 18.6 cluster with pgvector 0.8.6, a dedicated random-password superuser/database, private password-authenticated socket directory, random loopback ports and no shared database state. Alembic migrations ran before Letta startup. Letta 0.16.8 then served native block REST endpoints on loopback; the production JSONL worker authenticated exact package/source/content/configuration identity and completed the 20-trial namespace-reset probe plus add/update/noop/export/retrieve/slot-direct/delete/empty-export lifecycle.
+
+```text
+preflight outcome: pass
+admission outcome: pass
+namespace reset: 20/20 trials passed
+lifecycle: PASS
+stable add/update/delete entry ID: verified
+post-delete export: empty
+post-lifecycle marker count in the dedicated database: 0
+PostgreSQL: 18.6
+pgvector: 0.8.6
+LLM/API/GPU calls: 0/0/0
+cleanup: PASS
+```
+
+Authoritative evidence:
+
+```text
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_preflight.json
+  SHA-256 620a30c8c3fe05788e17aae52e7b015eb8cda0db549d5d9e47092b1d8e436e41
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_admission.json
+  SHA-256 196b5d8bde95a3d35445aea143e4bae0a702de2fd5a7515fec970bf71e5dffc5
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_qualification.json
+  SHA-256 fb3ce1ae6829aeb61353190806360a5aad17c4b4387aeab715248aad49501305
+```
+
+This is authenticated external-system runtime capability and lifecycle evidence, not benchmark accuracy or prompted-answer evidence. The earlier v1/v2 remote roots are retained as blocked diagnostics and are not authoritative. The next gate is a bounded supported-scope canary that keeps natural-language extraction, Letta native block state/retrieval and answer-model behavior as separate evidence layers.
+
+## Letta 0.16.8 + Qwen3.5 bounded extraction canary (2026-08-29)
+
+A source-bound 32-task Family-A canary was run on Song-1-Wu GPU0 using target-conditioned Qwen3.5 extraction, an explicit controller policy and an authenticated Letta 0.16.8 native block runtime. The task-view SHA-256 is `ef352d6eb719389bcab39d4746ad97fe7f1b0489f4fa402f15e039e33c5c2ac6`; the selected scope is eight semantic cores and 32 released tasks. Twenty-four single-object tasks are supported and eight multi-object tasks remain explicit `NOT_SUPPORTED`.
+
+The extraction prompt receives visible raw text plus the admitted attribute only. The controller binds the sole target object ID. Qwen returns operation/value JSON; mutation values must be finite scalars, and noop/delete values must be null. The controller's declared empty-store policy reconciled four extracted UPDATE operations to ADD. This reconciliation is preserved in the event traces and prevents interpreting the result as pure Qwen action accuracy. Letta performed native block create/update/export/retrieval/reset through its authenticated JSONL worker; task namespaces were removed after each terminal row. Prompted answering was not run in this gate.
+
+```text
+requested tasks: 32
+supported single-object tasks: 24
+NOT_SUPPORTED multi-object tasks: 8
+PASS on supported tasks: 24/24
+FAIL on supported tasks: 0
+state accuracy on evaluated supported tasks: 1.000
+k=16 gold retrieval rate: 1.000
+average final memory size: 1.000
+stable native entry ID: 24/24
+empty-store UPDATE-to-ADD reconciliations: 4 events
+provider/API calls: 0/0
+prompted-answer metrics: NOT_RUN / null
+```
+
+Qwen provenance is bound to `Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a`, authenticated shared-snapshot tree `e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db`, shared binding receipt SHA-256 `924cb994248cf56d1d41df0da3bca06ce7abe1184cde5f0af489d4d364a1d9c2`, and runtime receipt SHA-256 `5d06cb1cbacd43beb0b0a2aaafd1bd7a5b75e8f6d283f5dbbd899b8429ff202f`. Letta qualification was regenerated at project revision `ab434fd24718a84241c8af768de84e32c58ee689` with distinct qualification-runner and worker-source hashes, PostgreSQL 18.6, pgvector 0.8.6 and complete cleanup.
+
+Authoritative artifacts:
+
+```text
+results/vnext/post_core_letta_runtime_qualification_20260829_v2/letta_runtime_preflight.json
+  SHA-256 10e0f17047d62653bfff0e7a2c9a7a47624964c90963b1dbbe3ad0b905ec156c
+results/vnext/post_core_letta_runtime_qualification_20260829_v2/letta_runtime_admission.json
+  SHA-256 196b5d8bde95a3d35445aea143e4bae0a702de2fd5a7515fec970bf71e5dffc5
+results/vnext/post_core_letta_runtime_qualification_20260829_v2/letta_runtime_qualification.json
+  SHA-256 34f6de8a3f3a9634c0f8f785ec1393c5c892009eb52da737fccdfb4eec772086
+results/vnext/post_core_letta_qwen_canary_20260829_v1/rows.jsonl
+  SHA-256 95107ccaf39a880fb2d953cdee0cc8cf8969223bdcad952df0645d3d2fba35db
+results/vnext/post_core_letta_qwen_canary_20260829_v1/canary_receipt.json
+  SHA-256 885857451e27682c2e016059ee6380f2074bd0c2f8ec3e1f93cc70597817f164
+```
+
+Evidence boundary: this is a supported-scope joint pipeline result for target-conditioned Qwen extraction + controller reconciliation + Letta native block state/retrieval. It is not Letta-only accuracy, Qwen extraction-action accuracy, prompted-answer evidence or a full external-system leaderboard row. The next valid step is either a repeated deterministic canary or the full 80-task Family-A supported-scope matrix under the same frozen layer definitions.

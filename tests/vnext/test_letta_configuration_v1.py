@@ -33,6 +33,18 @@ def test_letta_configuration_freezes_release_source_and_apache_license() -> None
     assert configuration.credentials_required is False
 
 
+def test_letta_configuration_freezes_installed_content_anchor() -> None:
+    from mub.vnext.external.providers.letta import (
+        LETTA_INSTALLED_CONTENT_FILE_COUNT,
+        LETTA_INSTALLED_CONTENT_SHA256,
+    )
+
+    assert LETTA_INSTALLED_CONTENT_SHA256 == (
+        "12fd32f25e188754184584c182db6be788403f545c196216956acace93bd0ca9"
+    )
+    assert LETTA_INSTALLED_CONTENT_FILE_COUNT == 569
+
+
 def test_letta_configuration_rejects_release_identity_drift() -> None:
     from mub.vnext.external.providers.letta import fixed_letta_package_provenance
 
