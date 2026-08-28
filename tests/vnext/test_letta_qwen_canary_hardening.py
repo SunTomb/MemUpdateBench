@@ -76,3 +76,77 @@ def test_qualification_hashes_are_mandatory(tmp_path):
         (tmp_path/name).write_bytes(canonical_json_bytes(value))
     with pytest.raises(ValueError, match="hash"):
         validate_qualification_artifacts(tmp_path)
+
+
+def test_scope_selection_preserves_canary_and_selects_exact_full_family_a(monkeypatch):
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    from types import SimpleNamespace
+
+    class JsonTask:
+        def __init__(self, core_id, task_id):
+            self.task_id = task_id
+            self.metadata = SimpleNamespace(extra={"semantic_core_id": core_id})
+
+    raw = b"authenticated"
+    monkeypatch.setattr(module, "TASK_SHA256", module.sha256_bytes(raw))
+    tasks = [JsonTask(f"core-{core}", f"task-{core}-{variant}") for core in range(20) for variant in range(4)]
+    monkeypatch.setattr(module, "_parse_authenticated_tasks", lambda _: tasks)
+
+    assert len(module.select_tasks(raw)) == 32
+    full = module.select_tasks(raw, scope="full-family-a80")
+    assert len(full) == 80
+    assert [task.task_id for task in full] == sorted((task.task_id for task in tasks), key=lambda x: x.encode())
+
+
+def test_scope_rejects_wrong_authenticated_cardinality(monkeypatch):
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    raw = b"authenticated"
+    monkeypatch.setattr(module, "TASK_SHA256", module.sha256_bytes(raw))
+    monkeypatch.setattr(module, "_parse_authenticated_tasks", lambda _: [])
+    with pytest.raises(ValueError, match="80"):
+        module.select_tasks(raw, scope="full-family-a80")
+
+
+def test_full_scope_summary_has_null_prompted_metrics_and_operation_counts():
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    rows = [
+        {"status": "PASS", "state_accuracy": True, "gold_retrieved_k16": True, "final_memory_size": 1,
+         "reconciliation_count": 1, "extractions": [{"effective_operation": "add", "operation": "update"}]},
+        {"status": "NOT_SUPPORTED", "state_accuracy": None, "gold_retrieved_k16": None, "final_memory_size": None,
+         "reconciliation_count": 0, "extractions": []},
+        {"status": "FAIL", "state_accuracy": None, "gold_retrieved_k16": None, "final_memory_size": None,
+         "reconciliation_count": 0, "extractions": [{"effective_operation": "noop", "operation": "noop"}]},
+    ]
+    summary = module.build_summary(rows, scope="full-family-a80", requested=3, rows_sha256="x" * 64,
+                                   qualification_hashes={}, qualification_identity={}, letta_binding={},
+                                   endpoint="http://127.0.0.1:8000", model_provenance={})
+    assert summary["scope"] == "full-family-a80"
+    assert summary["prompted_exact_match"] is None
+    assert summary["prompted_metrics_denominator"] == 0
+    assert summary["operation_counts"]["requested"]["update"] == 1
+    assert summary["operation_counts"]["requested"]["noop"] == 1
+    assert summary["operation_counts"]["effective"]["add"] == 1
+    assert summary["operation_counts"]["effective"]["noop"] == 1
+    assert summary["total_reconciliation_count"] == 1
+
+
+def test_full_scope_summary_normalizes_uppercase_effective_operations():
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    rows = [
+        {"status": "PASS", "state_accuracy": True, "gold_retrieved_k16": True, "final_memory_size": 1,
+         "reconciliation_count": 1, "extractions": [
+             {"effective_operation": "ADD", "operation": "add"},
+             {"effective_operation": "UPDATE", "operation": "update"},
+         ]},
+    ]
+
+    summary = module.build_summary(rows, scope="full-family-a80", requested=1, rows_sha256="x" * 64,
+                                   qualification_hashes={}, qualification_identity={}, letta_binding={},
+                                   endpoint="http://127.0.0.1:8000", model_provenance={})
+
+    assert summary["operation_counts"]["requested"]["add"] == 1
+    assert summary["operation_counts"]["requested"]["update"] == 1
+    assert summary["operation_counts"]["effective"]["add"] == 1
+    assert summary["operation_counts"]["effective"]["update"] == 1
+    assert summary["total_reconciliation_count"] == 1

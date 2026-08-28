@@ -3911,3 +3911,44 @@ results/vnext/post_core_letta_qwen_canary_20260829_v1/canary_receipt.json
 ```
 
 Evidence boundary: this is a supported-scope joint pipeline result for target-conditioned Qwen extraction + controller reconciliation + Letta native block state/retrieval. It is not Letta-only accuracy, Qwen extraction-action accuracy, prompted-answer evidence or a full external-system leaderboard row. The next valid step is either a repeated deterministic canary or the full 80-task Family-A supported-scope matrix under the same frozen layer definitions.
+
+## Letta 0.16.8 + Qwen3.5 full Family-A supported-scope matrix (2026-08-29)
+
+The full authenticated matrix extends the same layer-separated pipeline to all 80 tasks in the frozen Family-A view. It completed 80/80 terminal rows: 52 single-object tasks were supported and 28 multi-object tasks were explicit `NOT_SUPPORTED`. All 52 supported tasks passed state execution and retrieval checks. The run used Qwen3.5 only for visible event extraction, Letta native blocks for state/retrieval, and the same controller-bound target identity and empty-store UPDATE-to-ADD reconciliation policy. Prompted answering remained unrun.
+
+```text
+requested tasks: 80
+supported single-object tasks: 52
+NOT_SUPPORTED multi-object tasks: 28
+PASS on supported tasks: 52/52
+FAIL on supported tasks: 0
+state accuracy: 1.000 (denominator 52)
+k=16 gold retrieval rate: 1.000 (denominator 52)
+average final memory size: 1.000 (denominator 52)
+stable entry ID rate: 1.000 (denominator 52)
+requested operations: ADD 43, UPDATE 1193, NOOP 0, DELETE 0
+effective operations: ADD 52, UPDATE 1184, NOOP 0, DELETE 0
+empty-store UPDATE-to-ADD reconciliations: 9
+total provider/API calls: 0/0
+prompted-answer metrics: NOT_RUN / null
+runtime cleanup: PASS
+```
+
+The nine reconciliations are disclosed because the result is not pure extraction-action accuracy: it is a joint target-conditioned Qwen + controller policy + Letta native block pipeline. Unsupported tasks remain outside all performance denominators.
+
+Authoritative artifacts:
+
+```text
+results/vnext/post_core_letta_runtime_qualification_20260829_v3/letta_runtime_preflight.json
+  SHA-256 6a8bf0bbc804af0a91ba12bb7ed6789d75a23dea3581dcf8ad20a2fbddc9ebdb
+results/vnext/post_core_letta_runtime_qualification_20260829_v3/letta_runtime_admission.json
+  SHA-256 196b5d8bde95a3d35445aea143e4bae0a702de2fd5a7515fec970bf71e5dffc5
+results/vnext/post_core_letta_runtime_qualification_20260829_v3/letta_runtime_qualification.json
+  SHA-256 16ef025b05648eb875e2569d61183b922b84e49db8bdfaf82aca30eeecfb9ec2
+results/vnext/post_core_letta_qwen_full_family_a_20260829_v2/rows.jsonl
+  SHA-256 3aee23cae9148ba14214d4afe10e3a0ff3d6821d9ab89f660f3f80bfcd544c16
+results/vnext/post_core_letta_qwen_full_family_a_20260829_v2/full_family_a_receipt.json
+  SHA-256 6ef2a66639de6d7da97b3f3345d19fcce86297670b011ffcba89f8f716740007
+```
+
+The full matrix is supported-scope external-system evidence, not a broad leaderboard, not prompted-answer evidence, and not an isolated Letta or Qwen accuracy claim. It should be analyzed alongside the 24/24 bounded canary and the earlier LangMem supported-scope result.

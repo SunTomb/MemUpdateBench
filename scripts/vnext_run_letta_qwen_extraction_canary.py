@@ -43,6 +43,9 @@ TASK_SHA = TASK_SHA256
 MODEL = MODEL_ID
 REV = MODEL_REVISION
 SCHEMA_VERSION = "memupdatebench.external.letta-qwen-extraction.canary.v2"
+FULL_SCHEMA_VERSION = "memupdatebench.external.letta-qwen-extraction.full-family-a.v1"
+CANARY_SCOPE = "canary32"
+FULL_SCOPE = "full-family-a80"
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -57,15 +60,25 @@ def task_core(task: MemUpdateTaskV3) -> str:
     return task.metadata.extra["semantic_core_id"]
 
 
-def select_tasks(raw: bytes) -> list[MemUpdateTaskV3]:
+def _parse_authenticated_tasks(raw: bytes) -> list[MemUpdateTaskV3]:
+    return [
+        MemUpdateTaskV3.model_validate(json.loads(line))
+        for line in raw.splitlines()
+        if line.strip()
+    ]
+
+
+def select_tasks(raw: bytes, *, scope: str = CANARY_SCOPE) -> list[MemUpdateTaskV3]:
+    if scope not in {CANARY_SCOPE, FULL_SCOPE}:
+        raise ValueError(f"unsupported task scope: {scope}")
     if sha256_bytes(raw) != TASK_SHA256:
         raise ValueError("task view SHA-256 mismatch")
-    tasks = []
-    for line in raw.splitlines():
-        if line.strip():
-            payload = json.loads(line)
-            tasks.append(MemUpdateTaskV3.model_validate(payload))
+    tasks = _parse_authenticated_tasks(raw)
     tasks.sort(key=lambda task: (task_core(task).encode("utf-8"), task.task_id.encode("utf-8")))
+    if scope == FULL_SCOPE:
+        if len(tasks) != 80:
+            raise ValueError("authenticated Family-A full scope is not exactly 80 tasks")
+        return tasks
     cores = sorted({task_core(task) for task in tasks}, key=lambda x: x.encode("utf-8"))[:8]
     selected = [task for task in tasks if task_core(task) in cores]
     if len(selected) != 32 or len(cores) != 8:
@@ -685,6 +698,78 @@ def cleanup_adapter(adapter, namespace: str) -> None:
     adapter.close()
 
 
+def build_summary(
+    rows: list[dict], *, scope: str, requested: int, rows_sha256: str,
+    qualification_hashes: dict, qualification_identity: dict, letta_binding: dict,
+    endpoint: str, model_provenance: dict, execution_mode: str = "production",
+) -> dict:
+    supported = [row for row in rows if row["status"] != "NOT_SUPPORTED"]
+    passed = [row for row in supported if row["status"] == "PASS"]
+    state_rows = [row for row in passed if row.get("state_accuracy") is not None]
+    retrieval_rows = [row for row in passed if row.get("gold_retrieved_k16") is not None]
+    memory_rows = [row for row in passed if row.get("final_memory_size") is not None]
+    stable_rows = [row for row in passed if row.get("stable_entry_id") is not None]
+    operations = {"add": 0, "update": 0, "noop": 0, "delete": 0}
+    effective_operations = dict(operations)
+    total_reconciliation = 0
+    for row in rows:
+        total_reconciliation += int(row.get("reconciliation_count") or 0)
+        for extraction in row.get("extractions", []):
+            operation = extraction.get("operation")
+            effective = extraction.get("effective_operation")
+            if isinstance(operation, str):
+                operation = operation.lower()
+            if isinstance(effective, str):
+                effective = effective.lower()
+            if operation in operations:
+                operations[operation] += 1
+            if effective in effective_operations:
+                effective_operations[effective] += 1
+    summary = {
+        "schema_version": FULL_SCHEMA_VERSION if scope == FULL_SCOPE else SCHEMA_VERSION,
+        "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL",
+        "requested": requested,
+        "terminal_rows": len(rows),
+        "supported": len(supported),
+        "unsupported": len(rows) - len(supported),
+        "pass": len(passed),
+        "fail": len(supported) - len(passed),
+        "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None,
+        "state_accuracy_denominator": len(state_rows),
+        "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None,
+        "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None,
+        "rows_sha256": rows_sha256,
+        "task_view_sha256": TASK_SHA256,
+        "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()),
+        "qualification_hashes": qualification_hashes,
+        "qualification_identity": qualification_identity,
+        "letta_worker_runtime": {**letta_binding, "configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "cwd": letta_binding.get("project_root"), "environment": {"PYTHONPATH": letta_binding.get("project_root"), "HF_HUB_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}},
+        "letta_base_url": endpoint,
+        "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")),
+        "model": {"id": MODEL_ID, "revision": MODEL_REVISION, **model_provenance},
+        "provider_calls": 0,
+        "api_calls": 0,
+        "answer_model_metrics": None,
+        "execution_mode": execution_mode,
+    }
+    if scope == FULL_SCOPE:
+        summary.update({
+            "scope": FULL_SCOPE,
+            "stable_entry_id_rate": sum(bool(row["stable_entry_id"]) for row in stable_rows) / len(stable_rows) if stable_rows else None,
+            "stable_entry_id_denominator": len(stable_rows),
+            "gold_retrieval_denominator": len(retrieval_rows),
+            "memory_size_denominator": len(memory_rows),
+            "total_reconciliation_count": total_reconciliation,
+            "operation_counts": {"requested": operations, "effective": effective_operations},
+            "prompted_exact_match": None,
+            "prompted_answer_em": None,
+            "prompted_answer_f1": None,
+            "prompted_metrics": None,
+            "prompted_metrics_denominator": 0,
+        })
+    return summary
+
+
 def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, adapter_factory=None) -> dict:
     tasks_path = Path(args.tasks)
     output = validate_output_root(Path(args.output_root), frozen_roots=(ROOT / "data" / "vnext" / "core", ROOT / "data" / "vnext" / "phase0", ROOT / "configs" / "vnext" / "post_core"))
@@ -710,7 +795,9 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
         expected_revision=getattr(args, "expected_letta_project_revision", None),
     )
     endpoint = validate_loopback_binding(args.letta_base_url, qualification["closure"])
-    selected = select_tasks(tasks_path.read_bytes())
+    scope = getattr(args, "scope", CANARY_SCOPE)
+    selected = select_tasks(tasks_path.read_bytes()) if scope == CANARY_SCOPE else select_tasks(tasks_path.read_bytes(), scope=scope)
+    requested = 32 if scope == CANARY_SCOPE else 80
     rows_path = output / "rows.jsonl"
     extractor = QwenExtractor(Path(args.model_snapshot)) if extractor_factory is None else extractor_factory()
     extractor.load()
@@ -791,16 +878,15 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
             _append_row(rows_path, row); rows.append(row)
     finally:
         extractor.close()
-    if len(rows) != 32:
-        raise RuntimeError("canary terminal row count is incomplete")
-    supported = [row for row in rows if row["status"] != "NOT_SUPPORTED"]
-    passed = [row for row in supported if row["status"] == "PASS"]
-    state_rows = [row for row in passed if row["state_accuracy"] is not None]
-    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_worker_runtime": {**letta_binding, "configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "cwd": letta_binding["project_root"], "environment": {"PYTHONPATH": letta_binding["project_root"], "HF_HUB_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "snapshot_binding": model_provenance["snapshot_binding"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
+    if len(rows) != requested:
+        raise RuntimeError(f"{scope} terminal row count is incomplete")
+    model_summary = {"snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "snapshot_binding": model_provenance["snapshot_binding"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())}
+    summary = build_summary(rows, scope=scope, requested=requested, rows_sha256=sha256_bytes(rows_path.read_bytes()), qualification_hashes=qualification["hashes"], qualification_identity={"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, letta_binding=letta_binding, endpoint=endpoint, model_provenance=model_summary, execution_mode="injected_test_only" if adapter_factory is not None else "production")
     if scan_for_secrets(summary):
         raise ValueError("canary receipt failed secret scan")
     summary["payload_sha256"] = sha256_bytes(canonical_json_bytes(summary))
-    _write_new(output / "canary_receipt.json", canonical_json_bytes(summary))
+    receipt_name = "canary_receipt.json" if scope == CANARY_SCOPE else "full_family_a_receipt.json"
+    _write_new(output / receipt_name, canonical_json_bytes(summary))
     return summary
 
 
@@ -816,6 +902,7 @@ def main(argv=None) -> int:
     parser.add_argument("--model-snapshot", required=True)
     parser.add_argument("--model-runtime-receipt", required=True)
     parser.add_argument("--model-snapshot-binding", required=True)
+    parser.add_argument("--scope", choices=(CANARY_SCOPE, FULL_SCOPE), default=CANARY_SCOPE)
     args = parser.parse_args(argv)
     try:
         result = run(args)
