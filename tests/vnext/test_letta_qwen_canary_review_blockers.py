@@ -26,3 +26,17 @@ def test_run_assigns_task_path_before_selection(tmp_path, monkeypatch):
     args = types.SimpleNamespace(tasks=str(tasks), output_root=str(tmp_path / "out"), model_snapshot=str(tmp_path), model_runtime_receipt=str(tasks), model_snapshot_binding=str(tasks), qualification_root=str(tmp_path), letta_base_url="http://127.0.0.1:8000", letta_python_executable=str(tmp_path / "python"), letta_project_root=str(tmp_path), expected_letta_project_revision=None)
     with pytest.raises(RuntimeError, match="terminal row count"):
         module.run(args)
+
+
+def test_cleanup_uses_public_reset_api_not_reset_namespace():
+    from mub.vnext.contracts.v3.adapter import ResetRequestV3
+    from scripts.vnext_run_letta_qwen_extraction_canary import cleanup_adapter
+    class ResetOnly:
+        def __init__(self): self.calls = []
+        def reset(self, request):
+            self.calls.append(request)
+            assert isinstance(request, ResetRequestV3)
+        def close(self): pass
+    adapter = ResetOnly()
+    assert cleanup_adapter(adapter, "ns") is None
+    assert adapter.calls[0].namespace == "ns"

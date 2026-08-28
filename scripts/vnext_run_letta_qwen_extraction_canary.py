@@ -675,6 +675,16 @@ def _row(task, status: str, *, error_class=None, state_accuracy=None, memory_siz
     return row
 
 
+def _safe_error_detail(exc: Exception) -> str:
+    detail = re.sub(r"[^a-zA-Z0-9_. -]", "", str(exc))[:240]
+    return detail or type(exc).__name__
+
+
+def cleanup_adapter(adapter, namespace: str) -> None:
+    adapter.reset(ResetRequestV3(namespace=namespace))
+    adapter.close()
+
+
 def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, adapter_factory=None) -> dict:
     tasks_path = Path(args.tasks)
     output = validate_output_root(Path(args.output_root), frozen_roots=(ROOT / "data" / "vnext" / "core", ROOT / "data" / "vnext" / "phase0", ROOT / "configs" / "vnext" / "post_core"))
@@ -714,6 +724,8 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
             started = time.monotonic()
             adapter = None
             close_error = None
+            cleanup_detail = None
+            stage = "adapter_initialization"
             affected_entry_ids = []
             reconciliation_count = 0
             extractions = []
@@ -728,8 +740,10 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
                 else:
                     adapter = adapter_factory(task)
                 namespace = "letta_qwen_" + task.task_id
+                stage = "namespace_reset"
                 adapter.reset(ResetRequestV3(namespace=namespace))
                 for event in task.events:
+                    stage = "model_extraction"
                     parsed, raw_output, tokens, latency = extractor.extract(event.raw_text, task.target_objects[0].attribute)
                     parsed = validate_extraction(parsed)
                     operation = parsed["operation"]
@@ -746,28 +760,34 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
                     else:
                         visible = f"{operation.title()} {task.target_objects[0].canonical_id} with value {json.dumps(value, ensure_ascii=False)}."
                     result = adapter.ingest_event(event.model_copy(update={"raw_text": visible, "normalized_text": visible}))
+                    stage = "state_export"
                     effective = result.effective_action.operation.value
                     affected_entry_ids.extend(result.affected_entry_ids)
                     extractions.append({"event_id": event.event_id, "operation": parsed["operation"], "effective_operation": effective, "output_sha256": sha256_bytes(raw_output.encode()), "generated_tokens": tokens, "latency_ms": latency})
                 entries = adapter.export_entries().entries
+                stage = "retrieval"
                 gold = task.gold_evidence[0].answer
                 answer = entries[0].value_candidate if len(entries) == 1 else None
                 retrieval = adapter.retrieve(RetrievalRequestV3(query=task.queries[0], k=16)).trace.retrieved_entries
                 row = _row(task, "PASS", state_accuracy=answer == gold, memory_size=len(entries), stable_id=bool(affected_entry_ids) and len(set(affected_entry_ids)) == 1, gold_retrieved=any(entry.value_candidate == gold for entry in retrieval), stale_retrieved=sum(entry.value_candidate != gold for entry in retrieval), extra={"gold_sha256": sha256_bytes(canonical_json_bytes(gold)), "extractions": extractions, "reconciliation_count": reconciliation_count, "affected_entry_ids": tuple(dict.fromkeys(affected_entry_ids)), "latency_ms": (time.monotonic() - started) * 1000})
             except Exception as exc:
-                row = _row(task, "FAIL", error_class=type(exc).__name__, extra={"extractions": extractions, "latency_ms": (time.monotonic() - started) * 1000})
+                row = _row(task, "FAIL", error_class=type(exc).__name__, extra={"stage": stage, "error_detail": _safe_error_detail(exc), "extractions": extractions, "latency_ms": (time.monotonic() - started) * 1000})
             finally:
                 if adapter is not None:
                     try:
-                        adapter.reset_namespace(namespace)
-                    except Exception:
+                        stage = "namespace_cleanup"
+                        adapter.reset(ResetRequestV3(namespace=namespace))
+                    except Exception as exc:
                         close_error = "namespace_cleanup_failed"
+                        cleanup_detail = _safe_error_detail(exc)
                     try:
+                        stage = "adapter_close"
                         adapter.close()
-                    except Exception:
+                    except Exception as exc:
                         close_error = "adapter_close_failed"
+                        cleanup_detail = _safe_error_detail(exc)
                 if close_error is not None:
-                    row = _row(task, "FAIL", error_class=close_error, extra={"extractions": extractions, "reconciliation_count": reconciliation_count, "affected_entry_ids": tuple(dict.fromkeys(affected_entry_ids)), "latency_ms": (time.monotonic() - started) * 1000})
+                    row = _row(task, "FAIL", error_class=close_error, extra={"stage": stage, "error_detail": cleanup_detail, "extractions": extractions, "reconciliation_count": reconciliation_count, "affected_entry_ids": tuple(dict.fromkeys(affected_entry_ids)), "latency_ms": (time.monotonic() - started) * 1000})
             _append_row(rows_path, row); rows.append(row)
     finally:
         extractor.close()
