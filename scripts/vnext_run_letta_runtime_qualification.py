@@ -381,7 +381,14 @@ def run_qualification(config: QualificationConfig, *, runner: Runner | None = No
         preflight = private / "preflight.json"; admission = private / "admission.json"
         preflight_value, preflight_raw, preflight_rc = _formal_json(runner, (str(config.python_executable), str(config.project_root / "scripts" / "vnext_preflight_letta_runtime.py"), "--python-executable", str(config.python_executable), "--worker-command", str(config.project_root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"), "--server-identity", f"http://127.0.0.1:{server_port}", "--database-identity", database_identity, "--output", str(preflight), "--run-prefix", "letta-runtime-song1", "--timeout-seconds", str(config.timeout_seconds), "--database-isolation-verified"), preflight, cwd=config.project_root, env=env)
         admission_value, admission_raw, admission_rc = _formal_json(runner, (str(config.python_executable), str(config.project_root / "scripts" / "vnext_admit_letta_runtime.py"), "--preflight", str(preflight), "--output", str(admission)), admission, cwd=config.project_root, env=env)
-        measured["marker_count"] = _psql(runner, psql, socket_dir, db_port, config.database, config.role, password, "SELECT count(*) FROM blocks WHERE description LIKE 'MemUpdateBench namespace marker v1:%';", pg_env)
+        post_lifecycle_marker_count = _psql(runner, psql, socket_dir, db_port, config.database, config.role, password, "SELECT count(*) FROM block WHERE description LIKE 'MemUpdateBench namespace marker v1:%';", pg_env)
+        measured["post_lifecycle_marker_count"] = post_lifecycle_marker_count
+        try:
+            marker_count_is_zero = int(post_lifecycle_marker_count) == 0
+        except (TypeError, ValueError):
+            marker_count_is_zero = False
+        if not marker_count_is_zero:
+            raise ValueError("post-lifecycle database isolation/cleanup probe failed: marker count must be zero")
         measured["post_lifecycle_database"] = _psql(runner, psql, socket_dir, db_port, config.database, config.role, password, "SELECT current_database();", pg_env)
         if measured["post_lifecycle_database"] != config.database:
             raise ValueError("post-lifecycle database isolation probe failed")

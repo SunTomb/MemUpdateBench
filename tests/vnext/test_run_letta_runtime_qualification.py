@@ -212,11 +212,12 @@ def test_run_rejects_frozen_core_output(tmp_path: Path) -> None:
 
 
 class FakeRunner:
-    def __init__(self, *, fail_at: str | None = None, stop_returncode: int = 0, blocked_formal: bool = False):
+    def __init__(self, *, fail_at: str | None = None, stop_returncode: int = 0, blocked_formal: bool = False, post_lifecycle_marker_count: str = "0"):
         self.calls: list[tuple[str, ...]] = []
         self.fail_at = fail_at
         self.stop_returncode = stop_returncode
         self.blocked_formal = blocked_formal
+        self.post_lifecycle_marker_count = post_lifecycle_marker_count
         self.processes = []
 
     def run(self, command, *, check=True, **kwargs):
@@ -234,6 +235,7 @@ class FakeRunner:
                 "SELECT extversion FROM pg_extension WHERE extname='vector';": "0.8.6",
                 "SELECT pg_backend_pid() || '|' || coalesce(inet_server_addr()::text,'') || '|' || coalesce(inet_server_port()::text,'') || '|' || current_database() || '|' || current_user || '|' || (SELECT rolsuper::text FROM pg_roles WHERE rolname=current_user);": "123|127.0.0.1|5432|mub_letta_v1|mub_letta_v1|true",
                 "SELECT current_database();": "mub_letta_v1",
+                "SELECT count(*) FROM block WHERE description LIKE 'MemUpdateBench namespace marker v1:%';": self.post_lifecycle_marker_count,
             }.get(sql, "")
             return type("Result", (), {"stdout": output + "\n", "stderr": "", "returncode": 0})()
         if "vnext_admit_letta_runtime.py" in joined:
@@ -293,6 +295,34 @@ def test_run_invokes_vector_before_alembic_and_formal_scripts_and_publishes(tmp_
     assert any(call[0] == str(config.alembic_executable) and call[1] == "-c" and call[-2:] == ("upgrade", "head") for call in runner.calls)
     assert (config.output_root / "letta_runtime_qualification.json").exists()
     assert all("random-secret" not in part for call in runner.calls for part in call)
+
+
+def test_post_lifecycle_marker_probe_uses_singular_block_table_and_zero_passes(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runner = FakeRunner(post_lifecycle_marker_count="0")
+
+    result = run_qualification(config, runner=runner)
+
+    marker_queries = [
+        call[call.index("-c") + 1]
+        for call in runner.calls
+        if "-c" in call and "MemUpdateBench namespace marker v1:" in call[call.index("-c") + 1]
+    ]
+    assert marker_queries == ["SELECT count(*) FROM block WHERE description LIKE 'MemUpdateBench namespace marker v1:%';"]
+    assert result["outcome"] == "PASS"
+    assert result["runtime"]["measured"]["post_lifecycle_marker_count"] == "0"
+
+
+def test_nonzero_post_lifecycle_marker_count_blocks_cleanup_leak(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runner = FakeRunner(post_lifecycle_marker_count="2")
+
+    result = run_qualification(config, runner=runner)
+
+    assert result["outcome"] == "BLOCKED"
+    assert result["runtime"]["measured"]["post_lifecycle_marker_count"] == "2"
+    assert result["diagnostic"]["error_type"] == "ValueError"
+    assert "post-lifecycle database isolation/cleanup probe failed" in result["diagnostic"]["message"]
 
 
 def test_blocked_formal_receipts_are_preserved_with_hashes(tmp_path: Path) -> None:
