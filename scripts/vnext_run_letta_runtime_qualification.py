@@ -12,9 +12,14 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Callable, Mapping, Protocol
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from mub.vnext.external.artifacts import assert_no_reparse_components
 from mub.vnext.external.security import redact_sensitive_text, scan_for_secrets

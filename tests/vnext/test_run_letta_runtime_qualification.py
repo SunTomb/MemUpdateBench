@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 
 import pytest
 
@@ -43,6 +45,23 @@ def _config(tmp_path: Path) -> QualificationConfig:
         output_root=output,
         project_revision="a" * 40,
     )
+
+
+def test_direct_script_invocation_help_works_without_project_cwd_or_pythonpath(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "vnext_run_letta_runtime_qualification.py"
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_subprocess_runner_forwards_caller_check_once(monkeypatch) -> None:
