@@ -36,6 +36,122 @@ def _binding_for_snapshot(module, snapshot: Path, *, tree_hash: str = "e" * 64) 
     return binding
 
 
+def test_production_run_serializes_real_letta_configuration_for_worker(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    from mub.vnext.contracts.v3.common import FrozenMemoryObjectKey
+    from mub.vnext.external.providers.letta import (
+        LettaAdapterConfigurationV1,
+        compute_letta_configuration_hash,
+    )
+    from scripts.vnext_preflight_letta_runtime import _query
+
+    class FakeExtractor:
+        def load(self) -> None:
+            return None
+
+        def extract(self, raw_text: str, attribute: str):
+            raise AssertionError("the serialization test task has no events")
+
+        def close(self) -> None:
+            return None
+
+    class FakeBridge:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def close(self) -> None:
+            return None
+
+    class FakeAdapter:
+        def __init__(self, *, bridge, configuration, target_objects) -> None:
+            self.entry = SimpleNamespace(value_candidate="Paris")
+
+        def reset(self, request):
+            return SimpleNamespace(success=True, namespace=request.namespace)
+
+        def export_entries(self):
+            return SimpleNamespace(entries=(self.entry,))
+
+        def retrieve(self, request):
+            return SimpleNamespace(trace=SimpleNamespace(retrieved_entries=(self.entry,)))
+
+        def close(self) -> None:
+            return None
+
+    key = FrozenMemoryObjectKey(
+        object_type="profile", namespace="default", entity="alice", attribute="city", subkey=None
+    )
+    task = SimpleNamespace(
+        task_id="task-serialization",
+        metadata=SimpleNamespace(extra={"semantic_core_id": "core-serialization"}),
+        target_objects=(key,),
+        events=(),
+        gold_evidence=(SimpleNamespace(answer="Paris"),),
+        queries=(_query(),),
+    )
+    tasks_path = tmp_path / "tasks.jsonl"
+    tasks_path.write_bytes(b"ignored\n")
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(b"{}")
+    runtime_receipt_path = tmp_path / "runtime.json"
+    runtime_receipt_path.write_bytes(b"{}")
+    output = tmp_path / "output"
+    captured_configurations: list[str] = []
+
+    def capture_worker_command(executable, project, configuration_json):
+        captured_configurations.append(configuration_json)
+        return (str(executable), str(project))
+
+    monkeypatch.setattr(module, "validate_output_root", lambda path, frozen_roots: output)
+    monkeypatch.setattr(module, "verify_model_provenance", lambda *args, **kwargs: {
+        "snapshot": str(tmp_path / "snapshot"),
+        "tree_sha256": "a" * 64,
+        "snapshot_binding": {},
+        "runtime_receipt_sha256": "b" * 64,
+        "runtime_identity": "test-runtime",
+    })
+    monkeypatch.setattr(module, "validate_qualification_artifacts", lambda root: {
+        "hashes": {}, "closure": {},
+    })
+    monkeypatch.setattr(module, "validate_worker_runtime_binding", lambda *args, **kwargs: {
+        "project_root": str(tmp_path),
+    })
+    monkeypatch.setattr(module, "validate_loopback_binding", lambda url, closure: url)
+    monkeypatch.setattr(module, "select_tasks", lambda raw: [task] * 32)
+    monkeypatch.setattr(module, "build_worker_command", capture_worker_command)
+    monkeypatch.setattr(module, "safe_worker_environment", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "JsonlSubprocessBridge", FakeBridge)
+    monkeypatch.setattr(module, "LettaExternalAdapterV3", FakeAdapter)
+
+    args = SimpleNamespace(
+        tasks=str(tasks_path),
+        output_root=str(output),
+        model_snapshot_binding=str(binding_path),
+        model_snapshot=str(tmp_path / "snapshot"),
+        model_runtime_receipt=str(runtime_receipt_path),
+        qualification_root=str(tmp_path / "qualification"),
+        letta_python_executable=str(tmp_path / "python"),
+        letta_project_root=str(tmp_path),
+        expected_letta_project_revision=None,
+        letta_base_url="http://127.0.0.1:8000",
+    )
+    (tmp_path / "python").write_bytes(b"python")
+
+    summary = module.run(args, extractor_factory=FakeExtractor)
+
+    rows = [json.loads(line) for line in (output / "rows.jsonl").read_text().splitlines()]
+    assert summary["fail"] == 0, rows[0]
+    assert len(captured_configurations) == 32
+    for configuration_json in captured_configurations:
+        configuration = LettaAdapterConfigurationV1.model_validate_json(
+            configuration_json, strict=True
+        )
+        assert canonical_json_bytes(configuration.model_dump(mode="json")) == configuration_json.encode()
+        assert compute_letta_configuration_hash(configuration) == module.sha256_bytes(
+            canonical_json_bytes(configuration.model_dump(mode="json"))
+        )
+
+
 def test_worker_runtime_binding_uses_distinct_worker_source_hash(tmp_path: Path) -> None:
     import subprocess
     import scripts.vnext_run_letta_qwen_extraction_canary as module

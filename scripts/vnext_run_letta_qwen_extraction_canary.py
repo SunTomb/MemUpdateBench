@@ -733,7 +733,7 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
             try:
                 if adapter_factory is None:
                     config = build_letta_adapter_configuration(run_id="letta-qwen-" + task.task_id)
-                    config_json = canonical_json_bytes(config).decode("utf-8")
+                    config_json = canonical_json_bytes(config.model_dump(mode="json")).decode("utf-8")
                     command = build_worker_command(args.letta_python_executable, args.letta_project_root, config_json)
                     bridge = JsonlSubprocessBridge(command=command, cwd=letta_binding["project_root"], environment=safe_worker_environment(endpoint, Path(letta_binding["project_root"])), timeout_seconds=60.0)
                     adapter = LettaExternalAdapterV3(bridge=bridge, configuration=config, target_objects=(FrozenMemoryObjectKey.model_validate(task.target_objects[0].model_dump(mode="python"), strict=True),))
