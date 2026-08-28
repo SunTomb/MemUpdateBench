@@ -109,9 +109,22 @@ def test_model_runtime_source_receipt_schema_is_accepted(tmp_path: Path, monkeyp
     monkeypatch.setattr(module, "MODEL_TREE_SHA256", tree_hash)
     monkeypatch.setattr(module, "MODEL_RUNTIME_RECEIPT_SHA256", module.sha256_bytes(receipt.read_bytes()))
     result = module.verify_model_provenance(snapshot, receipt)
+    assert result["tree_sha256"] == tree_hash
     assert result["runtime_receipt_sha256"] == module.MODEL_RUNTIME_RECEIPT_SHA256
+def test_snapshot_hash_delegates_to_canonical_helper(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    observed = {}
+    def canonical(**kwargs):
+        observed.update(kwargs)
+        return "f" * 64
+    monkeypatch.setattr(module, "snapshot_tree_sha256_v3", canonical)
+    assert module.stable_tree_sha256(snapshot) == "f" * 64
+    assert observed["model_id"] == MODEL_ID and observed["revision"] == MODEL_REVISION
 
 
+def test_output_root_rejects_frozen_or_symlink_paths(tmp_path: Path) -> None:
     from scripts.vnext_run_letta_qwen_extraction_canary import validate_output_root
     frozen = tmp_path / "core"
     frozen.mkdir()

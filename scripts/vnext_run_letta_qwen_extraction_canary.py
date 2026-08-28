@@ -27,6 +27,7 @@ from mub.vnext.external.providers.letta import (
 )
 from mub.vnext.external.providers.letta_adapter import LettaExternalAdapterV3
 from mub.vnext.external.security import scan_for_secrets
+from mub.vnext.runtime.answer_model_v3 import snapshot_tree_sha256_v3
 from mub.vnext.external.artifacts import assert_no_reparse_components
 from mub.vnext.contracts.v3.adapter import ResetRequestV3, RetrievalRequestV3
 
@@ -141,23 +142,13 @@ def validate_output_root(output: Path, *, frozen_roots: tuple[Path, ...] = ()) -
 
 def stable_tree_sha256(root: Path) -> str:
     root = root.resolve(strict=True)
+    assert_no_reparse_components(root)
     if not root.is_dir() or _is_reparse(root):
         raise ValueError("model snapshot must be a real directory")
-    files = []
-    for path in root.rglob("*"):
-        if _is_reparse(path):
+    for item in root.rglob("*"):
+        if _is_reparse(item):
             raise ValueError("model snapshot contains symlink or reparse point")
-        if path.is_file():
-            files.append(path)
-        elif not path.is_dir():
-            raise ValueError("model snapshot contains non-regular entry")
-    digest = hashlib.sha256()
-    for path in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
-        rel = path.relative_to(root).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(rel).to_bytes(8, "big")); digest.update(rel)
-        digest.update(len(content).to_bytes(8, "big")); digest.update(content)
-    return digest.hexdigest()
+    return snapshot_tree_sha256_v3(snapshot_path=root, model_id=MODEL_ID, revision=MODEL_REVISION)
 
 
 def verify_model_provenance(snapshot: Path, runtime_receipt: Path) -> dict:
