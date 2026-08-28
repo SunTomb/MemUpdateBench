@@ -124,6 +124,19 @@ def test_snapshot_hash_delegates_to_canonical_helper(tmp_path: Path, monkeypatch
     assert observed["model_id"] == MODEL_ID and observed["revision"] == MODEL_REVISION
 
 
+def test_snapshot_binding_receipt_validates_authoritative_file_list(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    payload = b"model-bytes"
+    (snapshot / "config.json").write_bytes(payload)
+    digest = module.sha256_bytes(payload)
+    binding = {"schema_version":"memupdatebench.post-core.shared-snapshot-binding.v1","repository":"Qwen/Qwen3.5-9B","revision":MODEL_REVISION,"snapshot_path":"/approved/Qwen3.5-9B","tree_sha256":"e"*64,"file_count":1,"total_bytes":len(payload),"files":[{"path":"config.json","sha256":digest,"size_bytes":len(payload)}]}
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e"*64)
+    monkeypatch.setattr(module, "MODEL_SNAPSHOT_PATH", "/approved/Qwen3.5-9B")
+    assert module.validate_snapshot_binding(snapshot, binding)["file_count"] == 1
+
+
 def test_output_root_rejects_frozen_or_symlink_paths(tmp_path: Path) -> None:
     from scripts.vnext_run_letta_qwen_extraction_canary import validate_output_root
     frozen = tmp_path / "core"

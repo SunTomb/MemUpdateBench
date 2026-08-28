@@ -36,7 +36,7 @@ MODEL_ID = "Qwen/Qwen3.5-9B"
 MODEL_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 MODEL_TREE_SHA256 = "e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db"
 MODEL_RUNTIME_RECEIPT_SHA256 = "5d06cb1cbacd43beb0b0a2aaafd1bd7a5b75e8f6d283f5dbbd899b8429ff202f"
-MODEL_RUNTIME_IDENTITY = "transformers-qwen35-9b-bf16-eager"
+MODEL_SNAPSHOT_PATH = "/NAS/HuggingFaceModels/Qwen3.5-9B"
 # Short aliases retained for provenance-oriented callers.
 TASK_SHA = TASK_SHA256
 MODEL = MODEL_ID
@@ -151,8 +151,43 @@ def stable_tree_sha256(root: Path) -> str:
     return snapshot_tree_sha256_v3(snapshot_path=root, model_id=MODEL_ID, revision=MODEL_REVISION)
 
 
-def verify_model_provenance(snapshot: Path, runtime_receipt: Path) -> dict:
-    snapshot = snapshot.resolve(strict=True)
+def validate_snapshot_binding(snapshot: Path, binding: dict) -> dict:
+    if not isinstance(binding, dict) or binding.get("schema_version") != "memupdatebench.post-core.shared-snapshot-binding.v1":
+        raise ValueError("snapshot binding schema mismatch")
+    if binding.get("repository") != MODEL_ID or binding.get("revision") != MODEL_REVISION or binding.get("snapshot_path") != MODEL_SNAPSHOT_PATH:
+        raise ValueError("snapshot binding identity mismatch")
+    files = binding.get("files")
+    if not isinstance(files, list) or binding.get("tree_sha256") != MODEL_TREE_SHA256 or type(binding.get("file_count")) is not int or type(binding.get("total_bytes")) is not int:
+        raise ValueError("snapshot binding metadata mismatch")
+    if "payload_sha256" in binding:
+        payload = dict(binding); payload.pop("payload_sha256")
+        if binding["payload_sha256"] != sha256_bytes(canonical_json_bytes(payload)):
+            raise ValueError("snapshot binding payload hash mismatch")
+    if "binding_sha256" in binding:
+        payload = dict(binding); payload.pop("binding_sha256")
+        if binding["binding_sha256"] != sha256_bytes(canonical_json_bytes(payload)):
+            raise ValueError("snapshot binding self hash mismatch")
+    assert_no_reparse_components(snapshot)
+    if not snapshot.is_dir() or _is_reparse(snapshot):
+        raise ValueError("snapshot binding path is unsafe")
+    observed = {}
+    for item in snapshot.rglob("*"):
+        if _is_reparse(item):
+            raise ValueError("snapshot binding contains symlink or reparse point")
+        if item.is_file():
+            rel = item.relative_to(snapshot).as_posix()
+            observed[rel] = {"sha256": sha256_bytes(item.read_bytes()), "size_bytes": item.stat().st_size}
+    declared = {item.get("path"): {"sha256": item.get("sha256"), "size_bytes": item.get("size_bytes")} for item in files if isinstance(item, dict)}
+    if len(declared) != len(files):
+        raise ValueError("snapshot binding file list has duplicates or malformed entries")
+    if observed != declared or len(observed) != binding["file_count"] or sum(item["size_bytes"] for item in observed.values()) != binding["total_bytes"]:
+        raise ValueError("snapshot binding file list mismatch")
+    return {"repository": MODEL_ID, "revision": MODEL_REVISION, "snapshot_path": binding["snapshot_path"], "tree_sha256": binding["tree_sha256"], "file_count": binding["file_count"], "total_bytes": binding["total_bytes"]}
+
+
+def verify_model_provenance(snapshot: Path, runtime_receipt: Path, binding: dict | None = None) -> dict:
+    if binding is not None:
+        validate_snapshot_binding(snapshot, binding)
     if _is_reparse(snapshot):
         raise ValueError("model snapshot must not be symlink or reparse")
     tree_hash = stable_tree_sha256(snapshot)
@@ -327,7 +362,12 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
     output = validate_output_root(Path(args.output_root), frozen_roots=(ROOT / "data" / "vnext" / "core", ROOT / "data" / "vnext" / "phase0", ROOT / "configs" / "vnext" / "post_core"))
     if output.exists():
         raise FileExistsError(output)
-    model_provenance = verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt))
+    binding_path = Path(args.model_snapshot_binding).resolve(strict=True)
+    binding_raw = binding_path.read_bytes()
+    model_binding = json.loads(binding_raw)
+    if canonical_json_bytes(model_binding) != binding_raw or scan_for_secrets(model_binding):
+        raise ValueError("model snapshot binding must be canonical and secret-free")
+    model_provenance = verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt), model_binding)
     qualification = validate_qualification_artifacts(Path(args.qualification_root))
     endpoint = validate_loopback_binding(args.letta_base_url, qualification["closure"])
     selected = select_tasks(tasks_path.read_bytes())
@@ -421,6 +461,7 @@ def main(argv=None) -> int:
     parser.add_argument("--letta-base-url", required=True)
     parser.add_argument("--model-snapshot", required=True)
     parser.add_argument("--model-runtime-receipt", required=True)
+    parser.add_argument("--model-snapshot-binding", required=True)
     args = parser.parse_args(argv)
     try:
         result = run(args)
