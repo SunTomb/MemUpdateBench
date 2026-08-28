@@ -172,6 +172,61 @@ def test_snapshot_hash_delegates_to_canonical_helper(tmp_path: Path, monkeypatch
     assert observed["model_id"] == MODEL_ID and observed["revision"] == MODEL_REVISION
 
 
+def test_snapshot_binding_accepts_authoritative_receipt_audit_metadata(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    payload = b"model-bytes"
+    (snapshot / "config.json").write_bytes(payload)
+    binding = _binding_for_snapshot(module, snapshot)
+    binding.update(
+        {
+            "available_bytes_after": 90,
+            "available_bytes_before": 100,
+            "model_loads": 0,
+            "operation_id": "cleanup-qwen-v1",
+            "provider_calls": 0,
+            "remaining_stage_roots": ["/NAS/staging/qwen"],
+            "removed_allocated_bytes": 10,
+            "removed_duplicate_path": "/NAS/staging/qwen-duplicate",
+            "removed_logical_bytes": 10,
+        }
+    )
+    binding["receipt_payload_sha256"] = module.sha256_bytes(
+        module.canonical_json_bytes(
+            {key: value for key, value in binding.items() if key != "receipt_payload_sha256"}
+        )
+    )
+
+    provenance = module.validate_snapshot_binding(snapshot, binding)
+
+    assert provenance["repo"] == MODEL_ID
+    assert provenance["revision"] == MODEL_REVISION
+    assert provenance["tree_sha256"] == "e" * 64
+    assert provenance["file_count"] == 1
+
+
+def test_snapshot_binding_rejects_audit_metadata_path_traversal(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", "e" * 64)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(b"model-bytes")
+    binding = _binding_for_snapshot(module, snapshot)
+    binding["removed_duplicate_path"] = r"..\secret"
+    binding["receipt_payload_sha256"] = module.sha256_bytes(
+        module.canonical_json_bytes(
+            {key: value for key, value in binding.items() if key != "receipt_payload_sha256"}
+        )
+    )
+
+    with pytest.raises(ValueError, match="path traversal"):
+        module.validate_snapshot_binding(snapshot, binding)
+
+
 def test_snapshot_binding_receipt_validates_authoritative_entries_shape(tmp_path: Path, monkeypatch) -> None:
     import scripts.vnext_run_letta_qwen_extraction_canary as module
 

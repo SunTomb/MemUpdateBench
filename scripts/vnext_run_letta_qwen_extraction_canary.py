@@ -163,6 +163,17 @@ _BINDING_FIELDS = frozenset({
     "entries",
     "receipt_payload_sha256",
 })
+_BINDING_AUDIT_FIELDS = frozenset({
+    "available_bytes_after",
+    "available_bytes_before",
+    "model_loads",
+    "operation_id",
+    "provider_calls",
+    "remaining_stage_roots",
+    "removed_allocated_bytes",
+    "removed_duplicate_path",
+    "removed_logical_bytes",
+})
 _BINDING_ENTRY_FIELDS = frozenset({"path", "sha256", "bytes"})
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -171,6 +182,44 @@ def _binding_sha256(value: object, label: str) -> str:
     if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
         raise ValueError(f"snapshot binding {label} must be lowercase SHA-256")
     return value
+
+
+def _binding_nonnegative_int(value: object, label: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"snapshot binding {label} must be a nonnegative int")
+
+
+def _binding_audit_path(value: object, label: str, *, allow_none: bool = False) -> None:
+    if allow_none and value is None:
+        return
+    if type(value) is not str or not value or any(ord(char) == 0 for char in value):
+        raise ValueError(f"snapshot binding {label} path is invalid")
+    normalized = value.replace("\\", "/")
+    if any(part in {".", ".."} for part in normalized.split("/")):
+        raise ValueError(f"snapshot binding {label} path traversal is invalid")
+
+
+def _validate_binding_audit_fields(binding: dict) -> None:
+    for field in (
+        "available_bytes_after",
+        "available_bytes_before",
+        "model_loads",
+        "provider_calls",
+        "removed_allocated_bytes",
+        "removed_logical_bytes",
+    ):
+        if field in binding:
+            _binding_nonnegative_int(binding[field], field)
+    if "operation_id" in binding and (type(binding["operation_id"]) is not str or not binding["operation_id"]):
+        raise ValueError("snapshot binding operation_id must be a nonempty string")
+    if "remaining_stage_roots" in binding:
+        roots = binding["remaining_stage_roots"]
+        if type(roots) is not list:
+            raise ValueError("snapshot binding remaining_stage_roots must be a list")
+        for root in roots:
+            _binding_audit_path(root, "remaining_stage_roots")
+    if "removed_duplicate_path" in binding:
+        _binding_audit_path(binding["removed_duplicate_path"], "removed_duplicate_path", allow_none=True)
 
 
 def _binding_snapshot_root(snapshot: Path) -> Path:
@@ -242,8 +291,11 @@ def validate_snapshot_binding(
 ) -> dict:
     if type(binding) is not dict or binding.get("schema_version") != "memupdatebench.post-core.shared-snapshot-binding.v1":
         raise ValueError("snapshot binding schema mismatch")
-    if set(binding) != _BINDING_FIELDS:
+    if not _BINDING_FIELDS <= set(binding):
         raise ValueError("snapshot binding fields mismatch")
+    if scan_for_secrets(binding):
+        raise ValueError("snapshot binding failed secret scan")
+    _validate_binding_audit_fields(binding)
     if binding["repo"] != MODEL_ID or binding["revision"] != MODEL_REVISION or binding["shared_snapshot_path"] != MODEL_SNAPSHOT_PATH:
         raise ValueError("snapshot binding identity mismatch")
     if type(binding["shared_snapshot_path"]) is not str or not binding["shared_snapshot_path"]:
