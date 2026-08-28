@@ -38,13 +38,14 @@ def test_qualification_requires_schema_and_affirmative_gates(tmp_path):
     subprocess.run(("git", "-C", str(project), "commit", "-m", "fixture"), check=True, capture_output=True)
     revision = subprocess.check_output(("git", "-C", str(project), "rev-parse", "HEAD"), text=True).strip()
     tree_hash, file_count = module._tracked_tree_identity(project)
-    closure = {"project_source": {"commit": revision, "tree_sha256": tree_hash, "file_count": file_count}, "runner_source_sha256": hashlib.sha256(runner_file.read_bytes()).hexdigest()}
+    closure = {"project_source": {"commit": revision, "tree_sha256": tree_hash, "file_count": file_count}, "runner_source_sha256": "a" * 64, "worker_source_sha256": hashlib.sha256(runner_file.read_bytes()).hexdigest()}
     executable = tmp_path / "python"
     executable.write_bytes(b"python")
 
     binding = module.validate_worker_runtime_binding(executable, project, closure)
     assert binding["project_revision"] == revision
-    assert binding["runner_source_sha256"] == closure["runner_source_sha256"]
+    assert binding["worker_source_sha256"] == closure["worker_source_sha256"]
+    assert binding["qualification_runner_source_sha256"] == closure["runner_source_sha256"]
 
     with pytest.raises(ValueError, match="absolute"):
         module.validate_worker_runtime_binding(Path("relative-python"), project, closure)
@@ -68,7 +69,7 @@ def test_output_root_rejects_frozen_overlap(tmp_path):
     with pytest.raises(ValueError): validate_output_root(frozen/'out', frozen_roots=(frozen,))
 
 def test_qualification_hashes_are_mandatory(tmp_path):
-    closure = {"schema_version":"memupdatebench.external.letta.runtime_qualification.v1","candidate_id":"letta_0_16_8_song1_local_linux","outcome":"PASS","identity":{"package_name":"letta","package_version":"0.16.8","source_commit":"1131535716e8a31c9a437f8695e25ac98f203a24"},"source":{},"project_source":{},"runner_source_sha256":"a"*64,"runtime":{"loopback_only":True},"boundary":{"llm_used":False,"api_used":False,"gpu_used":False},"cleanup":{"status":"PASS"},"preflight":{},"admission":{}}
+    closure = {"schema_version":"memupdatebench.external.letta.runtime_qualification.v1","candidate_id":"letta_0_16_8_song1_local_linux","outcome":"PASS","identity":{"package_name":"letta","package_version":"0.16.8","source_commit":"1131535716e8a31c9a437f8695e25ac98f203a24"},"source":{},"project_source":{},"runner_source_sha256":"a"*64,"worker_source_sha256":"b"*64,"runtime":{"loopback_only":True},"boundary":{"llm_used":False,"api_used":False,"gpu_used":False},"cleanup":{"status":"PASS"},"preflight":{},"admission":{}}
     preflight = {"schema_version":"memupdatebench.external.letta.preflight.v2","candidate_id":"letta_0_16_8_profile","mode":"profile_single_record_runtime","outcome":"pass","passed":True,"identity":{},"official_health":{},"runtime":{},"namespace_reset_probe":{},"lifecycle":{},"clean_close":{},"security":{},"boundary":{},"unsupported":{}}
     admission = {"schema_version":"memupdatebench.external.letta.admission.v2","candidate_id":"letta_0_16_8_profile","admission_scope":"profile_single_record_runtime","outcome":"pass","admitted":True,"gates":{},"reasons":[]}
     for name, value in (("letta_runtime_qualification.json",closure),("letta_runtime_preflight.json",preflight),("letta_runtime_admission.json",admission)):

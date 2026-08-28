@@ -26,6 +26,9 @@ def _config(tmp_path: Path) -> QualificationConfig:
     root = tmp_path / "project"
     root.mkdir()
     (root / "scripts").mkdir()
+    worker = root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+    worker.parent.mkdir(parents=True)
+    worker.write_bytes(b"worker-source\n")
     (tmp_path / "python").touch()
     (tmp_path / "alembic").touch()
     (tmp_path / "pgbin").mkdir()
@@ -363,6 +366,9 @@ def test_run_invokes_vector_before_alembic_and_formal_scripts_and_publishes(tmp_
     result = run_qualification(config, runner=runner)
     assert result["outcome"] == "PASS"
     assert result["boundary"] == {"llm_used": False, "api_used": False, "gpu_used": False}
+    worker = config.project_root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+    assert result["worker_source_sha256"] == hashlib.sha256(worker.read_bytes()).hexdigest()
+    assert result["worker_source_sha256"] != result["runner_source_sha256"]
     calls = [" ".join(call) for call in runner.calls]
     assert any("CREATE EXTENSION vector" in call for call in calls)
     assert calls.index(next(c for c in calls if "CREATE EXTENSION vector" in c)) < calls.index(next(c for c in calls if "alembic" in c))
@@ -371,6 +377,24 @@ def test_run_invokes_vector_before_alembic_and_formal_scripts_and_publishes(tmp_
     assert any(call[0] == str(config.alembic_executable) and call[1] == "-c" and call[-2:] == ("upgrade", "head") for call in runner.calls)
     assert (config.output_root / "letta_runtime_qualification.json").exists()
     assert all("random-secret" not in part for call in runner.calls for part in call)
+
+
+def test_worker_source_change_during_run_blocks_and_records_pre_run_hash(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    worker = config.project_root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+
+    class MutatingRunner(FakeRunner):
+        def run(self, command, *, check=True, **kwargs):
+            result = super().run(command, check=check, **kwargs)
+            if command and "MemUpdateBench namespace marker v1:" in " ".join(command):
+                worker.write_bytes(b"changed-worker-source\n")
+            return result
+
+    result = run_qualification(config, runner=MutatingRunner())
+
+    assert result["outcome"] == "BLOCKED"
+    assert result["diagnostic"]["worker_source_changed"] is True
+    assert result["worker_source_sha256"] == hashlib.sha256(b"worker-source\n").hexdigest()
 
 
 def test_post_lifecycle_marker_probe_uses_singular_block_table_and_zero_passes(tmp_path: Path) -> None:

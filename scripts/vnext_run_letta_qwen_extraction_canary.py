@@ -469,9 +469,12 @@ def validate_qualification_artifacts(root: Path) -> dict:
         raise ValueError("Letta qualification closure, preflight, and admission must all PASS")
     if closure.get("candidate_id") != "letta_0_16_8_song1_local_linux" or preflight.get("candidate_id") != "letta_0_16_8_profile" or preflight.get("mode") != "profile_single_record_runtime" or admission.get("candidate_id") != "letta_0_16_8_profile" or admission.get("admission_scope") != "profile_single_record_runtime":
         raise ValueError("qualification candidate or mode mismatch")
-    required_closure = ("candidate_id", "identity", "source", "project_source", "runner_source_sha256", "runtime", "boundary", "cleanup", "preflight", "admission")
+    required_closure = ("candidate_id", "identity", "source", "project_source", "runner_source_sha256", "worker_source_sha256", "runtime", "boundary", "cleanup", "preflight", "admission")
     if any(field not in closure for field in required_closure):
         raise ValueError("qualification closure is incomplete")
+    for field in ("runner_source_sha256", "worker_source_sha256"):
+        if type(closure[field]) is not str or not re.fullmatch(r"[0-9a-f]{64}", closure[field]):
+            raise ValueError(f"qualification closure has invalid {field}")
     artifact_hashes = {name: sha256_bytes((root / name).read_bytes()) for name in names}
     for field, name in (("preflight", "letta_runtime_preflight.json"), ("admission", "letta_runtime_admission.json")):
         declared = closure.get(field, {}).get("sha256") if isinstance(closure.get(field), dict) else None
@@ -549,12 +552,15 @@ def validate_worker_runtime_binding(letta_python_executable: Path | str, letta_p
     expected_tree_hash = (project_source or {}).get("tree_sha256")
     expected_file_count = (project_source or {}).get("file_count")
     expected_runner_hash = closure.get("runner_source_sha256")
+    expected_worker_hash = closure.get("worker_source_sha256")
     if not isinstance(expected_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
         raise ValueError("qualification closure lacks expected project revision")
     if not isinstance(expected_tree_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_tree_hash) or type(expected_file_count) is not int:
         raise ValueError("qualification closure lacks expected project tree identity")
     if not isinstance(expected_runner_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_runner_hash):
         raise ValueError("qualification closure lacks expected runner source hash")
+    if not isinstance(expected_worker_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_worker_hash):
+        raise ValueError("qualification closure lacks expected worker source hash")
     observed_commit = _git_value(project, "rev-parse", "HEAD")
     if observed_commit != expected_commit:
         raise ValueError("Letta project revision mismatch")
@@ -565,10 +571,10 @@ def validate_worker_runtime_binding(letta_python_executable: Path | str, letta_p
         raise ValueError("Letta project tree identity mismatch")
     worker = project / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
     worker = _require_real_absolute_file(worker, "Letta worker source")
-    observed_runner_hash = sha256_bytes(worker.read_bytes())
-    if observed_runner_hash != expected_runner_hash:
+    observed_worker_hash = sha256_bytes(worker.read_bytes())
+    if observed_worker_hash != expected_worker_hash:
         raise ValueError("Letta worker source hash mismatch")
-    return {"python_executable": str(executable), "project_root": str(project), "project_revision": observed_commit, "runner_source": str(worker), "runner_source_sha256": observed_runner_hash}
+    return {"python_executable": str(executable), "project_root": str(project), "project_revision": observed_commit, "worker_source": str(worker), "worker_source_sha256": observed_worker_hash, "runner_source_sha256": expected_runner_hash, "qualification_runner_source_sha256": expected_runner_hash}
 
 
 def build_worker_command(letta_python_executable: Path | str, letta_project_root: Path | str, configuration_json: str) -> tuple[str, ...]:

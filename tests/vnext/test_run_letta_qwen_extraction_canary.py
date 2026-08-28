@@ -14,6 +14,7 @@ from scripts.vnext_run_letta_qwen_extraction_canary import (
     safe_worker_environment,
     validate_loopback_url,
     validate_qualification_artifacts,
+    validate_worker_runtime_binding,
 )
 
 
@@ -31,6 +32,37 @@ def _binding_for_snapshot(module, snapshot: Path, *, tree_hash: str = "e" * 64) 
     }
     binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes(binding))
     return binding
+
+
+def test_worker_runtime_binding_uses_distinct_worker_source_hash(tmp_path: Path) -> None:
+    import subprocess
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    project = tmp_path / "project"
+    worker = project / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+    worker.parent.mkdir(parents=True)
+    worker.write_bytes(b"worker-source\n")
+    executable = tmp_path / "python"
+    executable.write_bytes(b"python\n")
+    subprocess.run(("git", "init", "-q", str(project)), check=True)
+    subprocess.run(("git", "-C", str(project), "config", "user.email", "test@example.com"), check=True)
+    subprocess.run(("git", "-C", str(project), "config", "user.name", "Test"), check=True)
+    subprocess.run(("git", "-C", str(project), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(project), "commit", "-qm", "initial"), check=True)
+    commit = subprocess.run(("git", "-C", str(project), "rev-parse", "HEAD"), check=True, capture_output=True, text=True).stdout.strip()
+    tree_hash, file_count = module._tracked_tree_identity(project)
+    worker_hash = module.sha256_bytes(worker.read_bytes())
+    closure = {
+        "project_source": {"commit": commit, "tree_sha256": tree_hash, "file_count": file_count},
+        "runner_source_sha256": "a" * 64,
+        "worker_source_sha256": worker_hash,
+    }
+
+    result = validate_worker_runtime_binding(executable, project, closure)
+
+    assert result["worker_source"] == str(worker)
+    assert result["worker_source_sha256"] == worker_hash
+    assert result["qualification_runner_source_sha256"] == "a" * 64
 
 
 def test_extraction_prompt_contains_only_visible_text_and_admitted_attribute() -> None:

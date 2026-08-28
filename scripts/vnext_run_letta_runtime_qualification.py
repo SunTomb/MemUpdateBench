@@ -370,6 +370,17 @@ def run_qualification(config: QualificationConfig, *, runner: Runner | None = No
         raise FileExistsError(output_root / "letta_runtime_qualification.json")
     source_identity = _source_identity(config.letta_source, runner, config.letta_source_commit)
     project_identity = _project_identity(config.project_root, runner, config.project_revision)
+    project_root = config.project_root.resolve(strict=True)
+    worker_source = config.project_root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+    assert_no_reparse_components(worker_source)
+    if worker_source.is_symlink() or not worker_source.is_file():
+        raise ValueError("Letta worker source must be a real regular file")
+    try:
+        worker_source = worker_source.resolve(strict=True)
+        worker_source.relative_to(project_root)
+    except (OSError, ValueError):
+        raise ValueError("Letta worker source must be under project root") from None
+    worker_source_sha256 = hashlib.sha256(worker_source.read_bytes()).hexdigest()
     runner_source_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     cluster = Path(tempfile.mkdtemp(prefix="mub-letta-pg-"))
     private = Path(tempfile.mkdtemp(prefix="mub-letta-private-"))
@@ -472,9 +483,16 @@ def run_qualification(config: QualificationConfig, *, runner: Runner | None = No
         logs_deleted = not private.exists()
         if not logs_deleted: cleanup_errors.append("raw_logs_remain")
     cleanup_passed = not cleanup_errors and process_stopped and password_deleted and logs_deleted
+    try:
+        worker_source_after_sha256 = hashlib.sha256(worker_source.read_bytes()).hexdigest()
+    except Exception:
+        worker_source_after_sha256 = None
+    if worker_source_after_sha256 != worker_source_sha256:
+        outcome = "BLOCKED"
+        diagnostic = {**diagnostic, "worker_source_changed": True}
     if not cleanup_passed:
         outcome = "BLOCKED"; diagnostic = {**diagnostic, "cleanup_blocked": True}
-    payload = {"schema_version": SCHEMA_VERSION, "candidate_id": "letta_0_16_8_song1_local_linux", "outcome": outcome, "project_revision": config.project_revision, "identity": PACKAGE_IDENTITY, "source": source_identity, "project_source": project_identity, "runner_source_sha256": runner_source_sha256, "preflight": {"artifact": "letta_runtime_preflight.json", "sha256": preflight_hash, "bytes": len(preflight_raw) if preflight_raw else None}, "admission": {"artifact": "letta_runtime_admission.json", "sha256": admission_hash, "bytes": len(admission_raw) if admission_raw else None}, "runtime": {"python": str(config.python_executable), "postgres_bin": str(config.postgres_bin), "measured": measured, "loopback_only": True, "random_ports": True, "dedicated_role_superuser": measured.get("rolsuper") is True, "vector_before_alembic": True, "nltk_cache_verified": True}, "boundary": {"llm_used": False, "api_used": False, "gpu_used": False}, "cleanup": {"status": "PASS" if cleanup_passed else "BLOCKED", "errors": cleanup_errors, "password_file_deleted": password_deleted, "process_stopped": process_stopped, "logs_deleted": logs_deleted}, "diagnostic": diagnostic, "raw_logs_recorded": False}
+    payload = {"schema_version": SCHEMA_VERSION, "candidate_id": "letta_0_16_8_song1_local_linux", "outcome": outcome, "project_revision": config.project_revision, "identity": PACKAGE_IDENTITY, "source": source_identity, "project_source": project_identity, "runner_source_sha256": runner_source_sha256, "worker_source_sha256": worker_source_sha256, "preflight": {"artifact": "letta_runtime_preflight.json", "sha256": preflight_hash, "bytes": len(preflight_raw) if preflight_raw else None}, "admission": {"artifact": "letta_runtime_admission.json", "sha256": admission_hash, "bytes": len(admission_raw) if admission_raw else None}, "runtime": {"python": str(config.python_executable), "postgres_bin": str(config.postgres_bin), "measured": measured, "loopback_only": True, "random_ports": True, "dedicated_role_superuser": measured.get("rolsuper") is True, "vector_before_alembic": True, "nltk_cache_verified": True}, "boundary": {"llm_used": False, "api_used": False, "gpu_used": False}, "cleanup": {"status": "PASS" if cleanup_passed else "BLOCKED", "errors": cleanup_errors, "password_file_deleted": password_deleted, "process_stopped": process_stopped, "logs_deleted": logs_deleted}, "diagnostic": diagnostic, "raw_logs_recorded": False}
     if scan_for_secrets(payload): raise ValueError("qualification closure failed secret scan")
     if preflight_raw is not None: _publish_bytes_no_replace(output_root / "letta_runtime_preflight.json", preflight_raw)
     if admission_raw is not None: _publish_bytes_no_replace(output_root / "letta_runtime_admission.json", admission_raw)
