@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from scripts.vnext_preflight_letta import run_preflight
 
 
@@ -41,6 +45,45 @@ def test_runtime_preflight_reports_not_run_when_factory_is_unavailable() -> None
     assert payload["lifecycle"]["status"] == "NOT_RUN"
     assert "runtime_bridge_unavailable" in payload["blockers"]
     assert payload["metrics"] is None
+
+
+def test_runtime_preflight_worker_environment_preserves_valid_native_loopback_url() -> None:
+    from scripts.vnext_preflight_letta_runtime import (
+        build_letta_preflight_worker_environment,
+    )
+
+    environment = build_letta_preflight_worker_environment(
+        {
+            "PATH": "path-entry",
+            "LETTA_NATIVE_API_BASE_URL": "http://127.0.0.1:18285",
+        },
+        project_root=Path(__file__).resolve().parents[2],
+    )
+
+    assert "LETTA_NATIVE_API_BASE_URL" in environment
+    assert environment["LETTA_NATIVE_API_BASE_URL"] == "http://127.0.0.1:18285"
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.test:18285",
+        "http://user:pass@127.0.0.1:18285",
+        "http://127.0.0.1:18285/?token=secret",
+    ),
+)
+def test_runtime_preflight_worker_environment_rejects_unsafe_native_url(
+    url: str,
+) -> None:
+    from scripts.vnext_preflight_letta_runtime import (
+        build_letta_preflight_worker_environment,
+    )
+
+    with pytest.raises(ValueError, match="LETTA_NATIVE_API_BASE_URL"):
+        build_letta_preflight_worker_environment(
+            {"PATH": "path-entry", "LETTA_NATIVE_API_BASE_URL": url},
+            project_root=Path(__file__).resolve().parents[2],
+        )
 
 
 class _SuccessfulFakeAdapter:

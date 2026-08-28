@@ -23,6 +23,11 @@ from mub.vnext.external.probe_v3 import run_namespace_reset_probe
 from mub.vnext.external.providers.letta import build_letta_adapter_configuration, compute_letta_configuration_hash
 from mub.vnext.external.providers.letta_adapter import LettaExternalAdapterV3
 from mub.vnext.external.security import build_worker_environment, redact_sensitive_text, scan_for_secrets
+from mub.vnext.external.workers.letta_rest import (
+    LETTA_NATIVE_API_BASE_URL_ENV,
+    LettaRestDependencyUnavailable,
+    _valid_loopback_base_url,
+)
 from mub.vnext.io import canonical_json_bytes
 
 SCHEMA_VERSION = "memupdatebench.external.letta.preflight.v2"
@@ -65,7 +70,16 @@ def build_letta_preflight_worker_environment(source_environment: Mapping[str, st
     project = str(Path(project_root).resolve(strict=True))
     source = dict(source_environment)
     source.update({"PYTHONPATH": project, "PYTHONIOENCODING": "utf-8", "HF_HUB_OFFLINE": "1"})
-    allowed_order = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONIOENCODING", "HF_HUB_OFFLINE")
+    if LETTA_NATIVE_API_BASE_URL_ENV in source:
+        try:
+            source[LETTA_NATIVE_API_BASE_URL_ENV] = _valid_loopback_base_url(
+                source[LETTA_NATIVE_API_BASE_URL_ENV]
+            )
+        except LettaRestDependencyUnavailable as exc:
+            raise ValueError(
+                "LETTA_NATIVE_API_BASE_URL must be a loopback HTTP(S) URL without credentials, query, or fragment"
+            ) from exc
+    allowed_order = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONIOENCODING", "HF_HUB_OFFLINE", LETTA_NATIVE_API_BASE_URL_ENV)
     return build_worker_environment(source, allowed_names=tuple(name for name in allowed_order if name in source), required_names=("PATH", "PYTHONPATH", "PYTHONIOENCODING"))
 
 
