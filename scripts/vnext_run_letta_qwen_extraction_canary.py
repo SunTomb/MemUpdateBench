@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from typing import Callable, Protocol
@@ -272,15 +273,103 @@ def validate_qualification_artifacts(root: Path) -> dict:
     if runtime and runtime.get("loopback_only") is False:
         raise ValueError("qualification runtime is not loopback-only")
     artifact_hashes = {name: sha256_bytes((root / name).read_bytes()) for name in names}
+    return {"closure": closure, "preflight": preflight, "admission": admission, "hashes": artifact_hashes}
+
+
+def _require_real_absolute_file(path: Path, label: str) -> Path:
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute")
+    assert_no_reparse_components(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a real regular file")
+    return path.resolve(strict=True)
+
+
+def _require_real_project_root(path: Path) -> Path:
+    if not path.is_absolute():
+        raise ValueError("Letta project root must be absolute")
+    assert_no_reparse_components(path)
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError("Letta project root must be a real directory")
+    resolved = path.resolve(strict=True)
+    for item in resolved.rglob("*"):
+        assert_no_reparse_components(item)
+        if item.is_symlink():
+            raise ValueError("Letta project tree must not contain symlinks")
+    return resolved
+
+
+def _git_value(project: Path, *args: str) -> str:
+    result = subprocess.run(("git", "-C", str(project), *args), check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError("Letta project git identity unavailable")
+    return result.stdout.strip()
+
+
+def _tracked_tree_identity(project: Path) -> tuple[str, int]:
+    raw = subprocess.run(("git", "-C", str(project), "ls-files", "-z"), check=False, capture_output=True).stdout
+    paths = [project / item.decode("utf-8") for item in raw.split(b"\0") if item]
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        relative = path.relative_to(project).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest(), len(paths)
+
+
+def validate_worker_runtime_binding(letta_python_executable: Path | str, letta_project_root: Path | str, closure: dict, *, expected_revision: str | None = None) -> dict:
+    executable = _require_real_absolute_file(Path(letta_python_executable), "Letta Python executable")
+    project = _require_real_project_root(Path(letta_project_root))
+    if not isinstance(closure, dict):
+        raise ValueError("qualification closure is required")
+    project_source = closure.get("project_source")
+    expected_commit = expected_revision or (project_source or {}).get("commit")
+    expected_tree_hash = (project_source or {}).get("tree_sha256")
+    expected_file_count = (project_source or {}).get("file_count")
+    expected_runner_hash = closure.get("runner_source_sha256")
+    if not isinstance(expected_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+        raise ValueError("qualification closure lacks expected project revision")
+    if not isinstance(expected_tree_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_tree_hash) or type(expected_file_count) is not int:
+        raise ValueError("qualification closure lacks expected project tree identity")
+    if not isinstance(expected_runner_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_runner_hash):
+        raise ValueError("qualification closure lacks expected runner source hash")
+    observed_commit = _git_value(project, "rev-parse", "HEAD")
+    if observed_commit != expected_commit:
+        raise ValueError("Letta project revision mismatch")
+    if _git_value(project, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("Letta project git worktree must be clean")
+    observed_tree_hash, observed_file_count = _tracked_tree_identity(project)
+    if observed_tree_hash != expected_tree_hash or observed_file_count != expected_file_count:
+        raise ValueError("Letta project tree identity mismatch")
+    worker = project / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"
+    worker = _require_real_absolute_file(worker, "Letta worker source")
+    observed_runner_hash = sha256_bytes(worker.read_bytes())
+    if observed_runner_hash != expected_runner_hash:
+        raise ValueError("Letta worker source hash mismatch")
+    return {"python_executable": str(executable), "project_root": str(project), "project_revision": observed_commit, "runner_source": str(worker), "runner_source_sha256": observed_runner_hash}
+
+
+def build_worker_command(letta_python_executable: Path | str, letta_project_root: Path | str, configuration_json: str) -> tuple[str, ...]:
+    executable = _require_real_absolute_file(Path(letta_python_executable), "Letta Python executable")
+    project = _require_real_project_root(Path(letta_project_root))
+    worker = _require_real_absolute_file(project / "mub" / "vnext" / "external" / "workers" / "letta_worker.py", "Letta worker source")
+    if type(configuration_json) is not str or not configuration_json:
+        raise ValueError("Letta worker configuration must be canonical JSON")
+    command = (str(executable), str(worker), "--configuration-json", configuration_json)
+    if scan_for_secrets(command):
+        raise ValueError("Letta worker command security scan failed")
+    return command
 
 
 def safe_worker_environment(base_url: str, project_root: Path) -> dict[str, str]:
     base_url = validate_loopback_url(base_url)
-    if not project_root.is_absolute() or not project_root.is_dir() or project_root.is_symlink():
-        raise ValueError("worker project root must be a real absolute directory")
+    project_root = _require_real_project_root(project_root)
     allowed = {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH"}
     env = {name: value for name, value in os.environ.items() if name in allowed and type(value) is str}
-    env.update({"LETTA_NATIVE_API_BASE_URL": base_url, "PYTHONPATH": str(project_root.resolve()), "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1"})
+    env.update({"LETTA_NATIVE_API_BASE_URL": base_url, "PYTHONPATH": str(project_root), "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1"})
     return env
 
 
@@ -369,6 +458,12 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
         raise ValueError("model snapshot binding must be canonical and secret-free")
     model_provenance = verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt), model_binding)
     qualification = validate_qualification_artifacts(Path(args.qualification_root))
+    letta_binding = validate_worker_runtime_binding(
+        args.letta_python_executable,
+        args.letta_project_root,
+        qualification["closure"],
+        expected_revision=getattr(args, "expected_letta_project_revision", None),
+    )
     endpoint = validate_loopback_binding(args.letta_base_url, qualification["closure"])
     selected = select_tasks(tasks_path.read_bytes())
     rows_path = output / "rows.jsonl"
@@ -386,13 +481,14 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
             close_error = None
             affected_entry_ids = []
             reconciliation_count = 0
+            extractions = []
             namespace = "letta_qwen_" + task.task_id
             try:
                 if adapter_factory is None:
                     config = build_letta_adapter_configuration(run_id="letta-qwen-" + task.task_id)
                     config_json = canonical_json_bytes(config).decode("utf-8")
-                    command = (sys.executable, str(ROOT / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"), "--configuration-json", config_json)
-                    bridge = JsonlSubprocessBridge(command=command, cwd=ROOT, environment=safe_worker_environment(endpoint, ROOT), timeout_seconds=60.0)
+                    command = build_worker_command(args.letta_python_executable, args.letta_project_root, config_json)
+                    bridge = JsonlSubprocessBridge(command=command, cwd=letta_binding["project_root"], environment=safe_worker_environment(endpoint, Path(letta_binding["project_root"])), timeout_seconds=60.0)
                     adapter = LettaExternalAdapterV3(bridge=bridge, configuration=config, target_objects=(FrozenMemoryObjectKey.model_validate(task.target_objects[0].model_dump(mode="python"), strict=True),))
                 else:
                     adapter = adapter_factory(task)
@@ -445,7 +541,7 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, 
     supported = [row for row in rows if row["status"] != "NOT_SUPPORTED"]
     passed = [row for row in supported if row["status"] == "PASS"]
     state_rows = [row for row in passed if row["state_accuracy"] is not None]
-    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0"}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
+    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_worker_runtime": {**letta_binding, "configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "cwd": letta_binding["project_root"], "environment": {"PYTHONPATH": letta_binding["project_root"], "HF_HUB_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
     if scan_for_secrets(summary):
         raise ValueError("canary receipt failed secret scan")
     summary["payload_sha256"] = sha256_bytes(canonical_json_bytes(summary))
@@ -459,6 +555,9 @@ def main(argv=None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--qualification-root", required=True)
     parser.add_argument("--letta-base-url", required=True)
+    parser.add_argument("--letta-python-executable", required=True)
+    parser.add_argument("--letta-project-root", required=True)
+    parser.add_argument("--expected-letta-project-revision")
     parser.add_argument("--model-snapshot", required=True)
     parser.add_argument("--model-runtime-receipt", required=True)
     parser.add_argument("--model-snapshot-binding", required=True)
