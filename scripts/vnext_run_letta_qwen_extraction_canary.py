@@ -60,7 +60,11 @@ def task_core(task: MemUpdateTaskV3) -> str:
 def select_tasks(raw: bytes) -> list[MemUpdateTaskV3]:
     if sha256_bytes(raw) != TASK_SHA256:
         raise ValueError("task view SHA-256 mismatch")
-    tasks = [MemUpdateTaskV3.model_validate(line, strict=True) for line in (json.loads(x) for x in raw.splitlines() if x.strip())]
+    tasks = []
+    for line in raw.splitlines():
+        if line.strip():
+            payload = json.loads(line)
+            tasks.append(MemUpdateTaskV3.model_validate(payload))
     tasks.sort(key=lambda task: (task_core(task).encode("utf-8"), task.task_id.encode("utf-8")))
     cores = sorted({task_core(task) for task in tasks}, key=lambda x: x.encode("utf-8"))[:8]
     selected = [task for task in tasks if task_core(task) in cores]

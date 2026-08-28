@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from scripts.vnext_run_letta_qwen_extraction_canary import (
     build_extraction_prompt,
     canonical_json_bytes,
     safe_worker_environment,
+    select_tasks,
     validate_loopback_url,
     validate_qualification_artifacts,
     validate_worker_runtime_binding,
@@ -98,6 +100,49 @@ def test_qualification_validation_requires_passed_triplet(tmp_path: Path) -> Non
         (tmp_path / name).write_bytes(canonical_json_bytes(value))
     with pytest.raises(ValueError):
         validate_qualification_artifacts(tmp_path)
+
+
+def test_select_tasks_accepts_json_coercible_enum_and_list_fields(monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    class JsonTask:
+        def __init__(self, payload: dict) -> None:
+            self.task_id = payload["task_id"]
+            self.metadata = SimpleNamespace(extra={"semantic_core_id": payload["semantic_core_id"]})
+
+    class JsonTaskModel:
+        @classmethod
+        def model_validate(cls, payload: dict, **kwargs):
+            assert payload["difficulty"] == "easy"
+            assert payload["source"]["source_type"] == "synthetic"
+            assert isinstance(payload["metadata"]["tags"], list)
+            if kwargs.get("strict"):
+                raise TypeError("JSON enum/list coercion requires non-strict validation")
+            return JsonTask(payload)
+
+    raw = b"".join(
+        json.dumps(
+            {
+                "task_id": f"task-{core_index}-{task_index}",
+                "semantic_core_id": f"core-{core_index}",
+                "difficulty": "easy",
+                "source": {"source_type": "synthetic"},
+                "metadata": {"tags": ["canary"]},
+            }
+        ).encode()
+        + b"\n"
+        for core_index in range(8)
+        for task_index in range(4)
+    )
+    monkeypatch.setattr(module, "TASK_SHA256", module.sha256_bytes(raw))
+    monkeypatch.setattr(module, "MemUpdateTaskV3", JsonTaskModel)
+
+    selected = select_tasks(raw)
+
+    assert len(selected) == 32
+    assert {task.metadata.extra["semantic_core_id"] for task in selected} == {
+        f"core-{index}" for index in range(8)
+    }
 
 
 def test_model_provenance_constants_are_frozen() -> None:
