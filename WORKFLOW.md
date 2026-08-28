@@ -3838,3 +3838,36 @@ results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/admissi
 ```
 
 Letta remains `BLOCKED`; its exact blockers are now installed-content/source binding and unavailable or unauthorized PostgreSQL runtime. No runtime lifecycle or accuracy row is claimed.
+
+## Letta 0.16.8 authenticated runtime qualification (2026-08-28)
+
+A new post-Core qualification run closes the two historical v4 blockers without rewriting that earlier evidence. Letta was installed from the pinned official source commit `1131535716e8a31c9a437f8695e25ac98f203a24`; two consecutive no-dependency reinstalls produced the same installed-content SHA-256 `12fd32f25e188754184584c182db6be788403f545c196216956acace93bd0ca9` over 569 authenticated files. The qualification runner and project code were executed from detached, user-owned git clones at project revision `7293f94482aeae89b1966fe24ba741a03308b55a`.
+
+The runtime used a temporary user-owned PostgreSQL 18.6 cluster with pgvector 0.8.6, a dedicated random-password superuser/database, private password-authenticated socket directory, random loopback ports and no shared database state. Alembic migrations ran before Letta startup. Letta 0.16.8 then served native block REST endpoints on loopback; the production JSONL worker authenticated exact package/source/content/configuration identity and completed the 20-trial namespace-reset probe plus add/update/noop/export/retrieve/slot-direct/delete/empty-export lifecycle.
+
+```text
+preflight outcome: pass
+admission outcome: pass
+namespace reset: 20/20 trials passed
+lifecycle: PASS
+stable add/update/delete entry ID: verified
+post-delete export: empty
+post-lifecycle marker count in the dedicated database: 0
+PostgreSQL: 18.6
+pgvector: 0.8.6
+LLM/API/GPU calls: 0/0/0
+cleanup: PASS
+```
+
+Authoritative evidence:
+
+```text
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_preflight.json
+  SHA-256 620a30c8c3fe05788e17aae52e7b015eb8cda0db549d5d9e47092b1d8e436e41
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_admission.json
+  SHA-256 196b5d8bde95a3d35445aea143e4bae0a702de2fd5a7515fec970bf71e5dffc5
+results/vnext/post_core_letta_runtime_qualification_20260828_v1/letta_runtime_qualification.json
+  SHA-256 fb3ce1ae6829aeb61353190806360a5aad17c4b4387aeab715248aad49501305
+```
+
+This is authenticated external-system runtime capability and lifecycle evidence, not benchmark accuracy or prompted-answer evidence. The earlier v1/v2 remote roots are retained as blocked diagnostics and are not authoritative. The next gate is a bounded supported-scope canary that keeps natural-language extraction, Letta native block state/retrieval and answer-model behavior as separate evidence layers.
