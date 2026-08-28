@@ -208,9 +208,41 @@ def _verify_real_tree(path: Path) -> Path:
     return resolved
 
 
-def _framed_tree_hash(source: Path) -> tuple[str, int]:
+def _git_status_clean(path: Path, runner: Runner) -> None:
+    result = runner.run(
+        ("git", "-C", str(path), "status", "--porcelain=v1", "--untracked-files=all"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if getattr(result, "returncode", 1) != 0:
+        raise ValueError("source git status unavailable")
+    if result.stdout:
+        raise ValueError("source git worktree must be clean")
+
+
+def _git_tracked_paths(path: Path, runner: Runner) -> tuple[Path, ...]:
+    result = runner.run(
+        ("git", "-C", str(path), "ls-files", "-z"),
+        check=False,
+        capture_output=True,
+    )
+    if getattr(result, "returncode", 1) != 0:
+        raise ValueError("source git tracked files unavailable")
+    raw = result.stdout
+    if isinstance(raw, str):
+        raw = raw.encode()
+    paths = tuple(path / item.decode("utf-8") for item in raw.split(b"\0") if item)
+    for item in paths:
+        assert_no_reparse_components(item)
+        if item.is_symlink() or not item.is_file():
+            raise ValueError("source tree tracked file must be a regular non-symlink file")
+    return paths
+
+
+def _framed_tree_hash(source: Path, tracked_paths: tuple[Path, ...]) -> tuple[str, int]:
     digest = hashlib.sha256()
-    files = sorted(path for path in source.rglob("*") if path.is_file())
+    files = sorted(tracked_paths)
     for path in files:
         relative = path.relative_to(source).as_posix().encode("utf-8")
         content = path.read_bytes()
@@ -219,9 +251,9 @@ def _framed_tree_hash(source: Path) -> tuple[str, int]:
     return digest.hexdigest(), len(files)
 
 
-def _stable_tree_identity(source: Path) -> tuple[str, int]:
-    first = _framed_tree_hash(source)
-    second = _framed_tree_hash(source)
+def _stable_tree_identity(source: Path, tracked_paths: tuple[Path, ...]) -> tuple[str, int]:
+    first = _framed_tree_hash(source, tracked_paths)
+    second = _framed_tree_hash(source, tracked_paths)
     if first != second:
         raise ValueError("source tree changed during hashing")
     return first
@@ -232,7 +264,9 @@ def _source_identity(source: Path, runner: Runner, expected_commit: str) -> dict
     commit = _git_head(resolved, runner)
     if commit != expected_commit:
         raise ValueError("Letta source commit mismatch")
-    tree_sha256, file_count = _stable_tree_identity(resolved)
+    _git_status_clean(resolved, runner)
+    tracked_paths = _git_tracked_paths(resolved, runner)
+    tree_sha256, file_count = _stable_tree_identity(resolved, tracked_paths)
     return {"commit": commit, "tree_sha256": tree_sha256, "file_count": file_count, "commit_verified": True}
 
 
@@ -241,7 +275,9 @@ def _project_identity(project: Path, runner: Runner, expected_revision: str) -> 
     commit = _git_head(resolved, runner)
     if commit != expected_revision:
         raise ValueError("project source revision mismatch")
-    tree_sha256, file_count = _stable_tree_identity(resolved)
+    _git_status_clean(resolved, runner)
+    tracked_paths = _git_tracked_paths(resolved, runner)
+    tree_sha256, file_count = _stable_tree_identity(resolved, tracked_paths)
     return {"commit": commit, "tree_sha256": tree_sha256, "file_count": file_count, "commit_verified": True}
 
 
@@ -274,6 +310,7 @@ def _publish_no_replace(path: Path, payload: dict) -> None:
 
 def build_postgres_environment(source_environment: Mapping[str, str], *, password: str) -> dict[str, str]:
     selected = {name: value for name, value in source_environment.items() if name in {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH"} and type(value) is str}
+    selected["PYTHONDONTWRITEBYTECODE"] = "1"
     selected["PGPASSWORD"] = password
     return selected
 
@@ -283,7 +320,7 @@ def _runtime_environment(config: QualificationConfig, *, port: int, db_uri: str,
     letta_dir = private / "letta"
     home.mkdir(mode=0o700); letta_dir.mkdir(mode=0o700)
     env = {
-        "PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(config.project_root), "PYTHONIOENCODING": "utf-8",
+        "PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(config.project_root), "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
         "HF_HUB_OFFLINE": "1", "NLTK_DATA": str(config.nltk_cache), "HOME": str(home), "LETTA_DIR": str(letta_dir),
         "LETTA_PG_URI": db_uri, "LETTA_NATIVE_API_BASE_URL": f"http://127.0.0.1:{port}",
         "LETTA_DISABLE_TRACING": "true", "LETTA_LLM_API_LOGGING": "false", "LETTA_TRACK_PROVIDER_TRACE": "false",

@@ -118,6 +118,77 @@ def test_build_postgres_environment_excludes_inherited_pg_variables(tmp_path: Pa
     assert env["PGPASSWORD"] == "pw"
 
 
+def test_runtime_and_postgres_child_environments_disable_bytecode(tmp_path: Path) -> None:
+    from scripts.vnext_run_letta_runtime_qualification import _runtime_environment, build_postgres_environment
+
+    private = tmp_path / "private"
+    private.mkdir()
+    runtime = _runtime_environment(_config(tmp_path), port=18285, db_uri="postgresql://db", private=private)
+    postgres = build_postgres_environment({"PATH": "x"}, password="pw")
+    assert runtime["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert postgres["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def _git_repo(tmp_path: Path, *, ignored: bool = False) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.py").write_text("print('ok')\n")
+    subprocess.run(("git", "init", "-q", str(repo)), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.email", "test@example.com"), check=True)
+    subprocess.run(("git", "-C", str(repo), "config", "user.name", "Test"), check=True)
+    if ignored:
+        (repo / ".gitignore").write_text("__pycache__/\n")
+    subprocess.run(("git", "-C", str(repo), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "initial"), check=True)
+    return repo
+
+
+def test_source_identity_ignores_ignored_pyc_but_hashes_authenticated_tracked_files(tmp_path: Path) -> None:
+    from scripts.vnext_run_letta_runtime_qualification import _source_identity, _git_head
+
+    repo = _git_repo(tmp_path, ignored=True)
+    expected = _git_head(repo, SubprocessRunner())
+    before = _source_identity(repo, SubprocessRunner(), expected)
+    pyc = repo / "__pycache__" / "x.pyc"
+    pyc.parent.mkdir()
+    pyc.write_bytes(b"generated")
+    after = _source_identity(repo, SubprocessRunner(), expected)
+    assert after == before
+    assert before["file_count"] == 2
+
+
+def test_source_identity_rejects_dirty_tracked_and_untracked_files(tmp_path: Path) -> None:
+    from scripts.vnext_run_letta_runtime_qualification import _source_identity, _git_head
+
+    repo = _git_repo(tmp_path, ignored=True)
+    runner = SubprocessRunner()
+    expected = _git_head(repo, runner)
+    (repo / "shadow.py").write_text("print('shadow')\n")
+    with pytest.raises(ValueError, match="clean"):
+        _source_identity(repo, runner, expected)
+    (repo / "shadow.py").unlink()
+    (repo / "tracked.py").write_text("print('changed')\n")
+    with pytest.raises(ValueError, match="clean"):
+        _source_identity(repo, runner, expected)
+
+
+def test_source_identity_rejects_symlink_even_when_git_status_is_clean(tmp_path: Path) -> None:
+    from scripts.vnext_run_letta_runtime_qualification import _source_identity, _git_head
+
+    repo = _git_repo(tmp_path)
+    target = repo / "target.py"
+    target.write_text("target\n")
+    subprocess.run(("git", "-C", str(repo), "add", "target.py"), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "target"), check=True)
+    link = repo / "link.py"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(ValueError, match="symlink|reparse"):
+        _source_identity(repo, SubprocessRunner(), _git_head(repo, SubprocessRunner()))
+
+
 def test_readiness_requires_json_list_and_live_process() -> None:
     from scripts.vnext_run_letta_runtime_qualification import SubprocessRunner
 
@@ -226,8 +297,13 @@ class FakeRunner:
             raise RuntimeError("simulated failure")
         joined = " ".join(command)
         if command and command[0] == "git":
-            output = "1131535716e8a31c9a437f8695e25ac98f203a24" if "letta-source" in joined else "a" * 40
-            return type("Result", (), {"stdout": output + "\n", "stderr": "", "returncode": 0})()
+            if "status" in command:
+                output = ""
+            elif "ls-files" in command:
+                output = ""
+            else:
+                output = "1131535716e8a31c9a437f8695e25ac98f203a24" if "letta-source" in joined else "a" * 40
+            return type("Result", (), {"stdout": output + ("\n" if output else ""), "stderr": "", "returncode": 0})()
         if "-c" in command:
             sql = command[command.index("-c") + 1]
             output = {
