@@ -97,7 +97,21 @@ def test_model_snapshot_requires_exact_tree_and_runtime_receipt(tmp_path: Path) 
         verify_model_provenance(snapshot, receipt)
 
 
-def test_output_root_rejects_frozen_or_symlink_paths(tmp_path: Path) -> None:
+def test_model_runtime_source_receipt_schema_is_accepted(tmp_path: Path, monkeypatch) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    tree_hash = module.stable_tree_sha256(snapshot)
+    receipt_value = {"schema_version":"memupdatebench.post-core.qwen-runtime-source-receipt.v1","load_status":"PASS","generation_status":"PASS","determinism_status":"PASS","unload_status":"PASS","provider_calls":0,"network_calls":0,"benchmark_generations":0,"gpu_index":3,"node":"Tang-1-Wu"}
+    receipt = tmp_path / "runtime.json"
+    receipt.write_bytes(canonical_json_bytes(receipt_value))
+    monkeypatch.setattr(module, "MODEL_TREE_SHA256", tree_hash)
+    monkeypatch.setattr(module, "MODEL_RUNTIME_RECEIPT_SHA256", module.sha256_bytes(receipt.read_bytes()))
+    result = module.verify_model_provenance(snapshot, receipt)
+    assert result["runtime_receipt_sha256"] == module.MODEL_RUNTIME_RECEIPT_SHA256
+
+
     from scripts.vnext_run_letta_qwen_extraction_canary import validate_output_root
     frozen = tmp_path / "core"
     frozen.mkdir()

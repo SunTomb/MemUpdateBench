@@ -10,6 +10,17 @@ def test_qualification_requires_exact_v2_schema():
     from scripts.vnext_run_letta_qwen_extraction_canary import validate_qualification_artifacts
     assert callable(validate_qualification_artifacts)
 
-def test_current_state_metric_is_not_named_stale_burden():
-    from scripts.vnext_run_letta_qwen_extraction_canary import current_retrieval_metric
-    assert current_retrieval_metric([]) is None
+def test_run_assigns_task_path_before_selection(tmp_path, monkeypatch):
+    import types
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+    tasks = tmp_path / "tasks.jsonl"
+    tasks.write_bytes(b"placeholder")
+    monkeypatch.setattr(module, "validate_output_root", lambda path, frozen_roots=(): path)
+    monkeypatch.setattr(module, "verify_model_provenance", lambda snapshot, receipt: {})
+    monkeypatch.setattr(module, "validate_qualification_artifacts", lambda root: {"closure":{"runtime":{"measured":{"server_port":8000}}},"hashes":{}})
+    monkeypatch.setattr(module, "validate_loopback_binding", lambda url, closure: url)
+    monkeypatch.setattr(module, "select_tasks", lambda raw: [])
+    monkeypatch.setattr(module, "QwenExtractor", lambda snapshot: types.SimpleNamespace(load=lambda: None, close=lambda: None))
+    args = types.SimpleNamespace(tasks=str(tasks), output_root=str(tmp_path / "out"), model_snapshot=str(tmp_path), model_runtime_receipt=str(tasks), qualification_root=str(tmp_path), letta_base_url="http://127.0.0.1:8000")
+    with pytest.raises(RuntimeError, match="terminal row count"):
+        module.run(args)

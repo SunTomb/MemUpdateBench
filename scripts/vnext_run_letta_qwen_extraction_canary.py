@@ -176,13 +176,14 @@ def verify_model_provenance(snapshot: Path, runtime_receipt: Path) -> dict:
         raise ValueError("runtime receipt is not canonical or is sensitive")
     if sha256_bytes(raw) != MODEL_RUNTIME_RECEIPT_SHA256:
         raise ValueError("runtime receipt hash mismatch")
-    model = value.get("model", value)
-    if not isinstance(model, dict) or model.get("model_id") != MODEL_ID or model.get("revision") != MODEL_REVISION or model.get("tree_sha256") != MODEL_TREE_SHA256:
-        raise ValueError("runtime receipt model identity mismatch")
-    runtime_identity = value.get("runtime_identity", model.get("runtime_identity"))
-    if runtime_identity != MODEL_RUNTIME_IDENTITY:
-        raise ValueError("runtime receipt runtime identity mismatch")
-    return {"snapshot": str(snapshot), "tree_sha256": tree_hash, "runtime_receipt_sha256": sha256_bytes(raw), "runtime_identity": runtime_identity}
+    if value.get("schema_version") != "memupdatebench.post-core.qwen-runtime-source-receipt.v1":
+        raise ValueError("runtime receipt schema mismatch")
+    required = ("load_status", "generation_status", "determinism_status", "unload_status", "provider_calls", "network_calls", "benchmark_generations", "gpu_index", "node")
+    if any(field not in value for field in required) or any(value[field] != "PASS" for field in ("load_status", "generation_status", "determinism_status", "unload_status")) or any(value[field] != 0 for field in ("provider_calls", "network_calls", "benchmark_generations")):
+        raise ValueError("runtime receipt affirmative fields mismatch")
+    if type(value["gpu_index"]) is not int or value["gpu_index"] < 0 or type(value["node"]) is not str or not value["node"]:
+        raise ValueError("runtime receipt execution identity mismatch")
+    return {"snapshot": str(snapshot), "tree_sha256": tree_hash, "runtime_receipt_sha256": sha256_bytes(raw), "runtime_identity": value["schema_version"], "runtime_receipt": value}
 
 
 def validate_extraction(parsed: object) -> dict:
@@ -330,16 +331,17 @@ def _row(task, status: str, *, error_class=None, state_accuracy=None, memory_siz
     return row
 
 
-def run(args, *, extractor_factory: Callable[[], ModelExtractor] = QwenExtractor, adapter_factory=None) -> dict:
+def run(args, *, extractor_factory: Callable[[], ModelExtractor] | None = None, adapter_factory=None) -> dict:
+    tasks_path = Path(args.tasks)
     output = validate_output_root(Path(args.output_root), frozen_roots=(ROOT / "data" / "vnext" / "core", ROOT / "data" / "vnext" / "phase0", ROOT / "configs" / "vnext" / "post_core"))
     if output.exists():
         raise FileExistsError(output)
-    verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt))
+    model_provenance = verify_model_provenance(Path(args.model_snapshot), Path(args.model_runtime_receipt))
     qualification = validate_qualification_artifacts(Path(args.qualification_root))
     endpoint = validate_loopback_binding(args.letta_base_url, qualification["closure"])
     selected = select_tasks(tasks_path.read_bytes())
     rows_path = output / "rows.jsonl"
-    extractor = extractor_factory() if extractor_factory is not QwenExtractor else QwenExtractor(Path(args.model_snapshot))
+    extractor = QwenExtractor(Path(args.model_snapshot)) if extractor_factory is None else extractor_factory()
     extractor.load()
     output.mkdir(parents=True)
     rows = []
@@ -412,7 +414,7 @@ def run(args, *, extractor_factory: Callable[[], ModelExtractor] = QwenExtractor
     supported = [row for row in rows if row["status"] != "NOT_SUPPORTED"]
     passed = [row for row in supported if row["status"] == "PASS"]
     state_rows = [row for row in passed if row["state_accuracy"] is not None]
-    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "tree_sha256": MODEL_TREE_SHA256, "runtime_receipt_sha256": MODEL_RUNTIME_RECEIPT_SHA256, "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0"}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
+    summary = {"schema_version": SCHEMA_VERSION, "outcome": "PASS" if not [row for row in supported if row["status"] == "FAIL"] else "FAIL", "requested": 32, "terminal_rows": len(rows), "supported": len(supported), "unsupported": len(rows) - len(supported), "pass": len(passed), "fail": len(supported) - len(passed), "state_accuracy": sum(bool(row["state_accuracy"]) for row in state_rows) / len(state_rows) if state_rows else None, "state_accuracy_denominator": len(state_rows), "gold_retrieval_rate": sum(bool(row["gold_retrieved_k16"]) for row in passed) / len(passed) if passed else None, "avg_memory_size": sum(row["final_memory_size"] for row in passed) / len(passed) if passed else None, "rows_sha256": sha256_bytes(rows_path.read_bytes()), "task_view_sha256": TASK_SHA256, "runner_source_sha256": sha256_bytes(Path(__file__).read_bytes()), "qualification_hashes": qualification["hashes"], "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")}, "letta_base_url": endpoint, "letta_configuration_hash": compute_letta_configuration_hash(build_letta_adapter_configuration(run_id="letta-qwen-manifest")), "model": {"id": MODEL_ID, "revision": MODEL_REVISION, "snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "timeout_seconds": 60.0, "seed": None, "device": "cuda:0"}, "provider_calls": 0, "api_calls": 0, "answer_model_metrics": None, "execution_mode": "injected_test_only" if adapter_factory is not None else "production"}
     if scan_for_secrets(summary):
         raise ValueError("canary receipt failed secret scan")
     summary["payload_sha256"] = sha256_bytes(canonical_json_bytes(summary))
