@@ -128,3 +128,25 @@ def test_full_scope_summary_has_null_prompted_metrics_and_operation_counts():
     assert summary["operation_counts"]["effective"]["add"] == 1
     assert summary["operation_counts"]["effective"]["noop"] == 1
     assert summary["total_reconciliation_count"] == 1
+
+
+def test_full_scope_summary_normalizes_uppercase_effective_operations():
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    rows = [
+        {"status": "PASS", "state_accuracy": True, "gold_retrieved_k16": True, "final_memory_size": 1,
+         "reconciliation_count": 1, "extractions": [
+             {"effective_operation": "ADD", "operation": "add"},
+             {"effective_operation": "UPDATE", "operation": "update"},
+         ]},
+    ]
+
+    summary = module.build_summary(rows, scope="full-family-a80", requested=1, rows_sha256="x" * 64,
+                                   qualification_hashes={}, qualification_identity={}, letta_binding={},
+                                   endpoint="http://127.0.0.1:8000", model_provenance={})
+
+    assert summary["operation_counts"]["requested"]["add"] == 1
+    assert summary["operation_counts"]["requested"]["update"] == 1
+    assert summary["operation_counts"]["effective"]["add"] == 1
+    assert summary["operation_counts"]["effective"]["update"] == 1
+    assert summary["total_reconciliation_count"] == 1

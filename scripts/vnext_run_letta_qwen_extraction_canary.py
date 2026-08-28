@@ -717,6 +717,10 @@ def build_summary(
         for extraction in row.get("extractions", []):
             operation = extraction.get("operation")
             effective = extraction.get("effective_operation")
+            if isinstance(operation, str):
+                operation = operation.lower()
+            if isinstance(effective, str):
+                effective = effective.lower()
             if operation in operations:
                 operations[operation] += 1
             if effective in effective_operations:
