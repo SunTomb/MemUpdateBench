@@ -216,7 +216,8 @@ class LettaExternalAdapterV3:
                     raise LettaAdapterError("Letta visible DELETE is malformed")
                 fields[name] = value
             target = self._target_by_id.get(target_text)
-            if target is None or fields.get("scope") != "object" or fields.get("enumerated_targets") != target_text or fields.get("event_logical_time") != event.timestamp or not fields.get("effective_at"):
+            expected_logical_time = event.timestamp if event.timestamp not in {None, ""} else "none"
+            if target is None or fields.get("scope") != "object" or fields.get("enumerated_targets") != target_text or fields.get("event_logical_time") != expected_logical_time or not fields.get("effective_at"):
                 raise LettaAdapterError("Letta visible DELETE is inconsistent")
             return AdapterActionPayloadV3(operation=Operation.DELETE, scope=ActionScope.OBJECT, target_object_keys=(target,))
         return AdapterActionPayloadV3(operation=observed.operation, scope=observed.scope, target_object_keys=observed.target_object_keys, value=observed.value)
