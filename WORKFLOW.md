@@ -3952,3 +3952,95 @@ results/vnext/post_core_letta_qwen_full_family_a_20260829_v2/full_family_a_recei
 ```
 
 The full matrix is supported-scope external-system evidence, not a broad leaderboard, not prompted-answer evidence, and not an isolated Letta or Qwen accuracy claim. It should be analyzed alongside the 24/24 bounded canary and the earlier LangMem supported-scope result.
+
+## Letta 0.16.8 + Qwen3.5 prompted-answer canary (2026-08-29)
+
+### Motivation and evidence boundary
+
+The earlier Letta Family-A runs established supported-scope state and retrieval evidence but intentionally left prompted-answer metrics null. This gate adds a separate answer layer without reinterpreting the extraction matrix: Qwen3.5 first performs visible-event CRUD extraction, the controller binds the admitted object and discloses empty-store UPDATE-to-ADD reconciliation, Letta performs native block state/export/retrieval, and the same source-bound Qwen snapshot answers only from the actual Letta k=16 retrieval trace. It is joint-pipeline evidence, not Letta-only accuracy, pure Qwen extraction accuracy, native Letta answering or a broad leaderboard result.
+
+The final source revision is `1e21674c0e4d648a8b1b8b7e5aaed2c87a341bfb`. Tang-3-Wu GPU0 was explicitly authorized and recorded as physical UUID `GPU-b4046e43-32f6-8e18-1a7d-4cfd3461a717`; logical `cuda:0` refers to that isolated visible device. PostgreSQL 18.6 + pgvector 0.8.6 was reconstructed from the previously authenticated local conda package cache with `--offline`, then Letta qualification passed on Tang-3 with loopback-only services and complete cleanup.
+
+### Runtime correction and diagnostics
+
+Two pre-result diagnostics are excluded from accuracy evidence:
+
+1. The first Tang-3 launcher stopped before Qwen load because it omitted four environment bindings used by the passing qualification (`PYTHONPATH`, `PYTHONIOENCODING`, `HF_HUB_OFFLINE` and `LETTA_NATIVE_API_BASE_URL`). No output root or task rows were created.
+2. Revision `930e038` loaded Qwen but produced 24 supported `FAIL` rows before first extraction because PyTorch 2.5.1 has no strict deterministic CUDA implementation for the Qwen3.5 `cumsum` kernel. This root is diagnostic only. Revision `1e21674` retains seed 0, greedy decoding, `CUBLAS_WORKSPACE_CONFIG=:4096:8`, CUDA/CuDNN deterministic settings and switches PyTorch to the disclosed `warn_only=True` mode. Two complete repetitions were then required and compared empirically.
+
+The missing strict CUDA kernel remains a runtime caveat. It did not change any semantic output across the two complete repetitions.
+
+### Commands and execution
+
+Representative commands were:
+
+```bash
+# Source-bound Letta qualification on Tang-3.
+python scripts/vnext_run_letta_runtime_qualification.py \
+  --python-executable /NAS/yesh/MemUpdateBench/external/conda_py313_v1/bin/python3.13 \
+  --postgres-bin /data/wujcan/mub_pg_env_tang3_prompted_v1/bin \
+  --letta-source /data/wujcan/letta_source_prompted_1131535716 \
+  --project-root /data/wujcan/mub_letta_project_1e21674 \
+  --project-revision 1e21674c0e4d648a8b1b8b7e5aaed2c87a341bfb \
+  --expected-postgres-version 18.6 \
+  --expected-pgvector-version 0.8.6
+
+# Each no-replace canary repetition used a fresh private PostgreSQL/Letta runtime.
+CUDA_VISIBLE_DEVICES=0 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+python scripts/vnext_run_letta_qwen_prompted_answer.py \
+  --scope canary32 \
+  --tasks <authenticated Family-A task view> \
+  --qualification-root <source-bound Tang-3 qualification> \
+  --letta-base-url http://127.0.0.1:58047 \
+  --model-snapshot /NAS/HuggingFaceModels/Qwen3.5-9B \
+  --model-snapshot-binding <authenticated binding receipt> \
+  --model-runtime-receipt <authenticated runtime receipt> \
+  --expected-letta-project-revision 1e21674c0e4d648a8b1b8b7e5aaed2c87a341bfb
+```
+
+### Results
+
+Both complete repetitions produced the same bounded result:
+
+```text
+requested tasks: 32
+supported single-object tasks: 24
+NOT_SUPPORTED multi-object tasks: 8
+PASS on supported tasks: 24/24
+FAIL on supported tasks: 0
+state accuracy: 1.000 (denominator 24)
+k=16 gold retrieval rate: 1.000 (denominator 24)
+average final memory size: 1.000
+prompted-answer EM: 1.000 (denominator 24)
+prompted-answer token F1: 1.000 (denominator 24)
+answer outcomes: CORRECT 24, WRONG 0, FORMAT_INVALID 0, UNAVAILABLE 0
+requested operations: ADD 20, UPDATE 600
+Letta effective operations: ADD 24, UPDATE 596
+empty-store UPDATE-to-ADD reconciliations: 4
+provider/API calls: 0/0
+retries: 0
+runtime cleanup: PASS
+```
+
+The repeated-run semantic projection SHA-256 is `229c70edc22b5fef5dc87f12e71e589b9ae08450ec484af41d59103f644684c9`. All 32 ordered terminal rows matched across repetitions for extraction output hashes, requested/effective operations, affected entry identities, final state, retrieval-trace hashes, visible-prompt hashes, answer raw-output hashes, prompted answers and scored outcomes. Latency fields were excluded from the determinism projection.
+
+### Authoritative artifacts
+
+```text
+results/vnext/post_core_letta_runtime_prompted_tang3_1e21674_v1/letta_runtime_qualification.json
+  SHA-256 df6aeac1be6397c41be1a4965fba33c5141a9d93c8e73c4456b1669fc8992d0a
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_v1/rows.jsonl
+  SHA-256 b526d7dee333c4a00bdf60b6da3f989ccc6daa03e67c9e892ce552015e5de638
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_v1/canary_receipt.json
+  SHA-256 6aa56558377c59b72e06e037e22fc348e6438e781c2f33325934ae236c729ff8
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_v1/execution_environment_receipt.json
+  SHA-256 322964c13f311d7631115fded1595d5563ca5c66f60384899ab9a4d230dd7aac
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_repeat_v1/rows.jsonl
+  SHA-256 2fb899a98dfbc2e368c7296e1deaffc9de3408a1464db66aa1e25f4d33a53e00
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_repeat_v1/execution_environment_receipt.json
+  SHA-256 028b85342adb7be3af323bacbf35872653fc7e22732e1ec43fd0813aaa2cde02
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_determinism_v1/determinism_receipt.json
+  SHA-256 b32c61637d6832154468ac6a95ca5d236f1378952f33037a19b62882aeece769
+```
+
+Each successful run also contains a canonical artifact index and integrity audit. Unsupported tasks remain outside every quality denominator. The valid conclusion is narrow: within Letta's admitted single-record Family-A surface, the source-bound Qwen extraction + controller + Letta retrieval + Qwen prompted-answer pipeline was fully correct and empirically stable across two repetitions. The separate 80-task full-family prompted-answer matrix remains a downstream gate rather than part of this canary claim.
