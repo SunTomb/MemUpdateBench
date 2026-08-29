@@ -4044,3 +4044,46 @@ results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_determinism_v1/
 ```
 
 Each successful run also contains a canonical artifact index and integrity audit. Unsupported tasks remain outside every quality denominator. The valid conclusion is narrow: within Letta's admitted single-record Family-A surface, the source-bound Qwen extraction + controller + Letta retrieval + Qwen prompted-answer pipeline was fully correct and empirically stable across two repetitions. The separate 80-task full-family prompted-answer matrix remains a downstream gate rather than part of this canary claim.
+
+## Letta 0.16.8 + Qwen3.5 full Family-A prompted-answer matrix (2026-08-29)
+
+After the repeated canary closed the prompted-answer and empirical determinism gates, the same source-bound pipeline was extended without changing the model, prompt renderer, parser, retrieval policy, controller reconciliation policy or Letta profile. The full run used revision `1e21674c0e4d648a8b1b8b7e5aaed2c87a341bfb`, the same Tang-3 qualification SHA-256 `df6aeac1be6397c41be1a4965fba33c5141a9d93c8e73c4456b1669fc8992d0a`, physical Tang-3 GPU0 and a fresh private PostgreSQL/Letta runtime.
+
+```text
+requested tasks: 80
+supported single-object tasks: 52
+NOT_SUPPORTED multi-object tasks: 28
+PASS on supported tasks: 52/52
+FAIL on supported tasks: 0
+state accuracy: 1.000 (denominator 52)
+k=16 gold retrieval rate: 1.000 (denominator 52)
+average final memory size: 1.000
+prompted-answer EM: 1.000 (denominator 52)
+prompted-answer token F1: 1.000 (denominator 52)
+answer outcomes: CORRECT 52, WRONG 0, FORMAT_INVALID 0, UNAVAILABLE 0
+requested operations: ADD 43, UPDATE 1193
+Letta effective operations: ADD 52, UPDATE 1184
+empty-store UPDATE-to-ADD reconciliations: 9
+provider/API calls: 0/0
+retries: 0
+runtime cleanup: PASS
+```
+
+The integrity audit verified exactly 80 ordered unique terminal rows, canonical JSON, source/model/qualification/worker bindings, secret-free artifacts, status-specific metric/null policies and complete runtime cleanup. All 32 tasks from the authoritative prompted-answer canary are present in the full matrix; their latency-excluded semantic projections are identical 32/32 for extraction outputs, operations, state, retrieval trace, visible prompt, answer output and score. This provides a direct consistency bridge from the repeated canary to the expanded 80-task surface.
+
+Authoritative artifacts:
+
+```text
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/rows.jsonl
+  SHA-256 2589a216a38ee97b91fee7a0e9e0a318be43d192e7a78e5600f27a6e8c35c44a
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/full_family_a_receipt.json
+  SHA-256 cda35ec576ab493ce2ac1ab016e1a8a9c64766c7dd4794339c0857a3de750fbb
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/artifact_index.json
+  SHA-256 2d6e20174c2cb75cee7f189f06dedffd128b8a80eff36bea0412fe0f10b9f3a2
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/execution_environment_receipt.json
+  SHA-256 e6c51ebbe568b4d768685917e7c3203bdf86fabb142bd9b463d65c7e95dda1b0
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/integrity_audit.json
+  SHA-256 2f3c517ff5707610aa93e7e6470498a30c91035ed810470dbb7f7d609423a835
+```
+
+Evidence boundary: this is complete Family-A supported-scope joint-pipeline evidence for Qwen visible-event extraction + controller reconciliation + Letta native block state/retrieval + Qwen retrieved-context answering. It is still not Letta-only accuracy, pure Qwen accuracy, native Letta answering or a broad cross-system leaderboard claim. The 28 multi-object tasks remain explicit unsupported work rather than zero-valued failures.
