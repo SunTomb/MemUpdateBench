@@ -169,6 +169,15 @@ def safe_offline_environment() -> None:
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
+def configure_deterministic_torch(torch) -> None:
+    torch.manual_seed(0)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+
 def _load_model_pair(model, extractor) -> None:
     try:
         model.load()
@@ -357,11 +366,7 @@ class QwenSession:
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
             self.torch = torch
-            torch.manual_seed(0)
-            torch.use_deterministic_algorithms(True)
-            if torch.cuda.is_available():
-                torch.backends.cudnn.benchmark = False
-                torch.backends.cudnn.deterministic = True
+            configure_deterministic_torch(torch)
             self.tokenizer = AutoTokenizer.from_pretrained(
                 str(self.snapshot), revision=MODEL_REVISION, local_files_only=True,
                 trust_remote_code=False,
@@ -801,7 +806,7 @@ def run(args, *, extractor_factory: Callable[[], object] | None = None, adapter_
         qualification_hashes=qualification["hashes"],
         qualification_identity={"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")},
         letta_binding=letta_binding, endpoint=endpoint,
-        model_provenance={"snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "snapshot_binding": model_provenance["snapshot_binding"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())},
+        model_provenance={"snapshot": model_provenance["snapshot"], "tree_sha256": model_provenance["tree_sha256"], "snapshot_binding": model_provenance["snapshot_binding"], "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"], "runtime_receipt_schema": model_provenance["runtime_identity"], "dtype": "bf16", "decoding": "greedy", "seed": 0, "deterministic_algorithms": "warn_only", "cublas_workspace_config": ":4096:8", "attn_implementation": "eager", "trust_remote_code": False, "thinking_enabled": False, "device": "cuda:0", "runtime_executable": str(Path(sys.executable).resolve())},
         execution_mode=execution_mode,
     )
     receipt_name = "full_family_a_receipt.json" if scope == FULL_SCOPE else "canary_receipt.json"
@@ -819,6 +824,9 @@ def run(args, *, extractor_factory: Callable[[], object] | None = None, adapter_
             "snapshot_binding_receipt_sha256": model_provenance.get("snapshot_binding", {}).get("receipt_file_sha256"),
             "snapshot_binding_payload_sha256": model_provenance.get("snapshot_binding", {}).get("receipt_payload_sha256"),
             "runtime_receipt_sha256": model_provenance["runtime_receipt_sha256"],
+            "seed": 0,
+            "deterministic_algorithms": "warn_only",
+            "cublas_workspace_config": ":4096:8",
         },
         "qualification_hashes": qualification["hashes"],
         "qualification_identity": {"package": qualification["closure"].get("identity"), "source": qualification["closure"].get("source"), "project_source": qualification["closure"].get("project_source"), "runtime": qualification["closure"].get("runtime")},

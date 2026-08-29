@@ -286,12 +286,13 @@ def test_qwen_load_closes_partial_resources_when_model_load_raises(monkeypatch, 
     class Cuda:
         def __init__(self): self.empty = 0; self.sync = 0
         def is_available(self): return True
+        def manual_seed_all(self, seed): pass
         def empty_cache(self): self.empty += 1
         def synchronize(self): self.sync += 1
 
     fake_torch = types.SimpleNamespace(
         cuda=Cuda(), bfloat16=object(), manual_seed=lambda value: None,
-        use_deterministic_algorithms=lambda value: None,
+        use_deterministic_algorithms=lambda value, **kwargs: None,
         backends=types.SimpleNamespace(cudnn=types.SimpleNamespace(benchmark=True, deterministic=False)),
     )
 
@@ -333,7 +334,7 @@ def test_qwen_load_closes_model_when_eval_raises(monkeypatch, tmp_path: Path) ->
         def is_available(self): return False
     fake_torch = types.SimpleNamespace(
         cuda=Cuda(), bfloat16=object(), manual_seed=lambda value: None,
-        use_deterministic_algorithms=lambda value: None,
+        use_deterministic_algorithms=lambda value, **kwargs: None,
         backends=types.SimpleNamespace(cudnn=types.SimpleNamespace(benchmark=True, deterministic=False)),
     )
     class Resource:
@@ -807,3 +808,39 @@ def test_production_row_accepts_required_letta_configuration_hash() -> None:
     )
     assert row["letta_configuration_hash"] == "a" * 64
     assert "execution_mode" not in row
+
+
+def test_torch_determinism_uses_seeded_warn_only_mode() -> None:
+    from scripts.vnext_run_letta_qwen_prompted_answer import configure_deterministic_torch
+
+    calls = []
+
+    class Cuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def manual_seed_all(seed):
+            calls.append(("cuda_seed", seed))
+
+    class Cudnn:
+        benchmark = True
+        deterministic = False
+
+    fake_torch = SimpleNamespace(
+        cuda=Cuda(),
+        backends=SimpleNamespace(cudnn=Cudnn()),
+        manual_seed=lambda seed: calls.append(("seed", seed)),
+        use_deterministic_algorithms=lambda enabled, **kwargs: calls.append(
+            ("deterministic", enabled, kwargs)
+        ),
+    )
+
+    configure_deterministic_torch(fake_torch)
+
+    assert ("seed", 0) in calls
+    assert ("cuda_seed", 0) in calls
+    assert ("deterministic", True, {"warn_only": True}) in calls
+    assert fake_torch.backends.cudnn.benchmark is False
+    assert fake_torch.backends.cudnn.deterministic is True
