@@ -199,3 +199,18 @@ def test_family_d_noop_traps_have_no_mutation_and_replay_clean(config) -> None:
         replay = replay_task_v3(task)
         assert not replay.issues
         assert replay.current_state[task.target_objects[0].canonical_id].value == task.gold_evidence[0].answer
+
+
+def test_family_c_alias_is_explicit_and_query_is_localized(config) -> None:
+    core = next(
+        item for item in generate_post_core_family_c_cores(config)
+        if item.family_axes["entity_condition"] == "alias"
+        and item.family_axes["attribute_condition"] == "exact"
+    )
+    english, _, spanish, japanese = render_post_core_tasks_v3(
+        core, config=config, split=Split.TRAIN, code_revision="post-core-render-test"
+    )
+    assert len(english.target_objects) == 1
+    assert "also known as" in english.queries[0].text
+    assert "Resuelve" in spanish.queries[0].text
+    assert "参照" in japanese.queries[0].text

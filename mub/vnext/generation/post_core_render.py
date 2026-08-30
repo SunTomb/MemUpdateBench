@@ -221,7 +221,7 @@ def _family_c_events_and_actions(core: PostCoreSemanticCore, rendered_task_id: s
     if entity_condition in {"same_name", "namespace_collision"}:
         keys = [_object_key(core, 0, namespace="post_core_a", entity="shared_entity"), _object_key(core, 1, namespace="post_core_b", entity="shared_entity")]
     elif entity_condition == "alias":
-        keys = [_object_key(core, 0, entity="primary_entity"), _object_key(core, 1, entity="alternate_entity")]
+        keys = [_object_key(core, 0, entity="primary_entity")]
     else:
         keys = [_object_key(core, 0)]
     events: list[dict[str, Any]] = []
@@ -336,7 +336,7 @@ def _build_current_evidence(query_id_value: str, key: dict[str, Any], event_id_v
     }
 
 
-def _build_family_c_query_and_evidence(query_id_value: str, keys: list[dict[str, Any]], events: list[dict[str, Any]], core: PostCoreSemanticCore) -> tuple[dict[str, Any], dict[str, Any]]:
+def _build_family_c_query_and_evidence(query_id_value: str, keys: list[dict[str, Any]], events: list[dict[str, Any]], core: PostCoreSemanticCore, *, locale: str) -> tuple[dict[str, Any], dict[str, Any]]:
     entity_condition = str(core.family_axes["entity_condition"])
     attribute_condition = str(core.family_axes["attribute_condition"])
     candidates = [
@@ -371,10 +371,22 @@ def _build_family_c_query_and_evidence(query_id_value: str, keys: list[dict[str,
         "evidence_kind": attribute_condition,
         "candidate_ids": list(linked_ids),
     }
+    query_text = f"Resolve the reference for {core.domain}.{core.attribute} and answer only when it is unique."
+    if entity_condition == "alias":
+        if locale == "es-ES":
+            query_text = f"Resuelve la referencia de alias alternate_entity, también conocida como primary_entity, para {core.domain}.{core.attribute} y responde solo cuando sea única."
+        elif locale == "ja-JP":
+            query_text = f"primary_entity の別名 alternate_entity に関する {core.domain}.{core.attribute} の参照を解決し、一意の場合のみ答えてください。"
+        else:
+            query_text = f"Resolve the alias reference alternate_entity, also known as primary_entity, for {core.domain}.{core.attribute} and answer only when it is unique."
+    elif locale == "es-ES":
+        query_text = f"Resuelve la referencia para {core.domain}.{core.attribute} y responde solo cuando sea única."
+    elif locale == "ja-JP":
+        query_text = f"{core.domain}.{core.attribute} の参照を解決し、一意の場合のみ答えてください。"
     query = {
         "query_id": query_id_value,
         "query_type": QueryTypeV3.UNRESOLVED_REFERENCE,
-        "text": f"Resolve the reference for {core.domain}.{core.attribute} and answer only when it is unique.",
+        "text": query_text,
         "selector": {
             "kind": "reference_resolution",
             "reference_candidates": candidates,
@@ -449,7 +461,9 @@ def _build_task(core: PostCoreSemanticCore, config: PostCoreDataConfig, *, split
     query_id_value = query_id(rendered_task_id, 0)
     version_history_raw = _build_version_history(keys_raw, actions_raw)
     if core.family_id == "entity_attribute_grounding":
-        query_raw, evidence_raw = _build_family_c_query_and_evidence(query_id_value, keys_raw, events_raw, core)
+        query_raw, evidence_raw = _build_family_c_query_and_evidence(
+            query_id_value, keys_raw, events_raw, core, locale=locale
+        )
     else:
         query_key = keys_raw[0]
         query_identity = tuple(query_key.get(part) for part in ("namespace", "entity", "attribute", "subkey"))
