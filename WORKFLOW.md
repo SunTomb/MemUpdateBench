@@ -4138,3 +4138,20 @@ Artifact:
 results/vnext/main_track_v1_oracle_diagnostic_v1/oracle_diagnostic.json
   SHA-256 dbee00842013342f527ebba5a3342b26bef43453793982172ee2fbb3362b18d3
 ```
+
+### Human-audit packet preparation (2026-08-30)
+
+A separate no-replace packet was materialized from the corrected candidate and authenticated 60-core selection. It contains exactly 240 selected surface-task records in selection order, including visible event text, normalized text, roles/metadata, declared actions/effects, target objects, query selectors, gold evidence, version history and blank human decision fields. It contains no model outputs and does not represent human decisions.
+
+```text
+packet tasks: 240
+selected semantic cores: 60
+artifacts: 3 (audit_packet.jsonl, audit_manifest.json, review_instructions.md)
+review status: NOT_STARTED
+policy: post-core-data-audit-v1
+audit_packet.jsonl SHA-256: ecdb7269db41309e2c8694dba9ecbb12a5a4d28fd4f11cbc2d99b77ce719cd65
+audit_manifest.json SHA-256: 6f9c0431b8a0ce639f428a7c346f3a95e4225a8baafe4a8d8faf14d00339fcdb
+review_instructions.md SHA-256: 323a2121a28ce56cc30e4f39fc9876939b355967ce7f1f2e026e1c92eebb4bcc
+```
+
+The packet is bound to candidate `data/vnext/main_track_v1_independence_v1` and selection hash `b6e9056792d8be212873ad1559487b2d6c66d833e1f9fb1cb6a1d2d2fc11e935`. Human review remains the release blocker; any requested semantic correction must regenerate a new candidate and packet rather than patching either artifact in place.
