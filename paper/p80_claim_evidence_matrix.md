@@ -239,24 +239,31 @@ results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.js
 
 **Caveat:** Coverage is not performance. Unsupported tasks are never pooled as zero. LangMem shares Qwen3.5 for extraction and answering, and its single-record profile envelope is not directly comparable to Raw append or exact CRUD as a broad leaderboard row.
 
-## Claim 12: Letta remains fail-closed blocked and has no accuracy row
+## Claim 12: Letta external-system evidence separates qualification, coverage and performance
 
 **Evidence:**
 
-- Letta 0.16.8 reports `letta_package_not_installed`; no package, server, or model was started.
-- The checked-in protocol fake is test-only and is not runtime evidence.
-- The admission receipt remains `BLOCKED` with runtime/accuracy/prompted-answer evidence `NOT_RUN`.
+- Letta 0.16.8 now has authenticated source-bound runtime qualification: native block lifecycle, 20/20 namespace reset trials, loopback-only PostgreSQL 18.6 + pgvector 0.8.6, and clean shutdown all pass.
+- The complete Qwen-assisted Family-A extraction matrix requests 80 tasks, supports 52 single-object tasks, leaves 28 multi-object tasks explicitly `NOT_SUPPORTED`, and passes all 52 supported tasks for state accuracy, k=16 gold retrieval, compactness and stable entry IDs.
+- The separate Qwen-assisted prompted-answer matrix requests the same 80 tasks, passes 52/52 supported tasks with prompted-answer EM/F1 1.000/1.000, and keeps unsupported tasks outside every quality denominator.
+- A repeated 32-task prompted-answer canary matches 32/32 on latency-excluded semantic projections before the full matrix; this supports empirical repeatability under the disclosed Qwen `warn_only` CUDA determinism caveat.
 
 **Artifacts and hashes:**
 
 ```text
-results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/preflight.json
-  89cc8ce890929a3b3710f50b1238b40865676288fdd3aff1257a896724778fbf
-results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/admission_receipt.json
-  fbf9f7cdf2e80549f93f519a360beda3a076aab0ee54fcbd724f678aef935a9e
+results/vnext/post_core_letta_runtime_prompted_tang3_1e21674_v1/letta_runtime_qualification.json
+  df6aeac1be6397c41be1a4965fba33c5141a9d93c8e73c4456b1669fc8992d0a
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/rows.jsonl
+  2589a216a38ee97b91fee7a0e9e0a318be43d192e7a78e5600f27a6e8c35c44a
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/full_family_a_receipt.json
+  cda35ec576ab493ce2ac1ab016e1a8a9c64766c7dd4794339c0857a3de750fbb
+results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/integrity_audit.json
+  2f3c517ff5707610aa93e7e6470498a30c91035ed810470dbb7f7d609423a835
+results/vnext/post_core_letta_qwen_prompted_canary_tang3_1e21674_determinism_v1/determinism_receipt.json
+  b32c61637d6832154468ac6a95ca5d236f1378952f33037a19b62882aeece769
 ```
 
-**Caveat:** The protocol fake must not be described as Letta runtime evidence; no accuracy row exists and blocked/null is not zero.
+**Caveat:** This is joint Qwen extraction + controller reconciliation + Letta native state/retrieval + Qwen prompted-answer evidence on the admitted single-record profile envelope. It is not Letta-only accuracy, pure Qwen accuracy, native Letta answering or a broad leaderboard row. Unsupported multi-object work is explicit null/unsupported evidence, not zero.
 
 ## Claim 13: Capability smoke establishes interface scope, not benchmark performance
 
@@ -277,4 +284,4 @@ paper/p80_qwen35_full_matrix_note.md
 
 ## Corrected external-system evidence boundary
 
-The LangMem-labeled result uses LangGraph `InMemoryStore` and custom adapter semantics; the installed LangMem package is identity-gated but its native runtime APIs are not invoked for CRUD/retrieval. Qwen extraction is target-conditioned (admitted attribute supplied; sole object ID controller-bound) and empty-store UPDATE is reconciled to CREATE. Report this as an external LangGraph-store/custom-adapter pipeline, not native LangMem or isolated storage-policy evidence. The no-LLM canary has 0/24 raw-text ingests and 8 explicit multi-object unsupported rows; per-row false flags are operational failures, while aggregate metrics are null. The Qwen-assisted full Family-A row has 52/80 supported tasks (65%), 28 unsupported, and supported state/retrieval/prompt EM 1.0. Closure hashes bind task-view and Qwen snapshot/runtime: canary `18d2a2816694d8c0749b5244b4f3a3d6b7413b7bdc75df9e86f7a3eb5506b6b7`; full `159bb5c36f516c5e3a5f030faf4c88bde72af5c1355a930ff5f0c819c8ee8383`. Letta remains blocked with no accuracy row.
+The LangMem-labeled result uses LangGraph `InMemoryStore` and custom adapter semantics; the installed LangMem package is identity-gated but its native runtime APIs are not invoked for CRUD/retrieval. Qwen extraction is target-conditioned (admitted attribute supplied; sole object ID controller-bound) and empty-store UPDATE is reconciled to CREATE. Report this as an external LangGraph-store/custom-adapter pipeline, not native LangMem or isolated storage-policy evidence. The no-LLM canary has 0/24 raw-text ingests and 8 explicit multi-object unsupported rows; per-row false flags are operational failures, while aggregate metrics are null. The Qwen-assisted full Family-A row has 52/80 supported tasks (65%), 28 unsupported, and supported state/retrieval/prompt EM 1.0. Closure hashes bind task-view and Qwen snapshot/runtime: canary `18d2a2816694d8c0749b5244b4f3a3d6b7413b7bdc75df9e86f7a3eb5506b6b7`; full `159bb5c36f516c5e3a5f030faf4c88bde72af5c1355a930ff5f0c819c8ee8383`. The newer Letta evidence is covered by Claim 12 and must not be merged into the LangMem claim.
