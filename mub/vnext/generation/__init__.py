@@ -65,6 +65,14 @@ from mub.vnext.generation.post_core_config import (
     PostCoreDataConfig,
     load_post_core_data_config,
 )
+from mub.vnext.generation.post_core_splits import (
+    PostCoreSplitAssignment,
+    PostCoreSplitAssignmentResult,
+    PostCoreSplitBalanceCell,
+    PostCoreSplitBalanceReport,
+    PostCoreSplitResult,
+    assign_post_core_splits,
+)
 from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.family_a import (
@@ -177,6 +185,11 @@ __all__ = [
     "PilotArtifactBundle",
     "PilotConfig",
     "PostCoreDataConfig",
+    "PostCoreSplitAssignment",
+    "PostCoreSplitAssignmentResult",
+    "PostCoreSplitBalanceCell",
+    "PostCoreSplitBalanceReport",
+    "PostCoreSplitResult",
     "POST_CORE_ATTRIBUTE_IDS",
     "POST_CORE_DATA_COMPILER_VERSION",
     "POST_CORE_DATA_CORES_PER_FAMILY",
@@ -206,6 +219,7 @@ __all__ = [
     "VALUES",
     "values_for_attribute",
     "action_id",
+    "assign_post_core_splits",
     "assign_splits",
     "build_pilot",
     "build_pilot_artifact_bundle",
