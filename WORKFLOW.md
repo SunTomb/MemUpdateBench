@@ -4087,3 +4087,49 @@ results/vnext/post_core_letta_qwen_prompted_full_family_a_tang3_1e21674_v1/integ
 ```
 
 Evidence boundary: this is complete Family-A supported-scope joint-pipeline evidence for Qwen visible-event extraction + controller reconciliation + Letta native block state/retrieval + Qwen retrieved-context answering. It is still not Letta-only accuracy, pure Qwen accuracy, native Letta answering or a broad cross-system leaderboard claim. The 28 multi-object tasks remain explicit unsupported work rather than zero-valued failures.
+
+## Main-track v1 multilingual B/C/D data candidate (2026-08-29)
+
+### Motivation and boundary
+
+The current Family-A external rows are a useful authenticated starting point but cover only 20 semantic cores and leave all multi-object tasks outside the supported profile envelope. To move toward a main-track benchmark, an add-only sibling data release was generated without modifying `data/vnext/core/v3`, Core manifests, Pilot files or Phase-0 metadata. This candidate expands independent semantic cores, controlled domains, attributes, task families and language/surface variation. It is a dataset candidate, not a human-audited or `FINAL_APPROVED` benchmark release.
+
+### Candidate design
+
+```text
+release_id: main_track_v1
+families: B interleaved multi-slot, C entity/attribute grounding, D NOOP/write discipline
+semantic cores: 900 (300 per family)
+renders: 4 per core
+strict-v3 tasks: 3,600
+split: group-first 630 train / 90 dev / 180 test cores
+split tasks: 2,520 train / 360 dev / 720 test
+surfaces: en-US explicit canonical, en-US concise natural, es-ES concise natural, ja-JP concise natural
+domains: 12
+attributes: 12
+difficulty per family: 150 easy / 90 medium / 60 hard
+review status: NOT_STARTED
+```
+
+Family B covers active object counts 2/4/8/12 and round-robin, burst and adversarial-adjacent interleavings. Family C covers exact/paraphrase/near-name attribute references, distinct/alias/same-name/namespace-collision entities and typed unique/ambiguous/no-match outcomes. Family D covers transient, hypothetical, negated, uncertain, semantic-near-miss, duplicate-current and unsupported-inference traps at NOOP densities 25/50/75 percent. The four surface variants preserve one semantic task hash per core while varying rendered/source/task identities and text hashes.
+
+### Automated validation and audit selection
+
+All 3,600 tasks pass strict-v3 construction, deterministic replay and normative evidence evaluation. The candidate validator checks exact counts, group-first split assignment, four-surface semantic equivalence, cross-split identity leakage, canonical bytes, manifest/per-task hashes and frozen-root exclusion. A separate deterministic audit-selection artifact selects 60 cores and all 240 corresponding surface tasks, covering all three families, all 12 domains and attributes, all four surfaces, all splits, all difficulty levels and every declared B/C/D diagnostic axis. Human review remains pending; no model or external-system evaluation has been run on this release.
+
+Authoritative candidate artifacts:
+
+```text
+data/vnext/main_track_v1/
+  generation_config.json
+  catalog_manifest.json
+  semantic_cores.jsonl
+  tasks.jsonl
+  split_balance.json
+  task_manifest.json
+  validation_report.json
+  release_index.json
+results/vnext/main_track_v1_audit_selection/selection.json
+```
+
+The candidate and selector were committed and pushed in `6d538ce`. The release is ready for the next human-audit gate, after which any wording/semantic corrections must regenerate a new candidate rather than patching published bytes. Only a passed stratified audit and final post-audit release validation can authorize downstream baseline/model runs.
