@@ -163,19 +163,33 @@ Paper wording: report as separate checkpoint families; do not call the gap pure 
 
 **Paper wording:** Qwen3.5-9B is bounded answer-model evidence over frozen Raw Append contexts. It does not reproduce reverse-order high-k collapse; its only observed tail is a small chronological/no-label k=4 positional/retrieval error pattern. Do not turn this into a broad external-memory-system robustness claim.
 
-## Post-Core external-system evidence: LangMem and Letta
+## Post-Core external-system evidence: LangGraph custom pipeline and Letta
 
 Coverage and performance are separate ledger dimensions. Unsupported tasks remain typed unsupported/null and are not scored as zero.
 
 | System/configuration | Scope and coverage | Supported-scope performance | Evidence |
 | --- | --- | --- | --- |
-| LangMem-labeled direct profile admission | LangMem package identity gate + LangGraph `InMemoryStore` + custom adapter; explicit CRUD profile only | Admission/protocol evidence only; not native LangMem runtime or benchmark accuracy | `results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/` |
+| LangMem package identity gate / LangGraph `InMemoryStore` custom adapter | Package identity gate + custom adapter; explicit CRUD profile only | Admission/protocol evidence only; not native LangMem runtime or benchmark accuracy | `results/vnext/post_core_langmem_0_0_30_profile_admission_20260826/` |
 | No-LLM raw-text canary | 32 requested; 24 single-object eligible; 8 multi-object `NOT_SUPPORTED`; raw-text success 0/24 | 24 `VISIBLE_SURFACE_UNSUPPORTED`; aggregate metrics null; failed rows not scored | rows SHA-256 `1c1eded0602260c1f09be2ecfde8f9427288ac13e7da18198c186c2027cf0c36` |
 | LangGraph-store/custom-adapter + Qwen canary | 32 requested; 24 supported; 8 `NOT_SUPPORTED`; target-conditioned extraction | 24/24 pass; state/retrieval 1.000; empty-store UPDATE reconciled to CREATE | closure v2 SHA-256 `18d2a2816694d8c0749b5244b4f3a3d6b7413b7bdc75df9e86f7a3eb5506b6b7` |
 | LangGraph-store/custom-adapter + Qwen full Family-A | 80 requested; 52 supported (65%); 28 `NOT_SUPPORTED` | 52/52 pass; state/retrieval/memory/prompt EM 1.000 | closure v2 SHA-256 `159bb5c36f516c5e3a5f030faf4c88bde72af5c1355a930ff5f0c819c8ee8383` |
-| Letta 0.16.8 direct-block candidate | Package installed; source binding incomplete; PostgreSQL runtime unavailable/unauthorized | `BLOCKED`; no lifecycle or accuracy row | `results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/` |
+| **Historical, superseded:** Letta 0.16.8 direct-block candidate | Package installed; source binding incomplete; PostgreSQL runtime unavailable/unauthorized | `BLOCKED`; no lifecycle or accuracy row | `results/vnext/post_core_letta_0_16_8_block_profile_admission_20260827_v4/` |
 
-**Interpretation boundary:** the current external performance row is a LangGraph-store/custom-adapter pipeline with a verified LangMem package dependency, not native LangMem runtime evidence. Qwen receives target attribute conditioning and supplies extraction plus answering; coverage and supported-task metrics remain separate.
+**Interpretation boundary:** the LangMem-labeled performance rows are a LangGraph `InMemoryStore` plus custom adapter pipeline with a verified LangMem package dependency; native LangMem runtime APIs are not used for CRUD or retrieval. Qwen receives target attribute conditioning and supplies extraction plus answering; coverage and supported-task metrics remain separate.
+
+## Current Letta qualification, extraction, and prompted-answer evidence
+
+The historical blocked row above is retained for provenance but is superseded by the authenticated runtime and source-bound supported-scope results below.
+
+| System/configuration | Scope and coverage | Supported-scope performance | Evidence |
+| --- | --- | --- | --- |
+| Letta 0.16.8 authenticated runtime qualification | Native block runtime; 20 namespace-reset trials; add/update/noop/export/retrieve/slot-direct/delete lifecycle | Preflight/admission pass; 20/20 reset; stable add/update/delete entry ID; post-delete export empty; cleanup pass | preflight SHA-256 `620a30c8c3fe05788e17aae52e7b015eb8cda0db549d5d9e47092b1d8e436e41`; admission SHA-256 `196b5d8bde95a3d35445aea143e4bae0a702de2fd5a7515fec970bf71e5dffc5`; qualification SHA-256 `fb3ce1ae6829aeb61353190806360a5aad17c4b4387aeab715248aad49501305` |
+| Letta + Qwen3.5 extraction canary | 32 requested; 24 supported; 8 multi-object `NOT_SUPPORTED`; prompted answering not run | 24/24 pass; state/retrieval/memory size 1.000; stable native entry ID 24/24; 4 empty-store UPDATE-to-ADD reconciliations | rows SHA-256 `95107ccaf39a880fb2d953cdee0cc8cf8969223bdcad952df0645d3d2fba35db`; canary receipt SHA-256 `885857451e27682c2e016059ee6380f2074bd0c2f8ec3e1f93cc70597817f164` |
+| Letta + Qwen3.5 extraction full Family-A | 80 requested; 52 supported; 28 multi-object `NOT_SUPPORTED` | 52/52 pass; state/retrieval/memory size/stable entry ID 1.000; 9 empty-store UPDATE-to-ADD reconciliations | rows SHA-256 `3aee23cae9148ba14214d4afe10e3a0ff3d6821d9ab89f660f3f80bfcd544c16`; receipt SHA-256 `6ef2a66639de6d7da97b3f3345d19fcce86297670b011ffcba89f8f716740007` |
+| Letta + Qwen3.5 prompted-answer canary | 32 requested; 24 supported; 8 multi-object `NOT_SUPPORTED`; two complete repetitions | 24/24 pass; state/retrieval/prompt EM/F1 1.000; 4 empty-store UPDATE-to-ADD reconciliations; repeated semantic projection SHA-256 `229c70edc22b5fef5dc87f12e71e589b9ae08450ec484af41d59103f644684c9` | runtime qualification SHA-256 `df6aeac1be6397c41be1a4965fba33c5141a9d93c8e73c4456b1669fc8992d0a`; rows SHA-256 `b526d7dee333c4a00bdf60b6da3f989ccc6daa03e67c9e892ce552015e5de638`; receipt SHA-256 `6aa56558377c59b72e06e037e22fc348e6438e781c2f33325934ae236c729ff8`; determinism receipt SHA-256 `b32c61637d6832154468ac6a95ca5d236f1378952f33037a19b62882aeece769` |
+| Letta + Qwen3.5 prompted-answer full Family-A | 80 requested; 52 supported; 28 multi-object `NOT_SUPPORTED` | 52/52 pass; state/retrieval/memory size/prompt EM/F1 1.000; 9 empty-store UPDATE-to-ADD reconciliations; runtime cleanup pass | runtime qualification SHA-256 `df6aeac1be6397c41be1a4965fba33c5141a9d93c8e73c4456b1669fc8992d0a`; rows SHA-256 `2589a216a38ee97b91fee7a0e9e0a318be43d192e7a78e5600f27a6e8c35c44a`; receipt SHA-256 `cda35ec576ab493ce2ac1ab016e1a8a9c64766c7dd4794339c0857a3de750fbb`; integrity audit SHA-256 `2f3c517ff5707610aa93e7e6470498a30c91035ed810470dbb7f7d609423a835` |
+
+**Letta interpretation boundary:** these are supported-scope joint-pipeline results for source-bound Qwen visible-event extraction, explicit controller reconciliation, Letta native block state/retrieval, and Qwen retrieved-context answering. They are not Letta-only accuracy, pure Qwen extraction accuracy, native Letta answering, or a broad cross-system leaderboard; the 28 multi-object tasks remain explicit unsupported work rather than zero-valued failures.
 
 ## Post-Core BASE capability smoke (operational qualification only)
 

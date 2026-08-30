@@ -2,20 +2,20 @@
 
 ## Current decision
 
-No-go for external-baseline implementation in the current P6.7 manuscript block. The current P6.3/P6.7 assets already support the main diagnostic claim: repeated same-slot updates create a tradeoff among final-state reliability, stale same-slot burden, memory compactness, and slot-conditioned answer robustness.
+Bounded external-system evidence now exists, but no fair native-SDK leaderboard row is claimed. The LangMem-labeled result is a LangGraph `InMemoryStore` plus custom MemUpdateBench adapter pipeline with the LangMem package used as an identity gate only. Letta has an authenticated native block runtime qualification and a 52/80 supported-scope prompted-answer matrix, both explicitly reported as a joint Qwen-extraction/controller/Letta pipeline. Mem0 has capability/admission evidence only, not native benchmark accuracy.
 
-External baselines should be added only if the paper draft needs ecosystem grounding beyond controlled diagnostic baselines.
+These rows supplement rather than replace the controlled diagnostic baselines. Broader external validity still requires comparable native integrations, wider data and domains, and a representative answer-model panel.
 
 ## Why not now
 
-1. The main claim is already visible without an external system: raw append and heuristic CRUD preserve `slot_direct` recoverability but collapse under `slot_prompt`, while Long25 trades compactness for imperfect final-state reliability.
+1. The main claim remains visible in the controlled baselines: raw append and heuristic CRUD preserve `slot_direct` recoverability but collapse under `slot_prompt`, while Long25 trades compactness for imperfect final-state reliability.
 2. The existing `baselines/` directory contains older agent-interface code and is not aligned with the current clean MemUpdateBench manuscript path.
-3. Mem0/Letta/MemGPT feasibility was previously checked at the package/environment level; they were not installed in the current cluster environment.
-4. Installing external systems into the main environment would add dependency and integration risk without first proving that the paper needs those rows.
+3. The completed external rows have deliberately bounded identities: LangGraph Store/custom adapter with a LangMem package identity gate; Letta native block state/retrieval combined with source-bound Qwen extraction, controller reconciliation, and Qwen answering; and Mem0 capability admission without benchmark accuracy.
+4. A fair native-SDK comparison would still add dependency, integration, and answer-model comparability requirements; those gaps should not be hidden by relabeling the bounded rows.
 
-## If an external baseline becomes necessary
+## If further external-baseline work becomes necessary
 
-Use an isolated environment and start with Mem0 only.
+Use an isolated environment and distinguish native framework execution from custom adapter pipelines.
 
 Recommended scope:
 
@@ -23,6 +23,7 @@ Recommended scope:
 - no changes to the core benchmark semantics,
 - no reuse of old G-MSRA Phase 1-5 agent pipeline,
 - no package installation into the main `gmsra` environment,
+- no relabeling of the existing LangGraph-store/custom-adapter or Letta joint-pipeline rows as native framework-only accuracy,
 - no learned repair training in the same phase.
 
 Recommended evaluation target:
@@ -49,4 +50,4 @@ Do not add it if:
 
 ## Recommended next step
 
-First stabilize `paper/manuscript_draft.md`, `paper/p63_metric_ledger.md`, `paper/p63_error_analysis_k16.md`, and `paper/remote_verification_log.md` as the primary manuscript-support package. Revisit Mem0 only after that package makes clear whether an external row is necessary.
+Use the completed LangGraph-store/custom-adapter and Letta joint-pipeline artifacts as bounded manuscript-supporting evidence, and report Mem0 only at its admitted capability scope rather than as native benchmark accuracy. Further work should target comparable native integrations and broader data/model coverage only if the venue requires a true external-system leaderboard.

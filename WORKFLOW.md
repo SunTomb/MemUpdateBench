@@ -3676,9 +3676,9 @@ Only Qwen3.5-9B and the GPT-5.5 transfer route pass this exact uniform BASE smok
 
 ### Scope and verified boundary
 
-LangMem is the first independent external-memory provider admitted after Core. This is a bounded capability/admission result only, not a benchmark run or accuracy claim. The implementation uses LangMem's local `InMemoryStore` native create, update, delete, and search operations through the visible-only JSONL bridge. It runs no LLM, API, GPU, network credential, or model input.
+LangMem is the package identity gate for the first independent external-memory pipeline admitted after Core. This is a bounded capability/admission result only, not a benchmark run or accuracy claim. The implementation uses LangGraph's `InMemoryStore` through a custom MemUpdateBench adapter and the visible-only JSONL bridge; native LangMem runtime APIs are not used for CRUD or retrieval. It runs no LLM, API, GPU, network credential, or model input.
 
-The admitted surface is explicitly **profile/single-record only**: one declared target object per adapter and one native record per runtime namespace. Collection mode, multi-object queries, scoped delete, historical query, native answering, LLM enrichment, and semantic embedding search are all typed unsupported. Retrieval is native in-memory enumeration followed by deterministic local token-overlap ranking.
+The admitted surface is explicitly **profile/single-record only**: one declared target object per adapter and one custom-adapter record per runtime namespace. Collection mode, multi-object queries, scoped delete, historical query, native answering, LLM enrichment, and semantic embedding search are all typed unsupported. The adapter performs deterministic local profile reconciliation/export and token-overlap retrieval over the LangGraph store.
 
 ### Identity and installation checks
 
@@ -3737,11 +3737,11 @@ results/vnext/post_core_langmem_family_a_canary_20260826/canary_receipt.json
   payload SHA-256 60cdf6adfda75d45ca083dab4454dd9ff507cf3a7c4826fb904448b57ae6f842
 ```
 
-This is a genuine external-system result: LangMem's native profile store passes explicit CRUD admission but cannot consume the benchmark's natural update surface without an extraction/enrichment model. A manager-quality LangMem row requires a separately qualified LLM extraction configuration; the direct profile result must not be reported as accuracy zero or silently repaired with normalized gold-derived actions.
+This is a genuine external-system pipeline result: the LangMem package identity gate is paired with LangGraph `InMemoryStore` and custom adapter logic that passes explicit profile CRUD admission but cannot consume the benchmark's natural update surface without an extraction/enrichment model. A manager-quality row requires a separately qualified LLM extraction configuration; the direct profile result must not be reported as accuracy zero or silently repaired with normalized gold-derived actions.
 
 ## LangMem 0.0.30 + Qwen3.5 extraction Family-A canary (2026-08-27)
 
-The direct no-LLM LangMem profile configuration could not ingest natural benchmark `raw_text`, so a separate manager-quality configuration was qualified with Qwen3.5 as a visible-event CRUD extractor. The extractor sees only the raw event and the single allowed profile attribute; it returns strict JSON with `operation` and scalar `value`. The controller binds the one admitted object ID. LangMem remains responsible for native create/update/noop/delete, state export and search. Empty-store UPDATE is reconciled to CREATE as part of the explicitly versioned manager configuration.
+The direct no-LLM profile configuration could not ingest natural benchmark `raw_text`, so a separate manager-quality configuration was qualified with Qwen3.5 as a visible-event CRUD extractor over the LangGraph `InMemoryStore` custom adapter. The extractor sees only the raw event and the single allowed profile attribute; it returns strict JSON with `operation` and scalar `value`. The controller binds the one admitted object ID. The custom adapter performs profile create/update/noop/delete, state export and deterministic retrieval; the LangMem package remains an identity gate only. Empty-store UPDATE is reconciled to CREATE as part of the explicitly versioned manager configuration.
 
 A four-step admission sequence passed:
 
@@ -3778,7 +3778,7 @@ results/vnext/post_core_langmem_qwen_extraction_canary_20260827_v3/canary_receip
 
 Two earlier execution roots are superseded diagnostics: Tang-1 lacked sufficient free memory at model load, and Song-1 initially exposed an incompatible optional sklearn/pyarrow import from the shared environment. Both stopped before task extraction. The final Song-1 runtime used a source-bound optional sklearn stub only to prevent importing the unused incompatible pyarrow path; no sklearn functionality was invoked.
 
-This is the first genuine external manager-quality state/retrieval row. Prompted answering and the complete 80-task Family-A matrix remain separate later gates. Unsupported multi-object work is not pooled as zero.
+This is the first genuine external manager-quality state/retrieval row for the LangGraph-store/custom-adapter pipeline. Prompted answering and the complete 80-task Family-A matrix remain separate later gates. Unsupported multi-object work is not pooled as zero.
 
 ## Letta 0.16.8 direct-block candidate gate (2026-08-27)
 
@@ -3797,7 +3797,7 @@ The next valid step is an isolated Python 3.11–3.13 Letta installation and aut
 
 ## LangMem 0.0.30 + Qwen3.5 full Family-A supported matrix (2026-08-27)
 
-The manager-quality LangMem configuration was extended from the 32-task canary to the complete authenticated 80-task Family-A view. Qwen3.5 performs visible raw-event CRUD extraction and the fixed prompted-answer layer; LangMem performs native profile create/update/noop/delete, state export and deterministic search. The controller binds the single admitted object ID and requests a scalar attribute value, never compiled `normalized_text` or gold actions.
+The manager-quality LangGraph-store/custom-adapter configuration was extended from the 32-task canary to the complete authenticated 80-task Family-A view. Qwen3.5 performs visible raw-event CRUD extraction and the fixed prompted-answer layer; the custom adapter performs profile create/update/noop/delete, state export and deterministic search over LangGraph's `InMemoryStore`. The controller binds the single admitted object ID and requests a scalar attribute value, never compiled `normalized_text` or gold actions.
 
 ```text
 requested tasks: 80
@@ -3822,7 +3822,7 @@ results/vnext/post_core_langmem_qwen_full_family_a_20260827_v1/canary_receipt.js
   payload SHA-256 5f4551783c816f4325463903803c7f1116d400d792ab02e7160667ba4b2953ea
 ```
 
-This establishes a genuine external manager-quality row within LangMem's admitted single-record profile envelope. Coverage is 65% of the Family-A view; the remaining 35% is explicit multi-object unsupported work and is not scored as zero. The result still shares Qwen3.5 for extraction and answering, so manager comparison must separate state/retrieval behavior from answer-model effects.
+This establishes a genuine external manager-quality row within the LangGraph-store/custom-adapter pipeline with a verified LangMem package dependency. Coverage is 65% of the Family-A view; the remaining 35% is explicit multi-object unsupported work and is not scored as zero. The result still shares Qwen3.5 for extraction and answering, so manager comparison must separate state/retrieval behavior from answer-model effects.
 
 ## Letta 0.16.8 real-package/server preflight update (2026-08-27)
 
