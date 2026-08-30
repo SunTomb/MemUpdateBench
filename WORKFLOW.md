@@ -4117,19 +4117,4 @@ Family B covers active object counts 2/4/8/12 and round-robin, burst and adversa
 
 All 3,600 tasks pass strict-v3 construction, deterministic replay and normative evidence evaluation. The candidate validator checks exact counts, group-first split assignment, four-surface semantic equivalence, cross-split identity leakage, canonical bytes, manifest/per-task hashes and frozen-root exclusion. A separate deterministic audit-selection artifact selects 60 cores and all 240 corresponding surface tasks, covering all three families, all 12 domains and attributes, all four surfaces, all splits, all difficulty levels and every declared B/C/D diagnostic axis. Human review remains pending; no model or external-system evaluation has been run on this release.
 
-Authoritative candidate artifacts:
-
-```text
-data/vnext/main_track_v1/
-  generation_config.json
-  catalog_manifest.json
-  semantic_cores.jsonl
-  tasks.jsonl
-  split_balance.json
-  task_manifest.json
-  validation_report.json
-  release_index.json
-results/vnext/main_track_v1_audit_selection/selection.json
-```
-
-The candidate and selector were committed and pushed in `6d538ce`. The release is ready for the next human-audit gate, after which any wording/semantic corrections must regenerate a new candidate rather than patching published bytes. Only a passed stratified audit and final post-audit release validation can authorize downstream baseline/model runs.
+The first candidate at `data/vnext/main_track_v1/` is superseded and must not be used: an independent semantic-hash audit found 900 cores but only 711 unique rendered semantic hashes. The renderer was corrected to bind deterministic expansion identity into actual object/value payloads, and the corrected no-replace candidate is now `data/vnext/main_track_v1_independence_v1/`. The corrected candidate has 900/900 unique semantic hashes, with four surface variants equivalent within each core; its audit selection is `results/vnext/main_track_v1_independence_audit_selection/selection.json`. The corrected candidate and selector were committed and pushed in `a55cffc`. It remains `review_status=NOT_STARTED`; only a passed stratified human audit and post-audit release validation can authorize downstream baseline/model runs.
