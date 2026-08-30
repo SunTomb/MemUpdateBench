@@ -4155,3 +4155,21 @@ review_instructions.md SHA-256: 323a2121a28ce56cc30e4f39fc9876939b355967ce7f1f2e
 ```
 
 The packet is bound to candidate `data/vnext/main_track_v1_independence_v1` and selection hash `b6e9056792d8be212873ad1559487b2d6c66d833e1f9fb1cb6a1d2d2fc11e935`. Human review remains the release blocker; any requested semantic correction must regenerate a new candidate and packet rather than patching either artifact in place.
+
+### First human audit outcome and regenerated packet (2026-08-30)
+
+The completed audit package `main_track_v1_independence_audit_completed_person1_person2` was independently checked against its bound candidate. It contains 240 rows: 214 `pass`, 26 `needs_revision`, 0 `block`, and 26 unresolved findings. The review therefore correctly reports `review_status=FAIL` and `benchmark_release_eligible=false`.
+
+Findings were concentrated in Family C: six alias cases used distinct `primary_entity` and `alternate_entity` canonical keys without establishing an alias relation, and twenty non-English C rows retained an English query sentence. The renderer was corrected so alias cases use one canonical target and explicitly state the alias relation, while Spanish and Japanese C queries are localized. The corrected no-replace candidate is `data/vnext/main_track_v1_audit_fix_v1/`; it again has 900 cores/3600 tasks, 900/900 unique semantic hashes, and passes the full automatic validation gate. A fresh selection and audit packet are bound to this corrected candidate:
+
+```text
+selection: results/vnext/main_track_v1_audit_fix_selection/selection.json
+selection SHA-256: dbee5a66234bdfd5bd8cf2111b9c7de51dbccb04c08ffec3ad92b96307c332ef
+packet: results/vnext/main_track_v1_audit_fix_packet_v1/
+audit_packet.jsonl SHA-256: 828cb18dbc7ae4718fcd62eb0c87044cb99049cabf3682cf018d10bef362a9f9
+audit_manifest.json SHA-256: c1c3fef54a5d46a7d72425c979e88d31f21132daef89878f847b408f8ad765d6
+review_instructions.md SHA-256: 323a2121a28ce56cc30e4f39fc9876939b355967ce7f1f2e026e1c92eebb4bcc
+review status: NOT_STARTED
+```
+
+The old failed audit remains historical evidence and is not rebound to the corrected candidate. No model or external-system evaluation is authorized until the corrected packet receives a complete human `PASS`.
