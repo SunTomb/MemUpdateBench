@@ -4173,3 +4173,22 @@ review status: NOT_STARTED
 ```
 
 The old failed audit remains historical evidence and is not rebound to the corrected candidate. No model or external-system evaluation is authorized until the corrected packet receives a complete human `PASS`.
+
+### Corrected candidate human-audit completion (2026-08-30)
+
+The completed audit directory `D:/USTC/2026Winter/MemUpdateBench/results/vnext/main_track_v1_audit_completed_person1_person2` now binds the corrected `main_track_v1_audit_fix_v1` candidate and the fresh audit packet. The completion validator checked the 240-row packet, decision fields, source packet hash, selection hash, all candidate artifact hashes and the automatic candidate validation report. It reports a complete PASS and eligibility for final release promotion.
+
+```text
+review status: PASS
+rows: 240
+pass: 240
+needs_revision: 0
+block: 0
+unresolved: 0
+benchmark release eligible: true
+reviewers: Person 1, Person 2
+completed packet SHA-256: 4acc399c051b973cf283ca7d8055e1b8bccc2a7d8b86fb0794ce2a1394cc4987
+review completion attestation SHA-256: 0f1d13f23e85f74c345642a63ca23efe89b1e8ebc47c6930f2fb79ad3437743c
+```
+
+The attestation records that the review metadata JSON was formatted rather than compact canonical (`review_metadata_canonical=false`); packet row bytes, candidate artifacts, selection bindings and semantic review decisions remain hash-checked. The original candidate and first failed audit remain immutable historical artifacts. This closes the data human-audit gate, but it does not itself establish model or external-system performance.
