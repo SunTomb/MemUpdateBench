@@ -4172,7 +4172,7 @@ review_instructions.md SHA-256: 323a2121a28ce56cc30e4f39fc9876939b355967ce7f1f2e
 review status: NOT_STARTED
 ```
 
-The old failed audit remains historical evidence and is not rebound to the corrected candidate. No model or external-system evaluation is authorized until the corrected packet receives a complete human `PASS`.
+The old failed audit remains historical evidence and is not rebound to the corrected candidate. It blocked downstream model and external-system evaluation until the corrected packet received a complete human `PASS`; that gate is now closed by the completion recorded below.
 
 ### Corrected candidate human-audit completion (2026-08-30)
 
@@ -4192,3 +4192,35 @@ review completion attestation SHA-256: 0f1d13f23e85f74c345642a63ca23efe89b1e8ebc
 ```
 
 The attestation records that the review metadata JSON was formatted rather than compact canonical (`review_metadata_canonical=false`); packet row bytes, candidate artifacts, selection bindings and semantic review decisions remain hash-checked. The original candidate and first failed audit remain immutable historical artifacts. This closes the data human-audit gate, but it does not itself establish model or external-system performance.
+
+### Main-track fixed-reference Qwen answer-layer baseline (2026-08-30)
+
+The first layered benchmark on the audited main-track candidate fixes memory state and retrieval to `ReferenceAdapterV3` and varies only the prompted answer layer. This deliberately isolates answer-model behavior from extraction and external-manager behavior. Qwen3.5-9B receives only the rendered retrieval prompt; no gold actions, hidden metadata, or raw model output is published. The full held-out test scope contains 720 tasks across Families B/C/D and en/es/ja.
+
+```text
+requested tasks: 720
+terminal PASS rows: 720
+answerable queries: 568
+expected abstentions: 152
+exact/normalized/typed answer match: 0.7708333 / 0.7708333 / 0.7708333
+token F1: 0.7708333
+answer outcomes: CORRECT 555, WRONG 6, FORMAT_INVALID 7, UNAVAILABLE 0, WRONG_ABSTENTION 152
+family EM: B 0.9958, C 0.3208, D 0.9958
+language EM: en 0.7806, es 0.7722, ja 0.7500
+provider/API/network calls: 0/0/0
+```
+
+The 152 wrong abstentions are concentrated in Family C: Qwen frequently answers when the gold disposition is `ABSTAINED`, rather than failing to retrieve the memory. Family B and D are near-ceiling, with one wrong answer in each; seven format errors occur in the Japanese subset. This is a reference-state answer-layer result, not external-memory manager evidence and not an extraction result.
+
+Authoritative artifacts:
+
+```text
+results/vnext/main_track_qwen35_answer_test720_tang1_ee793b1_v1/rows.jsonl
+  SHA-256 b84eb34b1c5401716ffd26efa6d63b2c74dbab4a1d9e70ada3aa540c4295cdd0
+results/vnext/main_track_qwen35_answer_test720_tang1_ee793b1_v1/summary.json
+  SHA-256 38db939504405ee152ee64b45dc6c32b3c325f7b3e2f62dcbab4e2d683fd92bd
+results/vnext/main_track_qwen35_answer_test720_tang1_ee793b1_v1/artifact_index.json
+  SHA-256 53ecc96d355e1510aa9314258e6cc6a97cede3f205ddfa8eb9b83021ec4e9794
+```
+
+Qwen model identity is `Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a`, with authenticated tree `e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db`; the run is bound to human-audit attestation SHA-256 `0f1d13f23e85f74c345642a63ca23efe89b1e8ebc47c6930f2fb79ad3437743c`. Tang-1 GPU1 and the model process cleaned up successfully. The next layered gate is to repeat this answer-only panel with an independently qualified answer model, then evaluate fixed extractor/manager combinations separately.
