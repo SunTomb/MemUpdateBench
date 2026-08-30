@@ -4118,3 +4118,23 @@ Family B covers active object counts 2/4/8/12 and round-robin, burst and adversa
 All 3,600 tasks pass strict-v3 construction, deterministic replay and normative evidence evaluation. The candidate validator checks exact counts, group-first split assignment, four-surface semantic equivalence, cross-split identity leakage, canonical bytes, manifest/per-task hashes and frozen-root exclusion. A separate deterministic audit-selection artifact selects 60 cores and all 240 corresponding surface tasks, covering all three families, all 12 domains and attributes, all four surfaces, all splits, all difficulty levels and every declared B/C/D diagnostic axis. Human review remains pending; no model or external-system evaluation has been run on this release.
 
 The first candidate at `data/vnext/main_track_v1/` is superseded and must not be used: an independent semantic-hash audit found 900 cores but only 711 unique rendered semantic hashes. The renderer was corrected to bind deterministic expansion identity into actual object/value payloads, and the corrected no-replace candidate is now `data/vnext/main_track_v1_independence_v1/`. The corrected candidate has 900/900 unique semantic hashes, with four surface variants equivalent within each core; its audit selection is `results/vnext/main_track_v1_independence_audit_selection/selection.json`. The corrected candidate and selector were committed and pushed in `a55cffc`. It remains `review_status=NOT_STARTED`; only a passed stratified human audit and post-audit release validation can authorize downstream baseline/model runs.
+
+### Deterministic held-out oracle gate (2026-08-30)
+
+The corrected candidate's 720 held-out test tasks were reopened and run through the v3 `ReferenceAdapterV3` with `slot_direct`. All 720 tasks completed with zero replay/evidence/query coverage/typed-answer issues, including Family C typed abstentions and Family D NOOP nonmutation cases. This is dataset/reference-oracle diagnostic evidence only: it uses the reference adapter and no model, external system, GPU, network, or provider calls. It does not establish benchmark accuracy or human-audit approval.
+
+```text
+test tasks: 720
+reference-oracle pass: 720/720
+failures: 0
+families: B 240, C 240, D 240
+languages: en 360, es 180, ja 180
+review status: NOT_STARTED
+```
+
+Artifact:
+
+```text
+results/vnext/main_track_v1_oracle_diagnostic_v1/oracle_diagnostic.json
+  SHA-256 dbee00842013342f527ebba5a3342b26bef43453793982172ee2fbb3362b18d3
+```
