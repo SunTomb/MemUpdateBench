@@ -35,6 +35,15 @@ from mub.vnext.contracts.enums import (
     TaskFamily,
 )
 from mub.vnext.contracts.manifest import RunManifest, ScorerConfig, TaskManifest
+from mub.vnext.contracts.post_core_data import (
+    PostCoreDifficultyQuotas,
+    PostCoreFamiliesConfig,
+    PostCoreFamilyBConfig,
+    PostCoreFamilyCConfig,
+    PostCoreFamilyDConfig,
+    PostCoreSplitConfig,
+    PostCoreSurfaceDeclaration,
+)
 from mub.vnext.contracts.runtime import (
     AnswerPrediction,
     MemoryEntryRecord,
@@ -102,6 +111,13 @@ __all__ = [
     "MetricFieldSupport",
     "Operation",
     "ParsedManagerAction",
+    "PostCoreDifficultyQuotas",
+    "PostCoreFamiliesConfig",
+    "PostCoreFamilyBConfig",
+    "PostCoreFamilyCConfig",
+    "PostCoreFamilyDConfig",
+    "PostCoreSplitConfig",
+    "PostCoreSurfaceDeclaration",
     "ParserExtractorProvenance",
     "ProtocolScores",
     "QueryType",

@@ -45,6 +45,26 @@ from mub.vnext.generation.core_catalogs import (
     CORE_SURFACE_TEMPLATE_SETS,
 )
 from mub.vnext.generation.core_config import CoreConfig, load_core_config
+from mub.vnext.generation.post_core_catalogs import (
+    POST_CORE_ATTRIBUTE_IDS,
+    POST_CORE_DOMAIN_IDS,
+    POST_CORE_FAMILY_DOMAIN_MATRIX,
+    POST_CORE_FAMILY_IDS,
+    POST_CORE_SURFACE_CATALOG_VERSION,
+    POST_CORE_SURFACE_KEYS,
+    POST_CORE_SURFACES,
+)
+from mub.vnext.generation.post_core_config import (
+    POST_CORE_DATA_COMPILER_VERSION,
+    POST_CORE_DATA_CORES_PER_FAMILY,
+    POST_CORE_DATA_DIFFICULTY_QUOTAS,
+    POST_CORE_DATA_PROFILE_VERSION,
+    POST_CORE_DATA_RELEASE_ID,
+    POST_CORE_DATA_SCHEMA_VERSION,
+    POST_CORE_DATA_SEED,
+    PostCoreDataConfig,
+    load_post_core_data_config,
+)
 from mub.vnext.generation.core_render_v3 import render_core_v3
 from mub.vnext.generation.core import CoreEvent, GenerationContext, SemanticCore
 from mub.vnext.generation.family_a import (
@@ -156,6 +176,21 @@ __all__ = [
     "NAMESPACES",
     "PilotArtifactBundle",
     "PilotConfig",
+    "PostCoreDataConfig",
+    "POST_CORE_ATTRIBUTE_IDS",
+    "POST_CORE_DATA_COMPILER_VERSION",
+    "POST_CORE_DATA_CORES_PER_FAMILY",
+    "POST_CORE_DATA_DIFFICULTY_QUOTAS",
+    "POST_CORE_DATA_PROFILE_VERSION",
+    "POST_CORE_DATA_RELEASE_ID",
+    "POST_CORE_DATA_SCHEMA_VERSION",
+    "POST_CORE_DATA_SEED",
+    "POST_CORE_DOMAIN_IDS",
+    "POST_CORE_FAMILY_DOMAIN_MATRIX",
+    "POST_CORE_FAMILY_IDS",
+    "POST_CORE_SURFACE_CATALOG_VERSION",
+    "POST_CORE_SURFACE_KEYS",
+    "POST_CORE_SURFACES",
     "PILOT_SURFACE_CATALOG",
     "PublishedPilotBundle",
     "REFERENCE_CONDITION_LABELS",

@@ -1,0 +1,62 @@
+schema_version: "2.0.0"
+profile_version: "2.0.0"
+compiler_version: "2.0.0"
+release_id: "main_track_v1"
+seed: 20260829
+surface_catalog_version: "vnext-post-core-data-surfaces-v1"
+surfaces:
+  - {locale: "en-US", surface_id: explicit_canonical}
+  - {locale: "en-US", surface_id: concise_natural}
+  - {locale: "es-ES", surface_id: concise_natural}
+  - {locale: "ja-JP", surface_id: concise_natural}
+domains:
+  - personal
+  - work
+  - community
+  - services
+  - education
+  - travel
+  - household
+  - software
+  - finance
+  - health
+  - media
+  - civic
+attributes:
+  - location
+  - company
+  - preference
+  - language
+  - timezone
+  - hobby
+  - instrument
+  - project
+  - role
+  - status
+  - priority
+  - contact_method
+split_strategy: group_first
+splits:
+  train: 0.70
+  dev: 0.10
+  test: 0.20
+families:
+  interleaved_multi_slot_update:
+    semantic_core_count: 300
+    domains: [work, education, software, services]
+    difficulty_quotas: {easy: 150, medium: 90, hard: 60}
+    active_object_counts: [2, 4, 8, 12]
+    interleaving_patterns: [round_robin, burst, adversarial_adjacent]
+  entity_attribute_grounding:
+    semantic_core_count: 300
+    domains: [personal, community, media, civic]
+    difficulty_quotas: {easy: 150, medium: 90, hard: 60}
+    attribute_conditions: [exact, paraphrase, near_name]
+    entity_conditions: [distinct, alias, same_name, namespace_collision]
+    typed_abstain: true
+  noop_write_discipline:
+    semantic_core_count: 300
+    domains: [finance, health, travel, household]
+    difficulty_quotas: {easy: 150, medium: 90, hard: 60}
+    noop_densities: [0.25, 0.50, 0.75]
+    trap_types: [transient, hypothetical, negated, uncertain, semantic_near_miss, duplicate_current, unsupported_inference]
