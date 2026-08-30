@@ -76,7 +76,7 @@ def _object_key(core: PostCoreSemanticCore, index: int, *, namespace: str | None
     return {
         "object_type": "fact",
         "namespace": namespace or "post_core",
-        "entity": entity or f"{core.domain}_entity_{index}",
+        "entity": entity or f"{core.domain}_entity_{core.expansion_id}_{index}",
         "attribute": core.attribute,
         "subkey": None,
     }
@@ -171,8 +171,8 @@ def _family_b_events_and_actions(core: PostCoreSemanticCore, rendered_task_id: s
     count = int(core.family_axes["active_object_count"])
     pattern = str(core.family_axes["interleaving_pattern"])
     keys = [_object_key(core, index) for index in range(count)]
-    values = [f"{core.attribute}-v{index}-0" for index in range(count)]
-    updates = [f"{core.attribute}-v{index}-1" for index in range(count)]
+    values = [f"{core.attribute}-{core.expansion_id}-v{index}-0" for index in range(count)]
+    updates = [f"{core.attribute}-{core.expansion_id}-v{index}-1" for index in range(count)]
     semantic_rows: list[tuple[Operation, int]] = []
     if pattern == "round_robin":
         semantic_rows = [(Operation.ADD, index) for index in range(count)] + [(Operation.UPDATE, index) for index in range(count)]
@@ -227,7 +227,7 @@ def _family_c_events_and_actions(core: PostCoreSemanticCore, rendered_task_id: s
     events: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
     for sequence_index, key in enumerate(keys):
-        value = f"{core.domain}-{core.attribute}-candidate-{sequence_index}"
+        value = f"{core.domain}-{core.attribute}-{core.expansion_id}-candidate-{sequence_index}"
         eid = event_id(rendered_task_id, sequence_index)
         aid = action_id(rendered_task_id, sequence_index, 0)
         events.append({
@@ -257,7 +257,7 @@ def _family_c_events_and_actions(core: PostCoreSemanticCore, rendered_task_id: s
 
 def _family_d_events_and_actions(core: PostCoreSemanticCore, rendered_task_id: str, *, locale: str, surface_id: str):
     key = _object_key(core, 0)
-    original_value = f"{core.domain}-{core.attribute}-stable"
+    original_value = f"{core.domain}-{core.attribute}-{core.expansion_id}-stable"
     density = float(core.family_axes["noop_density"])
     trap_type = str(core.family_axes["trap_type"])
     noop_count = max(1, round(4 * density))
@@ -409,7 +409,7 @@ def _build_family_c_query_and_evidence(query_id_value: str, keys: list[dict[str,
     selected_ids = list(linked_ids) if disposition is AnswerDisposition.ANSWERED else []
     answer = "" if disposition is AnswerDisposition.ANSWERED else None
     if disposition is AnswerDisposition.ANSWERED:
-        answer = f"{core.domain}-{core.attribute}-candidate-0"
+        answer = f"{core.domain}-{core.attribute}-{core.expansion_id}-candidate-0"
     evidence = {
         "query_id": query_id_value,
         "answer": answer,

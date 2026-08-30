@@ -96,3 +96,28 @@ def test_four_surfaces_share_semantics_but_not_surface_text(bundle) -> None:
         assert len({task["metadata"]["extra"]["surface_key"] for task in tasks}) == 4
         assert len({task["source"]["raw_hash"] for task in tasks}) == 4
         assert len({semantic_task_hash_v3(MemUpdateTaskV3.model_validate(task)) for task in tasks}) == 1
+
+
+def test_all_semantic_cores_have_distinct_semantic_payloads(bundle) -> None:
+    rows = [json.loads(line) for line in bundle.artifact("tasks.jsonl").content.splitlines()]
+    by_core = {}
+    for row in rows:
+        by_core.setdefault(row["metadata"]["split_key"]["semantic_core_id"], []).append(row)
+    hashes = {
+        next(iter({semantic_task_hash_v3(MemUpdateTaskV3.model_validate(task)) for task in tasks}))
+        for tasks in by_core.values()
+    }
+    assert len(by_core) == 900
+    assert len(hashes) == 900
+
+
+def test_all_rendered_cores_have_unique_semantic_hashes(bundle) -> None:
+    by_core: dict[str, set[str]] = {}
+    for task in bundle.tasks:
+        by_core.setdefault(task.metadata.split_key.semantic_core_id, set()).add(
+            semantic_task_hash_v3(task)
+        )
+
+    assert len(by_core) == 900
+    assert all(len(hashes) == 1 for hashes in by_core.values())
+    assert len({next(iter(hashes)) for hashes in by_core.values()}) == 900
