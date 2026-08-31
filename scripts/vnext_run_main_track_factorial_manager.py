@@ -45,6 +45,7 @@ EXTERNAL_BOUNDARY = (
     "provider/network/database execution, or broad scientific claim."
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_ELIGIBLE_SUPPORTED_COUNT = 240
 _RAW_FIELD_NAMES = {
     "prompt", "raw_prompt", "rendered_prompt", "rendered_chat_prompt",
     "output", "raw_output", "generated_text", "reasoning", "reasoning_content",
@@ -499,6 +500,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-snapshot-binding", type=Path)
     parser.add_argument("--langmem-qualification", type=Path)
     parser.add_argument("--langgraph-python-executable", type=Path)
+    parser.add_argument("--supported-limit", type=int)
     return parser
 
 
@@ -516,6 +518,7 @@ class RunnerArgs:
     model_snapshot_binding: Path | None = None
     langmem_qualification: Path | None = None
     langgraph_python_executable: Path | None = None
+    supported_limit: int | None = None
 
 
 class VisibleEventExtractor(Protocol):
@@ -555,6 +558,16 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _validate_supported_limit(value: Any) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 1 or value > _ELIGIBLE_SUPPORTED_COUNT:
+        raise ValueError(
+            f"supported_limit must be between 1 and {_ELIGIBLE_SUPPORTED_COUNT}"
+        )
+    return value
 
 
 def _require_sha(value: Any, label: str) -> str:
@@ -1146,6 +1159,7 @@ def run(
     manifest: Path | None = None,
 ) -> dict[str, Any]:
     manifest_path = Path(manifest or args.manifest)
+    supported_limit = _validate_supported_limit(getattr(args, "supported_limit", None))
     output = _validate_output_root(Path(args.output_root), (manifest_path, Path(args.candidate_root), Path(args.audit_attestation)))
     if args.execution_mode not in {"production", "injected_test_only"}:
         raise ValueError("execution_mode must be production or injected_test_only")
@@ -1159,8 +1173,20 @@ def run(
             raise RuntimeError("production mode requires production-bound factories")
     loaded_manifest, manifest_raw = _load_manifest(manifest_path)
     tasks, cell, provenance, binding = _validate_inputs(args, loaded_manifest, manifest_raw)
+    eligible_supported_ids = list(cell["supported_task_ids"])
+    selected_supported_ids = (
+        eligible_supported_ids
+        if supported_limit is None
+        else eligible_supported_ids[:supported_limit]
+    )
+    selected_supported_set = set(selected_supported_ids)
+    supported_ids = set(eligible_supported_ids)
+    expected_terminal_ids = [
+        task.task_id
+        for task in tasks
+        if task.task_id not in supported_ids or task.task_id in selected_supported_set
+    ]
     reason_by_id = {item["task_id"]: item for item in cell["unsupported_tasks"]}
-    supported_ids = set(cell["supported_task_ids"])
     extractor = extractor_factory()
     if not hasattr(extractor, "extract"):
         raise RuntimeError("injected extractor does not implement extract")
@@ -1181,6 +1207,8 @@ def run(
             task_sha = binding["task_hashes"][task.task_id]
             if task.task_id not in supported_ids:
                 rows.append(_unsupported_row(task, cell, args.manager_kind, task_sha, reason_by_id[task.task_id]))
+                continue
+            if task.task_id not in selected_supported_set:
                 continue
             manager = None
             try:
@@ -1226,24 +1254,28 @@ def run(
         raise RuntimeError(
             "resource cleanup failed"
         ) from cleanup_errors[0]
-    expected_ids = [task.task_id for task in tasks]
-    if [row["task_id"] for row in rows] != expected_ids or len(rows) != 720:
-        raise ValueError("terminal rows must preserve exact manifest task order and cardinality")
+    if [row["task_id"] for row in rows] != expected_terminal_ids or len(rows) != len(expected_terminal_ids):
+        raise ValueError("terminal rows must preserve scoped manifest task order and cardinality")
     supported = [row for row in rows if row["status"] == "SUPPORTED"]
     unsupported = [row for row in rows if row["status"] == "UNSUPPORTED"]
     state_rows = [row for row in supported if row["state"] is not None]
     retrieval_rows = [row for row in supported if row["retrieval"] is not None]
     failed = sum(row["execution_status"] == "FAIL" for row in supported)
     all_supported_terminal = (
-        len(supported) == len(cell["supported_task_ids"])
+        len(supported) == len(selected_supported_ids)
         and all(row["execution_status"] in {"PASS", "FAIL"} for row in supported)
     )
-    status = "PASS" if len(rows) == 720 and all_supported_terminal and failed == 0 else "FAIL"
+    requested_task_count = len(expected_terminal_ids)
+    scope = "full240" if supported_limit is None else f"canary{supported_limit}"
+    status = "PASS" if len(rows) == requested_task_count and all_supported_terminal and failed == 0 else "FAIL"
     evidence_class = (
         EVIDENCE_CLASS
         if args.execution_mode == "production"
         else TEST_ONLY_EVIDENCE_CLASS
     )
+    if supported_limit is not None:
+        evidence_class += "_canary"
+    scientific_evidence = args.execution_mode == "production" and supported_limit is None
     boundary_observed = args.execution_mode == "production"
     reason_counts = dict(sorted(Counter(row["reason_code"] for row in unsupported).items()))
     boundary = dict(_EXECUTION_BOUNDARY)
@@ -1259,11 +1291,18 @@ def run(
         "cell_id": cell["cell_id"],
         "manager_kind": args.manager_kind,
         "manager_id": cell["manager_id"],
+        "scope": scope,
+        "requested_task_count": requested_task_count,
+        "eligible_supported_count": len(eligible_supported_ids),
+        "executed_supported_count": len(selected_supported_ids),
+        "not_requested_supported_count": len(eligible_supported_ids) - len(selected_supported_ids),
+        "selected_supported_task_ids": list(selected_supported_ids),
+        "selected_supported_task_ids_sha256": _sha256_bytes(canonical_json_bytes(selected_supported_ids)),
         "evidence_class": evidence_class,
-        "scientific_evidence": args.execution_mode == "production",
+        "scientific_evidence": scientific_evidence,
         "execution_boundary_observed": boundary_observed,
         "external_manager_boundary": EXTERNAL_BOUNDARY,
-        "requested": len(tasks),
+        "requested": requested_task_count,
         "terminal_rows": len(rows),
         "supported": len(supported),
         "unsupported": len(unsupported),
@@ -1291,8 +1330,15 @@ def run(
         "status": status,
         "cell_id": cell["cell_id"],
         "manager_kind": args.manager_kind,
+        "scope": scope,
+        "requested_task_count": requested_task_count,
+        "eligible_supported_count": len(eligible_supported_ids),
+        "executed_supported_count": len(selected_supported_ids),
+        "not_requested_supported_count": len(eligible_supported_ids) - len(selected_supported_ids),
+        "selected_supported_task_ids": list(selected_supported_ids),
+        "selected_supported_task_ids_sha256": summary["selected_supported_task_ids_sha256"],
         "evidence_class": evidence_class,
-        "scientific_evidence": args.execution_mode == "production",
+        "scientific_evidence": scientific_evidence,
         "execution_boundary_observed": boundary_observed,
         "external_manager_boundary": EXTERNAL_BOUNDARY,
         "manifest_sha256": binding["manifest_sha256"],

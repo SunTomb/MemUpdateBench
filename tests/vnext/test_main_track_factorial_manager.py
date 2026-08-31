@@ -40,6 +40,7 @@ def _args(
     candidate_root: Path = CANDIDATE,
     audit_attestation: Path = ATTESTATION,
     execution_mode: str = "injected_test_only",
+    supported_limit: int | None = None,
 ):
     return runner.RunnerArgs(
         manifest=MANIFEST,
@@ -49,6 +50,7 @@ def _args(
         cell_id=cell_id or f"{manager_kind}_profile__qwen35_answer",
         output_root=output_root,
         execution_mode=execution_mode,
+        supported_limit=supported_limit,
     )
 
 
@@ -123,7 +125,14 @@ class FakeManager:
         self.closed = True
 
 
-def _run(tmp_path: Path, *, extractor: FakeExtractor | None = None, managers=None, manager_kind="letta"):
+def _run(
+    tmp_path: Path,
+    *,
+    extractor: FakeExtractor | None = None,
+    managers=None,
+    manager_kind="letta",
+    supported_limit: int | None = None,
+):
     extractor = extractor or FakeExtractor()
     managers = managers if managers is not None else []
 
@@ -133,7 +142,11 @@ def _run(tmp_path: Path, *, extractor: FakeExtractor | None = None, managers=Non
         return manager
 
     summary = runner.run(
-        _args(tmp_path / "out", manager_kind=manager_kind),
+        _args(
+            tmp_path / "out",
+            manager_kind=manager_kind,
+            supported_limit=supported_limit,
+        ),
         extractor_factory=lambda: extractor,
         manager_factory=manager_factory,
     )
@@ -170,6 +183,128 @@ def test_fake_adapter_runs_once_per_supported_task_and_emits_all_terminals(tmp_p
     rows = [json.loads(line) for line in (tmp_path / "out" / "manager_rows.jsonl").read_bytes().splitlines()]
     assert [row["task_id"] for row in rows] == [task.task_id for task in planner.select_test_tasks(CANDIDATE)]
     assert all(row["status"] in {"SUPPORTED", "UNSUPPORTED"} for row in rows)
+
+
+def test_canary8_emits_selected_supported_and_all_unsupported_in_global_order(tmp_path):
+    summary, extractor, managers = _run(tmp_path, supported_limit=8)
+    manifest = json.loads(MANIFEST.read_bytes())
+    cell = next(item for item in manifest["cells"] if item["cell_id"] == "letta_profile__qwen35_answer")
+    selected = cell["supported_task_ids"][:8]
+    expected_ids = [
+        task.task_id
+        for task in planner.select_test_tasks(CANDIDATE)
+        if task.task_id in set(cell["unsupported_task_ids"] if "unsupported_task_ids" in cell else [item["task_id"] for item in cell["unsupported_tasks"]])
+        or task.task_id in selected
+    ]
+    rows = [json.loads(line) for line in (tmp_path / "out" / "manager_rows.jsonl").read_bytes().splitlines()]
+
+    assert summary["scope"] == "canary8"
+    assert summary["requested_task_count"] == 488
+    assert summary["requested"] == 488
+    assert summary["terminal_rows"] == 488
+    assert summary["supported"] == 8
+    assert summary["unsupported"] == 480
+    assert summary["eligible_supported_count"] == 240
+    assert summary["executed_supported_count"] == 8
+    assert summary["not_requested_supported_count"] == 232
+    assert summary["selected_supported_task_ids"] == selected
+    assert summary["selected_supported_task_ids_sha256"] == hashlib.sha256(
+        runner.canonical_json_bytes(selected)
+    ).hexdigest()
+    assert summary["evidence_class"] == "manager_state_retrieval_fixture_test_only_canary"
+    assert summary["scientific_evidence"] is False
+    assert [row["task_id"] for row in rows] == expected_ids
+    assert len(managers) == 8
+    assert len(extractor.calls) == sum(
+        len(task.events)
+        for task in planner.select_test_tasks(CANDIDATE)
+        if task.task_id in selected
+    )
+
+
+def test_canary_does_not_create_factories_for_unselected_supported_tasks(tmp_path):
+    created_task_ids = []
+
+    def manager_factory(task, cell):
+        created_task_ids.append(task.task_id)
+        return FakeManager()
+
+    runner.run(
+        _args(tmp_path / "out", supported_limit=8),
+        extractor_factory=lambda: FakeExtractor(),
+        manager_factory=manager_factory,
+    )
+    manifest = json.loads(MANIFEST.read_bytes())
+    cell = next(item for item in manifest["cells"] if item["cell_id"] == "letta_profile__qwen35_answer")
+    assert created_task_ids == cell["supported_task_ids"][:8]
+
+
+@pytest.mark.parametrize("supported_limit", [0, -1, 241])
+def test_invalid_supported_limit_fails_before_factories(tmp_path, supported_limit):
+    calls = []
+
+    def unexpected_extractor():
+        calls.append("extractor")
+        return FakeExtractor()
+
+    def unexpected_manager(task, cell):
+        calls.append("manager")
+        return FakeManager()
+
+    with pytest.raises(ValueError, match="supported_limit"):
+        runner.run(
+            _args(tmp_path / f"out-{supported_limit}", supported_limit=supported_limit),
+            extractor_factory=unexpected_extractor,
+            manager_factory=unexpected_manager,
+        )
+    assert calls == []
+
+
+def test_full_scope_metadata_and_behavior_remain_unchanged(tmp_path):
+    summary, _, managers = _run(tmp_path)
+    manifest = json.loads(MANIFEST.read_bytes())
+    cell = next(item for item in manifest["cells"] if item["cell_id"] == "letta_profile__qwen35_answer")
+    selected = cell["supported_task_ids"]
+
+    assert summary["scope"] == "full240"
+    assert summary["requested_task_count"] == 720
+    assert summary["eligible_supported_count"] == 240
+    assert summary["executed_supported_count"] == 240
+    assert summary["not_requested_supported_count"] == 0
+    assert summary["selected_supported_task_ids"] == selected
+    assert summary["selected_supported_task_ids_sha256"] == hashlib.sha256(
+        runner.canonical_json_bytes(selected)
+    ).hexdigest()
+    assert summary["evidence_class"] == "manager_state_retrieval_fixture_test_only"
+    assert summary["scientific_evidence"] is False
+    assert len(managers) == 240
+
+
+def test_cli_parser_accepts_optional_supported_limit(tmp_path):
+    parser = runner.build_arg_parser()
+    parsed = parser.parse_args(
+        [
+            "--candidate-root", str(CANDIDATE),
+            "--audit-attestation", str(ATTESTATION),
+            "--manager-kind", "letta",
+            "--cell-id", "letta_profile__qwen35_answer",
+            "--output-root", str(tmp_path / "out"),
+            "--execution-mode", "injected_test_only",
+            "--supported-limit", "8",
+        ]
+    )
+    assert parsed.supported_limit == 8
+    omitted = parser.parse_args(
+        [
+            "--candidate-root", str(CANDIDATE),
+            "--audit-attestation", str(ATTESTATION),
+            "--manager-kind", "letta",
+            "--cell-id", "letta_profile__qwen35_answer",
+            "--output-root", str(tmp_path / "out2"),
+            "--execution-mode", "injected_test_only",
+        ]
+    )
+    assert omitted.supported_limit is None
 
 
 def test_unsupported_rows_have_typed_reason_and_null_policy(tmp_path):
