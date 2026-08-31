@@ -635,10 +635,23 @@ def test_incomplete_arbitrary_entry_object_key_is_rejected():
         })
 
 
-def test_publication_failure_cleans_staged_output_root(tmp_path, monkeypatch):
+def test_publication_uses_direct_atomic_output_on_nfs_without_directory_rename(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+
+    def fail_rename(*args, **kwargs):
+        raise OSError(95, "operation not supported")
+
+    monkeypatch.setattr(runner, "_rename_no_replace", fail_rename, raising=False)
+    runner._publish_output(output, {"manager_summary.json": b"{}"}, ())
+
+    assert (output / "manager_summary.json").read_bytes() == b"{}"
+
+
+def test_publication_failure_cleans_created_output_root(tmp_path, monkeypatch):
     output = tmp_path / "output"
 
     def fail_publish(*args, **kwargs):
+        output.mkdir()
         raise OSError("synthetic publication failure")
 
     monkeypatch.setattr(runner, "publish_files_atomically", fail_publish)

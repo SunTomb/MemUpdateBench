@@ -6,18 +6,14 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
-import shutil
 import sys
-import tempfile
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from mub.vnext.contracts.v3.common import FrozenMemoryObjectKey, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.adapter import AdapterActionResultV3, ResetRequestV3, RetrievalRequestV3
 from mub.vnext.external.bridge import WorkerRequestV1, WorkerResponseV1
-from mub.vnext.external.canaries_v3 import _rename_no_replace
 from mub.vnext.external.providers.langmem import build_langmem_adapter_configuration, compute_langmem_configuration_hash
 from mub.vnext.external.providers.langmem_adapter import LangMemExternalAdapterV3
 from mub.vnext.external.workers.langmem_worker import OfficialLangMemBackendV1, LangMemWorkerServiceV1
@@ -1152,33 +1148,32 @@ def _publish_output(
 ) -> Path:
     if not output.is_absolute():
         raise ValueError("output_root must be absolute")
-    if output.exists() or output.is_symlink():
+    output_preexisted = output.exists() or output.is_symlink()
+    if output_preexisted:
         raise FileExistsError(output)
     if not output.parent.is_dir():
         raise ValueError("output_root parent directory does not exist")
     if not artifacts:
         raise ValueError("output publication requires at least one artifact")
-    stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
+    destinations: dict[Path, bytes] = {}
+    for name, raw in artifacts.items():
+        relative = Path(name)
+        if relative.is_absolute() or relative.name != name:
+            raise ValueError("output artifact names must be single path components")
+        if not isinstance(raw, bytes):
+            raise TypeError("output artifact payloads must be bytes")
+        destinations[output / name] = raw
     try:
-        destinations: dict[Path, bytes] = {}
-        for name, raw in artifacts.items():
-            relative = Path(name)
-            if relative.is_absolute() or relative.name != name:
-                raise ValueError("output artifact names must be single path components")
-            if not isinstance(raw, bytes):
-                raise TypeError("output artifact payloads must be bytes")
-            destinations[stage / name] = raw
         publish_files_atomically(
             destinations,
             overwrite=False,
             source_paths=source_paths,
         )
-        _rename_no_replace(stage, output)
-        return output
     except BaseException:
-        if stage.exists() and not stage.is_symlink():
-            shutil.rmtree(stage)
+        if not output_preexisted and output.is_dir() and not output.is_symlink() and not any(output.iterdir()):
+            output.rmdir()
         raise
+    return output
 
 
 def run(
