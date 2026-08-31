@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -74,6 +75,13 @@ _LANGGRAPH_MANAGER_ID = "langgraph_store_custom_adapter"
 _LANGGRAPH_SYSTEM_NAME = "langgraph_in_memory_store"
 _LANGGRAPH_ADAPTER_VERSION = "memupdatebench-langmem-adapter-v1"
 _LANGGRAPH_IMPLEMENTATION_BOUNDARY = planner.LANGGRAPH_IMPLEMENTATION_BOUNDARY
+_LANGGRAPH_SOURCE_FILES = (
+    "mub/vnext/external/providers/langmem.py",
+    "mub/vnext/external/providers/langmem_adapter.py",
+    "mub/vnext/external/providers/langmem_protocol.py",
+    "mub/vnext/external/workers/langmem_worker.py",
+    "scripts/vnext_run_main_track_factorial_manager.py",
+)
 _QWEN_EXTRACTOR_IDENTITY = {
     "model_id": QWEN_MODEL_ID,
     "revision": QWEN_MODEL_REVISION,
@@ -301,6 +309,19 @@ def build_langgraph_store_custom_adapter_manager(
     return LangGraphStoreCustomAdapterManager(task=task, configuration_hash=configuration_hash)
 
 
+def _langgraph_adapter_source_bindings() -> list[dict[str, str]]:
+    project_root = Path(__file__).resolve().parents[1]
+    bindings: list[dict[str, str]] = []
+    for relative in _LANGGRAPH_SOURCE_FILES:
+        path = project_root / relative
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeIdentityError(
+                f"LangGraph qualification source file is unavailable: {relative}"
+            )
+        bindings.append({"path": relative, "sha256": _sha256_bytes(path.read_bytes())})
+    return bindings
+
+
 def _load_langgraph_qualification(path: Path, expected_configuration_hash: str) -> dict[str, Any]:
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         raise RuntimeIdentityError("LangGraph qualification must be an absolute regular file")
@@ -317,23 +338,122 @@ def _load_langgraph_qualification(path: Path, expected_configuration_hash: str) 
         "schema_version": "memupdatebench.external.langgraph-store-custom-adapter.qualification.v1",
         "manager_id": _LANGGRAPH_MANAGER_ID,
         "adapter_id": _LANGGRAPH_MANAGER_ID,
+        "adapter_version": _LANGGRAPH_ADAPTER_VERSION,
+        "system_name": _LANGGRAPH_SYSTEM_NAME,
+        "system_version": "0.0.30",
         "backend": "langgraph_in_memory_store",
-        "package_name": "langmem",
-        "package_version": "0.0.30",
-        "source_commit": "29cbe41e58528f92e9efa773c12e15c47be3808c",
+        "implementation_boundary": _LANGGRAPH_IMPLEMENTATION_BOUNDARY,
         "configuration_hash": expected_configuration_hash,
-        "qualification_status": "PASS",
-        "network_calls": 0,
-        "provider_calls": 0,
+        "qualification_status": "READY",
+        "outcome": "PASS",
+        "evidence_class": "capability_runtime_qualification",
+        "scientific_evidence": False,
+        "store_class": "langgraph.store.memory.InMemoryStore",
     }
     if any(value.get(key) != expected for key, expected in required.items()):
         raise RuntimeIdentityError("LangGraph qualification identity mismatch")
+    runtime_identity = _validate_langgraph_runtime_identity(
+        value.get("runtime_identity")
+    )
+    runtime_executable = runtime_identity["python_executable"]
+    packages = value.get("packages")
+    if not isinstance(packages, Mapping):
+        raise RuntimeIdentityError("LangGraph qualification package identity is missing")
+    if packages != runtime_identity["packages"]:
+        raise RuntimeIdentityError(
+            "LangGraph qualification package distribution identity mismatch"
+        )
+    langmem_package = packages.get("langmem")
+    langgraph_package = packages.get("langgraph")
+    if (
+        not isinstance(langmem_package, Mapping)
+        or langmem_package.get("status") != "AVAILABLE"
+        or langmem_package.get("version") != "0.0.30"
+        or not isinstance(langgraph_package, Mapping)
+        or langgraph_package.get("status") != "AVAILABLE"
+        or type(langgraph_package.get("version")) is not str
+        or not langgraph_package.get("version")
+    ):
+        raise RuntimeIdentityError("LangGraph qualification package identity mismatch")
+    package_identity = value.get("package_identity")
+    if not isinstance(package_identity, Mapping) or (
+        package_identity.get("langmem_source_commit")
+        != "29cbe41e58528f92e9efa773c12e15c47be3808c"
+        or package_identity.get("langmem_source_repository")
+        != "langchain-ai/langmem"
+        or package_identity.get("langmem_license_id") != "MIT"
+    ):
+        raise RuntimeIdentityError("LangGraph qualification package identity mismatch")
+    if value.get("official_backend") != {
+        "class": "OfficialLangMemBackendV1",
+        "module": "mub.vnext.external.workers.langmem_worker",
+        "configuration_hash": expected_configuration_hash,
+    }:
+        raise RuntimeIdentityError("LangGraph qualification backend identity mismatch")
+    if value.get("adapter_source_files") != _langgraph_adapter_source_bindings():
+        raise RuntimeIdentityError("LangGraph qualification source bindings mismatch")
+    if value.get("capabilities") != planner._PROFILE_CAPABILITIES:
+        raise RuntimeIdentityError("LangGraph qualification capabilities mismatch")
+    boundary = value.get("execution_boundary")
+    if boundary != {
+        "provider_calls": 0,
+        "model_loads": 0,
+        "database_accesses": 0,
+        "network_calls": 0,
+        "gpu_calls": 0,
+        "executable_calls": 0,
+        "remote_operations": 0,
+    }:
+        raise RuntimeIdentityError("LangGraph qualification execution boundary mismatch")
+    lifecycle = value.get("lifecycle")
+    preflight = value.get("preflight")
+    if not isinstance(lifecycle, Mapping) or lifecycle.get("passed") is not True:
+        raise RuntimeIdentityError("LangGraph qualification lifecycle is incomplete")
+    if (
+        not isinstance(preflight, Mapping)
+        or preflight.get("outcome") != "PASS"
+        or runtime_executable not in str(preflight.get("command", ""))
+    ):
+        raise RuntimeIdentityError("LangGraph qualification preflight is incomplete")
     qualification_hash = value.get("qualification_hash")
     payload = dict(value)
     payload.pop("qualification_hash", None)
     if type(qualification_hash) is not str or qualification_hash != _sha256_bytes(canonical_json_bytes(payload)):
         raise RuntimeIdentityError("LangGraph qualification hash mismatch")
     return dict(value)
+
+
+def _bind_langgraph_qualification_executable(
+    qualification: Mapping[str, Any], args: RunnerArgs
+) -> None:
+    configured = getattr(args, "langgraph_python_executable", None)
+    if configured is None:
+        configured = getattr(args, "python_executable", None)
+    executable = Path(configured) if configured is not None else Path(sys.executable)
+    if not executable.is_absolute():
+        raise RuntimeIdentityError(
+            "LangGraph production Python executable must be absolute"
+        )
+    try:
+        resolved = executable.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise RuntimeIdentityError(
+            "LangGraph production Python executable is unavailable"
+        ) from exc
+    if not resolved.is_file():
+        raise RuntimeIdentityError(
+            "LangGraph production Python executable must be a regular file"
+        )
+    runtime_identity = qualification["runtime_identity"]
+    observed_hash = _sha256_bytes(resolved.read_bytes())
+    if (
+        runtime_identity["python_executable"] != str(resolved)
+        or runtime_identity["executable_sha256"] != observed_hash
+        or runtime_identity["size_bytes"] != resolved.stat().st_size
+    ):
+        raise RuntimeIdentityError(
+            "LangGraph qualification executable path or hash does not match production interpreter"
+        )
 
 
 def build_production_extractor_factory(args: RunnerArgs) -> Callable[[], VisibleEventExtractor]:
@@ -355,6 +475,7 @@ def build_production_manager_factory(args: RunnerArgs) -> Callable[[Any, Mapping
     qualification = _load_langgraph_qualification(
         Path(args.langmem_qualification), _LANGMEM_CONFIGURATION_HASH
     )
+    _bind_langgraph_qualification_executable(qualification, args)
     def factory(task: Any, cell: Mapping[str, Any]) -> ExternalManager:
         manager = build_langgraph_store_custom_adapter_manager(task, cell)
         manager.qualification = qualification
@@ -377,6 +498,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-runtime-receipt", type=Path)
     parser.add_argument("--model-snapshot-binding", type=Path)
     parser.add_argument("--langmem-qualification", type=Path)
+    parser.add_argument("--langgraph-python-executable", type=Path)
     return parser
 
 
@@ -393,6 +515,7 @@ class RunnerArgs:
     model_runtime_receipt: Path | None = None
     model_snapshot_binding: Path | None = None
     langmem_qualification: Path | None = None
+    langgraph_python_executable: Path | None = None
 
 
 class VisibleEventExtractor(Protocol):
@@ -438,6 +561,97 @@ def _require_sha(value: Any, label: str) -> str:
     if type(value) is not str or _HEX64.fullmatch(value) is None:
         raise ValueError(f"{label} must be lowercase SHA-256")
     return value
+
+
+def _validate_langgraph_runtime_identity(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeIdentityError("LangGraph qualification runtime identity is missing")
+    required = (
+        "python_executable",
+        "executable_sha256",
+        "size_bytes",
+        "python_version",
+        "implementation",
+        "platform",
+        "packages",
+    )
+    if any(key not in value for key in required):
+        raise RuntimeIdentityError("LangGraph qualification runtime identity is incomplete")
+    executable = value["python_executable"]
+    if type(executable) is not str or not executable or not Path(executable).is_absolute():
+        raise RuntimeIdentityError(
+            "LangGraph qualification python_executable path is invalid"
+        )
+    try:
+        executable_path = Path(executable).resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise RuntimeIdentityError(
+            "LangGraph qualification python_executable path is unavailable"
+        ) from exc
+    if executable_path.is_symlink() or not executable_path.is_file():
+        raise RuntimeIdentityError(
+            "LangGraph qualification python_executable path is not a regular file"
+        )
+    if str(executable_path) != executable:
+        raise RuntimeIdentityError(
+            "LangGraph qualification python_executable path is not resolved"
+        )
+    try:
+        _require_sha(value["executable_sha256"], "qualification executable_sha256")
+    except ValueError as exc:
+        raise RuntimeIdentityError(str(exc)) from exc
+    size_bytes = value["size_bytes"]
+    if type(size_bytes) is not int or isinstance(size_bytes, bool) or size_bytes <= 0:
+        raise RuntimeIdentityError("LangGraph qualification executable size is invalid")
+    if _sha256_bytes(executable_path.read_bytes()) != value["executable_sha256"]:
+        raise RuntimeIdentityError(
+            "LangGraph qualification executable_sha256 does not match python_executable"
+        )
+    if executable_path.stat().st_size != size_bytes:
+        raise RuntimeIdentityError(
+            "LangGraph qualification executable size does not match python_executable"
+        )
+    for field in ("python_version", "implementation", "platform"):
+        if type(value[field]) is not str or not value[field]:
+            raise RuntimeIdentityError(
+                f"LangGraph qualification runtime {field} is missing"
+            )
+    packages = value["packages"]
+    if not isinstance(packages, Mapping) or set(packages) != {"langmem", "langgraph"}:
+        raise RuntimeIdentityError(
+            "LangGraph qualification package distributions are incomplete"
+        )
+    for package_name in ("langmem", "langgraph"):
+        package = packages[package_name]
+        if not isinstance(package, Mapping):
+            raise RuntimeIdentityError(
+                f"LangGraph qualification {package_name} distribution is invalid"
+            )
+        if package.get("status") != "AVAILABLE":
+            raise RuntimeIdentityError(
+                f"LangGraph qualification {package_name} distribution is unavailable"
+            )
+        if type(package.get("version")) is not str or not package["version"]:
+            raise RuntimeIdentityError(
+                f"LangGraph qualification {package_name} version is missing"
+            )
+        metadata_path = package.get("metadata_path")
+        if (
+            type(metadata_path) is not str
+            or not metadata_path
+            or not Path(metadata_path).is_absolute()
+        ):
+            raise RuntimeIdentityError(
+                f"LangGraph qualification {package_name} metadata path is invalid"
+            )
+        try:
+            _require_sha(
+                package.get("metadata_files_sha256"),
+                f"qualification {package_name} distribution hash",
+            )
+        except ValueError as exc:
+            raise RuntimeIdentityError(str(exc)) from exc
+    return dict(value)
 
 
 def _raw_field_location(value: Any, location: str = "root") -> str | None:
