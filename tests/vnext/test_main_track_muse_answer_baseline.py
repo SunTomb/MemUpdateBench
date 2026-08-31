@@ -63,7 +63,7 @@ def test_muse_http_adapter_parses_final_content_and_redacts_reasoning(monkeypatc
     assert payload["temperature"] == 0
     assert payload["top_p"] == 1
     assert payload["seed"] == 0
-    assert payload["max_tokens"] == 1024
+    assert payload["max_tokens"] == 1536
     assert payload["stream"] is False
     assert requests[0][0].full_url == "http://127.0.0.1:8080/v1/chat/completions"
 
@@ -133,7 +133,7 @@ def test_muse_identity_and_qualification_fields_are_bound(tmp_path: Path) -> Non
     assert binding["speculative_decoding"] is False
     assert binding["reasoning_storage"] == "sha256_only"
     assert binding["old_32_token_smoke_status"] == "BLOCKED"
-    assert binding["max_tokens"] == 1024
+    assert binding["max_tokens"] == 1536
 
     candidate = module.load_candidate(CANDIDATE_ROOT)
     task = candidate.test_tasks[0]
