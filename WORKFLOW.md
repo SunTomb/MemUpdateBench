@@ -4224,3 +4224,37 @@ results/vnext/main_track_qwen35_answer_test720_tang1_ee793b1_v1/artifact_index.j
 ```
 
 Qwen model identity is `Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a`, with authenticated tree `e4e43ba06e1da35da5b24b13a3d41ee4354c8c23592dd7ef8d57ea81dc6628db`; the run is bound to human-audit attestation SHA-256 `0f1d13f23e85f74c345642a63ca23efe89b1e8ebc47c6930f2fb79ad3437743c`. Tang-1 GPU1 and the model process cleaned up successfully. The next layered gate is to repeat this answer-only panel with an independently qualified answer model, then evaluate fixed extractor/manager combinations separately.
+
+### Main-track Qwen/Muse fixed-reference answer-model panel (2026-08-31)
+
+Muse Glimmer 30B GGUF was added as the second independently frozen open answer model while keeping `ReferenceAdapterV3` state/retrieval, the audited 720-task test set, retrieval k=16 and typed scoring fixed. The old 32-token Muse capability smoke remains `BLOCKED`; main-track qualification separately established that long reasoning traces require a larger output budget. The final full run used the authenticated Dynamic Q4_K_XL GGUF, llama.cpp commit `c1d0e7a004015f23bc0233470b747b596f29b264`, loopback HTTP, speculative decoding off, reasoning mode off, seed 0, temperature 0, request max 2048, server context 8192 and server n-predict 4096.
+
+```text
+Qwen3.5-9B: EM/F1 0.7708333, CORRECT 555, WRONG 6, FORMAT_INVALID 7, WRONG_ABSTENTION 152
+Muse GGUF:   EM/F1 0.8625000, CORRECT 491, CORRECT_ABSTENTION 130, FORMAT_INVALID 8, UNAVAILABLE 69, WRONG_ABSTENTION 22
+Family B EM: Qwen 0.9958, Muse 1.0000
+Family C EM: Qwen 0.3208, Muse 0.5875
+Family D EM: Qwen 0.9958, Muse 1.0000
+Language EM (Qwen/Muse): en 0.7806/0.8528, es 0.7722/0.8611, ja 0.7500/0.8833
+paired agreement/disagreement: 504 / 216
+paired disagreement categories: abstention 137, answer 2, format-or-unavailable 77
+```
+
+Muse's main gain is calibrated abstention: 130/152 expected-abstention tasks are correct versus 0/152 for Qwen. Muse also over-abstains on 69 expected-answer tasks, while Qwen mainly over-answers ambiguous/no-match tasks. Both models are near-ceiling on Families B and D, so the panel isolates Family C reference resolution and abstention as the dominant answer-layer discriminator. Eight Muse format-invalid rows reached the 2048 request cap; these remain explicit format/truncation outcomes rather than being silently retried or excluded.
+
+Both 720-task roots pass the strict post-publication answer-artifact validator: ordered task identity, candidate and human-audit bindings, task hashes, row score recomputation, summary aggregates, redaction and model/runtime provenance were independently checked. Muse server/process/GPU cleanup passed, returning GPU6 to 5 MiB.
+
+```text
+Muse rows: results/vnext/main_track_muse_answer_test720_tang1_133adce_v1/rows.jsonl
+  SHA-256 f3d966bf694b8f5238bf15ebccda834d8a5cac4dfa739aae5f1a54f62f4ded09
+Muse summary: results/vnext/main_track_muse_answer_test720_tang1_133adce_v1/summary.json
+  SHA-256 7ae37c93689812d62d320d8b533e996ec913755bac7e02130a267ab6d0c3007d
+Muse artifact audit: results/vnext/main_track_muse_answer_test720_audit_v1/answer_artifact_audit.json
+  SHA-256 e9a2de5068fcb7a78683bdb17aec54facbc0bf7e28e2ef6187a0939410c03dba
+Panel summary: results/vnext/main_track_qwen_muse_answer_panel_v1/panel_summary.json
+  SHA-256 873001f89888a3a2c117b43c4c9ca57529e0a5336d70c33e74dae8b03cbee1b7
+Panel index: results/vnext/main_track_qwen_muse_answer_panel_v1/panel_index.json
+  SHA-256 ae937ea2a1e70a4f54ec88ea852f1c94eba3feaf652a0281c5e681c7eb158a06
+```
+
+Evidence boundary: this is a paired fixed-reference answer-layer comparison. It is not external-manager evidence, extraction evidence, a significance test or a broad leaderboard. The next main-track layer is fixed-extractor/manager factorial evaluation on the same audited task universe.
