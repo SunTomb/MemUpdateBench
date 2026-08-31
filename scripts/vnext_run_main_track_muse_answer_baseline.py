@@ -101,6 +101,7 @@ def muse_model_binding(*, server_url: str | None = None, model_file: str = MUSE_
         "llama_cpp_commit": MUSE_LLAMA_CPP_COMMIT,
         "llama_binary_sha256": MUSE_LLAMA_BINARY_SHA256,
         "speculative_decoding": False,
+        "reasoning_mode": "off",
         "reasoning_storage": "sha256_only",
         "server_url": None if server_url is None else validate_loopback_url(server_url),
         "endpoint": "/v1/chat/completions",

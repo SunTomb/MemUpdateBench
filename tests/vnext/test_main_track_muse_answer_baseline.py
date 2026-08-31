@@ -131,6 +131,7 @@ def test_muse_identity_and_qualification_fields_are_bound(tmp_path: Path) -> Non
     assert binding["revision"] == "70bf1b61ac09f91b24d39038091b41c582bc5d7a"
     assert module.MUSE_MODEL_FILE in binding["model_file"]
     assert binding["speculative_decoding"] is False
+    assert binding["reasoning_mode"] == "off"
     assert binding["reasoning_storage"] == "sha256_only"
     assert binding["old_32_token_smoke_status"] == "BLOCKED"
     assert binding["max_tokens"] == 2048
