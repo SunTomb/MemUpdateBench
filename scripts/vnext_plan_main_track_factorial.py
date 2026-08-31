@@ -29,11 +29,15 @@ DEFAULT_OUTPUT = (
     ROOT
     / "results"
     / "vnext"
-    / "main_track_v1_factorial_plan_v1"
+    / "main_track_v1_factorial_plan_v2"
     / "factorial_manifest.json"
 )
 
-SCHEMA_VERSION = "memupdatebench.main-track.factorial-plan.v1"
+SCHEMA_VERSION = "memupdatebench.main-track.factorial-plan.v2"
+LANGGRAPH_IMPLEMENTATION_BOUNDARY = (
+    "LangGraph InMemoryStore + custom MemUpdateBench adapter; "
+    "not native LangMem CRUD/retrieval evidence"
+)
 QWEN_MODEL = {
     "model_id": "Qwen/Qwen3.5-9B",
     "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
@@ -99,12 +103,13 @@ _MANAGER_SPECS = {
         "capabilities": _PROFILE_CAPABILITIES,
     },
     "langgraph": {
-        "manager_id": "langmem_0_0_30_profile",
-        "adapter_id": "langmem_0_0_30_profile",
+        "manager_id": "langgraph_store_custom_adapter",
+        "adapter_id": "langgraph_store_custom_adapter",
         "adapter_version": "memupdatebench-langmem-adapter-v1",
-        "system_name": "langmem_0_0_30_profile",
+        "system_name": "langgraph_in_memory_store",
         "system_version": "0.0.30",
         "backend": "langgraph_in_memory_store",
+        "implementation_boundary": LANGGRAPH_IMPLEMENTATION_BOUNDARY,
         "capabilities": _PROFILE_CAPABILITIES,
     },
 }
@@ -509,9 +514,14 @@ def _validate_manifest_shape(manifest: dict[str, Any]) -> None:
         raise ValueError("factorial manifest cell IDs are invalid")
     expected_ids = set(task_ids)
     for cell in cells:
+        manager_kind, _ = _cell_spec(cell.get("cell_id"))
+        expected_manager = {
+            key: value for key, value in _MANAGER_SPECS[manager_kind].items()
+            if key != "capabilities"
+        }
         manager = cell.get("manager")
-        if type(manager) is not dict or manager.get("manager_id") != cell.get("manager_id"):
-            raise ValueError("factorial manifest manager_id binding is invalid")
+        if type(manager) is not dict or manager != expected_manager or manager.get("manager_id") != cell.get("manager_id"):
+            raise ValueError("factorial manifest manager specification or manager_id is invalid")
         supported = cell.get("supported_task_ids")
         unsupported = cell.get("unsupported_tasks")
         if type(supported) is not list or type(unsupported) is not list:

@@ -14,21 +14,34 @@ import tempfile
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from mub.vnext.contracts.v3.common import FrozenMemoryObjectKey, object_identity, typed_json_equal
-from mub.vnext.contracts.v3.adapter import AdapterActionResultV3
+from mub.vnext.contracts.v3.adapter import AdapterActionResultV3, ResetRequestV3, RetrievalRequestV3
+from mub.vnext.external.bridge import WorkerRequestV1, WorkerResponseV1
 from mub.vnext.external.canaries_v3 import _rename_no_replace
+from mub.vnext.external.providers.langmem import build_langmem_adapter_configuration, compute_langmem_configuration_hash
+from mub.vnext.external.providers.langmem_adapter import LangMemExternalAdapterV3
+from mub.vnext.external.workers.langmem_worker import OfficialLangMemBackendV1, LangMemWorkerServiceV1
 from mub.vnext.io import sha256_model
 from mub.vnext.io.atomic import publish_files_atomically
 from mub.vnext.external.security import scan_for_secrets
 from scripts import vnext_plan_main_track_factorial as planner
+from scripts.vnext_run_letta_qwen_extraction_canary import (
+    MODEL_ID as QWEN_MODEL_ID,
+    MODEL_REVISION as QWEN_MODEL_REVISION,
+    MODEL_TREE_SHA256 as QWEN_MODEL_TREE_SHA256,
+    MODEL_RUNTIME_RECEIPT_SHA256 as QWEN_MODEL_RUNTIME_RECEIPT_SHA256,
+    QwenExtractor,
+    verify_model_provenance,
+)
 
 SCHEMA_VERSION = "memupdatebench.main-track.factorial.manager-fixture.v1"
 ROW_SCHEMA_VERSION = f"{SCHEMA_VERSION}.row"
 INDEX_SCHEMA_VERSION = f"{SCHEMA_VERSION}.artifact-index"
+DEFAULT_MANIFEST = planner.DEFAULT_OUTPUT
 EVIDENCE_CLASS = "manager_state_retrieval_fixture"
 TEST_ONLY_EVIDENCE_CLASS = "manager_state_retrieval_fixture_test_only"
 EXTERNAL_BOUNDARY = (
-    "External-manager state and retrieval fixture only; no prompted-answer replay, "
-    "provider/model/network/database/GPU execution, or broad scientific claim."
+    "External-manager state/retrieval plus visible-event extraction only; no prompted-answer replay, "
+    "provider/network/database execution, or broad scientific claim."
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _RAW_FIELD_NAMES = {
@@ -38,7 +51,7 @@ _RAW_FIELD_NAMES = {
 }
 _MANAGER_IDS = {
     "letta": "letta_0_16_8_block_profile",
-    "langgraph": "langmem_0_0_30_profile",
+    "langgraph": "langgraph_store_custom_adapter",
 }
 _CELL_IDS = {
     "letta": "letta_profile__qwen35_answer",
@@ -54,15 +67,317 @@ _EXECUTION_BOUNDARY = {
     "remote_operations": 0,
 }
 _ALLOWED_REASON_KINDS = {"manager_contract", "manager_capability", "query_contract"}
-_ALLOWED_REASON_CODES = {
-    "single_query_required", "historical_query_not_supported", "multi_object_query_not_supported",
-    "single_target_object_required", "current_single_object_retrieved_prompt_required",
-    "manager_capability_not_supported", "ttl_delete_not_supported", "scoped_delete_not_supported",
+_LANGMEM_CONFIGURATION_HASH = compute_langmem_configuration_hash(
+    build_langmem_adapter_configuration(run_id="langgraph-production-manifest")
+)
+_LANGGRAPH_MANAGER_ID = "langgraph_store_custom_adapter"
+_LANGGRAPH_SYSTEM_NAME = "langgraph_in_memory_store"
+_LANGGRAPH_ADAPTER_VERSION = "memupdatebench-langmem-adapter-v1"
+_LANGGRAPH_IMPLEMENTATION_BOUNDARY = planner.LANGGRAPH_IMPLEMENTATION_BOUNDARY
+_QWEN_EXTRACTOR_IDENTITY = {
+    "model_id": QWEN_MODEL_ID,
+    "revision": QWEN_MODEL_REVISION,
+    "tree_sha256": QWEN_MODEL_TREE_SHA256,
+    "extractor_id": "qwen35_visible_event_crud_extractor",
+    "extractor_version": "qwen35-visible-event-crud-extraction-v1",
 }
 
 
 class RuntimeIdentityError(RuntimeError):
     pass
+
+
+class ProductionRuntimeProfile:
+    def __init__(self) -> None:
+        self.provider_calls = 0
+        self.model_loads = 0
+        self.database_accesses = 0
+        self.network_calls = 0
+        self.gpu_calls = 0
+        self.executable_calls = 0
+        self.remote_operations = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "provider_calls": self.provider_calls,
+            "model_loads": self.model_loads,
+            "database_accesses": self.database_accesses,
+            "network_calls": self.network_calls,
+            "gpu_calls": self.gpu_calls,
+            "executable_calls": self.executable_calls,
+            "remote_operations": self.remote_operations,
+        }
+
+
+class _InProcessLangMemBridge:
+    def __init__(self, service: LangMemWorkerServiceV1) -> None:
+        self._service = service
+        self.closed = False
+
+    def request(self, request: WorkerRequestV1) -> WorkerResponseV1:
+        if self.closed:
+            raise RuntimeError("LangGraph custom adapter bridge is closed")
+        return self._service.handle(request)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class Qwen35VisibleEventExtractor:
+    production_bound = True
+
+    def __init__(self, snapshot: Path, provenance: Mapping[str, Any]) -> None:
+        self._snapshot = snapshot.resolve(strict=True)
+        self._provenance = dict(provenance)
+        self._delegate = QwenExtractor(self._snapshot)
+        self.runtime_profile = ProductionRuntimeProfile()
+        self.identity = {
+            **_QWEN_EXTRACTOR_IDENTITY,
+            "runtime_receipt_sha256": self._provenance["runtime_receipt_sha256"],
+            "snapshot_binding_receipt_sha256": self._provenance["snapshot_binding_receipt_sha256"],
+            "snapshot_binding_payload_sha256": self._provenance["snapshot_binding_payload_sha256"],
+        }
+
+    def load(self) -> None:
+        self._delegate.load()
+        self.runtime_profile.model_loads += 1
+        try:
+            self._delegate.torch.use_deterministic_algorithms(True, warn_only=True)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def extract(self, event: Any, object_key: Any) -> Mapping[str, Any]:
+        if not hasattr(self._delegate, "model") or self._delegate.model is None:
+            raise RuntimeError("Qwen visible-event extractor is not loaded")
+        parsed, raw_output, generated_tokens, latency_ms = self._delegate.extract(
+            event.raw_text, object_key.attribute
+        )
+        self.runtime_profile.gpu_calls += 1
+        return {
+            "operation": parsed["operation"],
+            "value": parsed["value"],
+            "output_sha256": _sha256_bytes(raw_output.encode("utf-8")),
+            "generated_tokens": generated_tokens,
+            "latency_ms": latency_ms,
+        }
+
+    def close(self) -> None:
+        self._delegate.close()
+
+
+class LangGraphStoreCustomAdapterManager:
+    production_bound = True
+
+    def __init__(self, *, task: Any, configuration_hash: str = _LANGMEM_CONFIGURATION_HASH) -> None:
+        if configuration_hash != _LANGMEM_CONFIGURATION_HASH:
+            raise RuntimeIdentityError("LangGraph configuration hash mismatch")
+        target = FrozenMemoryObjectKey.model_validate(
+            task.target_objects[0].model_dump(mode="python"), strict=True
+        )
+        configuration = build_langmem_adapter_configuration(
+            run_id="langgraph-custom-" + task.task_id
+        )
+        backend = OfficialLangMemBackendV1(configuration)
+        bridge = _InProcessLangMemBridge(LangMemWorkerServiceV1(backend))
+        self._adapter = LangMemExternalAdapterV3(
+            bridge=bridge, configuration=configuration, target_objects=(target,)
+        )
+        self._namespace = "langgraph_custom_" + task.task_id
+        self.runtime_profile = ProductionRuntimeProfile()
+        self.identity = {
+            "manager_id": _LANGGRAPH_MANAGER_ID,
+            "adapter_id": _LANGGRAPH_MANAGER_ID,
+            "adapter_version": _LANGGRAPH_ADAPTER_VERSION,
+            "system_name": _LANGGRAPH_SYSTEM_NAME,
+            "system_version": "0.0.30",
+            "backend": "langgraph_in_memory_store",
+            "implementation_boundary": _LANGGRAPH_IMPLEMENTATION_BOUNDARY,
+            "package_name": "langmem",
+            "package_version": "0.0.30",
+            "source_commit": "29cbe41e58528f92e9efa773c12e15c47be3808c",
+            "configuration_hash": compute_langmem_configuration_hash(configuration),
+        }
+
+    @staticmethod
+    def _event_for_operation(event: Any, operation: str, value: Any) -> Any:
+        if operation == "noop":
+            text = "No memory object changes."
+        elif operation == "delete":
+            target = event.metadata.get("target_object_id") or ""
+            text = f"Delete {target} [scope=object; enumerated_targets={target}; event_logical_time={event.timestamp}; effective_at=now]."
+        else:
+            target = event.metadata.get("target_object_id") or ""
+            text = f"{operation.title()} {target} with value {json.dumps(value, ensure_ascii=False)}."
+        return event.model_copy(update={"raw_text": text, "normalized_text": text})
+
+    def reset(self, task: Any) -> None:
+        self._adapter.reset(ResetRequestV3(namespace=self._namespace))
+
+    def ingest(self, event: Any, *, operation: str, value: Any, object_key: Any) -> Mapping[str, Any]:
+        enriched = event.model_copy(
+            update={"metadata": {**event.metadata, "target_object_id": object_key.canonical_id}}
+        )
+        result = self._adapter.ingest_event(
+            self._event_for_operation(enriched, operation, value)
+        )
+        return result
+
+    @staticmethod
+    def _entry(entry: Any, *, score: float = 0.0, rank: int = 1) -> dict[str, Any]:
+        return {
+            "entry_id": entry.entry_id,
+            "object_key": entry.object_key_candidate.model_dump(mode="json"),
+            "value": entry.value_candidate,
+            "content": entry.content,
+            "source_event_ids": list(entry.source_event_ids),
+            "score": score,
+            "rank": rank,
+            "version_metadata": dict(entry.raw_metadata),
+        }
+
+    def export_entries(self) -> Sequence[Mapping[str, Any]]:
+        return [self._entry(entry) for entry in self._adapter.export_entries().entries]
+
+    def retrieve(self, query: Any) -> Mapping[str, Any]:
+        result = self._adapter.retrieve(RetrievalRequestV3(query=query, k=16))
+        trace = result.trace
+        return {
+            "entries": [
+                self._entry(entry, score=score, rank=rank)
+                for entry, score, rank in zip(trace.retrieved_entries, trace.scores, trace.ranks)
+            ],
+            "context_order": trace.context_order,
+            "version_metadata": dict(trace.version_metadata),
+        }
+
+    def close(self) -> None:
+        self._adapter.close()
+
+
+def validate_qwen35_runtime_provenance(
+    provenance: Mapping[str, Any], *, expected_runtime_receipt_sha256: str = QWEN_MODEL_RUNTIME_RECEIPT_SHA256
+) -> dict[str, Any]:
+    if provenance.get("runtime_receipt_sha256") != expected_runtime_receipt_sha256:
+        raise RuntimeIdentityError("Qwen runtime receipt provenance mismatch")
+    for name in ("snapshot_binding_receipt_sha256", "snapshot_binding_payload_sha256", "tree_sha256"):
+        if name not in provenance or type(provenance[name]) is not str:
+            raise RuntimeIdentityError(f"Qwen {name} provenance is missing")
+    if provenance.get("tree_sha256") != QWEN_MODEL_TREE_SHA256:
+        raise RuntimeIdentityError("Qwen tree provenance mismatch")
+    if provenance.get("repo") not in (None, QWEN_MODEL_ID) or provenance.get("revision") not in (None, QWEN_MODEL_REVISION):
+        raise RuntimeIdentityError("Qwen model identity provenance mismatch")
+    return dict(provenance)
+
+
+def build_qwen35_visible_event_extractor(
+    model_snapshot: Path,
+    *,
+    model_runtime_receipt: Path,
+    model_snapshot_binding: Path,
+) -> Qwen35VisibleEventExtractor:
+    snapshot = Path(model_snapshot)
+    if not snapshot.is_absolute() or not snapshot.is_dir() or snapshot.is_symlink():
+        raise RuntimeIdentityError("Qwen model snapshot must be an absolute regular directory")
+    binding_path = Path(model_snapshot_binding)
+    runtime_path = Path(model_runtime_receipt)
+    if not binding_path.is_absolute() or not runtime_path.is_absolute():
+        raise RuntimeIdentityError("Qwen provenance paths must be absolute")
+    try:
+        binding_raw = binding_path.read_bytes()
+        binding = json.loads(binding_raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeIdentityError("Qwen snapshot binding cannot be read") from exc
+    provenance = verify_model_provenance(
+        snapshot, runtime_path, binding, binding_raw=binding_raw, binding_path=binding_path
+    )
+    return Qwen35VisibleEventExtractor(snapshot, validate_qwen35_runtime_provenance(provenance))
+
+
+def build_langgraph_store_custom_adapter_manager(
+    task: Any, cell: Mapping[str, Any], *, configuration_hash: str = _LANGMEM_CONFIGURATION_HASH
+) -> LangGraphStoreCustomAdapterManager:
+    if cell.get("manager_id") != _LANGGRAPH_MANAGER_ID:
+        raise RuntimeIdentityError("LangGraph custom adapter manager specification mismatch")
+    return LangGraphStoreCustomAdapterManager(task=task, configuration_hash=configuration_hash)
+
+
+def _load_langgraph_qualification(path: Path, expected_configuration_hash: str) -> dict[str, Any]:
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise RuntimeIdentityError("LangGraph qualification must be an absolute regular file")
+    raw = path.read_bytes()
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeIdentityError("LangGraph qualification is not valid JSON") from exc
+    if canonical_json_bytes(value) != raw or scan_for_secrets(value):
+        raise RuntimeIdentityError("LangGraph qualification must be canonical and secret-free")
+    if not isinstance(value, Mapping):
+        raise RuntimeIdentityError("LangGraph qualification must be an object")
+    required = {
+        "schema_version": "memupdatebench.external.langgraph-store-custom-adapter.qualification.v1",
+        "manager_id": _LANGGRAPH_MANAGER_ID,
+        "adapter_id": _LANGGRAPH_MANAGER_ID,
+        "backend": "langgraph_in_memory_store",
+        "package_name": "langmem",
+        "package_version": "0.0.30",
+        "source_commit": "29cbe41e58528f92e9efa773c12e15c47be3808c",
+        "configuration_hash": expected_configuration_hash,
+        "qualification_status": "PASS",
+        "network_calls": 0,
+        "provider_calls": 0,
+    }
+    if any(value.get(key) != expected for key, expected in required.items()):
+        raise RuntimeIdentityError("LangGraph qualification identity mismatch")
+    qualification_hash = value.get("qualification_hash")
+    payload = dict(value)
+    payload.pop("qualification_hash", None)
+    if type(qualification_hash) is not str or qualification_hash != _sha256_bytes(canonical_json_bytes(payload)):
+        raise RuntimeIdentityError("LangGraph qualification hash mismatch")
+    return dict(value)
+
+
+def build_production_extractor_factory(args: RunnerArgs) -> Callable[[], VisibleEventExtractor]:
+    if not args.model_snapshot or not args.model_runtime_receipt or not args.model_snapshot_binding:
+        raise RuntimeError("production adapters are not configured: production extractor requires model snapshot, runtime receipt, and snapshot binding")
+    def factory() -> VisibleEventExtractor:
+        return build_qwen35_visible_event_extractor(
+            args.model_snapshot,
+            model_runtime_receipt=args.model_runtime_receipt,
+            model_snapshot_binding=args.model_snapshot_binding,
+        )
+    factory.production_bound = True
+    return factory
+
+
+def build_production_manager_factory(args: RunnerArgs) -> Callable[[Any, Mapping[str, Any]], ExternalManager]:
+    if not args.langmem_qualification:
+        raise RuntimeError("production manager requires LangGraph qualification")
+    qualification = _load_langgraph_qualification(
+        Path(args.langmem_qualification), _LANGMEM_CONFIGURATION_HASH
+    )
+    def factory(task: Any, cell: Mapping[str, Any]) -> ExternalManager:
+        manager = build_langgraph_store_custom_adapter_manager(task, cell)
+        manager.qualification = qualification
+        manager.identity["qualification_hash"] = qualification["qualification_hash"]
+        return manager
+    factory.production_bound = True
+    return factory
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run one audited main-track external-manager state/retrieval fixture cell.")
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--candidate-root", type=Path, required=True)
+    parser.add_argument("--audit-attestation", type=Path, required=True)
+    parser.add_argument("--manager-kind", choices=tuple(_MANAGER_IDS), required=True)
+    parser.add_argument("--cell-id", required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--execution-mode", choices=("production", "injected_test_only"), default="production")
+    parser.add_argument("--model-snapshot", type=Path)
+    parser.add_argument("--model-runtime-receipt", type=Path)
+    parser.add_argument("--model-snapshot-binding", type=Path)
+    parser.add_argument("--langmem-qualification", type=Path)
+    return parser
 
 
 @dataclass(frozen=True)
@@ -74,6 +389,10 @@ class RunnerArgs:
     cell_id: str
     output_root: Path
     execution_mode: str = "production"
+    model_snapshot: Path | None = None
+    model_runtime_receipt: Path | None = None
+    model_snapshot_binding: Path | None = None
+    langmem_qualification: Path | None = None
 
 
 class VisibleEventExtractor(Protocol):
@@ -160,7 +479,7 @@ def _load_manifest(path: Path) -> tuple[dict[str, Any], bytes]:
         raise ValueError("manifest is not valid JSON") from exc
     if type(manifest) is not dict or canonical_json_bytes(manifest) != raw:
         raise ValueError("manifest must be canonical JSON")
-    if manifest.get("schema_version") != "memupdatebench.main-track.factorial-plan.v1":
+    if manifest.get("schema_version") != planner.SCHEMA_VERSION:
         raise ValueError("factorial manifest schema mismatch")
     planner._validate_manifest_shape(manifest)
     return manifest, raw
@@ -386,6 +705,8 @@ def _bind_retrieval_trace(trace: dict[str, Any], query: Any, target_identity: st
 
 
 def _validate_row_consistency(row: Mapping[str, Any]) -> None:
+    if not typed_json_equal(row.get("event_records"), row.get("extractions")):
+        raise ValueError("event records drift from extractions")
     state = row.get("state")
     state_pairs = {
         "state_accuracy": "state_accuracy",
@@ -614,6 +935,9 @@ def run(
     output = _validate_output_root(Path(args.output_root), (manifest_path, Path(args.candidate_root), Path(args.audit_attestation)))
     if args.execution_mode not in {"production", "injected_test_only"}:
         raise ValueError("execution_mode must be production or injected_test_only")
+    if args.execution_mode == "production" and extractor_factory is None and manager_factory is None:
+        extractor_factory = build_production_extractor_factory(args)
+        manager_factory = build_production_manager_factory(args)
     if extractor_factory is None or manager_factory is None:
         raise RuntimeError("production adapters are not configured; inject extractor_factory and manager_factory")
     if args.execution_mode == "production":
@@ -632,6 +956,11 @@ def run(
             raise RuntimeError("production manifest extractor identity is missing")
         _validate_runtime_identity(extractor.identity, expected_extractor_identity, "extractor")
     rows: list[dict[str, Any]] = []
+    runtime_profiles: list[ProductionRuntimeProfile] = []
+    if args.execution_mode == "production" and callable(getattr(extractor, "load", None)):
+        extractor.load()
+    if isinstance(getattr(extractor, "runtime_profile", None), ProductionRuntimeProfile):
+        runtime_profiles.append(extractor.runtime_profile)
     cleanup_errors: list[BaseException] = []
     try:
         for task in tasks:
@@ -642,6 +971,8 @@ def run(
             manager = None
             try:
                 manager = manager_factory(task, cell)
+                if isinstance(getattr(manager, "runtime_profile", None), ProductionRuntimeProfile):
+                    runtime_profiles.append(manager.runtime_profile)
                 if args.execution_mode == "production":
                     _validate_runtime_identity(manager.identity, cell["manager"], "manager")
                 rows.append(_supported_row(task, cell, args.manager_kind, task_sha, extractor, manager))
@@ -701,6 +1032,12 @@ def run(
     )
     boundary_observed = args.execution_mode == "production"
     reason_counts = dict(sorted(Counter(row["reason_code"] for row in unsupported).items()))
+    boundary = dict(_EXECUTION_BOUNDARY)
+    if args.execution_mode == "production" and runtime_profiles:
+        boundary = {
+            key: sum(profile.as_dict()[key] for profile in runtime_profiles)
+            for key in _EXECUTION_BOUNDARY
+        }
     rows_raw = _canonical_jsonl(rows)
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -722,7 +1059,10 @@ def run(
         "gold_retrieval_rate": sum(bool(row["retrieval"]["gold_retrieved"]) for row in retrieval_rows) / len(retrieval_rows) if retrieval_rows else None,
         "retrieval_denominator": len(retrieval_rows),
         "unsupported_reason_counts": reason_counts,
-        "execution_boundary": dict(_EXECUTION_BOUNDARY),
+        "execution_boundary": dict(boundary),
+        "execution_boundary_planned": dict(_EXECUTION_BOUNDARY),
+        "execution_accounting_observed": bool(runtime_profiles),
+        "execution_accounting_source": "production_runtime_profile" if runtime_profiles else "injected_or_unavailable",
         "provider_calls": 0,
         "retries": 0,
         "execution_mode": args.execution_mode,
@@ -749,7 +1089,10 @@ def run(
             "manager_rows.jsonl": {"sha256": _sha256_bytes(rows_raw), "bytes": len(rows_raw), "record_count": len(rows)},
             "manager_summary.json": {"sha256": _sha256_bytes(canonical_json_bytes(summary)), "bytes": len(canonical_json_bytes(summary)), "record_count": 1},
         },
-        "execution_boundary": dict(_EXECUTION_BOUNDARY),
+        "execution_boundary": dict(boundary),
+        "execution_boundary_planned": dict(_EXECUTION_BOUNDARY),
+        "execution_accounting_observed": bool(runtime_profiles),
+        "execution_accounting_source": "production_runtime_profile" if runtime_profiles else "injected_or_unavailable",
         "provider_calls": 0,
         "retries": 0,
         "execution_mode": args.execution_mode,
@@ -775,14 +1118,7 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run one audited main-track external-manager state/retrieval fixture cell.")
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--candidate-root", type=Path, required=True)
-    parser.add_argument("--audit-attestation", type=Path, required=True)
-    parser.add_argument("--manager-kind", choices=tuple(_MANAGER_IDS), required=True)
-    parser.add_argument("--cell-id", required=True)
-    parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--execution-mode", choices=("production", "injected_test_only"), default="production")
+    parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
         summary = run(RunnerArgs(**vars(args)))

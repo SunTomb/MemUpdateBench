@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_factorial_plan_has_six_cells_and_contract_support_counts() -> None:
     manifest = build_factorial_manifest(CANDIDATE_ROOT, AUDIT_ATTESTATION)
 
-    assert manifest["schema_version"] == "memupdatebench.main-track.factorial-plan.v1"
+    assert manifest["schema_version"] == "memupdatebench.main-track.factorial-plan.v2"
     assert manifest["planning_status"] == "PLANNING_ONLY_NO_EXECUTION"
     assert manifest["task_view"]["count"] == 720
     assert len(manifest["task_view"]["task_ids"]) == 720
@@ -52,6 +52,43 @@ def test_factorial_plan_has_six_cells_and_contract_support_counts() -> None:
         assert cell["extractor"]["role"] == (
             "none" if cell["manager_id"] == "reference" else "visible_event_crud_extraction"
         )
+
+
+def test_langgraph_cell_uses_exact_custom_adapter_identity_and_boundary() -> None:
+    manifest = build_factorial_manifest(CANDIDATE_ROOT, AUDIT_ATTESTATION)
+    cell = next(
+        cell for cell in manifest["cells"]
+        if cell["cell_id"] == "langgraph_store_custom_adapter__qwen35_answer"
+    )
+
+    assert cell["manager"] == {
+        "manager_id": "langgraph_store_custom_adapter",
+        "adapter_id": "langgraph_store_custom_adapter",
+        "adapter_version": "memupdatebench-langmem-adapter-v1",
+        "system_name": "langgraph_in_memory_store",
+        "system_version": "0.0.30",
+        "backend": "langgraph_in_memory_store",
+        "implementation_boundary": factorial_plan.LANGGRAPH_IMPLEMENTATION_BOUNDARY,
+    }
+    assert cell["manager_id"] == "langgraph_store_custom_adapter"
+    assert cell["manager"]["implementation_boundary"] == (
+        "LangGraph InMemoryStore + custom MemUpdateBench adapter; "
+        "not native LangMem CRUD/retrieval evidence"
+    )
+    assert "langmem_0_0_30_profile" not in json.dumps(cell, sort_keys=True)
+
+
+def test_manifest_shape_rejects_langgraph_boundary_drift() -> None:
+    manifest = build_factorial_manifest(CANDIDATE_ROOT, AUDIT_ATTESTATION)
+    manifest["cells"][4]["manager"]["implementation_boundary"] = "drifted"
+    payload = dict(manifest)
+    payload.pop("payload_sha256")
+    manifest["payload_sha256"] = factorial_plan.sha256_bytes(
+        factorial_plan.canonical_json_bytes(payload)
+    )
+
+    with pytest.raises(ValueError, match="manager specification"):
+        factorial_plan._validate_manifest_shape(manifest)
 
 
 def test_profile_cells_use_typed_reasons_not_unsupported_zero() -> None:
