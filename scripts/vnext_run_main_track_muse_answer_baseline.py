@@ -63,7 +63,7 @@ MODEL_ID = MUSE_MODEL_ID
 MODEL_REVISION = MUSE_MODEL_REVISION
 MODEL_TREE_SHA256 = MUSE_MODEL_TREE_SHA256
 RUNTIME_RECEIPT_SHA256 = MUSE_RUNTIME_RECEIPT_SHA256
-MAX_TOKENS = 1536
+MAX_TOKENS = 2048
 AUDIT_ATTESTATION_DEFAULT = ROOT / "results" / "vnext" / "main_track_v1_audit_completion_attestation_v1" / "review_attestation.json"
 
 
@@ -110,8 +110,8 @@ def muse_model_binding(*, server_url: str | None = None, model_file: str = MUSE_
         "max_tokens": MAX_TOKENS,
         "stream": False,
         "old_32_token_smoke_status": "BLOCKED",
-        "truncation_tests": [128, 256, 512, 1024],
-        "qualification_note": "1536 is the smallest tested budget that removed observed canary truncation; semantic abstention errors remain model behavior",
+        "truncation_tests": [128, 256, 512, 1024, 1536],
+        "qualification_note": "2048 is the smallest tested budget that removed all observed stratified-canary truncation; remaining abstention errors are model behavior",
     }
 
 
@@ -349,8 +349,8 @@ def build_summary(rows: Sequence[dict[str, Any]], *, scope: str, candidate: Cand
         "by_family": _axis_counts(rows, "family"), "by_domain": _axis_counts(rows, "domain"), "by_language": _axis_counts(rows, "language"), "family_counts": _axis_counts(rows, "family"), "domain_counts": _axis_counts(rows, "domain"), "attribute_counts": _axis_counts(rows, "attribute"), "language_counts": _axis_counts(rows, "language"),
         "candidate_artifact_hashes": dict(candidate.artifact_hashes), "audit_attestation_sha256": None if audit_attestation is None else audit_attestation.sha256, "audit_review_status": None if audit_attestation is None else audit_attestation.review_status,
         "model_binding": binding, "runtime_binding": {"adapter_id": "reference", "answer_mode": "slot_prompt", "retrieval_policy": "normal_topk", "retrieval_k": RETRIEVAL_K, "provider_calls": 0, "api_calls": len(rows), "network_calls": len(rows)}, "provider_calls": 0, "api_calls": len(rows), "network_calls": len(rows), "rows_sha256": rows_sha256, "runner_source_sha256": _sha256_file(Path(__file__)),
-        "qualification": {"old_32_token_smoke_status": "BLOCKED", "max_tokens": MAX_TOKENS, "max_tokens_reason": "128/256/512/1024 truncation tests; 1536 completed observed failures", "truncation_tests": [128, 256, 512, 1024], "speculative_decoding": False, "reasoning_storage": "sha256_only"},
-        "old_32_token_smoke_status": "BLOCKED", "max_tokens": MAX_TOKENS, "max_tokens_reason": "128/256/512/1024 truncation tests; 1536 completed observed failures", "speculative_decoding": False, "reasoning_storage": "sha256_only",
+        "qualification": {"old_32_token_smoke_status": "BLOCKED", "max_tokens": MAX_TOKENS, "max_tokens_reason": "128/256/512/1024/1536 truncation tests; 2048 removed all observed stratified-canary truncation", "truncation_tests": [128, 256, 512, 1024, 1536], "speculative_decoding": False, "reasoning_storage": "sha256_only"},
+        "old_32_token_smoke_status": "BLOCKED", "max_tokens": MAX_TOKENS, "max_tokens_reason": "128/256/512/1024/1536 truncation tests; 2048 removed all observed stratified-canary truncation", "speculative_decoding": False, "reasoning_storage": "sha256_only",
     }
     if scan_for_secrets(summary):
         raise ValueError("Muse answer baseline summary failed secret scan")
