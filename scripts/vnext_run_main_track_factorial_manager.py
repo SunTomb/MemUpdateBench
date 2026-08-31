@@ -501,6 +501,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--langmem-qualification", type=Path)
     parser.add_argument("--langgraph-python-executable", type=Path)
     parser.add_argument("--supported-limit", type=int)
+    parser.add_argument("--allow-relocated-authenticated-inputs", action="store_true")
     return parser
 
 
@@ -519,6 +520,7 @@ class RunnerArgs:
     langmem_qualification: Path | None = None
     langgraph_python_executable: Path | None = None
     supported_limit: int | None = None
+    allow_relocated_authenticated_inputs: bool = False
 
 
 class VisibleEventExtractor(Protocol):
@@ -712,6 +714,22 @@ def _load_manifest(path: Path) -> tuple[dict[str, Any], bytes]:
     return manifest, raw
 
 
+def _input_relocation_metadata(
+    args: RunnerArgs,
+    manifest: Mapping[str, Any],
+    supplied_candidate: Path,
+    supplied_audit: Path,
+) -> dict[str, Any]:
+    return {
+        "enabled": args.allow_relocated_authenticated_inputs,
+        "manifest_candidate_root": str(manifest["candidate"]["root"]),
+        "execution_candidate_root": str(supplied_candidate),
+        "manifest_audit_path": str(manifest["audit_attestation"]["path"]),
+        "execution_audit_path": str(supplied_audit),
+        "authenticated_equivalence": True,
+    }
+
+
 def _validate_inputs(args: RunnerArgs, manifest: dict[str, Any], manifest_raw: bytes) -> tuple[list[Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     if args.manager_kind not in _MANAGER_IDS:
         raise ValueError("manager_kind must be letta or langgraph")
@@ -728,16 +746,19 @@ def _validate_inputs(args: RunnerArgs, manifest: dict[str, Any], manifest_raw: b
         declared_candidate = declared_candidate.resolve(strict=True)
     except FileNotFoundError:
         declared_candidate = declared_candidate.resolve(strict=False)
-    if declared_candidate != supplied_candidate:
-        raise ValueError("manifest candidate root binding does not match supplied path")
+    candidate_path_matches = declared_candidate == supplied_candidate
     supplied_audit = Path(args.audit_attestation).resolve(strict=True)
     declared_audit = Path(manifest["audit_attestation"].get("path", ""))
     try:
         declared_audit = declared_audit.resolve(strict=True)
     except FileNotFoundError:
         declared_audit = declared_audit.resolve(strict=False)
-    if declared_audit != supplied_audit:
-        raise ValueError("manifest audit attestation path binding does not match supplied path")
+    audit_path_matches = declared_audit == supplied_audit
+    if not args.allow_relocated_authenticated_inputs:
+        if not candidate_path_matches:
+            raise ValueError("manifest candidate root binding does not match supplied path")
+        if not audit_path_matches:
+            raise ValueError("manifest audit attestation path binding does not match supplied path")
     expected_manager = {
         key: value for key, value in planner._MANAGER_SPECS[args.manager_kind].items()
         if key != "capabilities"
@@ -761,6 +782,8 @@ def _validate_inputs(args: RunnerArgs, manifest: dict[str, Any], manifest_raw: b
     task_ids = [task.task_id for task in tasks]
     if task_ids != manifest["task_view"]["task_ids"]:
         raise ValueError("manifest task order does not match candidate test order")
+    if _sha256_bytes(canonical_json_bytes(task_ids)) != manifest["task_view"]["task_ids_sha256"]:
+        raise ValueError("manifest task IDs hash does not match candidate test order")
     expected_supported: list[str] = []
     expected_unsupported: list[dict[str, Any]] = []
     for task in tasks:
@@ -785,7 +808,14 @@ def _validate_inputs(args: RunnerArgs, manifest: dict[str, Any], manifest_raw: b
     if any(tasks_by_id[task_id].task_family != "noop_write_discipline" for task_id in expected_supported):
         raise ValueError("manager fixture supported tasks must be Family D")
     hashes = {task_id: sha256_model(tasks_by_id[task_id]) for task_id in task_ids}
-    return tasks, cell, provenance, {"manifest_sha256": _sha256_bytes(manifest_raw), "task_hashes": hashes}
+    input_relocation = _input_relocation_metadata(
+        args, manifest, supplied_candidate, supplied_audit
+    )
+    return tasks, cell, provenance, {
+        "manifest_sha256": _sha256_bytes(manifest_raw),
+        "task_hashes": hashes,
+        "input_relocation": input_relocation,
+    }
 
 
 def _identity(value: Any, label: str) -> dict[str, Any]:
@@ -1163,6 +1193,8 @@ def run(
     output = _validate_output_root(Path(args.output_root), (manifest_path, Path(args.candidate_root), Path(args.audit_attestation)))
     if args.execution_mode not in {"production", "injected_test_only"}:
         raise ValueError("execution_mode must be production or injected_test_only")
+    loaded_manifest, manifest_raw = _load_manifest(manifest_path)
+    tasks, cell, provenance, binding = _validate_inputs(args, loaded_manifest, manifest_raw)
     if args.execution_mode == "production" and extractor_factory is None and manager_factory is None:
         extractor_factory = build_production_extractor_factory(args)
         manager_factory = build_production_manager_factory(args)
@@ -1171,8 +1203,6 @@ def run(
     if args.execution_mode == "production":
         if not _factory_is_production_bound(extractor_factory) or not _factory_is_production_bound(manager_factory):
             raise RuntimeError("production mode requires production-bound factories")
-    loaded_manifest, manifest_raw = _load_manifest(manifest_path)
-    tasks, cell, provenance, binding = _validate_inputs(args, loaded_manifest, manifest_raw)
     eligible_supported_ids = list(cell["supported_task_ids"])
     selected_supported_ids = (
         eligible_supported_ids
@@ -1284,6 +1314,9 @@ def run(
             key: sum(profile.as_dict()[key] for profile in runtime_profiles)
             for key in _EXECUTION_BOUNDARY
         }
+    input_relocation = dict(binding["input_relocation"])
+    for row in rows:
+        row["input_relocation"] = dict(input_relocation)
     rows_raw = _canonical_jsonl(rows)
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -1319,6 +1352,7 @@ def run(
         "provider_calls": 0,
         "retries": 0,
         "execution_mode": args.execution_mode,
+        "input_relocation": dict(input_relocation),
         "manifest_sha256": binding["manifest_sha256"],
         "candidate_artifact_hashes": provenance["artifact_hashes"],
         "audit_attestation_sha256": provenance["audit_attestation_sha256"],
@@ -1356,6 +1390,7 @@ def run(
         "provider_calls": 0,
         "retries": 0,
         "execution_mode": args.execution_mode,
+        "input_relocation": dict(input_relocation),
     }
     validate_public_payload(summary)
     validate_public_payload(index)

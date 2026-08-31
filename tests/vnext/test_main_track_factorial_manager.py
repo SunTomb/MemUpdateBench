@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 
 import pytest
 
@@ -41,6 +42,7 @@ def _args(
     audit_attestation: Path = ATTESTATION,
     execution_mode: str = "injected_test_only",
     supported_limit: int | None = None,
+    allow_relocated_authenticated_inputs: bool = False,
 ):
     return runner.RunnerArgs(
         manifest=MANIFEST,
@@ -51,6 +53,7 @@ def _args(
         output_root=output_root,
         execution_mode=execution_mode,
         supported_limit=supported_limit,
+        allow_relocated_authenticated_inputs=allow_relocated_authenticated_inputs,
     )
 
 
@@ -291,9 +294,11 @@ def test_cli_parser_accepts_optional_supported_limit(tmp_path):
             "--output-root", str(tmp_path / "out"),
             "--execution-mode", "injected_test_only",
             "--supported-limit", "8",
+            "--allow-relocated-authenticated-inputs",
         ]
     )
     assert parsed.supported_limit == 8
+    assert parsed.allow_relocated_authenticated_inputs is True
     omitted = parser.parse_args(
         [
             "--candidate-root", str(CANDIDATE),
@@ -305,6 +310,7 @@ def test_cli_parser_accepts_optional_supported_limit(tmp_path):
         ]
     )
     assert omitted.supported_limit is None
+    assert omitted.allow_relocated_authenticated_inputs is False
 
 
 def test_unsupported_rows_have_typed_reason_and_null_policy(tmp_path):
@@ -457,6 +463,105 @@ def test_manifest_binds_exact_manager_and_extractor_specs(tmp_path):
             manager_factory=lambda task, cell: FakeManager(),
             manifest=tampered,
         )
+
+
+def _copy_authenticated_inputs(tmp_path: Path, *, mutate_candidate=None, mutate_audit=None):
+    candidate = tmp_path / "candidate-relocated"
+    shutil.copytree(CANDIDATE, candidate)
+    if mutate_candidate is not None:
+        mutate_candidate(candidate)
+    audit = tmp_path / "audit-relocated.json"
+    shutil.copy2(ATTESTATION, audit)
+    if mutate_audit is not None:
+        payload = json.loads(audit.read_bytes())
+        mutate_audit(payload)
+        audit.write_bytes(runner.canonical_json_bytes(payload))
+    return candidate, audit
+
+
+def test_identical_relocated_authenticated_inputs_are_accepted_with_flag(tmp_path):
+    candidate, audit = _copy_authenticated_inputs(tmp_path)
+    summary = runner.run(
+        _args(
+            tmp_path / "out",
+            candidate_root=candidate,
+            audit_attestation=audit,
+            supported_limit=1,
+            allow_relocated_authenticated_inputs=True,
+        ),
+        extractor_factory=lambda: FakeExtractor(),
+        manager_factory=lambda task, cell: FakeManager(),
+    )
+    assert summary["status"] == "PASS"
+    relocation = summary["input_relocation"]
+    assert relocation == {
+        "enabled": True,
+        "manifest_candidate_root": str(Path(json.loads(MANIFEST.read_bytes())["candidate"]["root"]).resolve()),
+        "execution_candidate_root": str(candidate.resolve()),
+        "manifest_audit_path": str(Path(json.loads(MANIFEST.read_bytes())["audit_attestation"]["path"]).resolve()),
+        "execution_audit_path": str(audit.resolve()),
+        "authenticated_equivalence": True,
+    }
+    index = json.loads((tmp_path / "out" / "artifact_index.json").read_bytes())
+    assert index["input_relocation"] == relocation
+    rows = [json.loads(line) for line in (tmp_path / "out" / "manager_rows.jsonl").read_bytes().splitlines()]
+    assert rows and all(row["input_relocation"] == relocation for row in rows)
+
+
+def test_identical_relocated_authenticated_inputs_are_rejected_without_flag(tmp_path):
+    candidate, audit = _copy_authenticated_inputs(tmp_path)
+    calls = []
+
+    def extractor_factory():
+        calls.append("extractor")
+        return FakeExtractor()
+
+    def manager_factory(task, cell):
+        calls.append("manager")
+        return FakeManager()
+
+    with pytest.raises(ValueError, match="candidate root binding"):
+        runner.run(
+            _args(
+                tmp_path / "out",
+                candidate_root=candidate,
+                audit_attestation=audit,
+                supported_limit=1,
+            ),
+            extractor_factory=extractor_factory,
+            manager_factory=manager_factory,
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize("changed_input", ["candidate", "audit"])
+def test_changed_relocated_authenticated_inputs_are_rejected_with_flag(tmp_path, changed_input):
+    def mutate_candidate(candidate):
+        tasks = candidate / "tasks.jsonl"
+        tasks.write_bytes(tasks.read_bytes() + b"\n")
+
+    def mutate_audit(payload):
+        payload["completed_packet_sha256"] = "0" * 64
+
+    candidate, audit = _copy_authenticated_inputs(
+        tmp_path,
+        mutate_candidate=mutate_candidate if changed_input == "candidate" else None,
+        mutate_audit=mutate_audit if changed_input == "audit" else None,
+    )
+    calls = []
+    with pytest.raises(ValueError, match="candidate artifact hash|audit attestation hash"):
+        runner.run(
+            _args(
+                tmp_path / "out",
+                candidate_root=candidate,
+                audit_attestation=audit,
+                supported_limit=1,
+                allow_relocated_authenticated_inputs=True,
+            ),
+            extractor_factory=lambda: calls.append("extractor") or FakeExtractor(),
+            manager_factory=lambda task, cell: calls.append("manager") or FakeManager(),
+        )
+    assert calls == []
 
 
 def test_manifest_support_reasons_and_order_are_recomputed(tmp_path):
