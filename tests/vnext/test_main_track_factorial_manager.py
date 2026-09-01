@@ -340,6 +340,75 @@ def test_retrieval_trace_hash_binds_actual_ordered_entries(tmp_path):
     assert trace["context_order"] == "fake_insertion_order"
 
 
+def test_supported_trace_binds_replay_metadata_and_task_event_ids(tmp_path):
+    _run(tmp_path)
+    tasks = {task.task_id: task for task in planner.select_test_tasks(CANDIDATE)}
+    row = next(
+        json.loads(line)
+        for line in (tmp_path / "out" / "manager_rows.jsonl").read_bytes().splitlines()
+        if json.loads(line)["status"] == "SUPPORTED"
+    )
+    trace = row["retrieval"]["trace"]
+    assert trace["retrieval_policy"] == "normal_topk"
+    assert trace["retrieval_k"] == 16
+    assert trace["retrieved_count"] == len(trace["entries"])
+    assert row["retrieval"]["retrieved_count"] == trace["retrieved_count"]
+    event_ids = {event.event_id for event in tasks[row["task_id"]].events}
+    assert all(
+        set(entry["source_event_ids"]).issubset(event_ids)
+        for entry in trace["entries"]
+    )
+
+
+def test_manager_retrieval_rejects_duplicate_entry_ids():
+    entry = {
+        "entry_id": "entry-1",
+        "object_key": {
+            "object_type": "profile",
+            "namespace": "default",
+            "entity": "alice",
+            "attribute": "city",
+            "subkey": None,
+        },
+        "value": "Paris",
+        "content": "alice.city = Paris",
+        "source_event_ids": ["event-1"],
+        "score": 1.0,
+        "rank": 1,
+        "version_metadata": {},
+    }
+    with pytest.raises(ValueError, match="duplicate entry_id"):
+        runner._retrieval({
+            "entries": [entry, dict(entry)],
+            "context_order": "fake_insertion_order",
+            "version_metadata": {},
+        })
+
+
+class InvalidSourceEventManager(FakeManager):
+    def retrieve(self, query):
+        result = super().retrieve(query)
+        if result["entries"]:
+            result["entries"][0]["source_event_ids"] = ["not-a-task-event"]
+        return result
+
+
+def test_manager_retrieval_rejects_source_event_ids_outside_task(tmp_path):
+    summary = runner.run(
+        _args(tmp_path / "out", supported_limit=1),
+        extractor_factory=lambda: FakeExtractor(),
+        manager_factory=lambda task, cell: InvalidSourceEventManager(),
+    )
+    assert summary["status"] == "FAIL"
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "manager_rows.jsonl").read_bytes().splitlines()
+    ]
+    row = next(row for row in rows if row["status"] == "SUPPORTED")
+    assert row["execution_status"] == "FAIL"
+    assert row["reason_code"] == "execution_failed"
+
+
 def test_output_is_no_replace_and_public_payload_rejects_raw_fields(tmp_path):
     _run(tmp_path)
     with pytest.raises(FileExistsError):

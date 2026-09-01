@@ -943,12 +943,28 @@ def _retrieval(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("retrieval context_order is invalid")
     if not isinstance(value["version_metadata"], Mapping):
         raise ValueError("retrieval version_metadata is invalid")
+    normalized_entries = [_entry(item) for item in entries]
+    entry_ids = [item["entry_id"] for item in normalized_entries]
+    if len(entry_ids) != len(set(entry_ids)):
+        raise ValueError("retrieval entries contain duplicate entry_id")
     normalized = {
-        "entries": [_entry(item) for item in entries],
+        "entries": normalized_entries,
         "context_order": value["context_order"],
         "version_metadata": dict(value["version_metadata"]),
     }
     return normalized
+
+
+def _validate_source_event_bindings(
+    entries: Sequence[Mapping[str, Any]], event_ids: Sequence[str]
+) -> None:
+    allowed = set(event_ids)
+    for entry in entries:
+        unknown = set(entry["source_event_ids"]) - allowed
+        if unknown:
+            raise ValueError(
+                "manager retrieval source_event_ids are not bound to task events"
+            )
 
 
 def _bind_retrieval_trace(trace: dict[str, Any], query: Any, target_identity: str) -> dict[str, Any]:
@@ -1081,6 +1097,12 @@ def _supported_row(task: Any, cell: Mapping[str, Any], manager_kind: str, task_s
             "latency_ms": parsed["latency_ms"],
         })
     exported = [_entry(item) for item in manager.export_entries()]
+    exported_entry_ids = [item["entry_id"] for item in exported]
+    if len(exported_entry_ids) != len(set(exported_entry_ids)):
+        raise ValueError("manager export contains duplicate entry_id")
+    _validate_source_event_bindings(
+        exported, [event.event_id for event in task.events]
+    )
     target_identity = object_identity(task.target_objects[0])
     target_entries = [
         item
@@ -1105,6 +1127,14 @@ def _supported_row(task: Any, cell: Mapping[str, Any], manager_kind: str, task_s
         task.queries[0],
         target_identity,
     )
+    _validate_source_event_bindings(
+        trace["entries"], [event.event_id for event in task.events]
+    )
+    trace.update({
+        "retrieval_policy": "normal_topk",
+        "retrieval_k": 16,
+        "retrieved_count": len(trace["entries"]),
+    })
     trace_hash = _sha256_bytes(canonical_json_bytes(trace))
     row["retrieval"] = {
         "trace": trace,
@@ -1114,7 +1144,7 @@ def _supported_row(task: Any, cell: Mapping[str, Any], manager_kind: str, task_s
             and typed_json_equal(item["value"], gold)
             for item in trace["entries"]
         ),
-        "retrieved_count": len(trace["entries"]),
+        "retrieved_count": trace["retrieved_count"],
     }
     row["state_accuracy"] = row["state"]["state_accuracy"]
     row["parsed_final_value"] = row["state"]["final_value"]
