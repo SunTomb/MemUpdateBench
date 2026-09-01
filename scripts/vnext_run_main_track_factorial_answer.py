@@ -457,8 +457,8 @@ def _validate_manager_fixture_attestation(
         raise ValueError("manager fixture receipt must attest a production PASS")
     if receipt.get("evidence_class") != summary.get("evidence_class"):
         raise ValueError("manager fixture receipt evidence class mismatch")
-    if receipt.get("attestation_status") != "PASS" or receipt.get("authentication_method") != "independent_release_attestation":
-        raise ValueError("manager fixture receipt is not independently authenticated")
+    if receipt.get("attestation_status") != "PASS" or receipt.get("authentication_method") != "hash_bound_release_attestation":
+        raise ValueError("manager fixture receipt is not hash-bound")
     if receipt.get("manifest_sha256") != manifest_sha256 or receipt.get("audit_attestation_sha256") != audit_sha:
         raise ValueError("manager fixture receipt manifest/audit binding mismatch")
     if receipt.get("candidate_artifact_hashes") != dict(candidate_hashes):

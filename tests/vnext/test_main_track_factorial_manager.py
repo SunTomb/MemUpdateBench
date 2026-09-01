@@ -1115,8 +1115,46 @@ def test_qwen_production_runtime_profile_records_load_and_gpu_work(monkeypatch, 
     }
 
 
+def test_letta_production_factory_fails_closed_before_langgraph_setup(monkeypatch, tmp_path):
+    parser = runner.build_arg_parser()
+    parsed = parser.parse_args(
+        [
+            "--candidate-root", str(CANDIDATE),
+            "--audit-attestation", str(ATTESTATION),
+            "--manager-kind", "letta",
+            "--cell-id", "letta_profile__qwen35_answer",
+            "--output-root", str(tmp_path / "out"),
+            "--execution-mode", "production",
+        ]
+    )
+    args = runner.RunnerArgs(**vars(parsed))
+
+    def unexpected_langgraph_setup(*args, **kwargs):
+        raise AssertionError("LangGraph production setup must not run for Letta")
+
+    monkeypatch.setattr(runner, "_load_langgraph_qualification", unexpected_langgraph_setup)
+    monkeypatch.setattr(
+        runner,
+        "build_langgraph_store_custom_adapter_manager",
+        unexpected_langgraph_setup,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        runner.build_production_manager_factory(args)
+
+    assert str(exc_info.value) == (
+        "Letta production fixture path is not implemented; "
+        "use existing separate qualified Letta runner"
+    )
+
+
 def test_production_factories_are_marked_bound_and_require_qualification_inputs(tmp_path):
-    args = _args(tmp_path / "out", execution_mode="production")
+    args = _args(
+        tmp_path / "out",
+        manager_kind="langgraph",
+        cell_id="langgraph_store_custom_adapter__qwen35_answer",
+        execution_mode="production",
+    )
     with pytest.raises(RuntimeError, match="model snapshot"):
         runner.build_production_extractor_factory(args)
     with pytest.raises(RuntimeError, match="qualification"):

@@ -39,9 +39,10 @@ _ZERO_BOUNDARY_KEYS = (
     "network_calls",
     "remote_operations",
 )
+_PRODUCTION_ACCOUNTING_SOURCE = "production_runtime_profile"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _CREDENTIAL_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s?#]*@", re.IGNORECASE)
-EXPECTED_MANAGER_RUNNER_SOURCE_SHA256 = "e32caea7adfb10bc1e03cc08d7430515cc3d2bd0db42c45fbdd1118baf04bfd9"
+EXPECTED_MANAGER_RUNNER_SOURCE_SHA256 = "2c4eb3656a62b4041de33b8e7b425a6f0550b68190b9d967886df97d46b943d1"
 _FROZEN_IMMUTABLE_ROOTS = (
     ROOT / "data" / "vnext" / "core" / "v3",
     ROOT / "data" / "vnext" / "pilot",
@@ -76,13 +77,24 @@ def _require_nonblank_string(value: Any, label: str) -> str:
     return value
 
 
-def _validate_runner_source_sha(value: Any) -> str:
+def _validate_runner_source_sha(
+    value: Any, *, expected: str | None = EXPECTED_MANAGER_RUNNER_SOURCE_SHA256
+) -> str:
     observed = _require_sha(value, "runner_source_sha256")
-    if observed != EXPECTED_MANAGER_RUNNER_SOURCE_SHA256:
+    if expected is not None and observed != expected:
         raise AttestationError(
             "runner_source_sha256 does not match expected manager runner source digest"
         )
     return observed
+
+
+def _manager_runner_source_hashes(path: Path) -> tuple[str, str]:
+    raw = path.read_bytes()
+    normalized = raw.replace(b"\r\n", b"\n")
+    normalized_sha256 = _validate_runner_source_sha(
+        sha256_bytes(normalized), expected=EXPECTED_MANAGER_RUNNER_SOURCE_SHA256
+    )
+    return sha256_bytes(raw), normalized_sha256
 
 
 def _validate_runtime_identity(value: Any) -> str | dict[str, Any]:
@@ -149,7 +161,17 @@ def _validate_summary_and_index(
     audit_sha: str,
     runner_source_sha256: str,
 ) -> dict[str, int]:
-    runner_source_sha256 = _validate_runner_source_sha(runner_source_sha256)
+    runner_source_sha256 = _validate_runner_source_sha(
+        runner_source_sha256, expected=runner_source_sha256
+    )
+    for key, expected in (
+        ("execution_accounting_observed", True),
+        ("execution_accounting_source", _PRODUCTION_ACCOUNTING_SOURCE),
+    ):
+        if summary.get(key) != index.get(key):
+            raise AttestationError(f"manager fixture summary/index {key} mismatch")
+        if summary.get(key) != expected:
+            raise AttestationError(f"manager fixture {key} is not production accounting")
     required_summary = {
         "status": "PASS",
         "execution_mode": EXECUTION_MODE,
@@ -182,6 +204,28 @@ def _validate_summary_and_index(
     if summary.get("selected_supported_task_ids_sha256") != sha256_bytes(canonical_json_bytes(selected)):
         raise AttestationError("manager fixture summary supported membership hash mismatch")
     boundary = _validate_execution_boundary(summary.get("execution_boundary"))
+    if expected_scope == "full240" and cell_id.endswith("__qwen35_answer"):
+        for key in ("model_loads", "gpu_calls"):
+            if boundary[key] < 1:
+                raise AttestationError(
+                    f"full production Qwen fixture execution boundary {key} must be positive"
+                )
+    if "runner_source_sha256_normalized" in summary or "runner_source_sha256_normalized" in index:
+        if summary.get("runner_source_sha256_normalized") != index.get(
+            "runner_source_sha256_normalized"
+        ):
+            raise AttestationError(
+                "manager fixture summary/index runner_source_sha256_normalized mismatch"
+            )
+        _validate_runner_source_sha(
+            summary.get("runner_source_sha256_normalized")
+        )
+    for key in ("extractor_identity", "extractor_source_sha256"):
+        if key in summary or key in index:
+            if key not in summary or key not in index or summary.get(key) != index.get(key):
+                raise AttestationError(f"manager fixture summary/index {key} mismatch")
+            if key == "extractor_source_sha256":
+                _require_sha(summary.get(key), key)
 
     required_index = {
         "status": "PASS",
@@ -190,6 +234,7 @@ def _validate_summary_and_index(
         "scientific_evidence": True,
         "scope": expected_scope,
         "manager_kind": manager_kind,
+        "manager_id": manager_id,
         "manifest_sha256": manifest_sha256,
         "candidate_artifact_hashes": dict(candidate_hashes),
         "audit_attestation_sha256": audit_sha,
@@ -260,8 +305,8 @@ def _validate_snapshot(
     if summary.get("cell_id") != cell_id:
         raise AttestationError("manager fixture cell binding mismatch")
     runner_source_path = Path(manager_runner.__file__).resolve(strict=True)
-    runner_source_sha256 = _validate_runner_source_sha(
-        sha256_bytes(runner_source_path.read_bytes())
+    runner_source_sha256, runner_source_sha256_normalized = _manager_runner_source_hashes(
+        runner_source_path
     )
     boundary = _validate_summary_and_index(
         summary,
@@ -292,6 +337,7 @@ def _validate_snapshot(
         "manager_id": expected_manager_id,
         "scope": expected_scope,
         "runner_source_sha256": runner_source_sha256,
+        "runner_source_sha256_normalized": runner_source_sha256_normalized,
         "execution_boundary": boundary,
     }
 
@@ -309,7 +355,12 @@ def _build_receipt(
     runtime_identity = _validate_runtime_identity(runtime_identity)
     manager_id = _require_nonblank_string(snapshot.get("manager_id"), "producer.manager_id")
     cell_id = _require_nonblank_string(snapshot.get("cell_id"), "producer.cell_id")
-    runner_source_sha256 = _validate_runner_source_sha(snapshot.get("runner_source_sha256"))
+    runner_source_sha256 = _validate_runner_source_sha(
+        snapshot.get("runner_source_sha256"), expected=snapshot.get("runner_source_sha256")
+    )
+    runner_source_sha256_normalized = _validate_runner_source_sha(
+        snapshot.get("runner_source_sha256_normalized", runner_source_sha256)
+    )
     producer = {
         "producer_id": producer_id,
         "producer_revision": producer_revision,
@@ -321,7 +372,7 @@ def _build_receipt(
         "schema_version": RECEIPT_SCHEMA,
         "status": "PASS",
         "attestation_status": "PASS",
-        "authentication_method": "independent_release_attestation",
+        "authentication_method": "hash_bound_release_attestation",
         "scientific_evidence": False,
         "execution_mode": EXECUTION_MODE,
         "evidence_class": EVIDENCE_CLASS,
@@ -338,8 +389,9 @@ def _build_receipt(
         "producer": producer,
         "producer_manager_id": manager_id,
         "producer_cell_id": cell_id,
-        "producer_source_sha256": runner_source_sha256,
+        "producer_source_sha256": runner_source_sha256_normalized,
         "runner_source_sha256": runner_source_sha256,
+        "runner_source_sha256_normalized": runner_source_sha256_normalized,
         "execution_boundary": dict(snapshot["execution_boundary"]),
         "input_relocation": {
             "enabled": bool(allow_relocated_authenticated_inputs),
@@ -420,10 +472,12 @@ def _revalidate_snapshot(
         "audit_sha256",
         "scope",
         "runner_source_sha256",
+        "runner_source_sha256_normalized",
         "execution_boundary",
     ):
-        if observed[key] != initial[key]:
-            raise AttestationError("manager fixture or source changed before publication")
+        if key in initial or key in observed:
+            if observed.get(key) != initial.get(key):
+                raise AttestationError("manager fixture or source changed before publication")
 
 
 def run(

@@ -1114,7 +1114,7 @@ def _write_valid_fixture_receipt(full_fixture: Path, destination: Path) -> tuple
         "execution_mode": "production",
         "evidence_class": summary["evidence_class"],
         "attestation_status": "PASS",
-        "authentication_method": "independent_release_attestation",
+        "authentication_method": "hash_bound_release_attestation",
         "manifest_sha256": summary["manifest_sha256"],
         "audit_attestation_sha256": summary["audit_attestation_sha256"],
         "candidate_artifact_hashes": summary["candidate_artifact_hashes"],

@@ -471,6 +471,11 @@ def build_production_extractor_factory(args: RunnerArgs) -> Callable[[], Visible
 
 
 def build_production_manager_factory(args: RunnerArgs) -> Callable[[Any, Mapping[str, Any]], ExternalManager]:
+    if args.manager_kind == "letta":
+        raise RuntimeError(
+            "Letta production fixture path is not implemented; "
+            "use existing separate qualified Letta runner"
+        )
     if not args.langmem_qualification:
         raise RuntimeError("production manager requires LangGraph qualification")
     qualification = _load_langgraph_qualification(
