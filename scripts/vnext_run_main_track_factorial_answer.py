@@ -49,6 +49,8 @@ TEST_ONLY_EVIDENCE_CLASS = EVIDENCE_CLASS + "_test_only"
 RETRIEVAL_K = 16
 EXECUTION_MODES = ("production", "injected_test_only")
 MANAGER_FIXTURE_RECEIPT_SCHEMA = "memupdatebench.main-track.manager-fixture-execution-receipt.v1"
+MANAGER_FIXTURE_SCHEMA = "memupdatebench.main-track.factorial.manager-fixture.v1"
+MANAGER_FIXTURE_INDEX_SCHEMA = MANAGER_FIXTURE_SCHEMA + ".artifact-index"
 PUBLIC_FORBIDDEN_FIELDS = frozenset(
     {
         "prompt",
@@ -75,7 +77,7 @@ _OUTCOMES = (
 )
 _FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter", "function_call"})
 _WINDOWS_PATH = re.compile(r"^[A-Za-z]:[\\/]")
-_UNIX_HOST_PATH = re.compile(r"^/(?:NAS|home|Users|mnt|tmp|var|opt)(?:/|$)")
+
 
 SCORING_BINDING = {
     "parser_version": ANSWER_MODEL_PARSER_VERSION_V3,
@@ -175,7 +177,7 @@ def _absolute_path_location(value: Any, location: str = "root") -> str | None:
                 return found
     elif type(value) is str and (
         _WINDOWS_PATH.match(value)
-        or _UNIX_HOST_PATH.match(value)
+        or value.startswith("/")
         or value.startswith(("~/", "\\\\"))
     ):
         return f"{location} contains an absolute path"
@@ -390,6 +392,14 @@ def _load_fixture(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any], dic
     _validate_private_payload(index)
     _artifact_metadata(index, "manager_rows.jsonl", rows_raw, len(rows))
     _artifact_metadata(index, "manager_summary.json", summary_raw, 1)
+    if summary.get("schema_version") != MANAGER_FIXTURE_SCHEMA:
+        raise ValueError("manager fixture summary schema mismatch")
+    if index.get("schema_version") != MANAGER_FIXTURE_INDEX_SCHEMA:
+        raise ValueError("manager fixture index schema mismatch")
+    for key in ("cell_id", "manager_kind", "manifest_sha256", "evidence_class", "scientific_evidence"):
+        if index.get(key) != summary.get(key):
+            label = "manifest binding" if key == "manifest_sha256" else f"{key} binding"
+            raise ValueError(f"manager fixture summary/index {label} mismatch")
     if summary.get("rows_sha256") != sha256_bytes(rows_raw):
         raise ValueError("manager fixture summary rows hash mismatch")
     if index.get("status") != summary.get("status") or index.get("scope") != summary.get("scope"):
@@ -474,6 +484,17 @@ def _validate_manager_fixture_attestation(
         if type(runtime_identity) is str
         else sha256_bytes(canonical_bytes(runtime_identity))
     )
+    for field, summary_field in (("manager_id", "manager_id"), ("cell_id", "cell_id")):
+        if field in producer and producer[field] != summary.get(summary_field):
+            raise ValueError(f"manager fixture receipt producer {field} binding mismatch")
+        if field in receipt and receipt[field] != summary.get(summary_field):
+            raise ValueError(f"manager fixture receipt {field} binding mismatch")
+    for field, summary_field in (
+        ("producer_manager_id", "manager_id"),
+        ("producer_cell_id", "cell_id"),
+    ):
+        if field in receipt and receipt[field] != summary.get(summary_field):
+            raise ValueError(f"manager fixture receipt {field} binding mismatch")
     return {
         "receipt_sha256": sha256_bytes(raw),
         "producer_id": producer["producer_id"],
@@ -482,7 +503,12 @@ def _validate_manager_fixture_attestation(
     }
 
 
-def _expected_cell(manifest: Mapping[str, Any], cell_id: str) -> Mapping[str, Any]:
+def _expected_cell(
+    manifest: Mapping[str, Any],
+    cell_id: str,
+    *,
+    tasks: Sequence[MemUpdateTaskV3] | None = None,
+) -> Mapping[str, Any]:
     cells = manifest.get("cells")
     if not isinstance(cells, list):
         raise ValueError("factorial manifest cells are invalid")
@@ -495,7 +521,37 @@ def _expected_cell(manifest: Mapping[str, Any], cell_id: str) -> Mapping[str, An
     _, model_kind = planner._cell_spec(cell_id)
     if cell.get("answer", {}).get("identity") != planner._answer_spec(model_kind)["identity"]:
         raise ValueError("manifest answer identity is invalid")
+    if tasks is not None:
+        planned_cell = _planned_cell(cell_id, tasks)
+        if canonical_bytes(cell) != canonical_bytes(planned_cell):
+            raise ValueError("requested factorial cell does not match deterministic planner")
     return cell
+
+
+def _planned_cell(cell_id: str, tasks: Sequence[MemUpdateTaskV3]) -> dict[str, Any]:
+    manager_kind, answer_kind = planner._cell_spec(cell_id)
+    manager = planner._MANAGER_SPECS[manager_kind]
+    supported: list[str] = []
+    unsupported: list[dict[str, Any]] = []
+    for task in tasks:
+        reason = None if manager_kind == "reference" else planner.task_support_reason(task, manager_kind)
+        if reason is None:
+            supported.append(task.task_id)
+        else:
+            unsupported.append({"task_id": task.task_id, **reason})
+    return {
+        "cell_id": cell_id,
+        "manager": {key: value for key, value in manager.items() if key != "capabilities"},
+        "manager_id": manager["manager_id"],
+        "extractor": planner._extractor_spec(manager_kind),
+        "answer": planner._answer_spec(answer_kind),
+        "capabilities_declared": manager["capabilities"],
+        "supported_count": len(supported),
+        "supported_task_ids": supported,
+        "unsupported_count": len(unsupported),
+        "unsupported_tasks": unsupported,
+        "evidence_boundary": "planning_only_support_matrix_no_runtime_accuracy_or_external_system_evidence",
+    }
 
 
 def _validate_fixture_rows(
@@ -547,6 +603,9 @@ def _validate_fixture_rows(
         raise ValueError("manager fixture summary/index scientific boundary mismatch")
     if index.get("evidence_class") != summary.get("evidence_class"):
         raise ValueError("manager fixture summary/index evidence class mismatch")
+    for key in ("cell_id", "manager_kind", "manifest_sha256", "scientific_evidence"):
+        if index.get(key) != summary.get(key):
+            raise ValueError(f"manager fixture summary/index {key} binding mismatch")
     if manifest_sha256 is not None:
         if summary.get("manifest_sha256") != manifest_sha256 or index.get("manifest_sha256") != manifest_sha256:
             raise ValueError("manager fixture manifest SHA binding mismatch")
@@ -570,12 +629,32 @@ def _validate_fixture_rows(
             raise ValueError(f"manager fixture row {number} task hash mismatch")
         if row.get("audit_attestation_sha256") not in (None, audit_sha):
             raise ValueError(f"manager fixture row {number} audit binding mismatch")
+        if row.get("schema_version") != MANAGER_FIXTURE_SCHEMA + ".row":
+            raise ValueError(f"manager fixture row {number} schema mismatch")
         expected_status = "UNSUPPORTED" if row["task_id"] in set(unsupported_ids) else "SUPPORTED"
         if row.get("status") != expected_status:
             raise ValueError(f"manager fixture row {number} status does not match manifest membership")
         if row.get("status") == "UNSUPPORTED":
-            if row.get("execution_status") not in {"NOT_RUN", None} or not row.get("reason_code") or not row.get("reason_kind"):
-                raise ValueError(f"manager fixture row {number} unsupported contract invalid")
+            if row.get("execution_status") not in {"NOT_RUN", None}:
+                raise ValueError(f"manager fixture row {number} unsupported execution status is invalid")
+            unsupported = next(item for item in unsupported_items if item["task_id"] == row["task_id"])
+            for key in ("reason_code", "reason_kind"):
+                if type(row.get(key)) is not str or not row[key].strip():
+                    raise ValueError(f"manager fixture row {number} unsupported {key} must be a nonblank string")
+                if row[key] != unsupported[key]:
+                    raise ValueError(f"manager fixture row {number} unsupported {key} does not match manifest")
+            if "detail" in row:
+                if type(row["detail"]) is not str or row["detail"] != unsupported.get("detail"):
+                    raise ValueError(f"manager fixture row {number} unsupported detail does not match manifest")
+            unsupported_null_fields = (
+                "state_accuracy", "parsed_final_value", "final_memory_size", "stable_entry_id",
+                "gold_retrieved", "retrieved_count", "retrieval_trace", "retrieval_trace_sha256",
+                "answer_disposition", "answer_format_valid", "parsed_answer", "answer_outcome",
+                "exact_match", "normalized_match", "typed_match", "typed_exact_match", "answer_f1",
+                "visible_prompt_sha256", "answer_output_sha256",
+            )
+            if any(row.get(key) is not None for key in unsupported_null_fields):
+                raise ValueError(f"manager fixture row {number} unsupported state/retrieval/answer metrics must be null")
             continue
         if row.get("status") != "SUPPORTED" or row.get("execution_status") != "PASS":
             raise ValueError(f"manager fixture row {number} is not a completed PASS row")
@@ -589,9 +668,18 @@ def _validate_fixture_rows(
             "stable_entry_id": "stable_entry_id",
         }
         if not isinstance(state, Mapping) or any(
-            row.get(key) != state.get(nested) for key, nested in state_pairs.items() if key in row
+            row.get(key) != state.get(nested) for key, nested in state_pairs.items()
         ):
             raise ValueError(f"manager fixture row {number} state fields drift")
+        if type(state.get("state_accuracy")) is not bool:
+            raise ValueError(f"manager fixture row {number} state_accuracy must be boolean")
+        if type(state.get("stable_entry_id")) is not bool:
+            raise ValueError(f"manager fixture row {number} stable_entry_id must be boolean")
+        final_memory_size = state.get("final_memory_size")
+        if type(final_memory_size) is not int or final_memory_size < 0:
+            raise ValueError(f"manager fixture row {number} final_memory_size must be a nonnegative integer")
+        if type(row.get("state_accuracy")) is not bool or type(row.get("stable_entry_id")) is not bool:
+            raise ValueError(f"manager fixture row {number} state accuracy/entry flags must be boolean")
         retrieval = row["retrieval"]
         retrieval_pairs = {
             "retrieval_trace": "trace",
@@ -599,9 +687,11 @@ def _validate_fixture_rows(
             "gold_retrieved": "gold_retrieved",
         }
         if not isinstance(retrieval, Mapping) or any(
-            row.get(key) != retrieval.get(nested) for key, nested in retrieval_pairs.items() if key in row
+            row.get(key) != retrieval.get(nested) for key, nested in retrieval_pairs.items()
         ):
             raise ValueError(f"manager fixture row {number} retrieval fields drift")
+        if type(retrieval.get("gold_retrieved")) is not bool or type(row.get("gold_retrieved")) is not bool:
+            raise ValueError(f"manager fixture row {number} gold_retrieved must be boolean")
         trace = retrieval.get("trace")
         if not isinstance(trace, Mapping) or retrieval.get("trace_sha256") != sha256_bytes(canonical_bytes(trace)):
             raise ValueError(f"manager fixture row {number} retrieval trace hash mismatch")
@@ -609,6 +699,18 @@ def _validate_fixture_rows(
             raise ValueError(f"manager fixture row {number} retrieved_count binding mismatch")
         reconstructed = reconstruct_retrieval_trace(row, task.queries[0])
         _validate_retrieval_source_event_bindings(reconstructed, task.events)
+        gold_evidence = task.gold_evidence[0]
+        expected_state_accuracy = typed_json_equal(state.get("final_value"), gold_evidence.answer)
+        if state.get("state_accuracy") is not expected_state_accuracy:
+            raise ValueError(f"manager fixture row {number} state accuracy does not match final value and gold")
+        target_identities = {object_identity(key) for key in task.queries[0].target_object_keys}
+        expected_gold_retrieved = any(
+            object_identity(entry.object_key_candidate) in target_identities
+            and typed_json_equal(entry.value_candidate, gold_evidence.answer)
+            for entry in reconstructed.retrieved_entries
+        )
+        if retrieval.get("gold_retrieved") is not expected_gold_retrieved:
+            raise ValueError(f"manager fixture row {number} gold retrieved flag does not match trace and gold")
         supported_rows.append(row)
     if summary.get("supported") is not None and summary.get("supported") != len(supported_rows):
         raise ValueError("manager fixture summary supported count mismatch")
@@ -892,6 +994,8 @@ def _answer_prediction(model: Any, request: PromptedAnswerRequestV3) -> tuple[An
     except Exception as exc:
         raise AnswerExecutionError("answer model execution failed") from exc
     if isinstance(value, AnswerPredictionV3):
+        if value.query_id != request.query.query_id:
+            raise ValueError("answer prediction query_id does not match request")
         raw = value.raw_output
     elif isinstance(value, str):
         raw = value
@@ -902,14 +1006,23 @@ def _answer_prediction(model: Any, request: PromptedAnswerRequestV3) -> tuple[An
     if scan_for_secrets(raw):
         raise ValueError("answer model output failed security scan")
     try:
-        prediction = parse_answer_prediction_v3(
+        parsed_prediction = parse_answer_prediction_v3(
             query_id=request.query.query_id,
             answer_schema=request.query.answer_schema,
             raw_output=raw,
         )
     except Exception as exc:
         raise AnswerExecutionError("answer output parsing failed") from exc
-    return prediction, raw
+    if isinstance(value, AnswerPredictionV3):
+        if (
+            value.disposition is not parsed_prediction.disposition
+            or value.format_valid is not parsed_prediction.format_valid
+            or value.error_flags != parsed_prediction.error_flags
+            or not typed_json_equal(value.parsed_answer, parsed_prediction.parsed_answer)
+        ):
+            raise ValueError("AnswerPredictionV3 raw output is inconsistent with prediction fields")
+        return value, raw
+    return parsed_prediction, raw
 
 
 def score_prediction(query: Any, prediction: AnswerPredictionV3, gold: Any) -> dict[str, Any]:
@@ -1022,6 +1135,7 @@ def _build_row(
             "execution_status": "NOT_RUN",
             "reason_code": fixture.get("reason_code"),
             "reason_kind": fixture.get("reason_kind"),
+            "detail": fixture.get("detail"),
             "state_accuracy": None,
             "gold_retrieved": None,
             "answer_disposition": None,
@@ -1258,7 +1372,8 @@ def _publish(
 ) -> dict[str, Any]:
     if not output.is_absolute():
         raise ValueError("output_root must be absolute")
-    if output.exists() or output.is_symlink():
+    output_preexisted = output.exists() or output.is_symlink()
+    if output_preexisted:
         raise FileExistsError(output)
     if not output.parent.is_dir():
         raise ValueError("output_root parent directory does not exist")
@@ -1332,7 +1447,12 @@ def _publish(
             pre_publish=guard,
         )
     except BaseException:
-        if output.is_dir() and not output.is_symlink() and not any(output.iterdir()):
+        if (
+            not output_preexisted
+            and output.is_dir()
+            and not output.is_symlink()
+            and not any(output.iterdir())
+        ):
             output.rmdir()
         raise
     return bound_summary
@@ -1390,6 +1510,19 @@ def _validate_qwen_production_inputs(
     return provenance
 
 
+def _qwen_adapter_source_path() -> Path:
+    path = Path(__file__).with_name("vnext_run_letta_qwen_prompted_answer.py")
+    assert_no_reparse_components(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Qwen adapter source must be a regular file")
+    return path.resolve(strict=True)
+
+
+def _source_sha256(path: Path, label: str) -> str:
+    assert_no_reparse_components(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular file")
+    return sha256_bytes(path.read_bytes())
 def _revalidate_fixture_and_inputs(
     *,
     fixture_root: Path,
@@ -1407,6 +1540,13 @@ def _revalidate_fixture_and_inputs(
     manager_fixture_attestation: str | Path | None,
     manager_fixture_attestation_sha256: str | None,
     initial_fixture_authentication: Mapping[str, Any] | None,
+    model_kind: str,
+    model_snapshot: str | Path | None,
+    model_runtime_receipt: str | Path | None,
+    model_snapshot_binding: str | Path | None,
+    initial_qwen_provenance: Mapping[str, Any] | None,
+    qwen_adapter_source: Path | None,
+    initial_qwen_adapter_source_sha256: str | None,
 ) -> None:
     _, manifest_raw, provenance, tasks, _ = _validate_manifest_and_candidate(
         manifest_path,
@@ -1445,6 +1585,22 @@ def _revalidate_fixture_and_inputs(
         )
         if observed_authentication != dict(initial_fixture_authentication or {}):
             raise ValueError("manager fixture receipt changed before publication")
+    if execution_mode == "production" and model_kind == "qwen":
+        observed_qwen_provenance = _validate_qwen_production_inputs(
+            model_snapshot,
+            model_runtime_receipt,
+            model_snapshot_binding,
+        )
+        if observed_qwen_provenance != dict(initial_qwen_provenance or {}):
+            raise ValueError("Qwen production provenance changed before publication")
+        if qwen_adapter_source is None or initial_qwen_adapter_source_sha256 is None:
+            raise ValueError("Qwen adapter source provenance is missing")
+        observed_qwen_adapter_source_sha256 = _source_sha256(
+            qwen_adapter_source,
+            "Qwen adapter source",
+        )
+        if observed_qwen_adapter_source_sha256 != initial_qwen_adapter_source_sha256:
+            raise ValueError("Qwen adapter source changed before publication")
 
 
 def run(
@@ -1476,18 +1632,33 @@ def run(
     manifest_path = Path(manifest).resolve(strict=True)
     candidate = Path(candidate_root).resolve(strict=True)
     audit = Path(audit_attestation).resolve(strict=True)
-    output = _validate_output_root(
-        Path(output_root),
-        (
-            manifest_path,
-            candidate,
-            audit,
-            fixture_root,
-            fixture_root / "manager_rows.jsonl",
-            fixture_root / "manager_summary.json",
-            fixture_root / "artifact_index.json",
-        ),
-    )
+    _, expected_model_kind = planner._cell_spec(cell_id)
+    qwen_adapter_source = None
+    initial_qwen_adapter_source_sha256 = None
+    output_sources = [
+        manifest_path,
+        candidate,
+        audit,
+        fixture_root,
+        fixture_root / "manager_rows.jsonl",
+        fixture_root / "manager_summary.json",
+        fixture_root / "artifact_index.json",
+    ]
+    if manager_fixture_attestation is not None:
+        output_sources.append(Path(manager_fixture_attestation))
+    if execution_mode == "production" and expected_model_kind == "qwen":
+        qwen_adapter_source = _qwen_adapter_source_path()
+        initial_qwen_adapter_source_sha256 = _source_sha256(
+            qwen_adapter_source,
+            "Qwen adapter source",
+        )
+        output_sources.extend(
+            Path(path)
+            for path in (model_snapshot, model_runtime_receipt, model_snapshot_binding)
+            if path is not None
+        )
+        output_sources.append(qwen_adapter_source)
+    output = _validate_output_root(Path(output_root), tuple(output_sources))
     rows, fixture_summary, fixture_index, fixture_hashes = _load_fixture(fixture_root)
     loaded_manifest, manifest_raw, provenance, tasks, relocation = _validate_manifest_and_candidate(
         manifest_path,
@@ -1496,7 +1667,7 @@ def run(
         allow_relocated_authenticated_inputs=allow_relocated_authenticated_inputs,
     )
     manifest_sha = sha256_bytes(manifest_raw)
-    cell = _expected_cell(loaded_manifest, cell_id)
+    cell = _expected_cell(loaded_manifest, cell_id, tasks=tasks)
     expected_manager_kind, expected_model_kind = planner._cell_spec(cell_id)
     if fixture_summary.get("manager_kind") != expected_manager_kind:
         raise ValueError("manager fixture manager kind does not match factorial cell")
@@ -1599,10 +1770,15 @@ def run(
         for fixture in validated_rows:
             task = task_by_id[fixture["task_id"]]
             if fixture.get("status") == "UNSUPPORTED":
+                unsupported_spec = next(
+                    item for item in cell["unsupported_tasks"] if item["task_id"] == fixture["task_id"]
+                )
+                fixture_for_output = dict(fixture)
+                fixture_for_output.setdefault("detail", unsupported_spec.get("detail"))
                 output_rows.append(
                     _build_row(
                         task,
-                        fixture,
+                        fixture_for_output,
                         model,
                         model_identity,
                         candidate_hashes=provenance["artifact_hashes"],
@@ -1668,6 +1844,13 @@ def run(
         manager_fixture_attestation=manager_fixture_attestation,
         manager_fixture_attestation_sha256=manager_fixture_attestation_sha256,
         initial_fixture_authentication=fixture_authentication,
+        model_kind=expected_model_kind,
+        model_snapshot=model_snapshot,
+        model_runtime_receipt=model_runtime_receipt,
+        model_snapshot_binding=model_snapshot_binding,
+        initial_qwen_provenance=qwen_provenance,
+        qwen_adapter_source=qwen_adapter_source,
+        initial_qwen_adapter_source_sha256=initial_qwen_adapter_source_sha256,
     )
     summary = build_summary(
         output_rows,
@@ -1688,19 +1871,29 @@ def run(
             row["task_id"] for row in validated_rows if row.get("status") == "UNSUPPORTED"
         ],
     )
+    publication_sources = [
+        manifest_path,
+        candidate / "tasks.jsonl",
+        candidate / "release_index.json",
+        audit,
+        fixture_root / "manager_rows.jsonl",
+        fixture_root / "manager_summary.json",
+        fixture_root / "artifact_index.json",
+    ]
+    if manager_fixture_attestation is not None:
+        publication_sources.append(Path(manager_fixture_attestation))
+    if execution_mode == "production" and expected_model_kind == "qwen":
+        publication_sources.extend(
+            Path(path)
+            for path in (model_snapshot, model_runtime_receipt, model_snapshot_binding)
+            if path is not None
+        )
+        publication_sources.append(qwen_adapter_source)
     summary = _publish(
         output,
         output_rows,
         summary,
-        source_paths=(
-            manifest_path,
-            candidate / "tasks.jsonl",
-            candidate / "release_index.json",
-            audit,
-            fixture_root / "manager_rows.jsonl",
-            fixture_root / "manager_summary.json",
-            fixture_root / "artifact_index.json",
-        ),
+        source_paths=tuple(publication_sources),
         pre_publish=lambda: _revalidate_fixture_and_inputs(
             fixture_root=fixture_root,
             manifest_path=manifest_path,
@@ -1717,6 +1910,13 @@ def run(
             manager_fixture_attestation=manager_fixture_attestation,
             manager_fixture_attestation_sha256=manager_fixture_attestation_sha256,
             initial_fixture_authentication=fixture_authentication,
+            model_kind=expected_model_kind,
+            model_snapshot=model_snapshot,
+            model_runtime_receipt=model_runtime_receipt,
+            model_snapshot_binding=model_snapshot_binding,
+            initial_qwen_provenance=qwen_provenance,
+        qwen_adapter_source=qwen_adapter_source,
+        initial_qwen_adapter_source_sha256=initial_qwen_adapter_source_sha256,
         ),
     )
     return summary

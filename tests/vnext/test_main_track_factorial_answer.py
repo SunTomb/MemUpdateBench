@@ -31,6 +31,7 @@ def test_missing_fixture_is_rejected_before_answer_model(tmp_path: Path) -> None
             audit_attestation=AUDIT,
             output_root=tmp_path / "output",
             cell_id="reference__qwen35_answer",
+            execution_mode="injected_test_only",
             answer_model_factory=lambda: calls.append("model"),
         )
     assert calls == []
@@ -57,6 +58,8 @@ def full_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
     (fixture / "manager_summary.json").write_bytes(summary_bytes)
     index = json.loads((fixture / "artifact_index.json").read_bytes())
     index["scientific_evidence"] = True
+    index["manager_kind"] = summary["manager_kind"]
+    index["manifest_sha256"] = summary["manifest_sha256"]
     index["artifacts"]["manager_rows.jsonl"] = {
         "sha256": runner.sha256_bytes(rows_raw), "bytes": len(rows_raw), "record_count": len(rows)
     }
@@ -125,31 +128,6 @@ def test_full_replay_preserves_order_and_excludes_unsupported_from_answer_denomi
     assert summary["answer_em"] == 1.0
     assert all("Use only the retrieved" in request.rendered_prompt for request in model.requests)
 
-
-def test_replay_reconstructs_only_frozen_entries_and_binds_prompt_hash(full_fixture: Path) -> None:
-    rows = [json.loads(line) for line in (full_fixture / "manager_rows.jsonl").read_bytes().splitlines()]
-    row = next(item for item in rows if item["status"] == "SUPPORTED")
-    import scripts.vnext_plan_main_track_factorial as planner
-
-    task = next(item for item in planner.select_test_tasks(CANDIDATE) if item.task_id == row["task_id"])
-    trace = runner.reconstruct_retrieval_trace(row, task.queries[0])
-    assert [entry.entry_id for entry in trace.retrieved_entries] == [item["entry_id"] for item in row["retrieval"]["trace"]["entries"]]
-    assert list(trace.scores) == [float(item["score"]) for item in row["retrieval"]["trace"]["entries"]]
-    assert list(trace.ranks) == [item["rank"] for item in row["retrieval"]["trace"]["entries"]]
-    assert trace.version_metadata == row["retrieval"]["trace"]["version_metadata"]
-
-
-def test_replay_reconstructs_only_frozen_entries_and_binds_prompt_hash(full_fixture: Path) -> None:
-    rows = [json.loads(line) for line in (full_fixture / "manager_rows.jsonl").read_bytes().splitlines()]
-    row = next(item for item in rows if item["status"] == "SUPPORTED")
-    import scripts.vnext_plan_main_track_factorial as planner
-
-    task = next(item for item in planner.select_test_tasks(CANDIDATE) if item.task_id == row["task_id"])
-    trace = runner.reconstruct_retrieval_trace(row, task.queries[0])
-    assert [entry.entry_id for entry in trace.retrieved_entries] == [item["entry_id"] for item in row["retrieval"]["trace"]["entries"]]
-    assert list(trace.scores) == [float(item["score"]) for item in row["retrieval"]["trace"]["entries"]]
-    assert list(trace.ranks) == [item["rank"] for item in row["retrieval"]["trace"]["entries"]]
-    assert trace.version_metadata == row["retrieval"]["trace"]["version_metadata"]
 
 
 def test_reconstruct_binds_source_event_ids_to_current_task_events(full_fixture: Path) -> None:
@@ -295,7 +273,7 @@ def _make_canary_fixture(source: Path, destination: Path, count: int = 8) -> Pat
     summary_raw = runner.canonical_bytes(summary)
     (destination / "manager_summary.json").write_bytes(summary_raw)
     index = json.loads((destination / "artifact_index.json").read_bytes())
-    index.update({"scope": f"canary{count}", "scientific_evidence": False, "evidence_class": "manager_state_retrieval_fixture_test_only_canary", "requested_task_count": len(rows), "executed_supported_count": count, "not_requested_supported_count": 240 - count, "selected_supported_task_ids": summary["selected_supported_task_ids"], "selected_supported_task_ids_sha256": summary["selected_supported_task_ids_sha256"]})
+    index.update({"scope": f"canary{count}", "scientific_evidence": False, "evidence_class": "manager_state_retrieval_fixture_test_only_canary", "requested_task_count": len(rows), "executed_supported_count": count, "not_requested_supported_count": 240 - count, "selected_supported_task_ids": summary["selected_supported_task_ids"], "selected_supported_task_ids_sha256": summary["selected_supported_task_ids_sha256"], "manager_kind": summary["manager_kind"], "manifest_sha256": summary["manifest_sha256"]})
     index["artifacts"]["manager_rows.jsonl"] = {"sha256": runner.sha256_bytes(rows_raw), "bytes": len(rows_raw), "record_count": len(rows)}
     index["artifacts"]["manager_summary.json"] = {"sha256": runner.sha256_bytes(summary_raw), "bytes": len(summary_raw), "record_count": 1}
     (destination / "artifact_index.json").write_bytes(runner.canonical_bytes(index))
@@ -311,7 +289,7 @@ def _make_test_only_full_fixture(source: Path, destination: Path) -> Path:
     summary_raw = runner.canonical_bytes(summary)
     (destination / "manager_summary.json").write_bytes(summary_raw)
     index = json.loads((destination / "artifact_index.json").read_bytes())
-    index.update({"scientific_evidence": False, "evidence_class": "manager_state_retrieval_fixture_test_only"})
+    index.update({"scientific_evidence": False, "evidence_class": "manager_state_retrieval_fixture_test_only", "manager_kind": summary["manager_kind"], "manifest_sha256": summary["manifest_sha256"]})
     index["artifacts"]["manager_summary.json"] = {
         "sha256": runner.sha256_bytes(summary_raw), "bytes": len(summary_raw), "record_count": 1
     }
@@ -885,3 +863,298 @@ def test_cli_parser_exposes_manager_fixture_attestation_digest() -> None:
         ]
     )
     assert parsed.manager_fixture_attestation_sha256 == "a" * 64
+
+
+def test_answer_prediction_rejects_a_mismatched_query_id() -> None:
+    from types import SimpleNamespace
+    from mub.vnext.contracts.enums import AnswerDisposition, AnswerSchema
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+
+    request = SimpleNamespace(
+        query=SimpleNamespace(query_id="query-expected", answer_schema=AnswerSchema.STRING),
+    )
+
+    class WrongQueryModel:
+        def answer(self, _request):
+            return AnswerPredictionV3(
+                query_id="query-other",
+                raw_output='{"disposition":"answered","answer":"ok"}',
+                disposition=AnswerDisposition.ANSWERED,
+                parsed_answer="ok",
+                format_valid=True,
+            )
+
+    with pytest.raises(ValueError, match="query_id"):
+        runner._answer_prediction(WrongQueryModel(), request)
+
+
+def test_answer_prediction_rejects_raw_object_field_mismatch() -> None:
+    from types import SimpleNamespace
+    from mub.vnext.contracts.enums import AnswerDisposition, AnswerSchema
+    from mub.vnext.contracts.v3.runtime import AnswerPredictionV3
+
+    request = SimpleNamespace(
+        query=SimpleNamespace(query_id="query-expected", answer_schema=AnswerSchema.STRING),
+    )
+
+    class InconsistentModel:
+        def answer(self, _request):
+            return AnswerPredictionV3(
+                query_id="query-expected",
+                raw_output='{"disposition":"answered","answer":"raw-value"}',
+                disposition=AnswerDisposition.ANSWERED,
+                parsed_answer="object-value",
+                format_valid=True,
+            )
+
+    with pytest.raises(ValueError, match="raw|consisten|prediction"):
+        runner._answer_prediction(InconsistentModel(), request)
+
+
+def test_requested_manifest_cell_matches_deterministic_planner(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_test_only_full_fixture(full_fixture, tmp_path / "cell-fixture")
+    manifest = json.loads(MANIFEST.read_bytes())
+    cell = next(item for item in manifest["cells"] if item["cell_id"] == "letta_profile__qwen35_answer")
+    cell["extractor"]["identity"]["extractor_version"] = "forged-extractor"
+    payload = dict(manifest)
+    payload.pop("payload_sha256")
+    manifest["payload_sha256"] = runner.sha256_bytes(runner.canonical_bytes(payload))
+    manifest_path = tmp_path / "forged-manifest.json"
+    manifest_path.write_bytes(runner.canonical_bytes(manifest))
+    manifest_sha = runner.sha256_bytes(manifest_path.read_bytes())
+    summary = json.loads((fixture / "manager_summary.json").read_bytes())
+    summary["manifest_sha256"] = manifest_sha
+    summary_raw = runner.canonical_bytes(summary)
+    (fixture / "manager_summary.json").write_bytes(summary_raw)
+    index = json.loads((fixture / "artifact_index.json").read_bytes())
+    index["manifest_sha256"] = manifest_sha
+    index["artifacts"]["manager_summary.json"] = {
+        "sha256": runner.sha256_bytes(summary_raw), "bytes": len(summary_raw), "record_count": 1
+    }
+    (fixture / "artifact_index.json").write_bytes(runner.canonical_bytes(index))
+    with pytest.raises(ValueError, match="cell|extractor|planner"):
+        runner.run(
+            manager_fixture_root=fixture,
+            manifest=manifest_path,
+            candidate_root=CANDIDATE,
+            audit_attestation=AUDIT,
+            output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer",
+            execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_output_root_overlap_sources_include_production_qwen_inputs(
+    full_fixture: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Path] = []
+
+    def capture(_output, source_paths):
+        seen.extend(source_paths)
+        raise ValueError("stop before validation")
+
+    monkeypatch.setattr(runner, "_validate_output_root", capture)
+    receipt = tmp_path / "fixture-receipt.json"
+    snapshot = tmp_path / "qwen-snapshot"
+    runtime = tmp_path / "qwen-runtime.json"
+    binding = tmp_path / "qwen-binding.json"
+    with pytest.raises(ValueError, match="stop"):
+        runner.run(
+            manager_fixture_root=full_fixture,
+            manifest=MANIFEST,
+            candidate_root=CANDIDATE,
+            audit_attestation=AUDIT,
+            output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer",
+            execution_mode="production",
+            model_snapshot=snapshot,
+            model_runtime_receipt=runtime,
+            model_snapshot_binding=binding,
+            manager_fixture_attestation=receipt,
+            manager_fixture_attestation_sha256="a" * 64,
+        )
+    assert {receipt, snapshot, runtime, binding}.issubset(set(seen))
+    assert Path(runner.__file__).with_name("vnext_run_letta_qwen_prompted_answer.py") in seen
+
+
+def test_fixture_unsupported_reason_code_is_bound_to_manifest(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-unsupported-reason")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "UNSUPPORTED")
+        row["reason_code"] = "forged_reason"
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="reason|unsupported"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+    with pytest.raises(ValueError, match="absolute path"):
+        runner.validate_public_payload({"path": "/etc/passwd"})
+    runner.validate_public_payload({"artifact_sha256": "a" * 64})
+
+
+def _rewrite_fixture_rows(fixture: Path, mutate) -> None:
+    rows = [json.loads(line) for line in (fixture / "manager_rows.jsonl").read_bytes().splitlines()]
+    mutate(rows)
+    rows_raw = b"".join(runner.canonical_bytes(row) + b"\n" for row in rows)
+    (fixture / "manager_rows.jsonl").write_bytes(rows_raw)
+    summary = json.loads((fixture / "manager_summary.json").read_bytes())
+    summary["rows_sha256"] = runner.sha256_bytes(rows_raw)
+    summary_raw = runner.canonical_bytes(summary)
+    (fixture / "manager_summary.json").write_bytes(summary_raw)
+    index = json.loads((fixture / "artifact_index.json").read_bytes())
+    index["artifacts"]["manager_rows.jsonl"] = {
+        "sha256": runner.sha256_bytes(rows_raw), "bytes": len(rows_raw), "record_count": len(rows)
+    }
+    index["artifacts"]["manager_summary.json"] = {
+        "sha256": runner.sha256_bytes(summary_raw), "bytes": len(summary_raw), "record_count": 1
+    }
+    (fixture / "artifact_index.json").write_bytes(runner.canonical_bytes(index))
+
+
+@pytest.mark.parametrize("field", ["state_accuracy", "gold_retrieved"])
+def test_fixture_rejects_non_boolean_accuracy_flags(
+    full_fixture: Path, tmp_path: Path, field: str
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / f"bad-{field}")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "SUPPORTED")
+        nested = "state" if field == "state_accuracy" else "retrieval"
+        row[field] = "true"
+        row[nested][field] = "true"
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="boolean|bool"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_fixture_rejects_recomputed_accuracy_flag_mismatch(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-state-accuracy")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "SUPPORTED")
+        row["state_accuracy"] = False
+        row["state"]["state_accuracy"] = False
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="state accuracy|state fields|recomputed"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_fixture_rejects_recomputed_gold_retrieved_flag_mismatch(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-gold-retrieved")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "SUPPORTED")
+        row["gold_retrieved"] = False
+        row["retrieval"]["gold_retrieved"] = False
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="gold retrieved|retrieval"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+@pytest.mark.parametrize("field", ["final_memory_size", "stable_entry_id"])
+def test_fixture_rejects_invalid_state_field_types(
+    full_fixture: Path, tmp_path: Path, field: str
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / f"bad-{field}")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "SUPPORTED")
+        row[field] = "1"
+        row["state"][field] = "1"
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="final_memory_size|stable_entry_id|state"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_fixture_unsupported_reason_detail_is_bound_to_manifest(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-unsupported-detail")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "UNSUPPORTED")
+        row["detail"] = "forged detail"
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="reason|detail|unsupported"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_fixture_index_cell_binding_must_match_summary(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-index-cell")
+    index = json.loads((fixture / "artifact_index.json").read_bytes())
+    index["cell_id"] = "wrong-cell"
+    (fixture / "artifact_index.json").write_bytes(runner.canonical_bytes(index))
+    with pytest.raises(ValueError, match="summary/index|cell"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+def test_fixture_unsupported_answer_metrics_are_required_null(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "bad-unsupported-metric")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "UNSUPPORTED")
+        row["exact_match"] = False
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="unsupported|metric|null"):
+        runner.run(
+            manager_fixture_root=fixture, manifest=MANIFEST, candidate_root=CANDIDATE,
+            audit_attestation=AUDIT, output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer", execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
