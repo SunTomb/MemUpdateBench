@@ -12,9 +12,11 @@ from scripts.vnext_run_letta_qwen_extraction_canary import (
     TASK_SHA256,
     build_extraction_prompt,
     canonical_json_bytes,
+    parse_extraction_output,
     safe_worker_environment,
     select_tasks,
     validate_loopback_url,
+    validate_extraction,
     validate_qualification_artifacts,
     validate_worker_runtime_binding,
 )
@@ -34,6 +36,28 @@ def _binding_for_snapshot(module, snapshot: Path, *, tree_hash: str = "e" * 64) 
     }
     binding["receipt_payload_sha256"] = module.sha256_bytes(module.canonical_json_bytes(binding))
     return binding
+
+
+def test_parse_extraction_output_accepts_pure_and_exact_fenced_json() -> None:
+    expected = {"operation": "noop", "value": None}
+    assert parse_extraction_output('{"operation":"noop","value":null}') == expected
+    assert parse_extraction_output('```json\n{"operation":"noop","value":null}\n```') == expected
+
+
+def test_parse_extraction_output_rejects_commentary_multiple_fences_and_invalid_semantics() -> None:
+    invalid = (
+        'Result: {"operation":"noop","value":null}',
+        '```json\n{"operation":"noop","value":null}\n``` trailing',
+        '```json\n```json\n{"operation":"noop","value":null}\n```\n```',
+        '```json\n\n```',
+        '{"operation":"noop","value":"not-null"}',
+        '{"operation":"add","value":null}',
+        '{"operation":"unknown","value":null}',
+        '{"operation":"noop","value":null,"extra":1}',
+    )
+    for raw in invalid:
+        with pytest.raises((ValueError, json.JSONDecodeError)):
+            parse_extraction_output(raw)
 
 
 def test_production_run_serializes_real_letta_configuration_for_worker(tmp_path: Path, monkeypatch) -> None:
@@ -286,8 +310,81 @@ def test_qualification_validation_rejects_minimal_forged_triplet(tmp_path: Path)
         validate_qualification_artifacts(tmp_path)
 
 
-def test_validate_extraction_value_semantics() -> None:
-    from scripts.vnext_run_letta_qwen_extraction_canary import validate_extraction
+def test_parse_extraction_output_accepts_pure_json() -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    parser = getattr(module, "parse_extraction_output", None)
+    assert parser is not None, "strict extraction parser is required"
+    assert parser('{"operation":"add","value":"Paris"}') == {
+        "operation": "add",
+        "value": "Paris",
+    }
+
+
+def test_parse_extraction_output_accepts_exact_json_fence() -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    assert module.parse_extraction_output(
+        " \n```json\n{\"operation\":\"update\",\"value\":3}\n``` \t"
+    ) == {"operation": "update", "value": 3}
+    assert module.parse_extraction_output(
+        "```\n{\"operation\":\"noop\",\"value\":null}\n```"
+    ) == {"operation": "noop", "value": None}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"operation":"add","value":"Paris"} trailing commentary',
+        'prefix {"operation":"add","value":"Paris"}',
+        '```json\n{"operation":"add","value":"Paris"}\n``` trailing commentary',
+    ),
+)
+def test_parse_extraction_output_rejects_prefix_or_suffix_text(raw: str) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    with pytest.raises(ValueError):
+        module.parse_extraction_output(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '```json\n{"operation":"add","value":"Paris"}',
+        '```JSON\n{"operation":"add","value":"Paris"}\n```',
+        '```json\n{"operation":"add","value":"Paris"}\n```\n```',
+        '```json\n```json\n{"operation":"add","value":"Paris"}\n```\n```',
+        "```json\nnot-json\n```",
+        "```json\n\n```",
+    ),
+)
+def test_parse_extraction_output_rejects_malformed_or_multiple_fences(raw: str) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    with pytest.raises(ValueError):
+        module.parse_extraction_output(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"operation":"add","value":null}',
+        '{"operation":"update","value":{}}',
+        '{"operation":"add","value":NaN}',
+        '{"operation":"add","value":1e999}',
+        '{"operation":"noop","value":"stale"}',
+        '{"operation":"delete","value":1}',
+        '{"operation":"replace","value":"Paris"}',
+        '{"operation":"add","value":"Paris","extra":true}',
+    ),
+)
+def test_parse_extraction_output_rejects_semantically_invalid_json(raw: str) -> None:
+    import scripts.vnext_run_letta_qwen_extraction_canary as module
+
+    with pytest.raises(ValueError):
+        module.parse_extraction_output(raw)
+
+
     for value in ("Paris", 3, 2.5, True):
         assert validate_extraction({"operation": "add", "value": value})["value"] == value
     for payload in ({"operation": "add", "value": None}, {"operation": "update", "value": {}}, {"operation": "update", "value": float("nan")}, {"operation": "noop", "value": "x"}, {"operation": "delete", "value": 1}):

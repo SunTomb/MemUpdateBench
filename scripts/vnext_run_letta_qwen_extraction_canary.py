@@ -449,6 +449,35 @@ def verify_model_provenance(
     }
 
 
+def parse_extraction_output(raw: str) -> dict:
+    if type(raw) is not str:
+        raise ValueError("extraction output must be a string")
+    text = raw.strip()
+    if not text:
+        raise ValueError("extraction output is empty")
+    if text.startswith("```"):
+        if text.startswith("```json\n"):
+            prefix = "```json\n"
+        elif text.startswith("```\n"):
+            prefix = "```\n"
+        else:
+            raise ValueError("invalid extraction markdown fence")
+        suffix = "\n```"
+        if not text.endswith(suffix):
+            raise ValueError("invalid extraction markdown fence")
+        content = text[len(prefix) : -len(suffix)]
+        if not content.strip():
+            raise ValueError("extraction output is empty")
+        if "```" in content:
+            raise ValueError("multiple extraction fences are not allowed")
+        text = content.strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid extraction JSON") from exc
+    return validate_extraction(parsed)
+
+
 def validate_extraction(parsed: object) -> dict:
     if type(parsed) is not dict or set(parsed) != {"operation", "value"}:
         raise ValueError("invalid extraction JSON")
@@ -661,9 +690,7 @@ class QwenExtractor:
         with self.torch.inference_mode():
             output = self.model.generate(**encoded, do_sample=False, num_beams=1, max_new_tokens=96, use_cache=True, pad_token_id=self.tokenizer.eos_token_id)
         raw = self.tokenizer.decode(output[0, encoded.input_ids.shape[-1]:], skip_special_tokens=True).strip()
-        parsed = json.loads(raw)
-        if type(parsed) is not dict or set(parsed) != {"operation", "value"} or parsed["operation"] not in {"add", "update", "noop", "delete"}:
-            raise ValueError("invalid extraction JSON")
+        parsed = parse_extraction_output(raw)
         return parsed, raw, int(output.shape[-1] - encoded.input_ids.shape[-1]), (time.monotonic() - started) * 1000
 
     def close(self) -> None:
