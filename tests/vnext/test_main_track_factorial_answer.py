@@ -42,6 +42,18 @@ def test_public_rows_do_not_contain_raw_material() -> None:
         runner.validate_public_payload({"rendered_prompt": "private"})
 
 
+def test_hash_suffix_fields_require_lowercase_sha256_values() -> None:
+    runner.validate_public_payload({"artifact_sha256": "a" * 64})
+    for payload in (
+        {"artifact_SHA256": "a" * 64},
+        {"artifact_sha256": "A" * 64},
+        {"artifact_sha256": "not-a-hash"},
+        {"artifact_sha256": {"nested": "value"}},
+    ):
+        with pytest.raises(ValueError, match="raw|sensitive|sha256"):
+            runner.validate_public_payload(payload)
+
+
 @pytest.fixture(scope="module")
 def full_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
     from tests.vnext.test_main_track_factorial_manager import _run as build_manager_fixture
@@ -1002,6 +1014,185 @@ def test_fixture_unsupported_reason_code_is_bound_to_manifest(
     with pytest.raises(ValueError, match="absolute path"):
         runner.validate_public_payload({"path": "/etc/passwd"})
     runner.validate_public_payload({"artifact_sha256": "a" * 64})
+
+
+def test_retrieval_trace_requires_strict_nonnegative_retrieved_counts(
+    full_fixture: Path,
+) -> None:
+    rows = [json.loads(line) for line in (full_fixture / "manager_rows.jsonl").read_bytes().splitlines()]
+    row = next(item for item in rows if item["status"] == "SUPPORTED")
+    import scripts.vnext_plan_main_track_factorial as planner
+
+    task = next(item for item in planner.select_test_tasks(CANDIDATE) if item.task_id == row["task_id"])
+    for trace_count, retrieval_count in (
+        (True, 1),
+        (1, True),
+        (-1, 1),
+        (1, -1),
+        (1.0, 1),
+        (1, 1.0),
+        ("1", 1),
+        (1, "1"),
+    ):
+        candidate = dict(row)
+        trace = dict(candidate["retrieval"]["trace"])
+        trace["retrieved_count"] = trace_count
+        candidate["retrieval"]["trace"] = trace
+        candidate["retrieval"]["retrieved_count"] = retrieval_count
+        candidate["retrieval"]["trace_sha256"] = runner.sha256_bytes(runner.canonical_bytes(trace))
+        with pytest.raises(ValueError, match="retrieved_count"):
+            runner.reconstruct_retrieval_trace(candidate, task.queries[0])
+
+
+def test_fixture_rejects_true_state_accuracy_without_stable_entry_id(
+    full_fixture: Path, tmp_path: Path
+) -> None:
+    fixture = _make_canary_fixture(full_fixture, tmp_path / "unstable-state")
+
+    def tamper(rows):
+        row = next(item for item in rows if item["status"] == "SUPPORTED")
+        row["stable_entry_id"] = False
+        row["state"]["stable_entry_id"] = False
+        assert row["state_accuracy"] is True
+        assert row["state"]["final_value"] is not None
+
+    _rewrite_fixture_rows(fixture, tamper)
+    with pytest.raises(ValueError, match="state accuracy|recomputed|stable"):
+        runner.run(
+            manager_fixture_root=fixture,
+            manifest=MANIFEST,
+            candidate_root=CANDIDATE,
+            audit_attestation=AUDIT,
+            output_root=tmp_path / "out",
+            cell_id="letta_profile__qwen35_answer",
+            execution_mode="injected_test_only",
+            answer_model_factory=lambda: GoldReplayModel(CANDIDATE, identity=_qwen_identity()),
+        )
+
+
+@pytest.mark.parametrize("frozen_root", [
+    ROOT / "data" / "vnext" / "core" / "v3",
+    ROOT / "data" / "vnext" / "pilot",
+])
+def test_output_root_nested_under_frozen_release_is_rejected_before_model_factory(
+    frozen_root: Path, full_fixture: Path, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    output = frozen_root / f"answer-test-{tmp_path.name}"
+    with pytest.raises(ValueError, match="immutable"):
+        runner.run(
+            manager_fixture_root=full_fixture,
+            manifest=MANIFEST,
+            candidate_root=CANDIDATE,
+            audit_attestation=AUDIT,
+            output_root=output,
+            cell_id="letta_profile__qwen35_answer",
+            execution_mode="injected_test_only",
+            answer_model_factory=lambda: calls.append("model"),
+        )
+    assert calls == []
+
+
+def test_output_root_validation_checks_frozen_release_roots_for_reparse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Path] = []
+
+    def record(path):
+        seen.append(Path(path))
+
+    monkeypatch.setattr(runner, "assert_no_reparse_components", record)
+    runner._validate_output_root(tmp_path / "out", ())
+    assert set(runner._FROZEN_IMMUTABLE_ROOTS).issubset(set(seen))
+
+
+def _write_valid_fixture_receipt(full_fixture: Path, destination: Path) -> tuple[Path, dict, dict, dict, dict]:
+    _, summary, index, fixture_hashes = runner._load_fixture(full_fixture)
+    receipt = {
+        "schema_version": runner.MANAGER_FIXTURE_RECEIPT_SCHEMA,
+        "status": "PASS",
+        "execution_mode": "production",
+        "evidence_class": summary["evidence_class"],
+        "attestation_status": "PASS",
+        "authentication_method": "independent_release_attestation",
+        "manifest_sha256": summary["manifest_sha256"],
+        "audit_attestation_sha256": summary["audit_attestation_sha256"],
+        "candidate_artifact_hashes": summary["candidate_artifact_hashes"],
+        "manager_fixture_artifact_hashes": fixture_hashes,
+        "manager_fixture_root_digest": runner._fixture_root_digest(fixture_hashes),
+        "cell_id": summary["cell_id"],
+        "scope": summary["scope"],
+        "producer": {
+            "producer_id": "fixture-producer",
+            "producer_revision": "fixture-revision",
+            "runtime_identity": "fixture-runtime",
+            "manager_id": summary["manager_id"],
+            "cell_id": summary["cell_id"],
+        },
+    }
+    destination.write_bytes(runner.canonical_bytes(receipt))
+    return destination, summary, index, fixture_hashes, receipt
+
+
+@pytest.mark.parametrize("field", ["manager_id", "cell_id"])
+def test_fixture_receipt_requires_producer_manager_and_cell_identity(
+    full_fixture: Path, tmp_path: Path, field: str
+) -> None:
+    receipt_path, summary, index, fixture_hashes, receipt = _write_valid_fixture_receipt(
+        full_fixture, tmp_path / "receipt.json"
+    )
+    receipt["producer"].pop(field)
+    receipt_path.write_bytes(runner.canonical_bytes(receipt))
+    with pytest.raises(ValueError, match="producer.*identity"):
+        runner._validate_manager_fixture_attestation(
+            receipt_path,
+            manager_fixture_attestation_sha256=runner.sha256_bytes(receipt_path.read_bytes()),
+            fixture_root=full_fixture,
+            fixture_hashes=fixture_hashes,
+            summary=summary,
+            index=index,
+            manifest_sha256=summary["manifest_sha256"],
+            candidate_hashes=summary["candidate_artifact_hashes"],
+            audit_sha=summary["audit_attestation_sha256"],
+        )
+
+
+@pytest.mark.parametrize("field", ["manager_id", "cell_id"])
+def test_fixture_receipt_producer_identity_must_match_summary(
+    full_fixture: Path, tmp_path: Path, field: str
+) -> None:
+    receipt_path, summary, index, fixture_hashes, receipt = _write_valid_fixture_receipt(
+        full_fixture, tmp_path / "receipt.json"
+    )
+    receipt["producer"][field] = "wrong"
+    receipt_path.write_bytes(runner.canonical_bytes(receipt))
+    with pytest.raises(ValueError, match="producer .*binding mismatch"):
+        runner._validate_manager_fixture_attestation(
+            receipt_path,
+            manager_fixture_attestation_sha256=runner.sha256_bytes(receipt_path.read_bytes()),
+            fixture_root=full_fixture,
+            fixture_hashes=fixture_hashes,
+            summary=summary,
+            index=index,
+            manifest_sha256=summary["manifest_sha256"],
+            candidate_hashes=summary["candidate_artifact_hashes"],
+            audit_sha=summary["audit_attestation_sha256"],
+        )
+
+
+def test_qwen_public_model_binding_includes_adapter_source_hash() -> None:
+    identity = runner._qwen_public_identity(
+        {"model_id": "qwen-test"},
+        {
+            "repo": "Qwen/Qwen3.5-9B",
+            "revision": "r" * 40,
+            "runtime_receipt_sha256": "a" * 64,
+            "snapshot_binding_receipt_sha256": "b" * 64,
+            "snapshot_binding_payload_sha256": "c" * 64,
+        },
+        adapter_source_sha256="d" * 64,
+    )
+    assert identity["qwen_adapter_source_sha256"] == "d" * 64
 
 
 def _rewrite_fixture_rows(fixture: Path, mutate) -> None:

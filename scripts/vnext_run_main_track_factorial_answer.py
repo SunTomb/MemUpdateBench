@@ -77,6 +77,10 @@ _OUTCOMES = (
 )
 _FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter", "function_call"})
 _WINDOWS_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_FROZEN_IMMUTABLE_ROOTS = (
+    ROOT / "data" / "vnext" / "core" / "v3",
+    ROOT / "data" / "vnext" / "pilot",
+)
 
 
 SCORING_BINDING = {
@@ -145,9 +149,10 @@ def _forbidden_field(value: Any, location: str = "root") -> str | None:
                 return f"{location} has a non-string field name"
             lowered = key.casefold()
             if lowered.endswith("_sha256"):
-                found = _forbidden_field(child, f"{location}.{key}")
-                if found:
-                    return found
+                if child is None:
+                    continue
+                if key != lowered or type(child) is not str or _HEX64.fullmatch(child) is None:
+                    return f"{location}.{key} is a raw prompt/output/reasoning or invalid hash field"
                 continue
             if lowered in PUBLIC_FORBIDDEN_FIELDS or lowered.startswith(
                 ("raw_prompt_", "raw_output_", "raw_reasoning_")
@@ -470,7 +475,7 @@ def _validate_manager_fixture_attestation(
         raise ValueError("manager fixture receipt producer/runtime identity is incomplete")
     if any(
         type(producer.get(key)) is not str or not producer.get(key).strip()
-        for key in ("producer_id", "producer_revision")
+        for key in ("producer_id", "producer_revision", "manager_id", "cell_id")
     ):
         raise ValueError("manager fixture receipt producer identity is incomplete")
     runtime_identity = producer.get("runtime_identity")
@@ -700,7 +705,10 @@ def _validate_fixture_rows(
         reconstructed = reconstruct_retrieval_trace(row, task.queries[0])
         _validate_retrieval_source_event_bindings(reconstructed, task.events)
         gold_evidence = task.gold_evidence[0]
-        expected_state_accuracy = typed_json_equal(state.get("final_value"), gold_evidence.answer)
+        expected_state_accuracy = (
+            state.get("stable_entry_id") is True
+            and typed_json_equal(state.get("final_value"), gold_evidence.answer)
+        )
         if state.get("state_accuracy") is not expected_state_accuracy:
             raise ValueError(f"manager fixture row {number} state accuracy does not match final value and gold")
         target_identities = {object_identity(key) for key in task.queries[0].target_object_keys}
@@ -827,8 +835,12 @@ def reconstruct_retrieval_trace(
     entries = trace.get("entries")
     if not isinstance(entries, list):
         raise ValueError("manager fixture retrieval entries must be ordered")
-    if trace.get("retrieved_count") != len(entries) or retrieval.get("retrieved_count") != len(entries):
-        raise ValueError("manager fixture retrieval retrieved_count mismatch")
+    for location, value in (
+        ("trace.retrieved_count", trace.get("retrieved_count")),
+        ("retrieval.retrieved_count", retrieval.get("retrieved_count")),
+    ):
+        if type(value) is not int or value < 0 or value != len(entries):
+            raise ValueError(f"manager fixture retrieval {location} mismatch")
     if len(entries) > RETRIEVAL_K:
         raise ValueError("manager fixture retrieval exceeds k=16")
     task_event_ids = None if task_events is None else _task_event_ids(task_events)
@@ -920,24 +932,42 @@ class _ProvenanceBoundModel:
             close()
 
 
-def _qwen_public_identity(expected: Mapping[str, Any], provenance: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+def _qwen_public_identity(
+    expected: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+    *,
+    adapter_source_sha256: str | None = None,
+) -> dict[str, Any]:
+    identity = {
         **dict(expected),
         "snapshot_release": f"{provenance['repo']}@{provenance['revision']}",
         "runtime_receipt_sha256": provenance["runtime_receipt_sha256"],
         "snapshot_binding_receipt_sha256": provenance["snapshot_binding_receipt_sha256"],
         "snapshot_binding_payload_sha256": provenance["snapshot_binding_payload_sha256"],
     }
+    if adapter_source_sha256 is not None:
+        identity["qwen_adapter_source_sha256"] = _require_sha(
+            adapter_source_sha256,
+            "qwen_adapter_source_sha256",
+        )
+    return identity
 
 
 def _build_qwen_production_factory(
     model_snapshot: Path,
     provenance: Mapping[str, Any],
     expected_identity: Mapping[str, Any],
+    *,
+    adapter_source_sha256: str | None = None,
 ) -> Callable[[], AnswerReplayModel]:
     from scripts.vnext_run_letta_qwen_prompted_answer import QwenSession
 
-    identity = _qwen_public_identity(expected_identity, provenance)
+    native_identity = _qwen_public_identity(expected_identity, provenance)
+    output_identity = _qwen_public_identity(
+        expected_identity,
+        provenance,
+        adapter_source_sha256=adapter_source_sha256,
+    )
 
     def factory() -> AnswerReplayModel:
         model = QwenSession(model_snapshot)
@@ -945,10 +975,10 @@ def _build_qwen_production_factory(
         if observed is not None:
             if not isinstance(observed, Mapping):
                 raise ValueError("Qwen answer model identity is invalid")
-            for key, expected_value in identity.items():
+            for key, expected_value in native_identity.items():
                 if observed.get(key) != expected_value:
                     raise ValueError(f"Qwen answer model identity mismatch for {key}")
-        return _ProvenanceBoundModel(model, identity)
+        return _ProvenanceBoundModel(model, output_identity)
 
     factory.production_bound = True  # type: ignore[attr-defined]
     return factory
@@ -1459,20 +1489,23 @@ def _publish(
 
 
 def _validate_output_root(output: Path, source_paths: Sequence[Path]) -> Path:
-    assert_no_reparse_components(output)
-    for source in source_paths:
-        assert_no_reparse_components(source)
+    for path in (output, *source_paths, *_FROZEN_IMMUTABLE_ROOTS):
+        assert_no_reparse_components(path)
     if not output.is_absolute():
         raise ValueError("output_root must be absolute")
     if output.exists() or output.is_symlink():
         raise FileExistsError(output)
-    if not output.parent.is_dir():
-        raise ValueError("output_root parent directory does not exist")
     resolved = output.resolve(strict=False)
     for source in source_paths:
         source_resolved = source.resolve(strict=False)
         if resolved == source_resolved or source_resolved in resolved.parents or resolved in source_resolved.parents:
             raise ValueError("output_root must be separate from inputs")
+    for frozen_root in _FROZEN_IMMUTABLE_ROOTS:
+        frozen_resolved = frozen_root.resolve(strict=False)
+        if resolved == frozen_resolved or frozen_resolved in resolved.parents:
+            raise ValueError("output_root must be outside frozen immutable roots")
+    if not output.parent.is_dir():
+        raise ValueError("output_root parent directory does not exist")
     return output
 
 
@@ -1726,6 +1759,7 @@ def run(
                 Path(model_snapshot).resolve(strict=True),
                 qwen_provenance,
                 expected_identity,
+                adapter_source_sha256=initial_qwen_adapter_source_sha256,
             )
         else:
             if muse_server_url is None:
@@ -1758,7 +1792,11 @@ def run(
             execution_mode=execution_mode,
             model_kind=expected_model_kind,
             required_binding=(
-                _qwen_public_identity(expected_identity, qwen_provenance)
+                _qwen_public_identity(
+                    expected_identity,
+                    qwen_provenance,
+                    adapter_source_sha256=initial_qwen_adapter_source_sha256,
+                )
                 if qwen_provenance is not None
                 else muse_required_binding
             ),
