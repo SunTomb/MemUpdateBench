@@ -1398,6 +1398,7 @@ def run(
         "status": status,
         "cell_id": cell["cell_id"],
         "manager_kind": args.manager_kind,
+        "manager_id": cell["manager_id"],
         "scope": scope,
         "requested_task_count": requested_task_count,
         "eligible_supported_count": len(eligible_supported_ids),

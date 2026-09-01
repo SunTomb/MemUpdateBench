@@ -283,6 +283,16 @@ def test_full_scope_metadata_and_behavior_remain_unchanged(tmp_path):
     assert len(managers) == 240
 
 
+def test_injected_fixture_index_manager_id_matches_summary_and_cell(tmp_path):
+    summary, _, _ = _run(tmp_path)
+    index = json.loads((tmp_path / "out" / "artifact_index.json").read_bytes())
+    manifest = json.loads(MANIFEST.read_bytes())
+    cell = next(item for item in manifest["cells"] if item["cell_id"] == "letta_profile__qwen35_answer")
+
+    assert index["manager_id"] == summary["manager_id"]
+    assert index["manager_id"] == cell["manager_id"]
+
+
 def test_cli_parser_accepts_optional_supported_limit(tmp_path):
     parser = runner.build_arg_parser()
     parsed = parser.parse_args(

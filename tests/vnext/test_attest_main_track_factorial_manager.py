@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 
-_EXPECTED_MANAGER_RUNNER_SHA256 = "2c4eb3656a62b4041de33b8e7b425a6f0550b68190b9d967886df97d46b943d1"
+_EXPECTED_MANAGER_RUNNER_SHA256 = "d35bc0a8e9555617186e1f7cba953e6473a74b295a6971d6d3f528ca309ae7ad"
 
 
 def test_manager_runner_source_hash_is_hardcoded_to_current_runner() -> None:
@@ -24,6 +24,24 @@ def test_attestation_schema_is_stable() -> None:
     from scripts import vnext_attest_main_track_factorial_manager as attestor
 
     assert attestor.RECEIPT_SCHEMA == "memupdatebench.main-track.manager-fixture-execution-receipt.v1"
+
+
+def test_manager_runner_source_hash_normalizes_checkout_line_endings(tmp_path) -> None:
+    from pathlib import Path
+
+    from scripts import vnext_attest_main_track_factorial_manager as attestor
+    from scripts import vnext_run_main_track_factorial_manager as manager_runner
+
+    source = Path(manager_runner.__file__).read_bytes()
+    for suffix, transformed in (
+        ("crlf", source.replace(b"\n", b"\r\n")),
+        ("cr", source.replace(b"\n", b"\r")),
+    ):
+        path = tmp_path / f"manager_runner_{suffix}.py"
+        path.write_bytes(transformed)
+        raw_sha256, normalized_sha256 = attestor._manager_runner_source_hashes(path)
+        assert raw_sha256 != normalized_sha256
+        assert normalized_sha256 == _EXPECTED_MANAGER_RUNNER_SHA256
 
 
 def _snapshot(attestor):
@@ -66,6 +84,7 @@ def test_receipt_binds_hashes_and_producer_without_paths() -> None:
     assert receipt["manager_fixture_artifact_hashes"] == snapshot["fixture_hashes"]
     assert receipt["manager_fixture_root_digest"] == snapshot["fixture_root_digest"]
     assert receipt["execution_boundary"] == snapshot["execution_boundary"]
+    assert receipt["authentication_method"] == "hash_bound_release_attestation"
     assert receipt["producer"] == {
         "producer_id": "letta-production-fixture",
         "producer_revision": "rev-1",
