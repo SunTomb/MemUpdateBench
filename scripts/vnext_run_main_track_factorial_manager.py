@@ -21,6 +21,7 @@ from mub.vnext.io import sha256_model
 from mub.vnext.io.atomic import publish_files_atomically
 from mub.vnext.external.security import scan_for_secrets
 from scripts import vnext_plan_main_track_factorial as planner
+from scripts import vnext_run_letta_qwen_extraction_canary as qwen_extraction_module
 from scripts.vnext_run_letta_qwen_extraction_canary import (
     MODEL_ID as QWEN_MODEL_ID,
     MODEL_REVISION as QWEN_MODEL_REVISION,
@@ -141,6 +142,9 @@ class Qwen35VisibleEventExtractor:
             "runtime_receipt_sha256": self._provenance["runtime_receipt_sha256"],
             "snapshot_binding_receipt_sha256": self._provenance["snapshot_binding_receipt_sha256"],
             "snapshot_binding_payload_sha256": self._provenance["snapshot_binding_payload_sha256"],
+            "extractor_source_sha256": _sha256_bytes(
+                Path(qwen_extraction_module.__file__).resolve(strict=True).read_bytes()
+            ),
         }
 
     def load(self) -> None:

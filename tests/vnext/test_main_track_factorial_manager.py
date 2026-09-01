@@ -939,6 +939,9 @@ def test_qwen35_production_factory_binds_exact_model_and_runtime_provenance(monk
         "runtime_receipt_sha256": runner.QWEN_MODEL_RUNTIME_RECEIPT_SHA256,
         "snapshot_binding_receipt_sha256": "b" * 64,
         "snapshot_binding_payload_sha256": "c" * 64,
+        "extractor_source_sha256": runner._sha256_bytes(
+            Path(runner.qwen_extraction_module.__file__).resolve(strict=True).read_bytes()
+        ),
     }
     assert extractor.production_bound is True
 
