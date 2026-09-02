@@ -4258,3 +4258,42 @@ Panel index: results/vnext/main_track_qwen_muse_answer_panel_v1/panel_index.json
 ```
 
 Evidence boundary: this is a paired fixed-reference answer-layer comparison. It is not external-manager evidence, extraction evidence, a significance test or a broad leaderboard. The next main-track layer is fixed-extractor/manager factorial evaluation on the same audited task universe.
+
+### Main-track fixed-extractor/manager factorial: LangGraph custom adapter + Qwen (2026-09-02)
+
+#### Motivation
+
+The main-track expansion requires a fixed visible-event extractor, an external memory manager, and a separately replayable prompted-answer layer on one audited task universe. This stage keeps those layers separate: Qwen3.5-9B converts visible events to the explicit CRUD/NOOP surface; a LangGraph `InMemoryStore` plus the custom MemUpdateBench adapter performs mutation and retrieval; a later answer runner consumes only the frozen retrieval fixture. The runtime is not native LangMem CRUD/retrieval evidence.
+
+#### Contract and qualification
+
+The corrected `main_track_v1` candidate remains immutable and contains 900 semantic cores / 3,600 tasks, with 720 TEST tasks. The v2 factorial manifest binds six cells: Reference×Qwen/Muse (720 supported each), Letta profile×Qwen/Muse (240 supported + 480 typed unsupported each), and LangGraph custom adapter×Qwen/Muse (240 supported + 480 typed unsupported each). The LangGraph identity is explicitly `langgraph_store_custom_adapter`, system/backend `langgraph_in_memory_store`, with the implementation boundary `LangGraph InMemoryStore + custom MemUpdateBench adapter; not native LangMem CRUD/retrieval evidence`.
+
+The local-only qualification loaded `langmem==0.0.30` and `langgraph==1.2.11`, exercised reset/add/update/NOOP/retrieve/export/reset in memory, and recorded zero provider/network/database/remote calls. The receipt is a hash-bound release attestation, not a cryptographic signature or independent signer assertion. The tested clean runtime used Torch 2.5.1+cu121, Transformers 5.9.0, Accelerate 1.12.0, and the shared Qwen3.5-9B snapshot.
+
+#### Engineering gates
+
+- Factorial planner and manager-fixture contract tests: 49 manager + 20 planner tests passed; support partitions remain 240/480 for both external profiles.
+- Qwen fenced-output hardening: exact pure JSON and exact JSON fences are accepted; commentary, malformed fences, and invalid schemas are rejected. The existing extraction suite passed 48 tests with one expected Windows symlink skip.
+- Manager canary8 on Song-2 GPU3 passed: 488 ordered rows (8 supported + 480 unsupported), state accuracy 1.0, gold retrieval 1.0, zero failures, one model load and 24 GPU generations. Rows SHA-256 `de55a0361a454615ca42a781fbc5af77559b7d0eaa533075fb79e6cdeddd57ba`.
+- Authoritative full-240 manager fixture on Tang-1 GPU1 passed: 720 ordered rows (240 supported + 480 unsupported), state accuracy 1.0, gold retrieval 1.0, zero failures, one model load and 720 GPU generations. Rows SHA-256 `a768d58764a1082ff015a29e1e9b587ea0fa667f8a971a4e76f4fbc8bc97a31f`; summary SHA-256 `0d7eacaa15fc456291779a367bb4af66616f6c42450da9877e3ec8c0adc9ed60`; index SHA-256 `9cac739bd4ce164987c1d57fa02a6c9cd0ac9de2bc5d46f196e987f83fe9808a`.
+- The source-pinned manager fixture attestation passed with receipt SHA-256 `0bd4bf9753db2698a8583f69f5e41fbd0401d45afd7fc355dee9c8e685809115`. It binds the manifest SHA-256 `6cd81f3c5eae9d4ea950c562d54ecc5e4f390ab4994b8ccb09286e45a272ee0b`, candidate/audit hashes, fixture root digest, manager source identity, production runtime accounting, and Tang-1 producer identity.
+- Authoritative Qwen answer replay passed on the same frozen fixture: 720 answer rows, 240 attempted answers, 480 typed unsupported rows, zero answer execution failures, inherited state/retrieval 1.0/1.0, answer EM/F1 `0.9916667`, outcomes CORRECT 238 and WRONG 2. Answer rows SHA-256 `ff56a6502216eef39eae77426f468e6657c4789d5bd6d6f98a8ea1385f982b72`; answer summary SHA-256 `678c02d15e33bfcb36503c4b02b38c06a171dc4dcef55c7ad2be3da91ee82193`; answer index SHA-256 `a94e82782e8f202937366e313e05a636a7dae92770b8d23181d0b10ee093846c`.
+
+#### Error analysis and conclusions
+
+The first Song-1 full run was retained as an invalidated diagnostic: 20 supported tasks failed because Qwen emitted exact fenced JSON for some NOOP events while the extractor expected only raw JSON. No rows from that run are interpreted scientifically. Strict fence parsing fixed the root cause without adding retries. A later Song-1 rerun was stopped when another user's GPU jobs occupied the requested cards; the task was moved to Tang-1. Tang-1 completed the source-pinned fixture and Qwen replay with clean state/retrieval and answer-layer results. All model, LangGraph, and manager processes released their GPUs after completion.
+
+These results are joint-pipeline evidence for one qualified LangGraph custom-adapter profile plus Qwen extraction and Qwen prompted answering. They do not establish native LangMem performance, a Letta factorial result, Muse production answer accuracy, statistical significance, or a broad external-memory leaderboard. The answer panel should not be interpreted as isolating manager effects from answer-model effects without the planned paired replay.
+
+#### Authoritative local copies and next steps
+
+Downloaded local copies are under:
+
+```text
+results/vnext/main_track_factorial_langgraph_qwen_full240_tang1_gpu1_v2/
+results/vnext/main_track_langgraph_manager_attestation_tang1_gpu1_full240_v3/
+results/vnext/main_track_factorial_langgraph_qwen_answer_full240_tang1_gpu1_v1/
+```
+
+The next steps are to audit/publish the downloaded roots as a separate evidence release, run the same frozen retrieval fixture through a second answer model only after its runtime identity is independently qualified, implement the Letta production manager path or keep it explicitly blocked, and then extend the matrix to independent Family H realistic-source revisions. Preserve Core/Pilot and all prior factorial v1/v2 diagnostic roots without overwrite.
