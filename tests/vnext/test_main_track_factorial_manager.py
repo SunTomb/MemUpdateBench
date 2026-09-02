@@ -1125,7 +1125,24 @@ def test_qwen_production_runtime_profile_records_load_and_gpu_work(monkeypatch, 
     }
 
 
-def test_letta_production_factory_fails_closed_before_langgraph_setup(monkeypatch, tmp_path):
+def _letta_production_args(tmp_path):
+    return runner.RunnerArgs(
+        manifest=MANIFEST,
+        candidate_root=CANDIDATE,
+        audit_attestation=ATTESTATION,
+        manager_kind="letta",
+        cell_id="letta_profile__qwen35_answer",
+        output_root=tmp_path / "out",
+        execution_mode="production",
+        letta_qualification_root=tmp_path / "qualification",
+        letta_base_url="http://127.0.0.1:8283",
+        letta_python_executable=tmp_path / "letta-python",
+        letta_project_root=tmp_path / "letta-project",
+        letta_expected_project_revision="a" * 40,
+    )
+
+
+def test_letta_production_cli_parser_exposes_qualified_worker_bindings(tmp_path):
     parser = runner.build_arg_parser()
     parsed = parser.parse_args(
         [
@@ -1135,27 +1152,139 @@ def test_letta_production_factory_fails_closed_before_langgraph_setup(monkeypatc
             "--cell-id", "letta_profile__qwen35_answer",
             "--output-root", str(tmp_path / "out"),
             "--execution-mode", "production",
+            "--letta-qualification-root", str(tmp_path / "qualification"),
+            "--letta-base-url", "http://127.0.0.1:8283",
+            "--letta-python-executable", str(tmp_path / "letta-python"),
+            "--letta-project-root", str(tmp_path / "letta-project"),
+            "--letta-expected-project-revision", "a" * 40,
         ]
     )
-    args = runner.RunnerArgs(**vars(parsed))
+    assert parsed.letta_qualification_root == tmp_path / "qualification"
+    assert parsed.letta_base_url == "http://127.0.0.1:8283"
+    assert parsed.letta_python_executable == tmp_path / "letta-python"
+    assert parsed.letta_project_root == tmp_path / "letta-project"
+    assert parsed.letta_expected_project_revision == "a" * 40
 
-    def unexpected_langgraph_setup(*args, **kwargs):
-        raise AssertionError("LangGraph production setup must not run for Letta")
 
-    monkeypatch.setattr(runner, "_load_langgraph_qualification", unexpected_langgraph_setup)
-    monkeypatch.setattr(
-        runner,
-        "build_langgraph_store_custom_adapter_manager",
-        unexpected_langgraph_setup,
+def test_letta_production_factory_fails_closed_before_worker_or_langgraph_setup(monkeypatch, tmp_path):
+    args = _args(
+        tmp_path / "out", manager_kind="letta", execution_mode="production"
     )
+    calls = []
+    monkeypatch.setattr(runner, "validate_qualification_artifacts", lambda *_: calls.append("qualification"))
+    monkeypatch.setattr(runner, "JsonlSubprocessBridge", lambda **_: calls.append("bridge"))
+    monkeypatch.setattr(runner, "_load_langgraph_qualification", lambda *_: calls.append("langgraph"))
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(RuntimeError, match="Letta production manager requires"):
         runner.build_production_manager_factory(args)
 
-    assert str(exc_info.value) == (
-        "Letta production fixture path is not implemented; "
-        "use existing separate qualified Letta runner"
+    assert calls == []
+
+
+def test_letta_factory_dispatches_with_qualified_source_and_project_bindings(monkeypatch, tmp_path):
+    args = _letta_production_args(tmp_path)
+    qualification_root = args.letta_qualification_root
+    qualification_root.mkdir()
+    qualification = {
+        "closure": {"identity": {"package_name": "letta"}, "source": {"commit": "b" * 40}},
+        "hashes": {"letta_runtime_qualification.json": "c" * 64},
+    }
+    binding = {
+        "python_executable": str(args.letta_python_executable),
+        "project_root": str(args.letta_project_root),
+        "project_revision": "a" * 40,
+        "worker_source": str(args.letta_project_root / "mub" / "vnext" / "external" / "workers" / "letta_worker.py"),
+        "worker_source_sha256": "d" * 64,
+        "runner_source_sha256": "e" * 64,
+    }
+    calls = []
+    monkeypatch.setattr(runner, "validate_qualification_artifacts", lambda root: calls.append(("qualification", root)) or qualification)
+    monkeypatch.setattr(runner, "validate_worker_runtime_binding", lambda *values, **kwargs: calls.append(("binding", values, kwargs)) or binding)
+    monkeypatch.setattr(runner, "validate_loopback_binding", lambda url, closure: calls.append(("loopback", url, closure)) or url)
+    monkeypatch.setattr(runner, "_build_letta_block_profile_manager", lambda **kwargs: calls.append(("manager", kwargs)) or kwargs)
+
+    factory = runner.build_production_manager_factory(args)
+    cell = {"manager_id": "letta_0_16_8_block_profile"}
+    result = factory(type("Task", (), {"task_id": "task-1"})(), cell)
+
+    assert factory.production_bound is True
+    assert result["endpoint"] == args.letta_base_url
+    assert result["qualification"] == qualification
+    assert result["binding"] == binding
+    assert calls[0] == ("qualification", qualification_root)
+    assert calls[1][0] == "binding"
+    assert calls[1][2] == {"expected_revision": "a" * 40}
+    assert calls[2] == ("loopback", args.letta_base_url, qualification["closure"])
+    assert calls[3][0] == "manager"
+
+
+def test_letta_factory_fails_closed_on_worker_project_revision_mismatch(monkeypatch, tmp_path):
+    args = _letta_production_args(tmp_path)
+    args.letta_qualification_root.mkdir()
+    monkeypatch.setattr(runner, "validate_qualification_artifacts", lambda root: {"closure": {}, "hashes": {}})
+    monkeypatch.setattr(
+        runner,
+        "validate_worker_runtime_binding",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("Letta project revision mismatch")),
     )
+    monkeypatch.setattr(runner, "validate_loopback_binding", lambda *args: pytest.fail("loopback must not run after project mismatch"))
+
+    with pytest.raises(ValueError, match="project revision mismatch"):
+        runner.build_production_letta_manager_factory(args)
+
+
+def test_letta_block_profile_manager_binds_identity_visible_actions_and_cleanup_order(monkeypatch):
+    records = []
+
+    class FakeBridge:
+        def __init__(self, **kwargs):
+            records.append(("bridge", kwargs))
+
+    class FakeAdapter:
+        def __init__(self, *, bridge, configuration, target_objects):
+            self.configuration = configuration
+            self.target_objects = target_objects
+        def reset(self, request):
+            records.append(("reset", request.namespace))
+        def ingest_event(self, event):
+            records.append(("ingest", event.raw_text, event.normalized_text))
+            return {"effective_operation": "add", "affected_entry_ids": ["entry-1"]}
+        def export_entries(self):
+            return type("Export", (), {"entries": ()})()
+        def retrieve(self, request):
+            return type("Retrieval", (), {"trace": type("Trace", (), {"retrieved_entries": (), "scores": (), "ranks": (), "context_order": "native", "version_metadata": {}})()})()
+        def close(self):
+            records.append(("close",))
+
+    monkeypatch.setattr(runner, "JsonlSubprocessBridge", FakeBridge)
+    monkeypatch.setattr(runner, "LettaExternalAdapterV3", FakeAdapter)
+    monkeypatch.setattr(runner, "build_worker_command", lambda *args: ("/qualified/python", "worker", "--configuration-json", args[2]))
+    monkeypatch.setattr(runner, "safe_worker_environment", lambda endpoint, root: {"LETTA_NATIVE_API_BASE_URL": endpoint, "PYTHONPATH": str(root)})
+    key = runner.FrozenMemoryObjectKey(object_type="profile", namespace="default", entity="alice", attribute="city", subkey=None)
+    task = type("Task", (), {"task_id": "task-1", "target_objects": (key,)})()
+    manager = runner.LettaBlockProfileManager(
+        task=task,
+        qualification={"closure": {"identity": {"package_name": "letta"}}, "hashes": {"letta_runtime_qualification.json": "a" * 64}},
+        binding={"python_executable": "/qualified/python", "project_root": "/qualified/project", "project_revision": "b" * 40, "worker_source_sha256": "c" * 64, "runner_source_sha256": "d" * 64},
+        endpoint="http://127.0.0.1:8283",
+    )
+    event = type("Event", (), {"event_id": "event-1", "timestamp": "2026-01-01T00:00:00Z", "metadata": {}, "model_copy": lambda self, update: type("VisibleEvent", (), update)()})()
+
+    assert manager.identity["manager_id"] == "letta_0_16_8_block_profile"
+    assert manager.identity["adapter_id"] == "letta_0_16_8_block_profile"
+    assert manager.identity["adapter_version"] == "memupdatebench-letta-adapter-v1"
+    assert manager.identity["system_name"] == "letta_0_16_8_block_profile"
+    assert manager.identity["system_version"] == "0.16.8"
+    assert manager.identity["backend"] == "letta_block_profile"
+    manager.reset(task)
+    result = manager.ingest(event, operation="add", value="Paris", object_key=key)
+    manager.close()
+
+    assert result == {"effective_operation": "add", "affected_entry_ids": ["entry-1"]}
+    assert records[1] == ("reset", "letta_main_track_task-1")
+    assert records[2] == ("ingest", 'Add default|alice|city| with value "Paris".', 'Add default|alice|city| with value "Paris".')
+    assert records[-2:] == [("reset", "letta_main_track_task-1"), ("close",)]
+    assert manager.runtime_profile.as_dict()["executable_calls"] == 1
 
 
 def test_production_factories_are_marked_bound_and_require_qualification_inputs(tmp_path):

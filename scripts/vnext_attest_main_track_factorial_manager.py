@@ -43,7 +43,7 @@ _PRODUCTION_ACCOUNTING_SOURCE = "production_runtime_profile"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _CREDENTIAL_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s?#]*@", re.IGNORECASE)
 # Pin the source after normalizing checkout-specific line endings to LF.
-EXPECTED_MANAGER_RUNNER_SOURCE_SHA256 = "d35bc0a8e9555617186e1f7cba953e6473a74b295a6971d6d3f528ca309ae7ad"
+EXPECTED_MANAGER_RUNNER_SOURCE_SHA256 = "b290fcd29cab699ca1e7e1e2d97c1d85878104ada91e5b545a6f901422c7ab8d"
 _FROZEN_IMMUTABLE_ROOTS = (
     ROOT / "data" / "vnext" / "core" / "v3",
     ROOT / "data" / "vnext" / "pilot",

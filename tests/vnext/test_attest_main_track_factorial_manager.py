@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 
-_EXPECTED_MANAGER_RUNNER_SHA256 = "d35bc0a8e9555617186e1f7cba953e6473a74b295a6971d6d3f528ca309ae7ad"
+_EXPECTED_MANAGER_RUNNER_SHA256 = "b290fcd29cab699ca1e7e1e2d97c1d85878104ada91e5b545a6f901422c7ab8d"
 
 
 def test_manager_runner_source_hash_is_hardcoded_to_current_runner() -> None:

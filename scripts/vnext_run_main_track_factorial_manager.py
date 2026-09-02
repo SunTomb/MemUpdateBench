@@ -13,14 +13,20 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from mub.vnext.contracts.v3.common import FrozenMemoryObjectKey, object_identity, typed_json_equal
 from mub.vnext.contracts.v3.adapter import AdapterActionResultV3, ResetRequestV3, RetrievalRequestV3
-from mub.vnext.external.bridge import WorkerRequestV1, WorkerResponseV1
+from mub.vnext.external.bridge import JsonlSubprocessBridge, WorkerRequestV1, WorkerResponseV1
 from mub.vnext.external.providers.langmem import build_langmem_adapter_configuration, compute_langmem_configuration_hash
 from mub.vnext.external.providers.langmem_adapter import LangMemExternalAdapterV3
+from mub.vnext.external.providers.letta import (
+    build_letta_adapter_configuration,
+    compute_letta_configuration_hash,
+)
+from mub.vnext.external.providers.letta_adapter import LettaExternalAdapterV3
 from mub.vnext.external.workers.langmem_worker import OfficialLangMemBackendV1, LangMemWorkerServiceV1
 from mub.vnext.io import sha256_model
 from mub.vnext.io.atomic import publish_files_atomically
 from mub.vnext.external.security import scan_for_secrets
 from scripts import vnext_plan_main_track_factorial as planner
+from scripts import vnext_run_letta_qwen_prompted_answer as prompted_answer_module
 from scripts import vnext_run_letta_qwen_extraction_canary as qwen_extraction_module
 from scripts.vnext_run_letta_qwen_extraction_canary import (
     MODEL_ID as QWEN_MODEL_ID,
@@ -30,6 +36,13 @@ from scripts.vnext_run_letta_qwen_extraction_canary import (
     QwenExtractor,
     verify_model_provenance,
 )
+
+validate_qualification_artifacts = qwen_extraction_module.validate_qualification_artifacts
+validate_worker_runtime_binding = qwen_extraction_module.validate_worker_runtime_binding
+validate_loopback_binding = qwen_extraction_module.validate_loopback_binding
+build_worker_command = qwen_extraction_module.build_worker_command
+safe_worker_environment = qwen_extraction_module.safe_worker_environment
+_adapter_for_task = prompted_answer_module._adapter_for_task
 
 SCHEMA_VERSION = "memupdatebench.main-track.factorial.manager-fixture.v1"
 ROW_SCHEMA_VERSION = f"{SCHEMA_VERSION}.row"
@@ -263,6 +276,191 @@ class LangGraphStoreCustomAdapterManager:
         self._adapter.close()
 
 
+class LettaBlockProfileManager:
+    """Production Letta native block-profile manager over a qualified worker.
+
+    The runner consumes an already-running, separately qualified loopback Letta
+    server. It never starts or qualifies that server; worker and server bootstrap
+    are an explicit upstream boundary.
+    """
+
+    production_bound = True
+
+    def __init__(
+        self,
+        *,
+        task: Any,
+        qualification: Mapping[str, Any],
+        binding: Mapping[str, Any],
+        endpoint: str,
+        runner_args: Any | None = None,
+    ) -> None:
+        if not isinstance(qualification, Mapping) or not isinstance(binding, Mapping):
+            raise RuntimeIdentityError("Letta qualification and worker binding are required")
+        try:
+            target = FrozenMemoryObjectKey.model_validate(
+                task.target_objects[0].model_dump(mode="python"), strict=True
+            )
+            project_root = binding["project_root"]
+            python_executable = binding["python_executable"]
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            raise RuntimeIdentityError("Letta production task or worker binding is incomplete") from exc
+        configuration = build_letta_adapter_configuration(
+            run_id="letta-qwen-prompted-" + task.task_id
+            if runner_args is not None
+            else "letta-main-track-" + task.task_id
+        )
+        if runner_args is not None:
+            self._adapter = _adapter_for_task(
+                runner_args, task, dict(binding), endpoint
+            )
+        else:
+            configuration_json = canonical_json_bytes(
+                configuration.model_dump(mode="json")
+            ).decode("utf-8")
+            command = build_worker_command(
+                python_executable, project_root, configuration_json
+            )
+            environment = safe_worker_environment(endpoint, Path(project_root))
+            bridge = JsonlSubprocessBridge(
+                command=command,
+                cwd=project_root,
+                environment=environment,
+                timeout_seconds=60.0,
+            )
+            self._adapter = LettaExternalAdapterV3(
+                bridge=bridge, configuration=configuration, target_objects=(target,)
+            )
+        self._task_id = task.task_id
+        self._namespace = "letta_main_track_" + task.task_id
+        self._target = target
+        self._closed = False
+        self.runtime_profile = ProductionRuntimeProfile()
+        self.runtime_profile.executable_calls += 1
+        hashes = qualification.get("hashes")
+        if not isinstance(hashes, Mapping):
+            raise RuntimeIdentityError("Letta qualification artifact hashes are missing")
+        closure = qualification.get("closure")
+        if not isinstance(closure, Mapping):
+            raise RuntimeIdentityError("Letta qualification closure is missing")
+        self.qualification = dict(qualification)
+        self.worker_binding = dict(binding)
+        self.identity = {
+            "manager_id": "letta_0_16_8_block_profile",
+            "adapter_id": "letta_0_16_8_block_profile",
+            "adapter_version": "memupdatebench-letta-adapter-v1",
+            "system_name": "letta_0_16_8_block_profile",
+            "system_version": "0.16.8",
+            "backend": "letta_block_profile",
+            "qualification_artifact_hashes": dict(hashes),
+            "qualification_hashes": dict(hashes),
+            "qualification_identity": {
+                "candidate_id": closure.get("candidate_id"),
+                "identity": closure.get("identity"),
+                "source": closure.get("source"),
+                "project_source": closure.get("project_source"),
+            },
+            "configuration_hash": compute_letta_configuration_hash(configuration),
+            "worker_runtime_binding": dict(binding),
+            "source_bindings": {
+                "qualification_runner_source_sha256": binding.get("runner_source_sha256"),
+                "worker_source_sha256": binding.get("worker_source_sha256"),
+                "manager_runner_source_sha256": _sha256_bytes(Path(__file__).read_bytes()),
+            },
+            "server_bootstrap_boundary": LETTA_SERVER_BOOTSTRAP_BOUNDARY,
+            "endpoint": endpoint,
+        }
+
+    @staticmethod
+    def _event_for_operation(event: Any, operation: str, value: Any, object_key: Any) -> Any:
+        target = object_key.canonical_id
+        operation = operation.lower()
+        if operation == "noop":
+            text = "No memory object changes."
+        elif operation == "delete":
+            logical = event.timestamp or "none"
+            effective = event.timestamp or "now"
+            text = (
+                f"Delete {target} [scope=object; enumerated_targets={target}; "
+                f"event_logical_time={logical}; effective_at={effective}]."
+            )
+        elif operation in {"add", "update"}:
+            text = f"{operation.title()} {target} with value {json.dumps(value, ensure_ascii=False, allow_nan=False)}."
+        else:
+            raise ValueError("Letta manager operation is invalid")
+        return event.model_copy(update={"raw_text": text, "normalized_text": text})
+
+    def reset(self, task: Any) -> None:
+        if task.task_id != self._task_id:
+            raise RuntimeIdentityError("Letta manager task binding mismatch")
+        self._adapter.reset(ResetRequestV3(namespace=self._namespace))
+
+    def ingest(self, event: Any, *, operation: str, value: Any, object_key: Any) -> Mapping[str, Any]:
+        visible = self._event_for_operation(event, operation, value, object_key)
+        return self._adapter.ingest_event(visible)
+
+    @staticmethod
+    def _entry(entry: Any, *, score: float = 0.0, rank: int = 1) -> dict[str, Any]:
+        return {
+            "entry_id": entry.entry_id,
+            "object_key": entry.object_key_candidate.model_dump(mode="json"),
+            "value": entry.value_candidate,
+            "content": entry.content,
+            "source_event_ids": list(entry.source_event_ids),
+            "score": score,
+            "rank": rank,
+            "version_metadata": dict(entry.raw_metadata),
+        }
+
+    def export_entries(self) -> Sequence[Mapping[str, Any]]:
+        return [self._entry(entry) for entry in self._adapter.export_entries().entries]
+
+    def retrieve(self, query: Any) -> Mapping[str, Any]:
+        result = self._adapter.retrieve(RetrievalRequestV3(query=query, k=16))
+        trace = result.trace
+        return {
+            "entries": [
+                self._entry(entry, score=score, rank=rank)
+                for entry, score, rank in zip(trace.retrieved_entries, trace.scores, trace.ranks)
+            ],
+            "context_order": trace.context_order,
+            "version_metadata": dict(trace.version_metadata),
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        first_error: BaseException | None = None
+        try:
+            self._adapter.reset(ResetRequestV3(namespace=self._namespace))
+        except BaseException as exc:
+            first_error = exc
+        try:
+            self._adapter.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        self._closed = True
+        if first_error is not None:
+            raise first_error
+
+
+LETTA_SERVER_BOOTSTRAP_BOUNDARY = (
+    "requires an already-running separately qualified loopback Letta server; "
+    "this runner does not start the server"
+)
+
+
+def _build_letta_block_profile_manager(
+    *, task: Any, qualification: Mapping[str, Any], binding: Mapping[str, Any], endpoint: str,
+    runner_args: Any | None = None,
+) -> LettaBlockProfileManager:
+    return LettaBlockProfileManager(
+        task=task, qualification=qualification, binding=binding, endpoint=endpoint,
+        runner_args=runner_args,
+    )
+
+
 def validate_qwen35_runtime_provenance(
     provenance: Mapping[str, Any], *, expected_runtime_receipt_sha256: str = QWEN_MODEL_RUNTIME_RECEIPT_SHA256
 ) -> dict[str, Any]:
@@ -470,12 +668,51 @@ def build_production_extractor_factory(args: RunnerArgs) -> Callable[[], Visible
     return factory
 
 
+def build_production_letta_manager_factory(args: RunnerArgs) -> Callable[[Any, Mapping[str, Any]], ExternalManager]:
+    required = {
+        "letta_qualification_root": getattr(args, "letta_qualification_root", None),
+        "letta_base_url": getattr(args, "letta_base_url", None),
+        "letta_python_executable": getattr(args, "letta_python_executable", None),
+        "letta_project_root": getattr(args, "letta_project_root", None),
+    }
+    missing = [name for name, value in required.items() if value is None or value == ""]
+    if missing:
+        raise RuntimeError(
+            "Letta production manager requires " + ", ".join(missing)
+        )
+    qualification = validate_qualification_artifacts(
+        Path(required["letta_qualification_root"])
+    )
+    if not isinstance(qualification, Mapping) or not isinstance(qualification.get("closure"), Mapping):
+        raise RuntimeIdentityError("Letta qualification closure is missing")
+    binding = validate_worker_runtime_binding(
+        required["letta_python_executable"],
+        required["letta_project_root"],
+        qualification["closure"],
+        expected_revision=getattr(args, "letta_expected_project_revision", None),
+    )
+    if not isinstance(binding, Mapping):
+        raise RuntimeIdentityError("Letta worker runtime binding is missing")
+    endpoint = validate_loopback_binding(
+        str(required["letta_base_url"]), qualification["closure"]
+    )
+
+    def factory(task: Any, cell: Mapping[str, Any]) -> ExternalManager:
+        if cell.get("manager_id") != "letta_0_16_8_block_profile":
+            raise RuntimeIdentityError("Letta block-profile manager specification mismatch")
+        manager = _build_letta_block_profile_manager(
+            task=task, qualification=qualification, binding=binding, endpoint=endpoint,
+            runner_args=args,
+        )
+        return manager
+
+    factory.production_bound = True
+    return factory
+
+
 def build_production_manager_factory(args: RunnerArgs) -> Callable[[Any, Mapping[str, Any]], ExternalManager]:
     if args.manager_kind == "letta":
-        raise RuntimeError(
-            "Letta production fixture path is not implemented; "
-            "use existing separate qualified Letta runner"
-        )
+        return build_production_letta_manager_factory(args)
     if not args.langmem_qualification:
         raise RuntimeError("production manager requires LangGraph qualification")
     qualification = _load_langgraph_qualification(
@@ -505,6 +742,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-snapshot-binding", type=Path)
     parser.add_argument("--langmem-qualification", type=Path)
     parser.add_argument("--langgraph-python-executable", type=Path)
+    parser.add_argument("--letta-qualification-root", type=Path)
+    parser.add_argument("--letta-base-url", help="Qualified loopback Letta URL; the runner never starts the server")
+    parser.add_argument("--letta-python-executable", type=Path)
+    parser.add_argument("--letta-project-root", type=Path)
+    parser.add_argument("--letta-expected-project-revision")
     parser.add_argument("--supported-limit", type=int)
     parser.add_argument("--allow-relocated-authenticated-inputs", action="store_true")
     return parser
@@ -524,6 +766,11 @@ class RunnerArgs:
     model_snapshot_binding: Path | None = None
     langmem_qualification: Path | None = None
     langgraph_python_executable: Path | None = None
+    letta_qualification_root: Path | None = None
+    letta_base_url: str | None = None
+    letta_python_executable: Path | None = None
+    letta_project_root: Path | None = None
+    letta_expected_project_revision: str | None = None
     supported_limit: int | None = None
     allow_relocated_authenticated_inputs: bool = False
 
