@@ -60,3 +60,17 @@ storage:              owned local ext4 temporary root
 This is state/retrieval evidence for direct Qdrant CRUD and provider-returned retrieval over two realistic-source trajectories. It is not prompted-answer accuracy, answer-model capability, semantic embedding quality, native answer quality, statistical independence beyond the two trajectories, or broad benchmark closure. The formal task releases remain immutable and retain `scientific_release_allowed=false`; this result is a separate downstream evidence root.
 
 Earlier v1–v12 attempts are retained as typed technical diagnostics. They are not accuracy zeros and are not merged into this result.
+
+## Logical evidence package
+
+The collected v13 result has a separate no-replace logical package:
+
+```text
+results/vnext/cross_domain_qdrant_evidence_package_20261001_v2
+package manifest SHA-256:
+3a4cf8b251b49cf19b2626b52cf4d7ee0471d50cd6c577bdb505bde73750267c
+```
+
+The package retains the authenticated result rows, summary, runtime, input bindings, HTTP accounting, source artifact index, collection audit and launcher/exit status. It does not copy raw NOAA/BEA source captures or task-release trees. Its metrics are descriptive counts over `cluster_unit=source_trajectory`, `cluster_n=2`; no confidence interval, broader independence claim, answer accuracy or scientific-release promotion is introduced.
+
+A pure validator rechecks the exact artifact/index/audit/source pins, both immutable formal-release bindings, public-task projection, normalized state/retrieval traces, cleanup, repeat equality and no-model boundary. The validator and package integration gate passed 95 tests with one Windows symlink-permission skip.
