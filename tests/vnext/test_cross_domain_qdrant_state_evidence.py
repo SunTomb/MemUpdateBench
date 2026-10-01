@@ -9,7 +9,7 @@ from scripts.vnext_package_cross_domain_qdrant_evidence import package_evidence
 from scripts.vnext_validate_cross_domain_qdrant_state import validate_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
-COLLECTED = ROOT / "results/vnext/cross_domain_state_collected_20260930_v13"
+COLLECTED = ROOT / "tests/vnext/fixtures/cross_domain_v13"
 BEA = ROOT / "data/vnext/family_h_cross_domain_bea_gdp/v1"
 NOAA = ROOT / "data/vnext/family_h_cross_domain_noaa/v1"
 EXPECTED_AUDIT = "5188cbbb7fbb3aacbf3a25994a75273060c9a2ab2857c180f3eacf7be3326eca"

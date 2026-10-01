@@ -1,0 +1,27 @@
+{
+  "audit_manifest_sha256": "6b34d43c46dce9a8464fa1a52e9bea5c95215ec87a273731af1a58d0f7a86110",
+  "candidate_index_sha256": "17d7d7785dbd7b6bd8afa705c3e4ecea6931cec8d056ec04c04967c925e727b1",
+  "candidate_status_preserved": "CANDIDATE_PENDING_HUMAN_REVIEW",
+  "capture_index_sha256": "d37a2a7a5ad5c0842fd1dae9846b3e2bb09264d2b238b31506b75766ff0be832",
+  "counts": {
+    "RELEASE_READY": 9
+  },
+  "decision_count": 9,
+  "decisions_sha256": "a0075eaeb2d81de1d3b039b525cfdd31243eb93f92999ab9ee13004f6f02d247",
+  "external_system_calls": 0,
+  "formal_task_release": false,
+  "generations": 0,
+  "model_loads": 0,
+  "note": "Review completion is recorded separately; candidate bytes and historical pending metadata are unchanged.",
+  "reviewer": "suntomb",
+  "reviewer_identity": "self-reported; not cryptographically authenticated",
+  "runtime_execution_authorized": false,
+  "schema": "memupdatebench.family-h.cross-domain-noaa-human-review-receipt.v1",
+  "scientific_release_allowed": false,
+  "snapshot_ready": 7,
+  "source_admission_ready": 1,
+  "source_capture_sha256": "773c28cdeae721fce84b66ba7bc26a31390cbbfb1020c93bd05614befa2d0aee",
+  "source_semantics": "one sequential weather trajectory, not statistically independent samples",
+  "status": "HUMAN_REVIEW_COMPLETE",
+  "surface_ready": 1
+}

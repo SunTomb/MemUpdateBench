@@ -25,6 +25,13 @@ from mub.vnext.scoring.registry_v3 import (
     validate_metric_registry_v3,
 )
 from mub.vnext.scoring.scorer_v3 import VerifiedScoringContextV3, score_task_v3
+from mub.vnext.scoring.native_multi_object import (
+    NativeMetricStatusV3,
+    NativeMetricSupportV3,
+    NativeMultiObjectScoreV3,
+    score_native_multi_object,
+    score_native_multi_object_v3,
+)
 
 __all__ = [
     "ALL_TASK_FAMILIES",
@@ -46,5 +53,10 @@ __all__ = [
     "primary_failure",
     "score_task",
     "score_task_v3",
+    "NativeMetricStatusV3",
+    "NativeMetricSupportV3",
+    "NativeMultiObjectScoreV3",
+    "score_native_multi_object",
+    "score_native_multi_object_v3",
     "validate_metric_registry_v3",
 ]

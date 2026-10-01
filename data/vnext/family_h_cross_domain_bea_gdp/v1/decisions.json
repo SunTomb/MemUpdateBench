@@ -1,0 +1,38 @@
+{
+  "candidate_index_sha256": "2a12b35dd2972f98d6b90f8cb9bfea46a60924e910ac94cab37c79756a6f86cd",
+  "decisions": [
+    {
+      "audit_id": "source-bea-gdp-2024q4",
+      "binding_sha256": "298e2217a69067b561f2145e9e35780484e10989a8b9ed5fbc35b7e4c7523205",
+      "decision": "RELEASE_READY",
+      "rationale": "核对三份官方 BEA release vintage、source group 与 same-quarter revision 语义；policy evidence SHA-256 e49a712b7e0ec2e8946e256315f4af675af72c29c8d9e019c46626fa56b5a79e 对应 POLICY_VERIFIED_PUBLIC_DOMAIN_WITH_ATTRIBUTION_BOUNDARY。派生记录保留 Source: U.S. Bureau of Economic Analysis、non-endorsement 边界且不复制原始 XLSX/PDF。"
+    },
+    {
+      "audit_id": "snapshot-advance",
+      "binding_sha256": "2430927bdfd821be240e366945abf9d7c293eeac751801904edab31a4dee1020",
+      "decision": "RELEASE_READY",
+      "rationale": "核对官方 advance release（2025-01-30）及 XLSX 文件哈希；Table 1、row 5、column 21 为 2024-Q4 Real GDP、Q3→Q4 seasonally adjusted annual rate、percent，报告值为一位小数 2.3。"
+    },
+    {
+      "audit_id": "snapshot-second",
+      "binding_sha256": "1cce23a059879a3cac62dd700a57adde3390c34922d72fc81cd3c2a80f1ae50d",
+      "decision": "RELEASE_READY",
+      "rationale": "核对官方 second estimate release（2025-02-27）及 XLSX 文件哈希；Table 1、row 5、column 21 对应同一 2024-Q4 Real GDP annualized percent measure，报告值为 2.3。该新 release 即使四舍五入后与 advance 相同，仍被正确保留为 UPDATE 而非 NOOP。"
+    },
+    {
+      "audit_id": "snapshot-third",
+      "binding_sha256": "00af6616f4cf11a767287151461750b3e296fecfdefd7782098f1d160635af28",
+      "decision": "RELEASE_READY",
+      "rationale": "核对官方 third estimate PDF/XLSX（2025-03-27）及文件哈希；Table 1、row 5、column 21 对应 2024-Q4 Real GDP、Q3→Q4 seasonally adjusted annual rate、percent，报告值为 2.4，且修订说明与 third vintage 一致。"
+    },
+    {
+      "audit_id": "surface-bea-gdp-2024q4",
+      "binding_sha256": "2be67c593416391fde4a05b545fc627a007646d9c880f9b44e8e35f34acb3d40",
+      "decision": "RELEASE_READY",
+      "rationale": "核对完整 generated surface binding：canonical_task_sha256 48413be5afef5ad05b058ec927a61490b134c452785529d66581335c4820de98、semantic_task_sha256 bee4ec672a8a4828ef30768f1d605c1024133194ccc28104933cc23cc4dfb3fb、event_count 3 及 query。事件为同一 object 的 ADD 2.3、UPDATE 2.3、UPDATE 2.4；answer schema 为 number，最终值 2.4，且未提前泄漏 third value。"
+    }
+  ],
+  "reviewer": "suntomb",
+  "schema": "family-h-cross-domain-bea-candidate-v1-human-decisions-v1",
+  "status": "COMPLETED"
+}

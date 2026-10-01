@@ -1,0 +1,3 @@
+Source: U.S. Bureau of Economic Analysis.
+This candidate contains normalized facts from dated BEA releases; it is not an official BEA product.
+Use is subject to the captured BEA linking policy and any third-party material terms.

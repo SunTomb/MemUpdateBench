@@ -4,6 +4,18 @@ MemUpdateBench is a focused diagnostic toolkit for repeated same-slot memory upd
 
 The current project direction is reviewer-risk driven. Strict reviews in `docs/critical_review.md` and `docs/critical_review_v3.md` narrowed the target to a controlled benchmark plus empirical analysis paper: final-state reliability, stale same-slot burden, memory compactness, and answer robustness should be reported separately.
 
+## Workspace and reproducibility
+
+See [Workspace Layout](docs/WORKSPACE_LAYOUT.md) for the supported source layout, protected releases, private archives and the remaining primary-checkout migration boundary. One-off deployment helpers and unfinished research are preserved in a local, hash-verified archive rather than mixed into the source snapshot.
+
+The checkout includes the reviewed NOAA/BEA task bytes and a screened historical v13 regression fixture. These are inputs to offline tests, not new benchmark runs. Source/config/provider prerequisites are versioned, and authenticated fixture bytes are protected from newline conversion.
+
+```bash
+python -m pytest -q tests/maintenance tests/vnext/test_run_cross_domain_state.py tests/vnext/test_run_cross_domain_qdrant_state.py tests/vnext/test_stage_cross_domain_state.py tests/vnext/test_cross_domain_qdrant_state_evidence.py
+```
+
+No Qdrant service, API model or GPU is started by this offline gate. Historical Core/model integration tests may need separately provisioned immutable inputs.
+
 ## Core claim
 
 Append-only memory can preserve final-state recoverability under oracle slot lookup, but repeated same-slot updates create stale memory burden. Under slot-conditioned answering, that stale burden causes answer collapse. Compact learned managers reduce stale burden, but can miss final updates or remain incompletely compact. P6.5 diagnostics further show that even perfect clean state can fail under prompted answering, so state, retrieval context, and answer generation must be analyzed as separate failure layers.

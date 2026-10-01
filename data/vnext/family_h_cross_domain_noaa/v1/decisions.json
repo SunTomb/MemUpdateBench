@@ -1,0 +1,62 @@
+{
+  "schema": "family-h-cross-domain-noaa-candidate-v2-human-decisions-v1",
+  "candidate_index_sha256": "17d7d7785dbd7b6bd8afa705c3e4ecea6931cec8d056ec04c04967c925e727b1",
+  "reviewer": "suntomb",
+  "status": "COMPLETED",
+  "decisions": [
+    {
+      "audit_id": "source-noaa-beryl",
+      "binding_sha256": "a53ad66ef4f6c8324a56b7f76f58a6974d9221164e6e1e1d74d056ff5478e537",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked the pinned NHC/NWS Beryl AL022024 archive identity, capture and disclaimer hashes, public-domain limits, source group, and non-endorsement boundary."
+    },
+    {
+      "audit_id": "snapshot-001",
+      "binding_sha256": "72c58680a589928f7277616f658d5becf5537ba4688ddb05f0fbf685d3bc492e",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked corrected advisory 001: 2100 UTC, 35 MPH, matching URL, raw hash, summary anchor, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "snapshot-002",
+      "binding_sha256": "b79fdc89db876a1b56c4088578d91a327211b62c62324fc531fc07d08942e726",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked advisory 002: 0300 UTC, 40 MPH, matching URL, raw hash, chronological anchor, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "snapshot-003",
+      "binding_sha256": "60f4c1620dc2e988c2182bf65715f03c21f0ba89ea4a84e7c5c22a11bef85744",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked advisory 003: 0900 UTC, 50 MPH, matching URL, raw hash, chronological anchor, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "snapshot-003a",
+      "binding_sha256": "0341201f9a6a640a395c29ad5905f4f90cd1670243286d25a475424986c4bcee",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked corrected intermediate advisory 3A: 1200 UTC, 60 MPH, distinct URL/time/raw hash, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "snapshot-004",
+      "binding_sha256": "3068dbf4e8018fd0703acc11602709cd754b490c170284f27b8f74a7da130188",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked advisory 004: 1500 UTC, 65 MPH, matching URL, raw hash, chronological anchor, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "snapshot-004a",
+      "binding_sha256": "1bfd657ae476a850baa75a0ef762ce85d1edbd05e0581f4962640a61bb25d0a7",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked distinct intermediate advisory 4A: 1800 UTC, 65 MPH; retained as a new equal-value observation with its own URL, time, and raw hash."
+    },
+    {
+      "audit_id": "snapshot-005",
+      "binding_sha256": "5913ea321c65209562e9f12c39172a2c8b97f35e2be6ae8828cc47fbe2a896a5",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked advisory 005: 2100 UTC, 75 MPH, matching URL, raw hash, final chronological anchor, and fixed canonical weather object."
+    },
+    {
+      "audit_id": "surface-noaa-beryl",
+      "binding_sha256": "d52803df6cdab94af2e2804503577ab27426f622b1263da6217d7a5cc12fc4e5",
+      "decision": "RELEASE_READY",
+      "rationale": "Checked all seven structured JSON events: ADD 35 followed by UPDATE 40/50/60/65/65/75, one fixed object key, complete anchors, numeric MPH values, current query, final gold value 75, and complete task binding."
+    }
+  ]
+}

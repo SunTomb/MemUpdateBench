@@ -1,3 +1,10 @@
+# Local, non-versioned workspace material
+/_local/
+/external/
+/.pytest_cache/
+/.*-venv/
+/.mub-vnext-publish-*.lock
+
 # Python
 __pycache__/
 *.py[cod]
@@ -34,8 +41,10 @@ data/
 *.json
 !tests/vnext/fixtures/legacy/*.csv
 !tests/vnext/fixtures/legacy/*.json
+!tests/vnext/fixtures/family_h/*.json
 !schemas/vnext/*.schema.json
 !schemas/legacy/*.schema.json
+!configs/vnext/main_track_family_h_realistic_source_v1.json
 !agent_meta.json
 !memory_store.json
 !diagnostics.json

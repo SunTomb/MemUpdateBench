@@ -1,0 +1,18 @@
+{
+  "artifacts": [
+    {
+      "bytes": 3328,
+      "path": "decisions.json",
+      "sha256": "a0075eaeb2d81de1d3b039b525cfdd31243eb93f92999ab9ee13004f6f02d247"
+    },
+    {
+      "bytes": 1325,
+      "path": "review_completion_receipt.json",
+      "sha256": "df3c812cc4c0c0b42ed8385c7604237375c12058e37507d5f37c04392faea6f3"
+    }
+  ],
+  "formal_task_release": false,
+  "schema": "memupdatebench.family-h.cross-domain-noaa-human-review-index.v1",
+  "scientific_release_allowed": false,
+  "status": "HUMAN_REVIEW_COMPLETE"
+}
