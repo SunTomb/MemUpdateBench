@@ -8,6 +8,8 @@ data/vnext/family_h_cross_domain_noaa/v1/** -text whitespace=cr-at-eol
 results/vnext/cross_domain_qdrant_evidence_package_20261001_v2/** -text
 tests/vnext/fixtures/cross_domain_v13/** -text
 configs/vnext/main_track_family_h_realistic_source_v1.json -text
+configs/vnext/post_core/cross_domain_answer_replay_v1.json text eol=lf
+results/vnext/cross_domain_answer_replay_20261002_v2/** -text
 
 tests/vnext/fixtures/legacy/*.json text eol=lf
 tests/vnext/fixtures/legacy/*.csv text eol=lf

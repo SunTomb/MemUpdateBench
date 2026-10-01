@@ -4323,3 +4323,43 @@ The parent inventory identified 16 whole-root staging/source-bundle candidates a
 Commands and policies are documented in `docs/WORKSPACE_LAYOUT.md`. The next physical-workspace action requires a session opened in the primary checkout; the archive command rechecks sources and refuses overwrite, changed bytes, reparse components, Git roots and protected evidence.
 
 Validation used an export of staged tree `5092dfdfd6413f0cab2b17f113234bd14ef2fc80`, not the dirty development directory. Import-origin checks passed. The clean export ran 249 tests successfully and explicitly skipped 32 original-capture/review integration cases plus two Windows symlink cases. With the retained original capture inputs, the same selected gate passed 281 tests with two Windows symlink skips. Frozen NOAA/BEA release indexes and all nine v13 fixture files revalidated byte-for-byte, and all 127 archived roots rehashed successfully. Documentation-only additions record these results after that source verification. No runtime/model or new scientific experiment was executed.
+
+## Resume research: frozen cross-domain answer readout preparation (2026-10-02)
+
+After the user's primary-directory organization, research resumed from the completed NOAA/BEA Qdrant v13 retrieval evidence. This phase deliberately does not re-run manager mutation/retrieval or infer GPU/model authorization from the earlier CPU canary. It freezes an offline answer-only replay contract: all four existing retrieval records, two source trajectories/tasks, two repetitions per task, and zero new model/tokenizer/provider/database/GPU/network execution.
+
+New files are `scripts/vnext_prepare_cross_domain_answer_replay.py`, `configs/vnext/post_core/cross_domain_answer_replay_v1.json`, `tests/vnext/test_cross_domain_answer_replay.py`, and `docs/vnext/cross_domain_answer_replay.md`. The archived three-task software Family H runner was used only as a pattern; it was not restored wholesale or reactivated. This implementation uses the existing strict-v3 renderer/parser and immutable formal-release readers. The canonical policy SHA-256 is `30df8bdc52e5f0dd48f7c53cecbb07b46f032c6eae81b2478c0969f9371d681a`.
+
+Admission authenticates the recorded v13 artifact/audit/runtime/release bindings, then independently recomputes the 20 historical state matches, 20 source-event links, zero stale entries, four final states and four retrieval matches from normalized provider entries and frozen reference data. The model-facing projection contains only public query text/schema and actual retrieved entries. It never substitutes an exported final state or injects gold/selector metadata. Only `point_id_derivation` and `version_index` are admitted as entry metadata; provider order is preserved. Scores/ranks are bound in the trace, not added to the canonical prompt. Exact prompt hashes are recorded without storing complete prompts or any raw output.
+
+The number-answer policy reuses `memupdatebench.answer-model-parser.v3`: strict JSON envelopes, finite numeric answers, no prose/fence/unit cleanup, and typed exact equality. In particular `75` differs from `75.0`. Completed malformed outputs or abstentions are incorrect completed readouts; technical failure, unsupported and not-run states remain null and excluded. The helper is explicitly descriptive answer-only scoring, not a fabricated canonical ScoreRecordV3. No synthetic test controls are reported as real model results.
+
+The no-replace preparation root is:
+
+```text
+results/vnext/cross_domain_answer_replay_20261002_v2
+index SHA-256: 1112a371f07326130634715cfc15fe656aa11a48539f2d16b06f39c400f9e687
+status: PREPARED_NOT_EXECUTED
+prospective_requests: 4
+execution_authorized: false
+model_runtime_status: NOT_QUALIFIED_FOR_THIS_REPLAY
+native_answer_status: UNSUPPORTED
+answer_metrics: null
+scientific_release_allowed: false
+```
+
+It contains exactly `manifest.json`, `plans.jsonl`, `validation.json` and `index.json`, and was reopened byte-for-byte against recomputed inputs. The config's Qwen3.5-9B pin is a prospective model/decoding intent only. No model snapshot, tokenizer, chat template, token budget or current device has been qualified by this step. A future live readout requires those bindings and an explicit execution boundary; no blanket authorization is encoded in this packet.
+
+Verification commands:
+
+```bash
+python -B -m pytest -q -p no:cacheprovider tests/vnext/test_cross_domain_answer_replay.py tests/vnext/test_cross_domain_qdrant_state_evidence.py tests/vnext/test_run_cross_domain_state.py tests/vnext/test_run_cross_domain_qdrant_state.py tests/vnext/test_stage_cross_domain_state.py tests/vnext/test_promote_family_h_cross_domain_bea.py tests/vnext/test_core_task12_execution.py
+python -B scripts/vnext_prepare_cross_domain_answer_replay.py --output-root results/vnext/cross_domain_answer_replay_20261002_v2
+python -B scripts/vnext_prepare_cross_domain_answer_replay.py --output-root results/vnext/cross_domain_answer_replay_20261002_v2 --verify-index-sha256 1112a371f07326130634715cfc15fe656aa11a48539f2d16b06f39c400f9e687
+```
+
+Result: **152 passed, three Windows symlink-permission skips**; Python 3.10 syntax check passed. Bounded read-only review identified mutable in-memory bundle and empty verification-hash issues; regression-first fixes close both. User edits to `docs/WORKSPACE_LAYOUT.md` are preserved and excluded from this research change. No frozen result/release/audit root was changed. Four future answers over two single-entry clean contexts would still be only a bounded readout/format check, not broad benchmark closure or evidence of stale-conflict robustness.
+
+An isolated staged export caught a portability defect before commit: the old working copies of ten unchanged Python source files still used CRLF, whereas Git already held LF. The v1 preparation's source-byte pins were therefore local-only. Those old bytes and policy were archived under `_local/archive/answer_replay_windows_v1/`; the original v1 output remains an unchanged, superseded diagnostic. Working source bytes were matched to the already committed LF files after verifying that newline encoding was the only difference, and the separate v2 preparation above binds those portable identities. No frozen data, v13 source snapshot, model or release bytes were rewritten. The initial long-path Windows export was also left as an unsuccessful local diagnostic; subsequent exports use short private paths.
+
+The portable v2 staged tree `fae761d68b5242a1137e84d4a8bf7adba49fd753` passed exact preparation rederivation and import-origin checks from an isolated checkout with `PYTHONPATH` unset. Its targeted answer/evidence gate passed 46 tests with two Windows symlink skips. The final full selected gate on the portable source passed 152 tests with three Windows symlink skips. Validation against the retained original collected root independently produced the same preparation index as the committed fixture. Later edits only append these verification results to documentation; the authenticated implementation/configuration/package bytes are unchanged.

@@ -1,0 +1,54 @@
+{
+  "schema": "memupdatebench.cross-domain.answer-replay-policy.v1",
+  "release_pins": {
+    "bea": "5525357436510b0c4e89efa53cdb6caf551c59234171c71bb97563e4c641790a",
+    "noaa": "738f46932d8e2e8c26da0a2820dc67c7b0bad9aa43659f4be266f22f0fc8ee3f"
+  },
+  "evidence_index_sha256": "2b2b9dbfd7703f0a91cc66a9267344837f4a892bfac89e5e2db25a00b836a60a",
+  "collection_audit_sha256": "5188cbbb7fbb3aacbf3a25994a75273060c9a2ab2857c180f3eacf7be3326eca",
+  "historical_source_manifest_sha256": "145a19b059aa3373de39e09a2581865e9910816739c530da09c20e3deb9a8c01",
+  "renderer_and_parser": {
+    "module": "mub.vnext.runtime.answer_model_v3",
+    "source_sha256": "4351b84a6b387e9242cd6c31e26d0455024f2101dc17dc2867887c38cd961195",
+    "parser_version": "memupdatebench.answer-model-parser.v3",
+    "entry_metadata_policy": "point_id_derivation_and_version_index_only",
+    "order": "provider_order",
+    "scores_and_ranks": "retained_in_trace_not_serialized_by_renderer",
+    "gold_target_selector_injection": false
+  },
+  "repetitions": {
+    "selection": "all_four_frozen_retrieval_records",
+    "source_order": ["bea", "noaa"],
+    "indices": [0, 1],
+    "cluster_unit": "source_trajectory",
+    "cluster_n": 2,
+    "independent_samples_claimed": false
+  },
+  "scoring": {
+    "answer_schema": "number",
+    "metric": "typed_json_exact_match",
+    "int_float_equal": false,
+    "unit_stripping": false,
+    "code_fence_stripping": false,
+    "numeric_tolerance": null,
+    "technical_failure_policy": "null_not_zero",
+    "unsupported_policy": "null_excluded",
+    "canonical_score_record": false,
+    "confidence_intervals": "NOT_ESTIMATED"
+  },
+  "prospective_model_intent": {
+    "model_id": "Qwen/Qwen3.5-9B",
+    "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+    "runtime_status": "NOT_QUALIFIED_FOR_THIS_REPLAY",
+    "chat_template_sha256": null,
+    "device_binding": null,
+    "prospective_requests": 4,
+    "max_new_tokens_per_request": 64,
+    "seed": 0,
+    "do_sample": false,
+    "num_beams": 1,
+    "execution_authorized": false
+  },
+  "scientific_release_allowed": false,
+  "benchmark_accuracy_claimed": false
+}
