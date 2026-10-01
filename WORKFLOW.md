@@ -4363,3 +4363,38 @@ Result: **152 passed, three Windows symlink-permission skips**; Python 3.10 synt
 An isolated staged export caught a portability defect before commit: the old working copies of ten unchanged Python source files still used CRLF, whereas Git already held LF. The v1 preparation's source-byte pins were therefore local-only. Those old bytes and policy were archived under `_local/archive/answer_replay_windows_v1/`; the original v1 output remains an unchanged, superseded diagnostic. Working source bytes were matched to the already committed LF files after verifying that newline encoding was the only difference, and the separate v2 preparation above binds those portable identities. No frozen data, v13 source snapshot, model or release bytes were rewritten. The initial long-path Windows export was also left as an unsuccessful local diagnostic; subsequent exports use short private paths.
 
 The portable v2 staged tree `fae761d68b5242a1137e84d4a8bf7adba49fd753` passed exact preparation rederivation and import-origin checks from an isolated checkout with `PYTHONPATH` unset. Its targeted answer/evidence gate passed 46 tests with two Windows symlink skips. The final full selected gate on the portable source passed 152 tests with three Windows symlink skips. Validation against the retained original collected root independently produced the same preparation index as the committed fixture. Later edits only append these verification results to documentation; the authenticated implementation/configuration/package bytes are unchanged.
+
+## Cross-domain answer execution-layer engineering gate (2026-10-02)
+
+The next bounded implementation adds `scripts/vnext_run_cross_domain_answer_replay.py`, `tests/vnext/test_cross_domain_answer_execution.py`, and `docs/vnext/cross_domain_answer_execution.md`. It consumes the unchanged v2 preparation and tests the four-request lifecycle without restoring the archived model runner or starting a real backend. The production CLI remains fail-closed and does not construct even a supplied factory. The explicit injected test API is labeled `injected_test_only`; a callback returning from `load()` is not proof of model loading or resource cleanup, so its model/tokenizer/GPU/network/provider/child-process totals remain null once construction is attempted.
+
+The runner separates public prompt requests from task/gold scoring inputs. It checks four template/token bindings before a single load callback and again after loading, then admits at most four generation callbacks with 64 new tokens each (256 total), seed 0, greedy decoding and one beam. It persists a hash-chained intent journal before calls, records actual callback entry separately, preserves known/unknown token usage, and stops future requests on a technical failure. Completed malformed answers remain incorrect test controls; technical/not-run scores are null. Cleanup is always attempted for a returned handle, even after partial load, unavailable clocks or journal-write failures. Aggregate test controls are withheld when execution or cleanup is incomplete.
+
+Timing budgets are explicitly cooperative test-only checks (prepare 30 s, load 120 s, generation 60 s, close 30 s). They do not cancel a blocking callback. Production still requires an owned-process hard watchdog, a qualified real backend, independent tokenizer/runtime bindings and current-device authorization. The 4,096-token test admission cap is not a measured model context limit. Neither the current Continue instruction nor the old CPU Qdrant canary promotes these missing gates.
+
+Reopening validates artifact membership/hashes, canonical journal-chain links, terminal rows/lifecycle, four distinct planned coordinates, input-binding consistency, callback-versus-intent counts, one-attempt/token limits, resource-null policy and recomputed usage/test-control summaries. A rehashed package with contradictory completion, cleanup, authorization, cluster or usage claims is rejected. Raw prompts, raw outputs, parsed answer values, private exceptions and credentials are not persisted.
+
+The default CLI was exercised once against a new root and returned the intended nonzero exit code 2:
+
+```text
+results/vnext/cross_domain_answer_admission_20261002_v1
+index SHA-256: 4caae501ffcf2d40c49311f4b5adcea5bc00e5533177c5b54150b092b12f515b
+status: BLOCKED
+rows: four NOT_RUN rows
+constructor/load/generation/close attempts: 0 / 0 / 0 / 0
+model/tokenizer/provider/GPU/network calls: 0
+answer_metrics: null
+test_control_summary: null
+```
+
+This is an execution-readiness receipt, not a model failure or accuracy zero. It was reopened successfully. The v13 manager result, two formal releases and the v2 prompt-preparation package were not modified. The only remaining unrelated worktree change is the user's workspace-layout documentation, which is excluded from this engineering unit.
+
+Verification command:
+
+```bash
+python -B -m pytest -q -p no:cacheprovider tests/vnext/test_cross_domain_answer_execution.py tests/vnext/test_cross_domain_answer_replay.py tests/vnext/test_core_answer_model_v3.py tests/vnext/test_cross_domain_qdrant_state_evidence.py
+```
+
+Result: **102 passed, two Windows symlink-permission skips**. The first 22 control-path tests passed; bounded source review then identified four classes of failure-handling/verification gaps. Sixteen regression cases reproduced those issues before fixes; the final gate includes additional cleanup-persistence and public-input-only checks. No real model/tokenizer was loaded, no Qdrant/provider run was started, and no new scientific answer metric is claimed.
+
+The staged tree `b00a5f536659f3e13d649a4fb02ca6766ee8e16f` was exported to a new short private directory with `PYTHONPATH` unset. Import-origin checks, exact preparation rederivation and blocked-execution receipt/source binding all passed. Fifteen selected execution/verifier tests passed, with 25 tests deliberately deselected in this extra isolated-checkout gate; the full selected regression counts above remain separate. Final documentation-only updates record this verification without changing authenticated executor or preparation bytes.
