@@ -42,6 +42,7 @@ data/
 !tests/vnext/fixtures/legacy/*.csv
 !tests/vnext/fixtures/legacy/*.json
 !tests/vnext/fixtures/family_h/*.json
+!tests/vnext/fixtures/cross_domain_qwen_blocked/**/*.json
 !schemas/vnext/*.schema.json
 !schemas/legacy/*.schema.json
 !configs/vnext/main_track_family_h_realistic_source_v1.json

@@ -174,9 +174,29 @@ def template_binding(request, prepared):
             'input_tokens':prepared.input_tokens}
 
 
+def backend_generation_count(backend):
+    value = getattr(backend, 'observations', {}).get('generation_attempts')
+    if value is None:
+        return None
+    require(type(value) is int and 0 <= value <= 4, 'invalid backend generation count')
+    return value
+
+
+def generation_accounting(observed, *, worker_launched):
+    keys = ('generation_attempts', 'generation_intents', 'generation_callback_entries')
+    if observed is None:
+        return dict.fromkeys(keys, None if worker_launched else 0)
+    actual = observed.get('backend_observations', {}).get('generation_attempts')
+    require(actual is None or type(actual) is int and 0 <= actual <= 4,
+            'invalid observed generation count')
+    return {'generation_attempts':actual,
+            'generation_intents':sum(row['attempt_intent'] for row in observed['rows']),
+            'generation_callback_entries':sum(row['callback_entries'] for row in observed['rows'])}
+
+
 def perform_readouts(requests, bindings, backend, emit, revalidate, after_load=lambda:None):
     require(len(requests)==len(bindings)==4,'exactly four readouts required')
-    rows=[{'request_id':r.request_id,'status':'NOT_RUN','attempts':0,'output_sha256':None,
+    rows=[{'request_id':r.request_id,'status':'NOT_RUN','attempts':0,'attempt_intent':0,'callback_entries':0,'output_sha256':None,
            'input_tokens':None,'generated_tokens':None,'prediction':None,'reason_code':'not_attempted'} for r in requests]
     life={'load_intent':0,'load_completed':False,'close':None,'error_phase':None,'error_type':None}
     phase='before_load'; active=None
@@ -189,8 +209,15 @@ def perform_readouts(requests, bindings, backend, emit, revalidate, after_load=l
             require(template_binding(request,prepared)==binding,'loaded tokenizer differs from preflight')
             revalidate(); phase='before_generation'
             emit({'phase':phase,'request_id':request.request_id,'attempt_intent':1})
-            row['attempts']=1; row['status']='ATTEMPTED'; started=time.monotonic()
-            result=backend.generate(prepared,max_new_tokens=64,seed=0,do_sample=False,num_beams=1)
+            row['attempt_intent']=1; row['status']='ATTEMPTED'; started=time.monotonic()
+            before=backend_generation_count(backend)
+            row['callback_entries']=1
+            try:
+                result=backend.generate(prepared,max_new_tokens=64,seed=0,do_sample=False,num_beams=1)
+            finally:
+                after=backend_generation_count(backend)
+                row['attempts']=after-before if before is not None and after is not None else None
+                require(row['attempts'] is None or row['attempts'] in (0,1), 'generation counter drift')
             require(type(result.generated_tokens) is int and 0<=result.generated_tokens<=64
                     and type(result.input_tokens) is int and result.input_tokens==binding['input_tokens'], 'generation usage contract mismatch')
             require(type(result.text) is str and len(result.text.encode())<=16384,'generation text size mismatch')
@@ -515,8 +542,7 @@ def supervise(args):
                            'format_valid':sum(r['format_valid'] is True for r in scores)} if status=='COMPLETE' else None),
         'model_loads_completed':(int(observed['lifecycle']['load_completed']) if observed else
                                  None if counters['load_worker_launches'] else 0),
-        'generation_attempts':(sum(r['attempts'] for r in observed['rows']) if observed else
-                               None if counters['load_worker_launches'] else 0),
+        **generation_accounting(observed, worker_launched=bool(counters['load_worker_launches'])),
         'cluster_unit':'source_trajectory','cluster_n':2,'prospective_requests':4,'native_answer':False,
         'scientific_release_allowed':False,'benchmark_accuracy_claimed':False,
         'claim_boundary':'separate Qwen readout of four frozen single-entry contexts from two trajectories; no native Qdrant or broad benchmark claim',

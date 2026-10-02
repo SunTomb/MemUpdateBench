@@ -88,6 +88,8 @@ The no-replace gate receipt is `results/vnext/cross_domain_answer_admission_2026
 
 It was reopened through the artifact and semantic verifier. All four rows are `NOT_RUN`, with zero callback attempts, zero model/tokenizer/provider/GPU/network calls and null scores. No fake successful answers are included in this production admission record.
 
-## Remaining live gates
+## Live boundary when this engineering gate was recorded
 
-A real four-request Qwen3.5-9B readout still requires explicit current device/operation authorization, replay-specific source/model/runtime qualification, an independently bound tokenizer/chat-template preflight, a qualified production backend and an owned-process hard watchdog/unload check. Historical Qwen runs and the earlier CPU-only Qdrant authorization do not satisfy these gates. The implementation provides no free-form flag or receipt string that can manufacture live authorization.
+At this gate, a real four-request Qwen3.5-9B readout still required explicit current device/operation authorization, replay-specific source/model/runtime qualification, an independently bound tokenizer/chat-template preflight, a qualified production backend and an owned-process hard watchdog/unload check. Historical Qwen runs and the earlier CPU-only Qdrant authorization did not satisfy these gates. This test-only implementation provides no free-form flag or receipt string that can manufacture live authorization.
+
+A separately authorized concrete backend and CPU validation were subsequently implemented in [Bounded Cross-Domain Qwen Readout](cross_domain_qwen_readout.md). The live trial remains resource-blocked with zero model loads/generations. This does not rewrite the historical gate, enable this module's production path, or establish answer accuracy.

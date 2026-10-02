@@ -116,6 +116,27 @@ def test_worker_failure_never_retries_and_always_closes(failure):
     assert len(result['rows'])==4
 
 
+def test_generation_admission_failure_is_intent_not_actual_model_attempt():
+    class AdmissionFailure(Fake):
+        def generate(self, prepared, **settings):
+            raise ValueError('device changed before model.generate')
+    backend = AdmissionFailure(); requests, bindings = requests_and_binding(backend)
+    result = run.perform_readouts(requests, bindings, backend, lambda event:None, lambda:None)
+    assert result['status'] == 'BLOCKED' and backend.closed
+    first = result['rows'][0]
+    assert first['attempt_intent'] == first['callback_entries'] == 1
+    assert first['attempts'] == 0
+    assert run.generation_accounting(result, worker_launched=True) == {
+        'generation_attempts':0, 'generation_intents':1, 'generation_callback_entries':1}
+
+
+def test_generation_accounting_preserves_unknown_after_worker_loss():
+    assert run.generation_accounting(None, worker_launched=True) == {
+        'generation_attempts':None, 'generation_intents':None, 'generation_callback_entries':None}
+    assert run.generation_accounting(None, worker_launched=False) == {
+        'generation_attempts':0, 'generation_intents':0, 'generation_callback_entries':0}
+
+
 def test_lifecycle_not_published_as_complete_without_process_and_gpu_cleanup():
     worker={'status':'WORKER_COMPLETE','rows':[]}
     good={'worker_exited':True,'owned_group_empty':True,'gpu_pid_absent':True,'temporary_root_removed':True}

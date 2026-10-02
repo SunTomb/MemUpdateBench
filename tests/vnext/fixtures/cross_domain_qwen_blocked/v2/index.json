@@ -1,0 +1,1 @@
+{"artifacts":[{"bytes":1223,"path":"authorization_profile.json","sha256":"69958f6558b55418e2890bb73b3c73f39af9f3c3be7caec0421eb1331801df0e"},{"bytes":1325,"path":"summary.json","sha256":"858c1a1a65f38aa5f003a69ca6a0c94c2fbc1caca429cae5261ab8ebbd313c5e"}],"schema":"memupdatebench.cross-domain.qwen-readout-index.v1","scientific_release_allowed":false,"status":"BLOCKED"}
