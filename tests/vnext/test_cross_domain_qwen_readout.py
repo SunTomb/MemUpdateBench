@@ -11,18 +11,69 @@ from scripts import vnext_run_cross_domain_qwen_readout as run
 from scripts.vnext_run_cross_domain_answer_replay import PreparedInput, GenerationOutput, PublicRequest
 
 
+def test_tang1_gpu1_shared_admission_is_explicit_and_non_destructive():
+    assert run.NODE_NAME == 'Tang1'
+    assert run.GPU_NAME == 'NVIDIA A40'
+    assert run.GPU_INDEX == 1
+    assert run.GPU_UUID == 'GPU-479aa50d-c1ce-0bc5-e91e-770c97243178'
+    assert run.RUN_ID == 'cross_domain_qwen_readout_20261009_tang1gpu1d'
+    assert run.TEMP_ROOT == Path('/tmp/mub-cross-domain-qwen-20261009_tang1gpu1d')
+    row = {'index':1, 'uuid':run.GPU_UUID, 'name':'NVIDIA A40', 'free_mib':38158}
+    foreign = [{'uuid':run.GPU_UUID, 'pid':2154260}]
+    observed = run.check_device_rows('Tang1', [row], foreign)
+    assert observed['foreign_process_count'] == 1
+    assert run.profile('1'*64)['shared_gpu_processes_allowed'] is True
+
+
+def test_shared_admission_waits_only_for_transient_low_headroom():
+    observations = iter([ValueError('insufficient current memory headroom'),
+                          ValueError('insufficient current memory headroom'),
+                          {'node':'Tang1','uuid':run.GPU_UUID,'free_mib':38158}])
+    sleeps = []
+    def observe():
+        value = next(observations)
+        if isinstance(value, BaseException): raise value
+        return value
+    assert run.observe_with_headroom(observe, sleep=lambda seconds:sleeps.append(seconds))['free_mib'] == 38158
+    assert sleeps == [1, 1]
+    with pytest.raises(ValueError, match='selected GPU busy'):
+        run.observe_with_headroom(lambda: (_ for _ in ()).throw(ValueError('selected GPU busy')),
+                                  sleep=lambda seconds:None)
+
+
 def test_device_admission_is_uuid_bound_and_never_uses_busy_or_low_memory():
-    row = {'index': run.GPU_INDEX, 'uuid': run.GPU_UUID, 'name': 'NVIDIA A40', 'free_mib': 45408}
-    assert run.check_device_rows('Tang2', [row], [])['uuid'] == run.GPU_UUID
-    for changed, processes in [({**row, 'uuid': 'wrong'}, []), ({**row, 'free_mib': 30000}, []),
-                                (row, [{'uuid': run.GPU_UUID, 'pid': 123}])]:
-        with pytest.raises(ValueError): run.check_device_rows('Tang2', [changed], processes)
+    row = {'index': run.GPU_INDEX, 'uuid': run.GPU_UUID, 'name': run.GPU_NAME, 'free_mib': 45408}
+    assert run.check_device_rows(run.NODE_NAME, [row], [])['uuid'] == run.GPU_UUID
+    for changed in ({**row, 'uuid': 'wrong'}, {**row, 'free_mib': 30000}):
+        with pytest.raises(ValueError): run.check_device_rows(run.NODE_NAME, [changed], [])
+    assert run.check_device_rows(run.NODE_NAME, [row], [{'uuid':run.GPU_UUID, 'pid':123}])['foreign_process_count'] == 1
     with pytest.raises(ValueError): run.check_device_rows('other-node', [row], [])
     after_load={**row,'free_mib':24000}
-    assert run.check_device_rows('Tang2',[after_load],[{'uuid':run.GPU_UUID,'pid':123}],
+    assert run.check_device_rows(run.NODE_NAME,[after_load],[{'uuid':run.GPU_UUID,'pid':123}],
                                  allowed_pid=123,minimum_free_mib=1024)['uuid']==run.GPU_UUID
     with pytest.raises(ValueError):
-        run.check_device_rows('Tang2',[after_load],[],minimum_free_mib=1024)
+        run.check_device_rows(run.NODE_NAME,[after_load],[],minimum_free_mib=1024)
+
+
+def test_cross_node_admission_binds_exact_node_and_device_name(monkeypatch):
+    monkeypatch.setattr(run, 'NODE_NAME', 'Song1', raising=False)
+    monkeypatch.setattr(run, 'GPU_NAME', 'NVIDIA A100-SXM4-80GB', raising=False)
+    row = {'index':run.GPU_INDEX, 'uuid':run.GPU_UUID, 'name':'NVIDIA A100-SXM4-80GB', 'free_mib':81046}
+    assert run.check_device_rows('Song1', [row], [])['node'] == 'Song1'
+    with pytest.raises(ValueError):
+        run.check_device_rows('Tang2', [row], [])
+    with pytest.raises(ValueError):
+        run.check_device_rows('Song1', [{**row, 'name':'NVIDIA A40'}], [])
+    assert run.profile('1'*64)['node'] == 'Song1'
+    assert run.profile('1'*64)['gpu_name'] == 'NVIDIA A100-SXM4-80GB'
+
+
+def test_shared_song3_admission_allows_foreign_processes_without_terminating_them():
+    row = {'index':run.GPU_INDEX, 'uuid':run.GPU_UUID, 'name':run.GPU_NAME, 'free_mib':46778}
+    foreign = [{'uuid':run.GPU_UUID, 'pid':123}, {'uuid':run.GPU_UUID, 'pid':456}]
+    observed = run.check_device_rows(run.NODE_NAME, [row], foreign)
+    assert observed['node'] == run.NODE_NAME
+    assert observed['foreign_process_count'] == 2
 
 
 def test_source_manifest_uses_platform_independent_member_order(tmp_path):

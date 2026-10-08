@@ -4424,3 +4424,27 @@ Result: **167 passed, two Windows symlink-permission skips**. The deployment gat
 The final gate added `tests/vnext/test_cross_domain_qwen_blocked_evidence.py` to the six-file command above and passed **175 tests with two Windows symlink-permission skips**. The eight receipt-only tests passed with exact copies of 12 files (243,491 bytes). An isolated export of staged tree `fe6aa8c98e4cfe2ba68fcc0c64c39c72de2a0a82` passed **73 new backend/driver/receipt tests**; all imported project modules were confined to the export. The first invocation with user-site packages disabled lacked pytest. The successful run kept `PYTHONPATH` unset and explicitly exposed installed test dependencies without processing user-site path hooks; it installed nothing and ran no model. Documentation-only updates after that export record its results without changing the tested code or pinned receipts.
 
 **Conclusion and remaining boundary.** The engineering path and CPU template/proxy checks are completed, but the authorized real answer readout is still resource-blocked. There is no new scientific answer metric. Re-admission needs a currently available device and a new no-replace source/profile/run binding within the original one-load/four-generation budget; current records are not restartable. No Core/Pilot/task/preparation/manager evidence is regenerated or promoted. The user's unrelated `docs/WORKSPACE_LAYOUT.md` modification remains excluded from this work unit.
+
+## Authorized shared Tang-1 Qwen readout: one real load, one failed generation (2026-10-09)
+
+**Motivation and authorization.** After Tang-2 was unavailable and Song-3 admission attempts were blocked, the user authorized Tang-1/2/3 and explicitly authorized sharing Tang-1 GPU1 with another process. The existing one-load/four-request scope remained unchanged: one Qwen3.5-9B load, four frozen NOAA/BEA requests, 64 new tokens each, zero generation retries, no paid-provider calls, no Qdrant rerun and no termination of another process.
+
+**Admission and implementation fixes.** Tang-1 GPU1 was observed as `GPU-479aa50d-c1ce-0bc5-e91e-770c97243178`, NVIDIA A40, with 38,158 MiB free and one foreign process. The profile explicitly records shared-process permission; the worker never owns or terminates that process. A first shared run exposed a separator mismatch between the deployment helper's underscore temporary-root name and the source's hyphen name. The `tang1gpu1b` and `tang1gpu1c` roots preserved the resulting pre-load BLOCKED diagnostics. The final source adds a bounded two-recheck wait only for transient `insufficient current memory headroom`; it never lowers the 30,720 MiB pre-load floor or retries model generation. The stable-admission gate passed 69 tests before the final run.
+
+**Final real outcome.** `tang1gpu1d` passed qualification, loaded the pinned model once and reached the first generation callback. Qwen allocated 17,941,189,632 bytes and reserved 18,001,952,768 bytes before close; guarded cleanup returned both to zero and status `CLOSED`. The first `bea-repeat-0` request raised a sanitized `RuntimeError` before producing output. The remaining three requests were `NOT_RUN`; no generated token count, parsed answer, typed exact score or answer metric exists. The final result is `BLOCKED`, not accuracy zero. Counts are: qualification processes 1, load workers 1, model loads completed 1, generation intents 1, callback entries 1, observed generation attempts 1, retries 0, paid-provider calls 0 and Qdrant calls 0. All four cleanup checks are true.
+
+Result pins:
+
+```text
+run root       cross_domain_qwen_readout_20261009_tang1gpu1d
+result index   5aaf45dcba2092826c251f38e3f8b518aa86d09718e80fb9fb985f31f3f4705b
+local audit    cb4e851eafd4c5d04974c6857a684b5948debecd71f256975cdbc9c01d07e12f
+source         70dc375720a5ee45349220063bcce03dc15618deca66b5c06e3633ba8a10e4a2
+profile        88a3a28683dd6fe81e128c5b6a0c1c7d59e7132435efe9285e597d2768f0952b
+archive        9247236c5a80f1b88e7c5b086595a0d449d126822b5a6a1c6ab36eb729fc1ac1
+collection tar e583316736f4c01d66410c4525fae5237dd4ba5750c38b09fb4a07fdb859072e
+```
+
+The exact result fixture and regression checks are under `tests/vnext/fixtures/cross_domain_qwen_blocked/tang1gpu1d/` and `tests/vnext/test_cross_domain_qwen_blocked_evidence.py`. They preserve hashes, four-row status accounting, qualification bindings, cleanup/memory observations and JSON/raw-output redaction without publishing raw prompts or generation text. The local audit is same-assistant artifact/score verification, not a new human audit or scientific approval.
+
+**Verification and conclusion.** The final targeted gate must include the earlier answer/evidence tests plus the Tang-1 fixture and shared-admission tests; no real model retry is authorized after the one failed generation attempt. The broad `tests/vnext tests/maintenance` run previously timed out below 3% and remains not a completed full-suite pass. The benchmark now has genuine external-manager Qdrant state/retrieval evidence and a genuine open-model runtime/load/cleanup observation, but no prompted-answer accuracy row from this four-request panel. The answer-layer evidence boundary remains open: the next scientific step requires a separately authorized execution plan rather than silently retrying this consumed one-load trial.

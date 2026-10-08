@@ -118,7 +118,71 @@ def test_blocked_summary_and_authorization_profile_remain_bounded(version):
     assert profile["scientific_release_allowed"] is False
 
 
-def test_v3_worker_error_and_two_phase_journal_are_preserved():
+def test_tang1_real_readout_preserves_load_failure_and_cleanup():
+    root = FIXTURE_ROOT / "tang1gpu1d"
+    index_raw = (root / "index.json").read_bytes()
+    assert sha256(index_raw) == "5aaf45dcba2092826c251f38e3f8b518aa86d09718e80fb9fb985f31f3f4705b"
+    index = json.loads(index_raw)
+    expected = {
+        "authorization_profile.json": (1291, "88a3a28683dd6fe81e128c5b6a0c1c7d59e7132435efe9285e597d2768f0952b"),
+        "qualification.json": (235862, "94158fe96db43143ead4d651a7300e62f0cba76279efa855b82ef2621a712eab"),
+        "qualification_journal.jsonl": (124, "7a1ba6d0585e34ce039de500e726b91302230e0d27e5f8986bd9bf689c1aa0d6"),
+        "readouts.json": (1889, "9eab4d98fcefc04f62ba230f842615e4957a1329930e3e6f06ca67101576a588"),
+        "summary.json": (2210, "9556f27bd386c3f74aee94d2a404fda8a3c718b9211439ad3021fa0c409cf451"),
+        "worker_journal.jsonl": (2315, "3608a9524aaae36cd2174ef4835d72148d9fb7803d854653653852c194852132"),
+        "worker_result.json": (2710, "8fa74566e0b1c96ec9a259cc0d96360ec26261ea4c5712767b9db054734b5ce8"),
+    }
+    assert index["status"] == "BLOCKED" and index["scientific_release_allowed"] is False
+    assert {item["path"] for item in index["artifacts"]} == set(expected)
+    for name, (size, digest) in expected.items():
+        raw = (root / name).read_bytes()
+        item = next(item for item in index["artifacts"] if item["path"] == name)
+        assert len(raw) == size == item["bytes"] and sha256(raw) == digest == item["sha256"]
+
+    summary = load_json(root / "summary.json")
+    assert summary["status"] == "BLOCKED" and summary["answer_metrics"] is None
+    assert summary["device"] == {
+        "foreign_process_count": 1, "free_mib": 38158, "index": 1,
+        "name": "NVIDIA A40", "node": "Tang1",
+        "uuid": "GPU-479aa50d-c1ce-0bc5-e91e-770c97243178",
+    }
+    assert summary["execution_accounting"] == {
+        "load_worker_launches": 1, "paid_provider_calls": 0,
+        "peak_temporary_bytes": 6115328, "qdrant_calls": 0,
+        "qualification_processes": 1, "retries": 0,
+    }
+    assert summary["model_loads_completed"] == 1
+    assert summary["generation_attempts"] == 1
+    assert all(value is True for value in summary["cleanup"].values())
+
+    worker = load_json(root / "worker_result.json")
+    assert worker["postvalidation"] is True
+    assert worker["lifecycle"]["load_completed"] is True
+    assert worker["lifecycle"]["error_phase"] == "before_generation"
+    assert worker["lifecycle"]["error_type"] == "RuntimeError"
+    assert worker["lifecycle"]["close"]["allocated_bytes_after"] == 0
+    assert worker["backend_observations"]["load_attempts"] == 1
+    assert worker["backend_observations"]["generation_attempts"] == 1
+    assert [row["status"] for row in worker["rows"]] == [
+        "TECHNICAL_FAILURE", "NOT_RUN", "NOT_RUN", "NOT_RUN"
+    ]
+    assert worker["rows"][0]["attempt_intent"] == worker["rows"][0]["callback_entries"] == 1
+    assert worker["rows"][0]["attempts"] == 1
+    assert all(row["prediction"] is None for row in worker["rows"])
+
+    qualification = load_json(root / "qualification.json")
+    assert qualification["status"] == "QUALIFIED_NO_MODEL_LOAD"
+    assert qualification["model_loads"] == qualification["generations"] == qualification["provider_calls"] == 0
+    assert [binding["input_tokens"] for binding in qualification["bindings"]] == [258, 261, 246, 247]
+    assert qualification["model_class"] == "transformers.models.qwen3_5.modeling_qwen3_5.Qwen3_5ForCausalLM"
+    for path in root.iterdir():
+        if path.suffix in (".json", ".jsonl"):
+            raw = path.read_bytes()
+            assert b'"raw_output"' not in raw
+            assert b'Use only the retrieved memory entries' not in raw
+
+
+
     root = FIXTURE_ROOT / "v3"
     error = load_json(root / "worker_error.json")
     assert error == {

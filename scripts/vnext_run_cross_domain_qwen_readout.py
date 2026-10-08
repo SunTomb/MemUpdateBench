@@ -25,13 +25,16 @@ SNAPSHOT_BINDING_SHA = '924cb994248cf56d1d41df0da3bca06ce7abe1184cde5f0af489d4d3
 HISTORY = BASE / 'post_core_qwen35_tang1_gpu3_runtime_gate_20260826_v2.json'
 HISTORY_SHA = '5d06cb1cbacd43beb0b0a2aaafd1bd7a5b75e8f6d283f5dbbd899b8429ff202f'
 PYTHON = BASE / 'qdrant_qwen_environment_20260905_v1/venv/bin/python'
-GPU_INDEX = 6
-GPU_UUID = 'GPU-9fff6cbd-a32d-2b97-12f6-786d30d15ee9'
+NODE_NAME = 'Tang1'
+GPU_NAME = 'NVIDIA A40'
+GPU_INDEX = 1
+GPU_UUID = 'GPU-479aa50d-c1ce-0bc5-e91e-770c97243178'
+SHARED_GPU_INDICES = frozenset((1,))
 TEMPLATE_SHA = 'a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715'
 PREPARATION_SHA = '1112a371f07326130634715cfc15fe656aa11a48539f2d16b06f39c400f9e687'
-RUN_ID = 'cross_domain_qwen_readout_20261002_v4'
+RUN_ID = 'cross_domain_qwen_readout_20261009_tang1gpu1d'
 RUN_ROOT = BASE / RUN_ID
-TEMP_ROOT = Path('/tmp/mub-cross-domain-qwen-20261002-v4')
+TEMP_ROOT = Path('/tmp/mub-cross-domain-qwen-20261009_tang1gpu1d')
 PHASE_BUDGETS = {'qualification': 1800, 'template_preflight': 240, 'before_load': 300,
                  'template_recheck': 120, 'before_generation': 90, 'after_generation': 60,
                  'before_close': 90, 'after_close': 120, 'post_validation': 1800,
@@ -79,8 +82,10 @@ def save_new(path, value):
 
 def profile(source_sha):
     return {'schema':'memupdatebench.cross-domain.qwen-authorization.v1', 'run_id':RUN_ID,
-        'authorization_basis':'explicit_user_authorization_for_one_bounded_trial_20261002',
-        'node':'Tang2', 'gpu_index':GPU_INDEX, 'gpu_uuid':GPU_UUID, 'minimum_free_mib':30720,
+        'authorization_basis':'explicit_user_authorization_for_one_bounded_trial_20261009',
+        'node':NODE_NAME, 'gpu_name':GPU_NAME, 'gpu_index':GPU_INDEX, 'gpu_uuid':GPU_UUID,
+        'shared_gpu_processes_allowed':GPU_INDEX in SHARED_GPU_INDICES,
+        'minimum_free_mib':30720,
         'model_id':MODEL_ID, 'revision':REVISION, 'model_tree_sha256':MODEL_TREE,
         'source_manifest_sha256':source_sha, 'preparation_index_sha256':PREPARATION_SHA,
         'maximum_load_attempts':1, 'maximum_generations':4, 'max_new_tokens':64,
@@ -97,14 +102,16 @@ def validate_profile(value):
 
 
 def check_device_rows(node, rows, processes, allowed_pid=None, minimum_free_mib=30720):
-    require(node=='Tang2','wrong execution node')
+    require(node==NODE_NAME,'wrong execution node')
     selected=[r for r in rows if r['uuid']==GPU_UUID]
-    require(len(selected)==1 and selected[0]['index']==GPU_INDEX and selected[0]['name']=='NVIDIA A40', 'device UUID/index mismatch')
+    require(len(selected)==1 and selected[0]['index']==GPU_INDEX and selected[0]['name']==GPU_NAME, 'device UUID/index mismatch')
     require(minimum_free_mib in (30720,1024) and (minimum_free_mib==30720 or allowed_pid is not None),
             'lower memory floor requires the admitted worker')
     require(selected[0]['free_mib']>=minimum_free_mib,'insufficient current memory headroom')
-    require(not any(p['uuid']==GPU_UUID and p['pid']!=allowed_pid for p in processes),'selected GPU busy')
-    return {**selected[0],'node':node}
+    foreign_process_count=sum(p['uuid']==GPU_UUID and p['pid']!=allowed_pid for p in processes)
+    if GPU_INDEX not in SHARED_GPU_INDICES:
+        require(foreign_process_count==0,'selected GPU busy')
+    return {**selected[0],'node':node,'foreign_process_count':foreign_process_count}
 
 
 def observe_device(allowed_pid=None, minimum_free_mib=30720):
@@ -116,6 +123,19 @@ def observe_device(allowed_pid=None, minimum_free_mib=30720):
     processes=gpu_processes()
     node=Path('/proc/sys/kernel/hostname').read_text().strip()
     return check_device_rows(node,rows,processes,allowed_pid,minimum_free_mib)
+
+
+def observe_with_headroom(observe, sleep=time.sleep, attempts=3):
+    last=None
+    for index in range(attempts):
+        try:
+            return observe()
+        except ValueError as exc:
+            if str(exc) != 'insufficient current memory headroom' or index+1 == attempts:
+                raise
+            last=exc
+            sleep(1)
+    raise last
 
 
 def gpu_processes():
@@ -342,7 +362,7 @@ class Reporter:
 
 def worker(args):
     source=Path(__file__).resolve().parents[1]
-    require(Path(args.run_root)==RUN_ROOT and Path(args.temp_root)==TEMP_ROOT
+    require(Path(args.run_root).resolve()==RUN_ROOT.resolve() and Path(args.temp_root).resolve()==TEMP_ROOT.resolve()
             and source==TEMP_ROOT/'source','worker roots are not the authorized trial')
     verify_source(source,args.source_sha)
     sys.path.insert(0,str(source))
@@ -436,7 +456,8 @@ def worker(args):
 
 def supervise(args):
     run=Path(args.run_root);temp=Path(args.temp_root)
-    require(sys.platform=='linux' and run==RUN_ROOT and temp==TEMP_ROOT,'unauthorized live root/platform')
+    require(sys.platform=='linux' and Path(args.run_root).resolve()==RUN_ROOT.resolve()
+            and Path(args.temp_root).resolve()==TEMP_ROOT.resolve(),'unauthorized live root/platform')
     require(ROOT==run/'source','supervisor source origin mismatch')
     config=json.loads((run/'profile.json').read_bytes());validate_profile(config)
     require(sha((run/'profile.json').read_bytes())==args.profile_sha and config['source_manifest_sha256']==args.source_sha,'profile pin mismatch')
@@ -472,7 +493,7 @@ def supervise(args):
             time.sleep(0.5)
         require(process.returncode==0,'owned child failed')
     try:
-        before_device=observe_device()
+        before_device=observe_with_headroom(observe_device)
         helper._filesystem_info(temp.parent)
         require(shutil.disk_usage(temp.parent).free>=2*1024**3,'temporary space unavailable')
         owned=helper.claim_owned_directory(temp)
