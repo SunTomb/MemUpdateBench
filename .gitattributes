@@ -18,3 +18,5 @@ tests/vnext/fixtures/legacy/*.csv text eol=lf
 tests/vnext/fixtures/legacy/*.md text eol=lf
 schemas/vnext/*.schema.json text eol=lf
 schemas/legacy/*.schema.json text eol=lf
+
+results/vnext/native_multi_object_canary_preparation_20261010_v1/** -text

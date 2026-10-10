@@ -6,4 +6,8 @@ The contract uses the canonical object identity `(namespace, entity, attribute, 
 
 The in-process fake provider used by temporary tests is deliberately non-scientific and cannot establish native admission, external-system capability, accuracy, or answer quality. Qualification is fail-closed: package import, a fake provider, missing direct observations, declared-versus-observed capability overclaims, failed visible-only checks, missing traces, failed isolation/cleanup, nondeterministic repeats, or provider calls during qualification produce typed `BLOCKED`/`NOT_REQUESTED` outcomes.
 
-Direct Qdrant source/runtime/API evidence, a native canary, a full run, answer replay, and a release package do not yet exist. No Qdrant dependency, executable, network call, model call, GPU run, or provider call is introduced by this foundation.
+Direct multi-object qualification, a native canary execution, a full run, answer replay, and a native release package do not yet exist. The separately recorded NOAA/BEA Qdrant v13 state/retrieval evidence does not qualify these multi-object gates. No Qdrant dependency, executable, network call, model call, GPU run, or provider call is introduced by this foundation.
+
+## Offline canary inputs
+
+[Native Multi-Object Canary Preparation](native_multi_object_canary.md) adds four synthetic API scenarios with two prospective repetitions, using the existing mutation and retrieval contracts. Provider inputs and evaluator-only reference expectations are separate. The packet is source-bound and no-replace, but remains `PREPARED_NOT_EXECUTED`, with `execution_authorized=false` and `native_admission=NOT_REQUESTED`. It does not establish native capability, retrieval quality, accuracy, an observed repeat or a runtime authorization.
