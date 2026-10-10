@@ -289,6 +289,7 @@ class QdrantNativeMultiObjectProvider:
                 raise ValueError("runtime_namespace must be a nonblank exact string")
             self._observation_witnesses: list[QdrantProviderObservationV1] = []
             self._observed_provider_methods: set[str] = set()
+            self._last_query_points_observation: tuple[dict[str, Any], ...] = ()
             self._models = None
             if client is None:
                 module = _load_qdrant_client_module()
@@ -380,6 +381,10 @@ class QdrantNativeMultiObjectProvider:
     @property
     def collection_name(self) -> str:
         return self.configuration.collection_name
+
+    @property
+    def last_query_points_observation(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(item) for item in self._last_query_points_observation)
 
     @property
     def runtime_namespace(self) -> str:
@@ -943,6 +948,12 @@ class QdrantNativeMultiObjectProvider:
             with_vectors=False,
         )
         points = self._query_points(response)
+        self._last_query_points_observation = tuple(
+            {"id": str(self._point_field(point, "id")),
+             "score": self._point_field(point, "score"),
+             "payload": _jsonable(self._point_field(point, "payload"))}
+            for point in points
+        )
         entries: list[NativeRetrievalEntryV3] = []
         for order_index, point in enumerate(points):
             provider_id = self._point_field(point, "id")

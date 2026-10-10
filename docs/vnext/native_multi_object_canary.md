@@ -65,3 +65,32 @@ cb50151dceba0256f1962f00e51bfbd86c0f8383fa895d434e0f73f56ba578cd
 Pinned reopening passed. The relevant native/preparation regression gate passed 128 tests, including 13 new tests. A bounded automated review and reproduced failure tests covered protected-path traversal, output-directory competition, post-import source edits and checkout line endings before publication. These are engineering checks, not a human audit or a native runtime result.
 
 An isolated export of staged tree `42e594685b27bb9dc85d80fd1ad19bd57fdcbc5b` reopened the packet under that same index pin and passed all 13 new tests. `PYTHONPATH` was unset; test dependencies were made available explicitly without processing user-site path hooks. Every imported `mub`/`scripts` module was inside the export. This also exercised LF source reconstruction rather than depending on the development checkout's CRLF copy of one helper. No real provider or model was executed.
+
+## Real Tang-3 observation
+
+With explicit user authorization, one CPU-only direct-Qdrant run was executed on Tang-3 using Qdrant 1.19.0, server revision `74f3e85b9473c62560006c043e13737ce6b48412`, the pinned binary/environment hashes and loopback port 16333. Earlier v1–v8 roots stopped before provider calls because of deployment/readiness/orchestration defects and are retained as technical diagnostics; they are not accuracy zeros.
+
+The corrected v10 run is retained in the compact evidence package:
+
+```text
+results/vnext/native_multi_object_canary_tang3_evidence_20261010_v3
+```
+
+Its package index SHA-256 is:
+
+```text
+a1ccf19e20c53c89308dd39afab4eb2dec45f7c57c26409860b60061448809c6
+```
+
+The direct provider observation completed:
+
+- 8/8 synthetic case instances observed;
+- 50/50 planned mutation operations completed;
+- 8/8 retrieval calls completed;
+- 48 reset attempts (six per case, including guard/subject isolation and final cleanup resets);
+- 374 direct provider observation witnesses, including 8 `query_points`, 154 `scroll`, 74 `retrieve`, 54 `upsert`, 60 `delete`, 8 collection creation, 8 schema reads and 8 existence checks;
+- all case cleanup values `client_closed=true` and `collection_deleted=true`;
+- owned server, worker and temporary-root cleanup all passed;
+- no model loads, generations, GPU calls, paid-provider calls or answer metrics.
+
+The same-process producer audit and a separate local `audit_cases` replay both returned `AUDITED`. The audit checks the frozen synthetic expectations, typed values, four-part identities, per-object no-effect/executed outcomes, final provider exports, guard isolation, retrieval IDs/payloads/rank/order/score and repeated semantic projections. Raw query-point observations are retained separately from normalized retrieval traces. This is direct Qdrant CRUD/hash-vector retrieval evidence over a synthetic API canary, not semantic embedding quality, prompted answering, a general native-manager release, or a scientific accuracy claim. `native_admission` remains `NOT_GRANTED` and `scientific_release_allowed=false` until the broader qualification/release gates are separately closed.
