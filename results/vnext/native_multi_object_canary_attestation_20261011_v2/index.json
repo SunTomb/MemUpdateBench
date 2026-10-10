@@ -1,0 +1,1 @@
+{"artifacts":[{"bytes":1756,"path":"attestation.json","sha256":"4ff350db49c519fafdcd7b83f3f9784836bafadb189e75dd25db9fa20629fa92"}],"native_admission":"NOT_GRANTED","schema":"memupdatebench.native-qdrant-canary-attestation-index.v1","scientific_release_allowed":false,"status":"BOUNDED_CANARY_ATTESTED"}

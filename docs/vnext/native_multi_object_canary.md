@@ -94,3 +94,31 @@ The direct provider observation completed:
 - no model loads, generations, GPU calls, paid-provider calls or answer metrics.
 
 The same-process producer audit and a separate local `audit_cases` replay both returned `AUDITED`. The audit checks the frozen synthetic expectations, typed values, four-part identities, per-object no-effect/executed outcomes, final provider exports, guard isolation, retrieval IDs/payloads/rank/order/score and repeated semantic projections. Raw query-point observations are retained separately from normalized retrieval traces. This is direct Qdrant CRUD/hash-vector retrieval evidence over a synthetic API canary, not semantic embedding quality, prompted answering, a general native-manager release, or a scientific accuracy claim. `native_admission` remains `NOT_GRANTED` and `scientific_release_allowed=false` until the broader qualification/release gates are separately closed.
+
+## Bounded canary attestation
+
+The completed v10 evidence was independently reopened by a no-execution attestor:
+
+```text
+results/vnext/native_multi_object_canary_attestation_20261011_v1
+```
+
+Attestation index SHA-256:
+
+```text
+f39eab5311620ae52d156a45333d085417fdcede98e6cbe987dba274ac2ab7cf
+```
+
+The attestation binds the preparation index, evidence index, profile/runtime identity, 8 cases, 50 mutation attempts/completions, 8 retrievals, 48 resets, 374 provider witnesses, per-case client/collection cleanup, and zero model/GPU/provider-model execution. It explicitly reports `BOUNDED_CANARY_ATTESTED`, `native_admission=NOT_GRANTED`, `scientific_release_allowed=false`, and `independent_signer=false`.
+
+This is a hash-bound same-assistant attestation of an observed synthetic canary, not a cryptographic signature, independent human audit, native benchmark release or broad scientific qualification. A later release would still need a separate qualification receipt, broader real-source/full-fixture scope and release-level review.
+
+## Attestation hardening
+
+The attestation was hardened to revalidate the compact evidence index itself: exact artifact membership, byte counts and SHA-256 values are checked before summary/case counts are trusted. Owned server/worker/temp cleanup flags are also mandatory. A tampered observations artifact is rejected before attestation. The hardened no-replace sibling is:
+
+```text
+results/vnext/native_multi_object_canary_attestation_20261011_v2
+```
+
+It has the same deterministic attestation payload SHA-256 `4ff350db49c519fafdcd7b83f3f9784836bafadb189e75dd25db9fa20629fa92`; the sibling index SHA-256 is recorded by its `index.json`. This remains a same-assistant bounded attestation with `independent_signer=false`, not a scientific release.
