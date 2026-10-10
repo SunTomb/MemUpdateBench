@@ -4459,3 +4459,12 @@ The exact result fixture and regression checks are under `tests/vnext/fixtures/c
 **Verification.** The new unit gate passed 3 tests. The CLI is no-replace and performs no SSH, GPU, model, provider or Qdrant calls. This is a diagnostic evidence package, not a scientific release or independent human audit.
 
 **Conclusion.** Family-H evidence is now reconciled into an explicit evidence-class boundary, but not promoted. The next scientific work still requires resolving provenance identity or obtaining a separately authorized, independently bound runtime/source package; no answer accuracy claim is widened by this package.
+## Cross-domain Qwen readout validator (2026-10-10)
+
+**Motivation.** The Tang-1 Qwen trial is consumed after one real model load and one failed generation; previous v2/v3/v4 roots are technical/not-run diagnostics. The fixture tests pinned their evidence, but no reusable CLI could reopen a result root without reinterpreting it manually.
+
+**Implementation.** Added `scripts/vnext_validate_cross_domain_qwen_readout.py`, `tests/vnext/test_validate_cross_domain_qwen_readout.py`, and `docs/vnext/cross_domain_qwen_readout_validation.md`. The validator checks artifact membership/hashes, blocked/null policy, Qwen/preparation identity, authorization limits, cleanup, four-request order, intent/callback/actual generation accounting, technical/not-run row policy, qualification binding, and redaction. It only reads fixtures and publishes an exclusive no-replace compact report.
+
+**Result.** Validated v2, v3, v4 and `tang1gpu1d` fixtures and generated `results/vnext/cross_domain_qwen_readout_validation_20261010_v1`. The bundle remains `BLOCKED` with `scientific_release_allowed=false`; validation artifact SHA-256 is `1307e334a3a087d15805f8b9316363f65d2bb80670ed6896455833e97c2c7372`. No model/GPU/provider/Qdrant/SSH operation occurred and no existing result was rewritten.
+
+**Verification.** New validator tests passed 4 tests. This package is artifact/provenance validation only, not model qualification, answer accuracy, human audit or scientific approval.
