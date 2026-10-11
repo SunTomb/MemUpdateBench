@@ -4542,3 +4542,7 @@ The native canary attestor now revalidates the evidence index's exact five-artif
 **Offline coverage.** The frozen manifest `results/vnext/offline_test_shards_20261012_v1.json` reopens with schema `memupdatebench.test-shards.v1`, exactly 5,210 collected node IDs, and 8 balanced shards of 652/652/651/651/651/651/651/651 tests. The focused shard-runner gate passed **8 tests**, and a one-test CLI worker smoke passed with return code 0. The full 8-shard suite was not restarted after the host memory-pressure stop, so no full-suite pass is claimed.
 
 **Scope.** This change touches only the new maintenance runner/tests and this workflow record. `docs/WORKSPACE_LAYOUT.md` remains a user-owned unstaged edit. No frozen release, model, GPU, provider, or benchmark evidence was modified.
+
+## Corrected offline shard rerun stopped by host pressure (2026-10-12)
+
+A user-authorized rerun used the corrected in-process pytest worker and a fresh no-replace output root, `offline_shard_results_20261012_v2`. The host's background-shell pressure guard terminated task `be66kzy7u` while the session was idle because system memory was critically low. The task output contains only `[killed]`; no shard return code, per-shard result file, or summary was produced. This is an infrastructure stop, not a test failure or pass, so the full 8-shard regression remains unverified. The system instructed that it must not be restarted automatically while memory pressure may remain.
