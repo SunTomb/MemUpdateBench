@@ -4532,3 +4532,13 @@ The native canary attestor now revalidates the evidence index's exact five-artif
 **Verification.** Family-H staging/runner tests passed 10 tests; the final Family-H/native contract/adapter/scoring/Qdrant gate passed 149 tests. The no-replace attestation was reopened from its index and its 3/27/3/3/0 counts and cleanup flags matched. Existing Family-H, Core, Pilot, NOAA/BEA and prior Qdrant roots remain unchanged. The user's workspace-layout edit remains excluded.
 
 **Remaining boundary.** This closes the bounded real-source direct-Qdrant state/retrieval layer for the three published Family-H tasks, not the broad native-manager release. A future release would still need a release-level human decision, broader independent source/task coverage, and a separately designed answer-layer replay if prompted answering is required.
+
+## Deterministic offline test-shard runner hardening (2026-10-12)
+
+**Motivation.** The first attempt to execute the collected offline suite expanded 651–652 pytest node IDs directly into the Windows child-process command line. Each started shard failed before pytest collection with `FileNotFoundError: [WinError 206]` (command line too long); the supervisor was then terminated by the host's memory-pressure guard. The earlier run therefore supplies neither a test pass nor a test-failure result.
+
+**Implementation.** Added `scripts/maintenance/run_test_shards.py` and `tests/maintenance/test_run_test_shards.py`. Collection remains subprocess-based, but shard execution now invokes `pytest.main()` inside the short-lived shard worker process after loading node IDs from the frozen manifest, so node IDs are not serialized into a Windows process command line. The worker captures stdout/stderr, restores cwd/sys.path/environment, disables the cache provider, and preserves the existing no-replace manifest/result behavior.
+
+**Offline coverage.** The frozen manifest `results/vnext/offline_test_shards_20261012_v1.json` reopens with schema `memupdatebench.test-shards.v1`, exactly 5,210 collected node IDs, and 8 balanced shards of 652/652/651/651/651/651/651/651 tests. The focused shard-runner gate passed **8 tests**, and a one-test CLI worker smoke passed with return code 0. The full 8-shard suite was not restarted after the host memory-pressure stop, so no full-suite pass is claimed.
+
+**Scope.** This change touches only the new maintenance runner/tests and this workflow record. `docs/WORKSPACE_LAYOUT.md` remains a user-owned unstaged edit. No frozen release, model, GPU, provider, or benchmark evidence was modified.
