@@ -4546,3 +4546,11 @@ The native canary attestor now revalidates the evidence index's exact five-artif
 ## Corrected offline shard rerun stopped by host pressure (2026-10-12)
 
 A user-authorized rerun used the corrected in-process pytest worker and a fresh no-replace output root, `offline_shard_results_20261012_v2`. The host's background-shell pressure guard terminated task `be66kzy7u` while the session was idle because system memory was critically low. The task output contains only `[killed]`; no shard return code, per-shard result file, or summary was produced. This is an infrastructure stop, not a test failure or pass, so the full 8-shard regression remains unverified. The system instructed that it must not be restarted automatically while memory pressure may remain.
+
+## Tang-2 cluster offline shard gate blocked by environment dependencies (2026-10-12)
+
+**Execution.** To honor the cluster-first compute boundary, the pushed `correct-langmem-evidence-boundary` branch was cloned into the isolated remote tree `/NAS/yesh/MemUpdateBench/_local/cluster_full_regression_20261012_v1`. The frozen 5,210-node manifest and corrected in-process runner were copied there; the original remote project tree and its shared environment were not overwritten. MSYS path conversion was disabled for SSH so the worker used the intended `/NAS/yesh` paths.
+
+**Result.** The unique Tang-2 tmux run produced all 8 per-shard result files and the summary. Every shard returned pytest code `4`; every result reported the exact expected node count `652/652/651/651/651/651/651/651`, and the frozen manifest reopened with exact 5,210-node coverage. The rows do not represent test assertion failures or passes: collection stopped before tests ran.
+
+**Cause and boundary.** The authorized `gmsra` environment lacks `openpyxl` and `jsonschema`, producing collection-time `ModuleNotFoundError` errors in Family-H BEA and v3 schema tests. No dependency was installed into the shared environment because the project rule is to keep using the existing `gmsra` environment and only change `PYTHONPATH`. This is a typed environment blocker, not evidence against the shard runner or benchmark methods. The full offline regression remains pending a dependency-qualified cluster environment; no model, GPU, provider, frozen release or benchmark evidence changed.
