@@ -1,0 +1,1 @@
+{"artifacts":[{"bytes":1299,"path":"attestation.json","sha256":"15c8e210b2cebc76e949edeaa2b5220099e629eaeff4c0e2c364320b76ba75da"}],"native_admission":"NOT_GRANTED","schema":"memupdatebench.family-h.native-qdrant-attestation-index.v1","scientific_release_allowed":false,"status":"FAMILY_H_NATIVE_STATE_RETRIEVAL_ATTESTED"}
