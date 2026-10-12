@@ -93,3 +93,14 @@ def test_run_shard_uses_in_process_pytest_instead_of_long_argv(monkeypatch, tmp_
     assert result["nodeid_count"] == 700
     assert len(calls) == 1
     assert calls[0] == ["-q", "-p", "no:cacheprovider", *manifest["shards"][0]["nodeids"]]
+
+
+@pytest.mark.parametrize("nodeid", [
+    "tests/vnext/test_gold_replay.py::test_case[<lambda>-action[0] a0_0]",
+    'tests/vnext/test_legacy_loaders.py::test_case[{"nested": [{"value": NaN}]}]',
+    "tests/vnext/test_example.py::TestGroup::test_case[space and [nested] bracket]",
+])
+def test_parse_preserves_spaces_and_nested_brackets_in_parameter_ids(nodeid):
+    assert shards.parse_collected_nodeids([nodeid]) == [nodeid]
+    manifest = shards.build_shard_manifest([nodeid], shard_count=1)
+    assert shards.build_pytest_args(manifest, 0)[-1] == nodeid

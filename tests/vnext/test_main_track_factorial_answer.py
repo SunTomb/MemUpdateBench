@@ -14,6 +14,23 @@ CANDIDATE = ROOT / "data" / "vnext" / "main_track_v1_audit_fix_v1"
 AUDIT = ROOT / "results" / "vnext" / "main_track_v1_audit_completion_attestation_v1" / "review_attestation.json"
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _use_answer_test_manifest(tmp_path_factory: pytest.TempPathFactory):
+    from scripts import vnext_plan_main_track_factorial as planner
+    from tests.vnext import test_main_track_factorial_manager as manager_tests
+
+    manifest_path = MANIFEST
+    if not manifest_path.exists():
+        manifest_path = tmp_path_factory.mktemp("answer-factorial-plan") / "factorial_manifest.json"
+        manifest = planner.build_factorial_manifest(CANDIDATE, AUDIT)
+        manifest_path.write_bytes(runner.canonical_bytes(manifest))
+    # Importing the manager's helper does not activate that module's fixtures.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(globals(), "MANIFEST", manifest_path)
+        patch.setattr(manager_tests, "MANIFEST", manifest_path)
+        yield
+
+
 def test_module_exposes_immutable_replay_entrypoint() -> None:
     assert callable(runner.run)
     assert callable(runner.reconstruct_retrieval_trace)

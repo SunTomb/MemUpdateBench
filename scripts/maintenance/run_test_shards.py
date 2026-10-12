@@ -15,7 +15,7 @@ from typing import Iterable
 import pytest
 
 
-NODEID = re.compile(r"^(?P<node>[^\s:]+(?:/[^\s:]+)*::[^\s]+(?:\[[^\]]*\])?)$")
+NODEID = re.compile(r"^(?P<node>[^\s:]+::[^\s\[]+(?:\[.*\])?)$")
 
 
 def parse_collected_nodeids(lines: Iterable[str]) -> list[str]:
