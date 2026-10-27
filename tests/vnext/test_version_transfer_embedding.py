@@ -75,3 +75,15 @@ def test_embedding_http_route_is_explicit_and_measured(tmp_path):
         thread.join(timeout=5)
         embedding.close()
     assert not thread.is_alive()
+
+
+def test_native_mem0_batch_of_100_keeps_item_and_token_ceilings(tmp_path):
+    backend = Embedder()
+    boundary = LocalEmbeddingBoundary(backend, tmp_path / 'mem0-batch.jsonl', model_id='fixed-embedding', max_items=100)
+    response = boundary.create({'model':'fixed-embedding','input':['a'] * 100}, role='mem0')
+    assert len(response['data']) == 100
+    assert boundary.totals == {'attempts':1,'items':100,'input_tokens':300}
+    with pytest.raises(RuntimeError, match='budget'):
+        boundary.create({'model':'fixed-embedding','input':'a'}, role='mem0')
+    assert backend.calls == 1
+    boundary.close()

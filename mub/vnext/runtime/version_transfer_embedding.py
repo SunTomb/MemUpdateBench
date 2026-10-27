@@ -40,8 +40,8 @@ class LocalEmbeddingBoundary:
             raise ValueError('embedding dimension changes are unsupported')
         texts = request.get('input')
         texts = [texts] if type(texts) is str else texts
-        if type(texts) is not list or not texts or len(texts) > 32 or any(type(t) is not str for t in texts):
-            raise ValueError('embedding requires at most 32 text inputs')
+        if type(texts) is not list or not texts or len(texts) > 100 or any(type(t) is not str for t in texts):
+            raise ValueError('embedding requires at most 100 text inputs')
         counts = [self.backend.token_count(t) for t in texts]
         if any(type(c) is not int or c <= 0 or c > self.backend.max_tokens for c in counts):
             raise ValueError('embedding context overflow; truncation is forbidden')
