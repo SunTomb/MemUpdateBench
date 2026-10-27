@@ -1,6 +1,17 @@
 # Related Work and Positioning Draft
 
-## Recommended manuscript framing
+## Current research decision boundary (2026-10-26)
+
+The active direction is a bounded repeated-update/version-transfer diagnostic study, not another general memory leaderboard. The approved protocol is in `docs/superpowers/specs/2026-10-26-version-transfer-decision-design.md`. Historical positioning below is background, not a current novelty or execution claim.
+
+Graphiti/Zep already implement temporal fact resolution and historical retention; LongMemEval includes knowledge updates; STALE studies implicit obsolescence and retrieved-but-misused evidence; MINTEval evaluates long-horizon interference; LAPSE studies temporal information loss including installed Graphiti pipelines. Accordingly, dynamic updates, temporal metadata and layered evaluation are not claimed as firsts. A potential increment is a tightly controlled, native-system paired analysis of update density and temporal information transfer under sufficient public evidence. It remains a hypothesis until the qualified pilot and fresh-ingestion replication are complete.
+
+Correctly invalidated historical records are not memory errors. Oracle latest/outdated labels are privileged diagnostics, not deployed system competence. Default unfiltered retrieval cannot substitute for a reasonably configured native temporal query. The new preparation packet and SDK import checks provide no accuracy, scientific GO, or paper-acceptance evidence.
+
+Primary sources: [Graphiti](https://github.com/getzep/graphiti), [Zep](https://arxiv.org/abs/2501.13956), [LongMemEval](https://arxiv.org/abs/2410.10813), [STALE](https://arxiv.org/abs/2605.06527), [MINTEval](https://arxiv.org/abs/2605.18565), and [LAPSE](https://arxiv.org/abs/2609.36457). These are the directly inspected sources, not a claim of exhaustive novelty search.
+
+## Historical manuscript framing
+
 
 MemUpdateBench should be positioned as a controlled diagnostic benchmark for repeated updates to the same `(entity, attribute)` slot. It is not a broad long-term memory benchmark, not a general agent leaderboard, and not a replacement for realistic dialogue-history evaluations. Its value is that it makes final-state reliability, stale same-slot burden, memory compactness, and slot-conditioned answer robustness jointly measurable under an exact update-frequency axis.
 
