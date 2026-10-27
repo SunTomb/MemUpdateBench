@@ -210,6 +210,13 @@ def main():
     read_packet(args.packet_root, args.packet_index_sha256)
     tasks = [MemUpdateTaskV3.model_validate_json(line) for line in (args.packet_root / 'smoke.jsonl').read_bytes().splitlines()]
     assert len(tasks) == 4 and all(len(task.events) <= 5 for task in tasks)
+    budget_policy_path = ROOT / 'configs/vnext/version_transfer_decision_v1.json'
+    budget_policy = json.loads(budget_policy_path.read_bytes())
+    # One independently audited failed native attempt predates this configuration.
+    prior_smoke_attempts, other_system_reservation = 1, 4
+    smoke_cap = budget_policy['budget']['smoke_trajectories']
+    if smoke_cap < prior_smoke_attempts + len(tasks) + other_system_reservation:
+        raise ValueError('approved smoke trajectory budget insufficient for this retry and comparator')
     for port in (17687, 18043):
         available(port)
     free = subprocess.check_output(['nvidia-smi', '--id='+args.gpu_uuid,
@@ -237,6 +244,9 @@ def main():
               'graphiti_revision': GRAPHITI_REVISION, 'retrieval_recipe': 'EDGE_HYBRID_SEARCH_RRF',
               'structured_output_mode': args.structured_output_mode,
               'model_interpreter': str(args.model_python),
+              'budget_policy_sha256': sha(budget_policy_path),
+              'smoke_trajectory_cap': smoke_cap, 'prior_smoke_attempts': prior_smoke_attempts,
+              'comparator_reserved_smoke_trajectories': other_system_reservation,
               'packet_index_sha256': args.packet_index_sha256, 'llm_attempt_ceiling': 256,
               'embedding_model': EMBEDDING_ID, 'model': MODEL_ID,
               'runtime_source_hashes': {name: sha(ROOT/name) for name in (
@@ -294,6 +304,10 @@ def main():
         for port in (17687,18043):
             with socket.socket() as sock:
                 report['owned_ports_closed'][str(port)] = sock.connect_ex(('127.0.0.1',port)) != 0
+        case_summary = run / 'native_case_summary.json'
+        if case_summary.exists():
+            report['cases'] = json.loads(case_summary.read_bytes())
+            report['actual_trajectory_attempts_this_run'] = sum(c['event_attempts'] > 0 for c in report['cases'])
         for label,name in (('llm','llm-calls.jsonl'),('embedding','embedding-calls.jsonl')):
             path=run/name
             if path.exists():

@@ -37,7 +37,8 @@
     "main_episode_requests": 1632,
     "main_retrievals": 192,
     "main_and_ablation_answers": 488,
-    "smoke_trajectories": 8,
+    "smoke_trajectories": 9,
+    "smoke_budget_amendment": "user_approved_one_additional_attempt_after_native_schema_failure_2026_10_27",
     "replication_trajectories": 16,
     "replication_episode_requests": 272,
     "replication_native_answers": 64
