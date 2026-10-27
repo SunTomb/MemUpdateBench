@@ -101,3 +101,15 @@ def test_packet_binds_generator_and_contract_sources(tmp_path):
     assert manifest['source_hashes']['scripts/vnext_prepare_version_transfer_decision.py']
     assert manifest['source_hashes']['mub/vnext/contracts/v3/task.py']
     assert manifest['independent_sample_claim'] == '16_declared_synthetic_trajectories_not_population_independence'
+
+
+def test_depth_conditions_use_one_matched_form_background_entity():
+    tasks = prep.build_tasks(code_revision='test-revision')
+    for task in tasks:
+        target = task.queries[0].target_object_keys[0]
+        others = [key for key in task.target_objects if key.canonical_id != target.canonical_id]
+        depth = task.metadata.extra['update_count']
+        assert len(others) == (0 if depth == 16 else 1)
+        if others:
+            assert others[0].entity.split('-')[0] == target.entity.split('-')[0]
+            assert len(others[0].entity) == len(target.entity)

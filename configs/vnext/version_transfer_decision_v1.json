@@ -7,6 +7,8 @@
   "validation_cores": 8,
   "depths": [1, 4, 16],
   "events_per_task": 17,
+  "background_policy": "one_non_target_entity_with_matched_public_name_form",
+  "surface_revision": "matched-entity-v2",
   "history_event_position": 8,
   "retrieval_k": 8,
   "readouts": ["native_order_full_time", "reverse_order_full_time"],

@@ -80,7 +80,9 @@ def _task(core_index, depth, code_revision, *, positions=None, repeated=False, s
     keys = {}
     for position in range(size):
         is_target = position in target_positions
-        key = target if is_target else {**target, 'entity': f'Other-{core_index:02d}-{position:02d}'}
+        key = target if is_target else {
+            **target, 'entity': f'{"Person" if domain == "profile" else "Project"}-{core_index + 16:02d}'
+        }
         name = key['entity']
         value = f'{value_kind}-value-{0 if repeated and is_target else position:02d}'
         event_id, action_id = f'{task_id}-e{position:02d}', f'{task_id}-a{position:02d}'
