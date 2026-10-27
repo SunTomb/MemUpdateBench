@@ -20,7 +20,7 @@ from mub.vnext.runtime.version_transfer_local import LocalCompletionBoundary
 
 
 class TransformersBackend:
-    def __init__(self, snapshot, gpu_uuid):
+    def __init__(self, snapshot, gpu_uuid, *, require_json_schema=False):
         if os.environ.get('HF_HUB_OFFLINE') != '1' or os.environ.get('TRANSFORMERS_OFFLINE') != '1':
             raise ValueError('offline model loading flags required')
         if not gpu_uuid.startswith('GPU-') or os.environ.get('CUDA_VISIBLE_DEVICES') != gpu_uuid:
@@ -28,6 +28,19 @@ class TransformersBackend:
         snapshot = Path(snapshot).resolve(strict=True)
         if Path('/NAS/yesh') not in snapshot.parents:
             raise ValueError('model input must stay inside authorized NAS boundary')
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            constraint_version = version('lm-format-enforcer')
+        except PackageNotFoundError:
+            constraint_version = None
+        self.supports_json_schema = constraint_version == '0.11.3'
+        if require_json_schema and not self.supports_json_schema:
+            raise ValueError('pinned lm-format-enforcer required before model loading')
+        if self.supports_json_schema:
+            from lmformatenforcer import JsonSchemaParser
+            from lmformatenforcer.integrations.transformers import build_transformers_prefix_allowed_tokens_fn
+            self._schema_parser = JsonSchemaParser
+            self._prefix_builder = build_transformers_prefix_allowed_tokens_fn
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
@@ -38,17 +51,26 @@ class TransformersBackend:
         self.model.eval()
         self.context_tokens = min(32768, int(self.model.config.max_position_embeddings))
 
-    def prepare(self, messages):
+    def prepare(self, messages, response_schema=None):
         # No fallback template and no truncation: template errors are technical failures.
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors='pt', truncation=False, add_special_tokens=False)
-        return {'input_tokens': int(inputs.input_ids.shape[1]), 'inputs': inputs}
+        prepared = {'input_tokens': int(inputs.input_ids.shape[1]), 'inputs': inputs}
+        if response_schema is not None:
+            if not self.supports_json_schema:
+                raise ValueError('constrained schema decoding unavailable')
+            prepared['prefix_allowed_tokens_fn'] = self._prefix_builder(
+                self.tokenizer, self._schema_parser(response_schema))
+        return prepared
 
     def generate(self, prepared, max_tokens):
         inputs = prepared['inputs'].to(self.model.device)
+        options = {}
+        if 'prefix_allowed_tokens_fn' in prepared:
+            options['prefix_allowed_tokens_fn'] = prepared['prefix_allowed_tokens_fn']
         with self.torch.inference_mode():
             output = self.model.generate(**inputs, do_sample=False, max_new_tokens=max_tokens,
-                                         pad_token_id=self.tokenizer.eos_token_id)
+                                         pad_token_id=self.tokenizer.eos_token_id, **options)
         generated = output[0, prepared['input_tokens']:]
         tokens = int(generated.shape[0])
         eos = self.model.generation_config.eos_token_id
@@ -79,7 +101,8 @@ def serve(boundary, *, port, seconds, on_ready=None, embedding=None):
 
         def do_GET(self):
             if self.path == '/health':
-                self.respond(200, {'ready': True, 'model': boundary.model_id})
+                self.respond(200, {'ready': True, 'model': boundary.model_id,
+                                   'supports_json_schema': getattr(getattr(boundary, 'backend', None), 'supports_json_schema', False)})
             elif self.path == '/v1/models':
                 self.respond(200, {'object': 'list', 'data': [{'id': boundary.model_id, 'object': 'model'}]})
             else:
@@ -132,6 +155,7 @@ def main():
     parser.add_argument('--input-tokens', type=int, default=24000000)
     parser.add_argument('--output-tokens', type=int, default=2000000)
     parser.add_argument('--seconds', type=int, default=43200)
+    parser.add_argument('--require-json-schema', action='store_true')
     parser.add_argument('--embedding-snapshot', type=Path)
     parser.add_argument('--embedding-model-id')
     parser.add_argument('--embedding-ledger', type=Path)
@@ -159,7 +183,7 @@ def main():
             embedding_backend = MiniLMBackend(args.embedding_snapshot)
             embedding = LocalEmbeddingBoundary(embedding_backend, args.embedding_ledger,
                                                model_id=args.embedding_model_id)
-        backend = TransformersBackend(args.snapshot, args.gpu_uuid)
+        backend = TransformersBackend(args.snapshot, args.gpu_uuid, require_json_schema=args.require_json_schema)
         boundary = LocalCompletionBoundary(backend, budget, model_id=args.model_id)
         serve(boundary, port=args.port, embedding=embedding,
               seconds=max(1, args.seconds - (time.monotonic() - budget._started)),

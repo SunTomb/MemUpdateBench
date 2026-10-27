@@ -101,7 +101,7 @@ def database_config(run, neo):
     return conf
 
 
-async def native_cases(run, tasks):
+async def native_cases(run, tasks, *, structured_output_mode='json_object'):
     from openai import AsyncOpenAI
     from graphiti_core import Graphiti
     from graphiti_core.cross_encoder.client import CrossEncoderClient
@@ -129,23 +129,27 @@ async def native_cases(run, tasks):
                       default_headers={'X-MUB-Role': 'graphiti'}, max_retries=0, timeout=120)
     llm = CappedClient(config=LLMConfig(model=MODEL_ID, small_model=MODEL_ID,
                                       temperature=0, max_tokens=2048),
-                       client=api, max_tokens=2048, structured_output_mode='json_object')
+                       client=api, max_tokens=2048, structured_output_mode=structured_output_mode)
     embedder = OpenAIEmbedder(config=OpenAIEmbedderConfig(embedding_model=EMBEDDING_ID,
                                                         embedding_dim=384), client=api)
     driver = Neo4jDriver('bolt://127.0.0.1:17687', None, None)
     graph = Graphiti(graph_driver=driver, llm_client=llm, embedder=embedder,
                      cross_encoder=UnsupportedCrossEncoder(), max_coroutines=1)
-    cases = []
+    cases = [{'case': task.metadata.extra['smoke_case'], 'status': 'NOT_RUN',
+              'event_attempts': 0, 'event_completions': 0, 'retrieval_completions': 0}
+             for task in tasks]
     try:
-        await graph.build_indices_and_constraints()
+        # Neo4jDriver schedules setup at construction inside an active loop.
+        if driver._init_task is not None:
+            await driver._init_task
+        else:
+            await graph.build_indices_and_constraints()
         for index, task in enumerate(tasks):
             group = f'version_transfer_owned_smoke_{index}'
             bridge = GraphitiNativeEpisode(graph, namespace=group, source_type=EpisodeType.text,
                 filter_factory=GraphitiNativeEpisode.validity_filter_factory(SearchFilters, DateFilter, ComparisonOperator),
                 search_config=EDGE_HYBRID_SEARCH_RRF)
-            row = {'case': task.metadata.extra['smoke_case'], 'status': 'NOT_RUN',
-                   'event_attempts': 0, 'event_completions': 0, 'retrieval_completions': 0}
-            cases.append(row)
+            row = cases[index]
             try:
                 for position, event in enumerate(task.events):
                     row['event_attempts'] += 1
@@ -186,12 +190,17 @@ def main():
     parser.add_argument('--packet-root', type=Path, required=True)
     parser.add_argument('--packet-index-sha256', required=True)
     parser.add_argument('--gpu-uuid', required=True)
+    parser.add_argument('--structured-output-mode', choices=('json_object', 'json_schema'), default='json_object')
+    parser.add_argument('--model-python', type=Path,
+                        default=Path('/NAS/yesh/miniconda3/envs/gmsra/bin/python'))
     args = parser.parse_args()
     base = Path('/NAS/yesh/MemUpdateBench')
     run = args.output_root.absolute()
     if not run.is_relative_to(base / '_local') or run.exists() or run.is_symlink() or '..' in run.parts:
         raise ValueError('smoke output must be a new owned project-local directory')
     assert_no_reparse_components(run)
+    if not args.model_python.resolve(strict=True).is_relative_to(Path('/NAS/yesh')):
+        raise ValueError('model interpreter outside authorized NAS boundary')
     args.packet_root = args.packet_root.absolute()
     if not args.packet_root.resolve().is_relative_to(base):
         raise ValueError('packet must remain within authorized project boundary')
@@ -226,6 +235,8 @@ def main():
     report = {'status': 'BLOCKED', 'evidence_class': 'native_graphiti_capability_smoke',
               'scientific_evidence': False, 'study_validation_tasks': 0, 'paid_api_calls': 0,
               'graphiti_revision': GRAPHITI_REVISION, 'retrieval_recipe': 'EDGE_HYBRID_SEARCH_RRF',
+              'structured_output_mode': args.structured_output_mode,
+              'model_interpreter': str(args.model_python),
               'packet_index_sha256': args.packet_index_sha256, 'llm_attempt_ceiling': 256,
               'embedding_model': EMBEDDING_ID, 'model': MODEL_ID,
               'runtime_source_hashes': {name: sha(ROOT/name) for name in (
@@ -253,18 +264,23 @@ def main():
             raise RuntimeError('GPU headroom changed before model load; no model started')
         snapshot = base.parent/'hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28'
         mini = base.parent/'hf_cache/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/c9745ed1d9f207416be6d2e6f8de32d1f16199bf'
-        model = subprocess.Popen([str(base.parent/'miniconda3/envs/gmsra/bin/python'),'-B','-I',
+        model = subprocess.Popen([str(args.model_python),'-B','-I',
             str(ROOT/'scripts/vnext_serve_version_transfer_local.py'), '--snapshot',str(snapshot),
             '--gpu-uuid',args.gpu_uuid,'--model-id',MODEL_ID,'--ledger',str(run/'llm-calls.jsonl'),
             '--attempts','256','--input-tokens','1000000','--output-tokens','524288','--seconds','3600',
             '--embedding-snapshot',str(mini),'--embedding-model-id',EMBEDDING_ID,
-            '--embedding-ledger',str(run/'embedding-calls.jsonl')], cwd=base, env=env,
+            '--embedding-ledger',str(run/'embedding-calls.jsonl')]
+            + (['--require-json-schema'] if args.structured_output_mode == 'json_schema' else []), cwd=base, env=env,
             stdout=model_log,stderr=subprocess.STDOUT,start_new_session=True)
         processes.append(model)
         wait_port(model,18043,600)
         with urlopen('http://127.0.0.1:18043/health',timeout=5) as response:
-            assert json.load(response)['model'] == MODEL_ID
-        cases = asyncio.run(asyncio.wait_for(native_cases(run,tasks),timeout=2400))
+            health = json.load(response)
+            assert health['model'] == MODEL_ID
+            if args.structured_output_mode == 'json_schema':
+                assert health.get('supports_json_schema') is True
+        cases = asyncio.run(asyncio.wait_for(native_cases(run,tasks,
+            structured_output_mode=args.structured_output_mode),timeout=2400))
         report['cases'] = cases
         if len(cases)==4 and all(c['status']=='OBSERVED' and c['namespace_empty_after_cleanup'] for c in cases):
             report['status']='READY'

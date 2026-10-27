@@ -1,6 +1,7 @@
 """Strict local completion protocol; no aliases, hidden truncation or fake usage."""
 from __future__ import annotations
 
+import json
 import math
 import threading
 
@@ -25,8 +26,18 @@ class LocalCompletionBoundary:
         if type(temperature) not in (int, float) or not math.isfinite(temperature) or temperature != 0:
             raise ValueError('deterministic temperature zero is required')
         response_format = request.get('response_format', {'type': 'text'})
-        if type(response_format) is not dict or response_format.get('type') not in ('text', 'json_object'):
-            raise ValueError('JSON schema constrained decoding is not implemented')
+        if type(response_format) is not dict or response_format.get('type') not in ('text', 'json_object', 'json_schema'):
+            raise ValueError('unsupported response format')
+        schema = None
+        if response_format['type'] == 'json_schema':
+            if getattr(self.backend, 'supports_json_schema', False) is not True:
+                raise ValueError('backend has no qualified JSON schema decoding')
+            descriptor = response_format.get('json_schema')
+            if type(descriptor) is not dict or type(descriptor.get('schema')) is not dict:
+                raise ValueError('explicit JSON schema required')
+            schema = descriptor['schema']
+            if schema.get('type') != 'object' or len(json.dumps(schema, allow_nan=False)) > 65536:
+                raise ValueError('study requires a bounded object response schema')
         messages = request.get('messages')
         if type(messages) is not list or not messages:
             raise ValueError('nonempty text messages required')
@@ -39,7 +50,8 @@ class LocalCompletionBoundary:
         if type(maximum) is not int or not 0 < maximum <= 2048:
             raise ValueError('output token limit exceeds study ceiling')
         with self._lock:
-            prepared = self.backend.prepare(messages)
+            prepared = (self.backend.prepare(messages) if schema is None else
+                        self.backend.prepare(messages, response_schema=schema))
             prompt_tokens = prepared['input_tokens']
             if type(prompt_tokens) is not int or prompt_tokens <= 0:
                 raise ValueError('backend must report exact input token count')

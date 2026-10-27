@@ -88,3 +88,26 @@ def test_loopback_http_smoke_reports_usage_without_a_model(tmp_path):
         thread.join(timeout=5)
         budget.close()
     assert not thread.is_alive()
+
+
+def test_declared_schema_backend_receives_exact_schema_without_output_repair(tmp_path):
+    from copy import deepcopy
+
+    class ConstrainedBackend(Backend):
+        supports_json_schema = True
+
+        def prepare(self, messages, response_schema=None):
+            self.schema = deepcopy(response_schema)
+            return super().prepare(messages)
+
+    _, _, budget, request = setup_boundary(tmp_path)
+    backend = ConstrainedBackend()
+    boundary = LocalCompletionBoundary(backend, budget, model_id='pinned-model')
+    schema = {'type': 'object', 'properties': {'ok': {'type': 'boolean'}}, 'required': ['ok']}
+    request['response_format'] = {'type': 'json_schema', 'json_schema': {'name': 'check', 'schema': schema}}
+    result = boundary.complete(request, role='graphiti')
+    assert backend.schema == schema
+    assert schema['required'] == ['ok']
+    assert result['choices'][0]['message']['content'] == '{"ok":true}'
+    assert backend.generated == 1
+    budget.close()
