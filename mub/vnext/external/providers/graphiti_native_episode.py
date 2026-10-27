@@ -25,7 +25,7 @@ def _public_time(value):
 
 
 class GraphitiNativeEpisode:
-    def __init__(self, client, *, namespace, source_type, filter_factory):
+    def __init__(self, client, *, namespace, source_type, filter_factory, search_config=None):
         if type(namespace) is not str or not namespace.strip():
             raise ValueError('owned namespace must be nonblank')
         if not callable(filter_factory):
@@ -34,6 +34,7 @@ class GraphitiNativeEpisode:
         self.namespace = namespace
         self.source_type = source_type
         self.filter_factory = filter_factory
+        self.search_config = search_config
         self.counts = {'episode_attempts': 0, 'retrieval_attempts': 0}
         self.closed = False
 
@@ -66,6 +67,10 @@ class GraphitiNativeEpisode:
             raise ValueError('query must state public as-of ISO UTC time')
         native_filter = self.filter_factory(_public_time(matched.group(1)))
         self.counts['retrieval_attempts'] += 1
+        if self.search_config is not None:
+            config = self.search_config.model_copy(deep=True, update={'limit': query.k})
+            return await self.client.search_(query=query.query_text, group_ids=[self.namespace],
+                                             config=config, search_filter=native_filter)
         return await self.client.search(query=query.query_text, group_ids=[self.namespace],
                                         num_results=query.k, search_filter=native_filter)
 

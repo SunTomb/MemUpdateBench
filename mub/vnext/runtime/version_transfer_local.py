@@ -19,6 +19,8 @@ class LocalCompletionBoundary:
             raise ValueError('only a single nonstreaming response is supported')
         if request.get('tools') or request.get('tool_choice') not in (None, 'none'):
             raise ValueError('tool execution is unsupported')
+        if any(name in request for name in ('logprobs', 'top_logprobs', 'logit_bias', 'stop', 'seed', 'reasoning_effort')):
+            raise ValueError('unimplemented decoding options must not be ignored')
         temperature = request.get('temperature', 0)
         if type(temperature) not in (int, float) or not math.isfinite(temperature) or temperature != 0:
             raise ValueError('deterministic temperature zero is required')

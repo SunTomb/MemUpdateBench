@@ -51,7 +51,7 @@ def test_context_overflow_rejected_without_truncation_or_generation(tmp_path):
 @pytest.mark.parametrize('changes', [
     {'model': 'silent-alias'}, {'stream': True}, {'temperature': 0.7},
     {'response_format': {'type': 'json_schema'}}, {'max_tokens': 2049},
-    {'tools': [{'type': 'function'}]},
+    {'tools': [{'type': 'function'}]}, {'logprobs': True}, {'logit_bias': {'123': 1}},
 ])
 def test_unsupported_request_fails_before_generation(tmp_path, changes):
     boundary, backend, budget, request = setup_boundary(tmp_path)

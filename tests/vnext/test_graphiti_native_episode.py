@@ -80,3 +80,27 @@ def test_native_filter_factory_uses_validity_interval_not_gold_version():
     assert filt.invalid_at[0][0].comparison_operator == 'IS NULL'
     assert filt.invalid_at[1][0].comparison_operator == '>'
     assert filt.invalid_at[1][0].date == when
+
+
+def test_explicit_native_search_recipe_preserves_entire_result_and_scores():
+    from pydantic import BaseModel
+
+    class Config(BaseModel):
+        limit: int = 10
+
+    class NativeSearchClient(Client):
+        async def search_(self, **kwargs):
+            self.searches.append(kwargs)
+            return SimpleNamespace(edges=['native-first', 'native-second'], edge_reranker_scores=[0.8, 0.4])
+
+    config = Config()
+    client = NativeSearchClient()
+    bridge = GraphitiNativeEpisode(client, namespace='owned', source_type='text',
+                                  filter_factory=lambda t: t, search_config=config)
+    query = ProviderQueryInputV1(query_id='q', query_text='As of 2025-01-02T00:00:00Z, where?',
+                                 k=8, runtime_namespace='owned')
+    result = run(bridge.retrieve(query))
+    assert result.edges == ['native-first', 'native-second']
+    assert result.edge_reranker_scores == [0.8, 0.4]
+    assert client.searches[0]['config'].limit == 8
+    assert config.limit == 10

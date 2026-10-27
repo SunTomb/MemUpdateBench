@@ -63,7 +63,7 @@ class TransformersBackend:
         self.torch.cuda.empty_cache()
 
 
-def serve(boundary, *, port, seconds, on_ready=None):
+def serve(boundary, *, port, seconds, on_ready=None, embedding=None):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             self.request.settimeout(30)
@@ -86,7 +86,7 @@ def serve(boundary, *, port, seconds, on_ready=None):
                 self.respond(404, {'error': 'not_found'})
 
         def do_POST(self):
-            if self.path != '/v1/chat/completions':
+            if self.path not in ('/v1/chat/completions', '/v1/embeddings'):
                 self.respond(404, {'error': 'not_found'})
                 return
             try:
@@ -95,7 +95,12 @@ def serve(boundary, *, port, seconds, on_ready=None):
                     raise ValueError('invalid request byte limit')
                 request = json.loads(self.rfile.read(length))
                 role = self.headers.get('X-MUB-Role', 'unclassified')
-                result = boundary.complete(request, role=role)
+                if self.path == '/v1/embeddings':
+                    if embedding is None:
+                        raise ValueError('embedding backend not qualified/configured')
+                    result = embedding.create(request, role=role)
+                else:
+                    result = boundary.complete(request, role=role)
                 self.respond(200, result)
             except BudgetBlocked:
                 self.respond(429, {'error': 'STUDY_BUDGET_BLOCKED'})
@@ -127,7 +132,15 @@ def main():
     parser.add_argument('--input-tokens', type=int, default=24000000)
     parser.add_argument('--output-tokens', type=int, default=2000000)
     parser.add_argument('--seconds', type=int, default=43200)
+    parser.add_argument('--embedding-snapshot', type=Path)
+    parser.add_argument('--embedding-model-id')
+    parser.add_argument('--embedding-ledger', type=Path)
     args = parser.parse_args()
+    embedding_options = (args.embedding_snapshot, args.embedding_model_id, args.embedding_ledger)
+    if any(embedding_options) and not all(embedding_options):
+        parser.error('embedding snapshot, model identity and ledger must be supplied together')
+    if args.embedding_ledger and Path('/NAS/yesh') not in args.embedding_ledger.absolute().parents:
+        parser.error('embedding ledger must remain inside authorized NAS boundary')
     if not (0 < args.attempts <= 10000 and 0 < args.input_tokens <= 24000000
             and 0 < args.output_tokens <= 2000000 and 0 < args.seconds <= 43200):
         parser.error('requested limits exceed study ceiling')
@@ -139,18 +152,29 @@ def main():
     signal.signal(signal.SIGTERM, terminate)
     budget = StudyBudget(args.ledger, attempts=args.attempts, input_tokens=args.input_tokens,
                          output_tokens=args.output_tokens, seconds=args.seconds)
-    backend = None
+    backend = embedding_backend = embedding = None
     try:
+        if args.embedding_snapshot:
+            from mub.vnext.runtime.version_transfer_embedding import MiniLMBackend, LocalEmbeddingBoundary
+            embedding_backend = MiniLMBackend(args.embedding_snapshot)
+            embedding = LocalEmbeddingBoundary(embedding_backend, args.embedding_ledger,
+                                               model_id=args.embedding_model_id)
         backend = TransformersBackend(args.snapshot, args.gpu_uuid)
         boundary = LocalCompletionBoundary(backend, budget, model_id=args.model_id)
-        serve(boundary, port=args.port, seconds=max(1, args.seconds - (time.monotonic() - budget._started)),
+        serve(boundary, port=args.port, embedding=embedding,
+              seconds=max(1, args.seconds - (time.monotonic() - budget._started)),
               on_ready=lambda address: print(json.dumps({'ready': True, 'model': args.model_id,
                                                           'listen': list(address)}), flush=True))
     finally:
         if backend is not None:
             backend.close()
+        if embedding_backend is not None:
+            embedding_backend.close()
+        if embedding is not None:
+            embedding.close()
         budget.close()
-        print(json.dumps({'terminal': True, 'usage': budget.totals}), flush=True)
+        print(json.dumps({'terminal': True, 'usage': budget.totals,
+                          'embedding_usage': embedding.totals if embedding else None}), flush=True)
 
 
 if __name__ == '__main__':
