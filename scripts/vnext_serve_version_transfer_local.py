@@ -38,9 +38,13 @@ class TransformersBackend:
             raise ValueError('pinned lm-format-enforcer required before model loading')
         if self.supports_json_schema:
             from lmformatenforcer import JsonSchemaParser
-            from lmformatenforcer.integrations.transformers import build_transformers_prefix_allowed_tokens_fn
+            from lmformatenforcer.integrations.transformers import (
+                build_token_enforcer_tokenizer_data, build_transformers_prefix_allowed_tokens_fn,
+            )
             self._schema_parser = JsonSchemaParser
             self._prefix_builder = build_transformers_prefix_allowed_tokens_fn
+            self._tokenizer_data_builder = build_token_enforcer_tokenizer_data
+        self._static_tokenizer_data = None
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
@@ -51,16 +55,20 @@ class TransformersBackend:
         self.model.eval()
         self.context_tokens = min(32768, int(self.model.config.max_position_embeddings))
 
+    def _schema_prefix(self, response_schema):
+        if not self.supports_json_schema:
+            raise ValueError('constrained schema decoding unavailable')
+        if self._static_tokenizer_data is None:
+            self._static_tokenizer_data = self._tokenizer_data_builder(self.tokenizer)
+        return self._prefix_builder(self._static_tokenizer_data, self._schema_parser(response_schema))
+
     def prepare(self, messages, response_schema=None):
         # No fallback template and no truncation: template errors are technical failures.
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors='pt', truncation=False, add_special_tokens=False)
         prepared = {'input_tokens': int(inputs.input_ids.shape[1]), 'inputs': inputs}
         if response_schema is not None:
-            if not self.supports_json_schema:
-                raise ValueError('constrained schema decoding unavailable')
-            prepared['prefix_allowed_tokens_fn'] = self._prefix_builder(
-                self.tokenizer, self._schema_parser(response_schema))
+            prepared['prefix_allowed_tokens_fn'] = self._schema_prefix(response_schema)
         return prepared
 
     def generate(self, prepared, max_tokens):
@@ -80,7 +88,7 @@ class TransformersBackend:
                 'completion_tokens': tokens, 'finish_reason': 'stop' if ended else 'length'}
 
     def close(self):
-        self.model = self.tokenizer = None
+        self.model = self.tokenizer = self._static_tokenizer_data = None
         gc.collect()
         self.torch.cuda.empty_cache()
 

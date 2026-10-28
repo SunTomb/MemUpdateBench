@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import random
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,14 +61,32 @@ def _time(position):
     return (datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=position)).isoformat().replace('+00:00', 'Z')
 
 
+def _value_schedule(core_index):
+    """Counterbalance value magnitude without encoding effective-time order."""
+    seed = int(digest(f'version-transfer-values-v3:{core_index}'.encode()), 16)
+    rng = random.Random(seed)
+    for _ in range(10000):
+        labels = list(range(17))
+        rng.shuffle(labels)
+        if labels[-1] in (0, 16):
+            continue
+        if (labels[-1] > labels[0]) != (core_index % 2 == 0):
+            continue
+        return labels
+    raise ValueError('failed to construct counterbalanced value schedule')
+
+
 def _task(core_index, depth, code_revision, *, positions=None, repeated=False, smoke_case=None):
     config = json.loads(CONFIG_PATH.read_bytes())
     required = {'core_count': 16, 'dev_cores': 8, 'validation_cores': 8,
-                'depths': [1, 4, 16], 'events_per_task': 17, 'history_event_position': 8}
+                'depths': [1, 4, 16], 'events_per_task': 17, 'history_event_position': 8,
+                'surface_revision': 'matched-entity-counterbalanced-values-v3',
+                'value_schedule_policy': 'sha256_seeded_permutation_counterbalanced_endpoints_v1'}
     if any(config.get(name) != value for name, value in required.items()):
         raise ValueError('config disagrees with the frozen study design')
     config_hash = digest(canonical(config))
     domain, attribute, label, value_kind = CORES[core_index]
+    value_schedule = list(range(17)) if smoke_case else _value_schedule(core_index)
     entity = f'{"Person" if domain == "profile" else "Project"}-{core_index:02d}'
     # Depth conditions use the same value at a given public time and the same final value.
     size = 17 if positions is None else max(positions) + 1
@@ -84,7 +103,7 @@ def _task(core_index, depth, code_revision, *, positions=None, repeated=False, s
             **target, 'entity': f'{"Person" if domain == "profile" else "Project"}-{core_index + 16:02d}'
         }
         name = key['entity']
-        value = f'{value_kind}-value-{0 if repeated and is_target else position:02d}'
+        value = f'{value_kind}-value-{value_schedule[0 if repeated and is_target else position]:02d}'
         event_id, action_id = f'{task_id}-e{position:02d}', f'{task_id}-a{position:02d}'
         text = (f'Effective {_time(position)}, the {label} for {name} is {value}. '
                 'This single-valued setting replaces its earlier setting from that time onward.')
@@ -115,7 +134,7 @@ def _task(core_index, depth, code_revision, *, positions=None, repeated=False, s
                         'selector': selector, 'target_object_keys': [target], 'answer_schema': 'string',
                         'evaluation_mode': 'retrieved_prompt'})
         evidence.append({'query_id': query_id,
-                         'answer': f'{value_kind}-value-{0 if repeated else selected:02d}',
+                         'answer': f'{value_kind}-value-{value_schedule[0 if repeated else selected]:02d}',
                          'supporting_object_keys': [target], 'supporting_event_ids': [event_id],
                          'derivation_steps': [{'step_id': 'read', 'operation': 'read',
                                                'supporting_object_keys': [target],
@@ -164,6 +183,22 @@ def build_smoke(*, code_revision):
                  for i, case in enumerate(('replacement', 'repeated_value', 'history', 'similar_entity')))
 
 
+def value_shortcut_audit(tasks):
+    rows = {}
+    for task in tasks:
+        target = task.queries[0].target_object_keys[0].canonical_id
+        values = [action.value for action in task.actions
+                  if any(key.canonical_id == target for key in action.target_object_keys)]
+        gold = task.gold_evidence[0].answer
+        cell = f'{task.metadata.split.value}/u{task.metadata.extra["update_count"]}'
+        counts = rows.setdefault(cell, {'tasks': 0, 'maximum_value_correct': 0,
+                                        'minimum_value_correct': 0})
+        counts['tasks'] += 1
+        counts['maximum_value_correct'] += int(gold == max(values))
+        counts['minimum_value_correct'] += int(gold == min(values))
+    return {'evidence_class': 'deterministic_input_control_not_model_results', 'rows': rows}
+
+
 def publish(output_root, *, code_revision):
     output = Path(output_root).absolute()
     assert_no_reparse_components(output)
@@ -188,6 +223,8 @@ def publish(output_root, *, code_revision):
                 'code_revision': code_revision, 'task_count': len(tasks), 'core_count': 16,
                 'independent_sample_claim': '16_declared_synthetic_trajectories_not_population_independence',
                 'tokenizer_length_validation': 'PENDING_MODEL_QUALIFICATION',
+                'surface_revision': json.loads(artifacts['config.json'])['surface_revision'],
+                'value_shortcut_audit': value_shortcut_audit(tasks),
                 'source_hash_policy': 'python_lf_normalized',
                 'source_hashes': {name: digest((ROOT / name).read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n')) for name in SOURCE_FILES},
                 'smoke_count': len(smoke), 'model_calls': 0,

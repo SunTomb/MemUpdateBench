@@ -5,14 +5,24 @@
   "core_count": 16,
   "dev_cores": 8,
   "validation_cores": 8,
-  "depths": [1, 4, 16],
+  "depths": [
+    1,
+    4,
+    16
+  ],
   "events_per_task": 17,
   "background_policy": "one_non_target_entity_with_matched_public_name_form",
-  "surface_revision": "matched-entity-v2",
+  "surface_revision": "matched-entity-counterbalanced-values-v3",
   "history_event_position": 8,
   "retrieval_k": 8,
-  "readouts": ["native_order_full_time", "reverse_order_full_time"],
-  "systems": ["graphiti_native", "mem0_native"],
+  "readouts": [
+    "native_order_full_time",
+    "reverse_order_full_time"
+  ],
+  "systems": [
+    "graphiti_native",
+    "mem0_native"
+  ],
   "primary_endpoint": "current_answer_high_minus_low_depth",
   "temporal_contract": "monotone_public_effective_time_equal_to_event_time",
   "decision": {
@@ -43,5 +53,7 @@
     "replication_episode_requests": 272,
     "replication_native_answers": 64
   },
-  "scientific_release_allowed": false
+  "scientific_release_allowed": false,
+  "value_schedule_policy": "sha256_seeded_permutation_counterbalanced_endpoints_v1",
+  "smoke_value_schedule_policy": "retained_v2_capability_inputs_not_scientific_samples"
 }

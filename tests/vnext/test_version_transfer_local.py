@@ -111,3 +111,32 @@ def test_declared_schema_backend_receives_exact_schema_without_output_repair(tmp
     assert result['choices'][0]['message']['content'] == '{"ok":true}'
     assert backend.generated == 1
     budget.close()
+
+
+def test_schema_requests_share_static_tokenizer_data_but_not_parser_state():
+    from scripts.vnext_serve_version_transfer_local import TransformersBackend
+
+    backend = object.__new__(TransformersBackend)
+    backend.supports_json_schema = True
+    backend.tokenizer = object()
+    backend._static_tokenizer_data = None
+    builds, parsers = [], []
+
+    def build(tokenizer):
+        builds.append(tokenizer)
+        return object()
+
+    def parser(schema):
+        result = {'schema': schema}
+        parsers.append(result)
+        return result
+
+    backend._tokenizer_data_builder = build
+    backend._schema_parser = parser
+    backend._prefix_builder = lambda data, state: (data, state)
+    first = backend._schema_prefix({'type': 'object'})
+    second = backend._schema_prefix({'type': 'object'})
+    assert builds == [backend.tokenizer]
+    assert first[0] is second[0]
+    assert first[1] is not second[1]
+    assert len(parsers) == 2

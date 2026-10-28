@@ -113,3 +113,43 @@ def test_depth_conditions_use_one_matched_form_background_entity():
         if others:
             assert others[0].entity.split('-')[0] == target.entity.split('-')[0]
             assert len(others[0].entity) == len(target.entity)
+
+
+def test_value_labels_do_not_encode_event_time_or_fixed_final_version():
+    tasks = prep.build_tasks(code_revision='test-revision')
+    high = [t for t in tasks if t.metadata.extra['update_count'] == 16]
+    finals = []
+    for task in high:
+        values = [a.value for a in task.actions]
+        assert values != sorted(values) and values != sorted(values, reverse=True)
+        assert task.gold_evidence[0].answer not in (min(values), max(values))
+        finals.append(task.gold_evidence[0].answer.rsplit('-', 1)[1])
+    assert len(set(finals)) >= 6
+    for split in ('dev', 'test'):
+        low = [t for t in tasks if t.metadata.extra['update_count'] == 1 and t.metadata.split.value == split]
+        assert sum(t.gold_evidence[0].answer > t.actions[0].value for t in low) == 4
+
+
+def test_value_schedule_is_deterministic_and_keeps_smoke_surface_unchanged():
+    assert prep._value_schedule(0) == prep._value_schedule(0)
+    assert all(sorted(prep._value_schedule(i)) == list(range(17)) for i in range(16))
+    cases = prep.build_smoke(code_revision='test-revision')
+    for task in cases:
+        repeated = task.metadata.extra['smoke_case'] == 'repeated_value'
+        target = task.queries[0].target_object_keys[0].canonical_id
+        for position, action in enumerate(task.actions):
+            expected = 0 if repeated and action.target_object_keys[0].canonical_id == target else position
+            assert action.value.endswith(f'-{expected:02d}')
+
+
+def test_manifest_declares_surface_and_reports_simple_shortcut_baselines(tmp_path):
+    out = tmp_path / 'v3-candidate'
+    prep.publish(out, code_revision='test-revision')
+    manifest = json.loads((out / 'manifest.json').read_bytes())
+    assert manifest['surface_revision'] == 'matched-entity-counterbalanced-values-v3'
+    audit = manifest['value_shortcut_audit']
+    assert audit['evidence_class'] == 'deterministic_input_control_not_model_results'
+    assert audit['rows']['dev/u1']['maximum_value_correct'] == 4
+    assert audit['rows']['test/u16']['maximum_value_correct'] == 0
+    assert audit['rows']['test/u16']['minimum_value_correct'] == 0
+    assert manifest['tokenizer_length_validation'] == 'PENDING_MODEL_QUALIFICATION'
