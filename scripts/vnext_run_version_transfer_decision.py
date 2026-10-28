@@ -101,7 +101,7 @@ def database_config(run, neo):
     return conf
 
 
-async def native_cases(run, tasks, *, structured_output_mode='json_object'):
+def native_graph_clients(*, structured_output_mode='json_object'):
     from openai import AsyncOpenAI
     from graphiti_core import Graphiti
     from graphiti_core.cross_encoder.client import CrossEncoderClient
@@ -135,6 +135,15 @@ async def native_cases(run, tasks, *, structured_output_mode='json_object'):
     driver = Neo4jDriver('bolt://127.0.0.1:17687', None, None)
     graph = Graphiti(graph_driver=driver, llm_client=llm, embedder=embedder,
                      cross_encoder=UnsupportedCrossEncoder(), max_coroutines=1)
+    return graph, driver, api
+
+
+async def native_cases(run, tasks, *, structured_output_mode='json_object'):
+    from graphiti_core.nodes import EpisodeType
+    from graphiti_core.search.search_config_recipes import EDGE_HYBRID_SEARCH_RRF
+    from graphiti_core.search.search_filters import SearchFilters, DateFilter, ComparisonOperator
+
+    graph, driver, api = native_graph_clients(structured_output_mode=structured_output_mode)
     cases = [{'case': task.metadata.extra['smoke_case'], 'status': 'NOT_RUN',
               'event_attempts': 0, 'event_completions': 0, 'retrieval_completions': 0}
              for task in tasks]

@@ -45,3 +45,10 @@ def test_owned_stop_targets_only_the_supplied_process_group(monkeypatch):
     assert len(sent) == 1 and sent[0][0] == 12345
     assert runner.stop_owned(process) is True
     assert len(sent) == 1
+
+
+def test_native_client_factory_is_reusable_without_importing_provider_packages():
+    import inspect
+    assert callable(runner.native_graph_clients)
+    signature = inspect.signature(runner.native_graph_clients)
+    assert signature.parameters['structured_output_mode'].kind is inspect.Parameter.KEYWORD_ONLY
