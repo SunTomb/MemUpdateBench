@@ -1,6 +1,12 @@
 # Related Work and Positioning Draft
 
-## Current research decision boundary (2026-10-26)
+## Audited development decision (2026-10-28)
+
+The bounded Graphiti-only development experiment has now completed and been independently re-audited. Current-query correctness was 8/8 at each update count (1/4/16), in both native and reversed evidence order; reversal changed 20/24 current prompts. No pre-specified current-depth or depth-by-order deterioration signal was observed. The formal dev-screen state is **INCONCLUSIVE**, and the investment recommendation is **pivot or stop the current-value degradation claim before spending validation budget**. No validation or fresh-ingestion replication was performed. This is a scoped negative observation, not proof of universal Graphiti reliability.
+
+Historical native answers were 5/24 correct, with 17 abstentions and nine empty retrieved contexts. All historical contexts had at most one entry, so historical order reversal did not change a prompt and is not an order-robustness test. The historical gap remains exploratory with unresolved state/retrieval/reader attribution; it cannot silently replace the pre-specified primary endpoint or establish a new paper contribution. Mem0 remains runtime-blocked and is not a scored comparison row. See [the bounded findings and caveats](version_transfer_dev_findings_draft.md) and the hash-bound compact decision under `results/vnext/version_transfer_development_decision_20261028_v1/`.
+
+## Planning context (2026-10-26)
 
 The active direction is a bounded repeated-update/version-transfer diagnostic study, not another general memory leaderboard. The approved protocol is in `docs/superpowers/specs/2026-10-26-version-transfer-decision-design.md`. Historical positioning below is background, not a current novelty or execution claim.
 

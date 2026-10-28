@@ -1,0 +1,532 @@
+{
+  "aggregate_charged_llm": {
+    "attempts": 1831,
+    "input_tokens": 2586044,
+    "output_tokens": 124788
+  },
+  "decision": "INCONCLUSIVE",
+  "decision_scope": "development_screen_not_preregistered_validation",
+  "elapsed_seconds": 8301.183348147199,
+  "embedding_usage_this_run": {
+    "attempts": 1994,
+    "input_tokens": 30727,
+    "items": 2888
+  },
+  "execution_source_revision": "1218c766f034f8a2e0268c90f6ea008442ee5c2e",
+  "increasing_current_order_effect_cores": [],
+  "independent_audit_sha256": "25774fde2cd8f4440e19ea3f3893b6ae06736a37d5071f1f0da2d5fd0af2a879",
+  "independent_signer": false,
+  "investment_recommendation": "PIVOT_OR_STOP_CURRENT_VALUE_DEGRADATION_CLAIM",
+  "limits": [
+    "Development data only; no confirmatory validation or fresh-ingestion replication.",
+    "Single Graphiti/Qwen2.5/MiniLM/Neo4j/native-RRF/constrained-decoding configuration.",
+    "Eight controlled synthetic trajectories are the sampling units, not 144 independent samples.",
+    "Perfect current answers do not establish perfect internal state or universal system reliability.",
+    "Historical misses are exploratory, not a replacement primary endpoint.",
+    "Oracle prompts change evidence content/length and are not a causal retrieval-effect estimate.",
+    "State/object alignment remains unavailable, as declared in canonical records."
+  ],
+  "llm_roles": {
+    "graphiti": 1603,
+    "oracle_readout": 48,
+    "readout": 96
+  },
+  "manipulation_checks": {
+    "current/u1": {
+      "changed_prompt": 7,
+      "empty_context": 0,
+      "queries": 8,
+      "single_entry": 1
+    },
+    "current/u16": {
+      "changed_prompt": 7,
+      "empty_context": 0,
+      "queries": 8,
+      "single_entry": 1
+    },
+    "current/u4": {
+      "changed_prompt": 6,
+      "empty_context": 0,
+      "queries": 8,
+      "single_entry": 2
+    },
+    "point_in_time/u1": {
+      "changed_prompt": 0,
+      "empty_context": 1,
+      "queries": 8,
+      "single_entry": 7
+    },
+    "point_in_time/u16": {
+      "changed_prompt": 0,
+      "empty_context": 7,
+      "queries": 8,
+      "single_entry": 1
+    },
+    "point_in_time/u4": {
+      "changed_prompt": 0,
+      "empty_context": 1,
+      "queries": 8,
+      "single_entry": 7
+    }
+  },
+  "metrics": {
+    "native/current/u1": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "native/current/u16": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "native/current/u4": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "native/point_in_time/u1": {
+      "abstained": 5,
+      "correct": 2,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "native/point_in_time/u16": {
+      "abstained": 8,
+      "correct": 0,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "native/point_in_time/u4": {
+      "abstained": 4,
+      "correct": 3,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/current/u1": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/current/u16": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/current/u4": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/point_in_time/u1": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/point_in_time/u16": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "oracle/point_in_time/u4": {
+      "abstained": 2,
+      "correct": 6,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/current/u1": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/current/u16": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/current/u4": {
+      "abstained": 0,
+      "correct": 8,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/point_in_time/u1": {
+      "abstained": 5,
+      "correct": 2,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/point_in_time/u16": {
+      "abstained": 8,
+      "correct": 0,
+      "format_invalid": 0,
+      "total": 8
+    },
+    "reverse/point_in_time/u4": {
+      "abstained": 4,
+      "correct": 3,
+      "format_invalid": 0,
+      "total": 8
+    }
+  },
+  "next_action": "Do not run validation or repeat Mem0 automatically. A historical-serving hypothesis needs a separate scoped protocol and native-state/retrieval diagnosis.",
+  "owned_ports_closed_now": true,
+  "owned_processes_absent_now": true,
+  "packet_index_sha256": "d84fcdc7eb7d09ff393b8e279d9c987252c033073b19ab950feb8b9d94490341",
+  "paired_contrasts": [
+    {
+      "core_id": "vtd-core-00",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-01",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-02",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-03",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-08",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-09",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-10",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": true,
+          "oracle": false,
+          "reverse": true
+        }
+      },
+      "native_current_low_minus_high": 0
+    },
+    {
+      "core_id": "vtd-core-11",
+      "current": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "4": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        }
+      },
+      "current_order_effect_high_minus_low": 0,
+      "history": {
+        "1": {
+          "native": true,
+          "oracle": true,
+          "reverse": true
+        },
+        "16": {
+          "native": false,
+          "oracle": true,
+          "reverse": false
+        },
+        "4": {
+          "native": true,
+          "oracle": false,
+          "reverse": true
+        }
+      },
+      "native_current_low_minus_high": 0
+    }
+  ],
+  "primary_deteriorating_cores": [],
+  "primary_improving_cores": [],
+  "reason": "No paired current-answer deterioration or increasing current-order effect in the qualified single-system dev sample.",
+  "remaining_native_smoke_trajectory_attempts": 3,
+  "sample": {
+    "development_cores": 8,
+    "events": 408,
+    "queries": 48,
+    "readout_responses": 144,
+    "trajectories": 24,
+    "validation_tasks": 0
+  },
+  "schema": "memupdatebench.version-transfer-development-decision.v1",
+  "scientific_release_allowed": false,
+  "secondary_history": {
+    "abstentions": 17,
+    "causal_attribution": "UNRESOLVED_NO_COMPLETE_FINAL_STATE_EXPORT",
+    "empty_context_queries": 9,
+    "native_correct": 5,
+    "order_manipulation_applicable": false,
+    "queries": 24
+  },
+  "systems": {
+    "graphiti": "qualified configuration only",
+    "mem0": "BLOCKED_NOT_INCLUDED"
+  },
+  "terminal_sha256": "84e75a7352e48ecff9cadd8f01fb81da303ecc89253b15f88e1084e95c34b1c7",
+  "usage_this_run": {
+    "attempts": 1747,
+    "input_tokens": 2457599,
+    "output_tokens": 118502
+  }
+}

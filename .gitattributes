@@ -21,3 +21,5 @@ schemas/legacy/*.schema.json text eol=lf
 
 results/vnext/native_multi_object_canary_preparation_20261010_v1/** -text
 results/vnext/family_h_native_qdrant_full_20261012_attestation_v1/** -text
+
+results/vnext/version_transfer_development_decision_20261028_v1/** -text
