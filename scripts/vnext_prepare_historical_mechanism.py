@@ -498,6 +498,16 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     if manifest.get("source_hashes") != _source_hashes():
         raise ValueError("source hash binding mismatch")
     cases = build_cases(code_revision=manifest["code_revision"])
+    expected_task_hashes = {case.role: case.task_hash for case in cases}
+    expected_semantic_hashes = {case.role: case.semantic_hash for case in cases}
+    if manifest.get("case_count") != len(cases):
+        raise ValueError("manifest case_count binding mismatch")
+    if manifest.get("roles") != list(_ROLES):
+        raise ValueError("manifest roles binding mismatch")
+    if manifest.get("task_hashes") != expected_task_hashes:
+        raise ValueError("manifest task_hashes binding mismatch")
+    if manifest.get("semantic_hashes") != expected_semantic_hashes:
+        raise ValueError("manifest semantic_hashes binding mismatch")
     records = [json.loads(line) for line in (root / "cases.jsonl").read_bytes().splitlines()]
     if len(records) != 3 or [record.get("role") for record in records] != list(_ROLES):
         raise ValueError("case role or count mismatch")

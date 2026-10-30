@@ -133,3 +133,61 @@ def test_packet_rejects_tampered_top_level_execution_counter(tmp_path):
     index_sha256 = hashlib.sha256(index_raw).hexdigest()
     with pytest.raises(ValueError, match="execution counters"):
         read_packet(output, index_sha256)
+
+
+def _rewrite_manifest_and_index(output, mutate):
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    mutate(manifest)
+    manifest_path.write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    manifest_raw = manifest_path.read_bytes()
+    index["artifacts"]["manifest.json"] = {
+        "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "bytes": len(manifest_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    return hashlib.sha256(index_raw).hexdigest()
+
+
+def test_packet_rejects_tampered_manifest_task_hashes(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output,
+        lambda manifest: manifest["task_hashes"].update({"target_only_control": "0" * 64}),
+    )
+    with pytest.raises(ValueError, match="manifest"):
+        read_packet(output, index_sha256)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("case_count", 4),
+        ("roles", ["historical_serving", "cross_entity_same_relation", "target_only_control"]),
+    ],
+)
+def test_packet_rejects_tampered_manifest_case_shape(tmp_path, field, value):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output, lambda manifest: manifest.update({field: value})
+    )
+    with pytest.raises(ValueError, match="manifest"):
+        read_packet(output, index_sha256)
+
+
+def test_packet_rejects_tampered_manifest_semantic_hashes(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output,
+        lambda manifest: manifest["semantic_hashes"].update({"historical_serving": "f" * 64}),
+    )
+    with pytest.raises(ValueError, match="manifest"):
+        read_packet(output, index_sha256)
