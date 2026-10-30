@@ -390,6 +390,7 @@ def _case_record(case: MechanismCase) -> dict[str, Any]:
         "task_hash": case.task_hash,
         "semantic_hash": case.semantic_hash,
         "source_code_revision": case.task.source.generator.code_revision,
+        "status": case.status,
         "model_calls": case.model_calls,
         "provider_calls": case.provider_calls,
         "database_calls": case.database_calls,
@@ -489,6 +490,11 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         "execution_attempts": 0,
     }:
         raise ValueError("packet has nonzero execution counters")
+    if any(
+        manifest.get(name) != 0
+        for name in ("model_calls", "provider_calls", "database_calls", "execution_attempts")
+    ):
+        raise ValueError("packet has nonzero execution counters")
     if manifest.get("source_hashes") != _source_hashes():
         raise ValueError("source hash binding mismatch")
     cases = build_cases(code_revision=manifest["code_revision"])
@@ -496,6 +502,8 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     if len(records) != 3 or [record.get("role") for record in records] != list(_ROLES):
         raise ValueError("case role or count mismatch")
     for case, record in zip(cases, records):
+        if record.get("status") != case.status:
+            raise ValueError(f"case status binding mismatch: {case.role}")
         if record.get("task_hash") != case.task_hash or record.get("semantic_hash") != case.semantic_hash:
             raise ValueError(f"case hash binding mismatch: {case.role}")
         if record.get("public_events") != [event.public_payload for event in case.events]:

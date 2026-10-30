@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -98,3 +99,37 @@ def test_packet_rejects_protected_or_unrelated_result_roots():
         publish_packet(CONFIG_PATH.parents[2] / "results/vnext/pilot/forbidden", code_revision="fixture-revision")
     with pytest.raises(ValueError, match="unrelated"):
         publish_packet(CONFIG_PATH.parents[2] / "results/unrelated/forbidden", code_revision="fixture-revision")
+
+
+def test_cases_jsonl_records_preparation_status_per_case(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    records = [json.loads(line) for line in (output / "cases.jsonl").read_bytes().splitlines()]
+    assert [record["status"] for record in records] == [
+        "PREPARED_NOT_EXECUTED",
+        "PREPARED_NOT_EXECUTED",
+        "PREPARED_NOT_EXECUTED",
+    ]
+
+
+def test_packet_rejects_tampered_top_level_execution_counter(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["model_calls"] = 1
+    manifest_path.write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    manifest_raw = manifest_path.read_bytes()
+    index["artifacts"]["manifest.json"] = {
+        "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "bytes": len(manifest_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    index_sha256 = hashlib.sha256(index_raw).hexdigest()
+    with pytest.raises(ValueError, match="execution counters"):
+        read_packet(output, index_sha256)
