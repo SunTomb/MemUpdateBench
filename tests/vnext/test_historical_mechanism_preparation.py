@@ -7,6 +7,7 @@ import pytest
 
 from mub.vnext.external.visibility import visible_event_input, visible_query_input
 from mub.vnext.validation.replay_v3 import replay_task_v3, resolve_query_v3
+from scripts import vnext_prepare_historical_mechanism as prep
 from scripts.vnext_prepare_historical_mechanism import (
     CONFIG_PATH,
     build_cases,
@@ -25,14 +26,17 @@ def test_builds_exactly_three_cases_with_distinct_roles():
     assert all(case.task.source.generator.code_revision == "fixture-revision" for case in cases)
 
 
-def test_cases_replay_and_queries_resolve_independently():
-    cases = build_cases(code_revision="fixture-revision")
-    historical = cases[2]
-    assert len(historical.task.queries) == 2
-    assert {query.query_type.value for query in historical.task.queries} == {"current", "point_in_time"}
-    replay = replay_task_v3(historical.task)
-    for query, gold in zip(historical.task.queries, historical.task.gold_evidence):
-        resolved = resolve_query_v3(query, replay, historical.task.events)
+@pytest.mark.parametrize("case_index", [0, 1, 2])
+def test_cases_replay_and_queries_resolve_independently(case_index):
+    case = build_cases(code_revision="fixture-revision")[case_index]
+    if case.role == "historical_serving":
+        assert len(case.task.queries) == 2
+        assert {query.query_type.value for query in case.task.queries} == {"current", "point_in_time"}
+    else:
+        assert len(case.task.queries) == 1
+    replay = replay_task_v3(case.task)
+    for query, gold in zip(case.task.queries, case.task.gold_evidence):
+        resolved = resolve_query_v3(query, replay, case.task.events)
         assert not resolved.issues
         assert resolved.answer == gold.answer
 
@@ -191,3 +195,55 @@ def test_packet_rejects_tampered_manifest_semantic_hashes(tmp_path):
     )
     with pytest.raises(ValueError, match="manifest"):
         read_packet(output, index_sha256)
+
+
+def test_packet_rejects_tampered_config_after_index_rehash(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    config_path = output / "config.json"
+    config = json.loads(config_path.read_bytes())
+    config["retrieval_k"] = 9
+    config_path.write_bytes(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    config_raw = config_path.read_bytes()
+    index["artifacts"]["config.json"] = {
+        "sha256": hashlib.sha256(config_raw).hexdigest(),
+        "bytes": len(config_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    with pytest.raises(ValueError, match="config"):
+        read_packet(output, hashlib.sha256(index_raw).hexdigest())
+
+
+def test_build_cases_loads_one_validated_config_snapshot(monkeypatch):
+    calls = []
+    original = prep._load_config
+
+    def counted_load_config(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(prep, "_load_config", counted_load_config)
+    build_cases(code_revision="fixture-revision")
+    assert len(calls) == 1
+
+
+def test_failed_new_publication_cleans_empty_dir_for_retry(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    original_publish = prep.publish_files_atomically
+
+    def fail_publication(*args, **kwargs):
+        raise RuntimeError("injected publication failure")
+
+    monkeypatch.setattr(prep, "publish_files_atomically", fail_publication)
+    with pytest.raises(RuntimeError, match="injected publication failure"):
+        publish_packet(output, code_revision="fixture-revision")
+    assert not output.exists()
+
+    monkeypatch.setattr(prep, "publish_files_atomically", original_publish)
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    assert read_packet(output, receipt["index_sha256"])["status"] == "PREPARED_NOT_EXECUTED"

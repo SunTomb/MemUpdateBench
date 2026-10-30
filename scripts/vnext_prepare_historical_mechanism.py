@@ -76,6 +76,18 @@ class PublicQuery:
 
 
 @dataclass(frozen=True)
+class ConfigSnapshot:
+    raw_bytes: bytes
+    canonical_bytes: bytes
+    raw_sha256: str
+    canonical_sha256: str
+    case_roles: tuple[str, ...]
+    retrieval_k: int
+    status: str
+    scientific_release_allowed: bool
+
+
+@dataclass(frozen=True)
 class MechanismCase:
     role: str
     runtime_namespace: str
@@ -104,15 +116,37 @@ class MechanismCase:
         return self.task.source.generator.code_revision
 
 
-def _config() -> dict[str, Any]:
-    config = json.loads(CONFIG_PATH.read_bytes())
-    if tuple(config.get("case_roles", ())) != _ROLES:
+def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
+    raw = CONFIG_PATH.read_bytes() if raw_bytes is None else bytes(raw_bytes)
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("historical mechanism config is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("historical mechanism config must be an object")
+    case_roles = tuple(data.get("case_roles", ()))
+    status = data.get("status")
+    scientific_release_allowed = data.get("scientific_release_allowed")
+    retrieval_k = data.get("retrieval_k")
+    if case_roles != _ROLES:
         raise ValueError("historical mechanism config case roles disagree")
-    if config.get("status") != "PREPARED_NOT_EXECUTED":
+    if status != "PREPARED_NOT_EXECUTED":
         raise ValueError("historical mechanism config status disagrees")
-    if config.get("scientific_release_allowed") is not False:
+    if scientific_release_allowed is not False:
         raise ValueError("historical mechanism config release policy disagrees")
-    return config
+    if type(retrieval_k) is not int or retrieval_k <= 0:
+        raise ValueError("historical mechanism config retrieval_k is invalid")
+    canonical = _canonical(data)
+    return ConfigSnapshot(
+        raw_bytes=raw,
+        canonical_bytes=canonical,
+        raw_sha256=_sha256(raw),
+        canonical_sha256=_sha256(canonical),
+        case_roles=case_roles,
+        retrieval_k=retrieval_k,
+        status=status,
+        scientific_release_allowed=scientific_release_allowed,
+    )
 
 
 def _key(entity: str, attribute: str = "relation") -> dict[str, Any]:
@@ -125,8 +159,7 @@ def _key(entity: str, attribute: str = "relation") -> dict[str, Any]:
     }
 
 
-def _build_task(role: str, code_revision: str) -> MemUpdateTaskV3:
-    config = _config()
+def _build_task(role: str, code_revision: str, config: ConfigSnapshot) -> MemUpdateTaskV3:
     target = _key("Target-00")
     other = _key("Other-00")
     if role == "cross_entity_same_relation":
@@ -259,7 +292,7 @@ def _build_task(role: str, code_revision: str) -> MemUpdateTaskV3:
             }
         )
     raw_hash = _sha256(_canonical(events))
-    config_hash = _sha256(CONFIG_PATH.read_bytes())
+    config_hash = config.canonical_sha256
     task = MemUpdateTaskV3.model_validate(
         {
             "task_id": task_id,
@@ -320,8 +353,8 @@ def _build_task(role: str, code_revision: str) -> MemUpdateTaskV3:
     return task
 
 
-def _public_case(role: str, code_revision: str) -> MechanismCase:
-    task = _build_task(role, code_revision)
+def _public_case(role: str, code_revision: str, config: ConfigSnapshot) -> MechanismCase:
+    task = _build_task(role, code_revision, config)
     runtime_namespace = f"historical-mechanism-v1-{role}"
     public_events = tuple(
         PublicEvent(
@@ -336,7 +369,7 @@ def _public_case(role: str, code_revision: str) -> MechanismCase:
         PublicQuery(
             source_query=query,
             public_payload=visible_query_input(
-                query, k=_config()["retrieval_k"], runtime_namespace=runtime_namespace
+                query, k=config.retrieval_k, runtime_namespace=runtime_namespace
             ).model_dump(mode="json"),
         )
         for query in task.queries
@@ -350,9 +383,12 @@ def _public_case(role: str, code_revision: str) -> MechanismCase:
     )
 
 
-def build_cases(*, code_revision: str) -> tuple[MechanismCase, ...]:
+def build_cases(
+    *, code_revision: str, config: ConfigSnapshot | None = None
+) -> tuple[MechanismCase, ...]:
     """Build the exactly three canonical, replay-checked mechanism cases."""
-    return tuple(_public_case(role, code_revision) for role in _ROLES)
+    snapshot = _load_config() if config is None else config
+    return tuple(_public_case(role, code_revision, snapshot) for role in _ROLES)
 
 
 def _source_hashes() -> dict[str, str]:
@@ -404,18 +440,19 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
     output = _guard_output(Path(output_root))
     if output.exists():
         raise FileExistsError(output)
-    config_raw = CONFIG_PATH.read_bytes()
-    cases = build_cases(code_revision=code_revision)
+    config = _load_config()
+    cases = build_cases(code_revision=code_revision, config=config)
     records_raw = b"".join(_canonical(_case_record(case)) + b"\n" for case in cases)
-    config = json.loads(config_raw)
     manifest: dict[str, Any] = {
         "schema": "memupdatebench.version-transfer-historical-mechanism-manifest.v1",
         "status": "PREPARED_NOT_EXECUTED",
         "scientific_release_allowed": False,
         "code_revision": code_revision,
+        "config_sha256": config.canonical_sha256,
+        "config_artifact_sha256": config.raw_sha256,
         "case_count": len(cases),
         "roles": list(_ROLES),
-        "retrieval_k": config["retrieval_k"],
+        "retrieval_k": config.retrieval_k,
         "source_hash_policy": "python_lf_normalized",
         "source_hashes": _source_hashes(),
         "task_hashes": {case.role: case.task_hash for case in cases},
@@ -434,7 +471,7 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         "protected_roots": ["data/vnext/core", "data/vnext/pilot", "results/unrelated"],
     }
     artifacts = {
-        "config.json": config_raw,
+        "config.json": config.raw_bytes,
         "cases.jsonl": records_raw,
         "manifest.json": _canonical(manifest),
     }
@@ -446,11 +483,21 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         },
     }
     index_raw = _canonical(index)
-    output.mkdir(parents=True, exist_ok=False)
-    publish_files_atomically(
-        {output / name: raw for name, raw in {**artifacts, "index.json": index_raw}.items()},
-        overwrite=False,
-    )
+    created_output = not output.exists()
+    try:
+        output.mkdir(parents=True, exist_ok=False)
+        publish_files_atomically(
+            {output / name: raw for name, raw in {**artifacts, "index.json": index_raw}.items()},
+            overwrite=False,
+        )
+    except BaseException:
+        if created_output and output.exists():
+            try:
+                if not any(output.iterdir()):
+                    output.rmdir()
+            except OSError:
+                pass
+        raise
     return {
         "index_sha256": _sha256(index_raw),
         "status": "PREPARED_NOT_EXECUTED",
@@ -479,6 +526,19 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         if len(content) != reference["bytes"] or _sha256(content) != reference["sha256"]:
             raise ValueError(f"artifact hash mismatch: {name}")
     manifest = json.loads((root / "manifest.json").read_bytes())
+    current_config = _load_config()
+    packet_config = _load_config((root / "config.json").read_bytes())
+    if (
+        packet_config.canonical_sha256 != current_config.canonical_sha256
+        or packet_config.raw_sha256 != current_config.raw_sha256
+    ):
+        raise ValueError("config binding mismatch")
+    if manifest.get("config_sha256") != current_config.canonical_sha256:
+        raise ValueError("config manifest binding mismatch")
+    if manifest.get("config_artifact_sha256") != current_config.raw_sha256:
+        raise ValueError("config artifact manifest binding mismatch")
+    if manifest.get("retrieval_k") != current_config.retrieval_k:
+        raise ValueError("config retrieval_k manifest binding mismatch")
     if manifest.get("status") != "PREPARED_NOT_EXECUTED":
         raise ValueError("packet status is not preparation-only")
     if manifest.get("scientific_release_allowed") is not False:
@@ -497,7 +557,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         raise ValueError("packet has nonzero execution counters")
     if manifest.get("source_hashes") != _source_hashes():
         raise ValueError("source hash binding mismatch")
-    cases = build_cases(code_revision=manifest["code_revision"])
+    cases = build_cases(code_revision=manifest["code_revision"], config=current_config)
     expected_task_hashes = {case.role: case.task_hash for case in cases}
     expected_semantic_hashes = {case.role: case.semantic_hash for case in cases}
     if manifest.get("case_count") != len(cases):
