@@ -1,0 +1,3237 @@
+{
+  "aggregate": {
+    "counts": {
+      "u1/empty_retrieval": 1,
+      "u1/historical_abstained": 5,
+      "u1/historical_answer_correct": 2,
+      "u1/last_seen_compatible_gold_candidate_not_returned": 0,
+      "u1/no_target_mention_returned": 3,
+      "u1/non_target_transition_excluding_query_candidate": 3,
+      "u1/observed_non_target_invalidation_transition": 4,
+      "u1/queries": 8,
+      "u1/time_valid_gold_candidate_returned": 4,
+      "u1/time_valid_target_mention_returned": 5,
+      "u16/empty_retrieval": 7,
+      "u16/historical_abstained": 8,
+      "u16/historical_answer_correct": 0,
+      "u16/last_seen_compatible_gold_candidate_not_returned": 8,
+      "u16/no_target_mention_returned": 7,
+      "u16/non_target_transition_excluding_query_candidate": 0,
+      "u16/observed_non_target_invalidation_transition": 0,
+      "u16/queries": 8,
+      "u16/time_valid_gold_candidate_returned": 0,
+      "u16/time_valid_target_mention_returned": 1,
+      "u4/empty_retrieval": 1,
+      "u4/historical_abstained": 4,
+      "u4/historical_answer_correct": 3,
+      "u4/last_seen_compatible_gold_candidate_not_returned": 0,
+      "u4/no_target_mention_returned": 3,
+      "u4/non_target_transition_excluding_query_candidate": 3,
+      "u4/observed_non_target_invalidation_transition": 3,
+      "u4/queries": 8,
+      "u4/time_valid_gold_candidate_returned": 4,
+      "u4/time_valid_target_mention_returned": 5
+    },
+    "non_target_transition_endpoint_witnesses": {
+      "exact_observed_name": 7
+    },
+    "non_target_transition_same_fact": {
+      "True": 7
+    }
+  },
+  "analyzer_source_sha256": {
+    "analyze_version_transfer_mechanism.py": "3cbaae961a38110c3621ad4494103d7490b74bad5657b2cc031fa711fc1b045b",
+    "vnext_analyze_version_transfer_dev_mechanism.py": "79ba82dd3aa4048b3f24c5d498d97fdf0f2c49d4ee5cf8a4d5b5725910ed765c"
+  },
+  "database_calls": 0,
+  "final_state_coverage": "UNAVAILABLE_MUTATION_OUTPUTS_ONLY",
+  "identity_scope": "lexical_synthetic_identifiers_not_general_semantic_grounding",
+  "input_bindings": {
+    "independent_audit_sha256": "25774fde2cd8f4440e19ea3f3893b6ae06736a37d5071f1f0da2d5fd0af2a879",
+    "indexed_artifacts": 972,
+    "packet_index_sha256": "d84fcdc7eb7d09ff393b8e279d9c987252c033073b19ab950feb8b9d94490341",
+    "terminal_sha256": "84e75a7352e48ecff9cadd8f01fb81da303ecc89253b15f88e1084e95c34b1c7"
+  },
+  "interpretation_limits": [
+    "An invalidation transition is observed across returned mutations, not a complete final-state dump.",
+    "A candidate absent from retrieval is not proof that it persisted or was deleted.",
+    "Text and endpoint witnesses do not uniquely identify whether extraction, resolution or storage caused an error.",
+    "Historical findings are exploratory and cannot replace the pre-specified current-value primary endpoint.",
+    "No new inference, validation trajectory or causal intervention was executed."
+  ],
+  "model_calls": 0,
+  "rows": [
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "cee308a5-fc1e-4a16-affe-9cf880e7d4fc"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-00",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        1
+      ],
+      "target_invalidation_count": 1,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "cee308a5-fc1e-4a16-affe-9cf880e7d4fc",
+          "event_position": 1,
+          "fact_sha256": "a0c1be8e60f361c5452b1005472c03b0b9ac7fb69daac38b648a93fcc4de5b9b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-00-u1"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "fcb261e2-b5cf-4859-8624-46ce877fbceb"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-00",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        1
+      ],
+      "target_invalidation_count": 4,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "fcb261e2-b5cf-4859-8624-46ce877fbceb",
+          "event_position": 1,
+          "fact_sha256": "a0c1be8e60f361c5452b1005472c03b0b9ac7fb69daac38b648a93fcc4de5b9b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7f9141c9-8493-46c0-9a79-37a5c1c3eb25",
+          "event_position": 14,
+          "fact_sha256": "436fc773cab528f9f6704ed63c1963ff99d2d2ee13f44fde32e65dcbb194b771",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e626cd14-12c9-45df-a197-41a65bac52aa",
+          "event_position": 16,
+          "fact_sha256": "4a5b909187de6a4b3de6330637efbc29fb91c9de1d2a20e17248063d17f85c61",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4be33a39-7a29-44af-84b1-34e62d2da81c",
+          "event_position": 16,
+          "fact_sha256": "4cd85715a59f55ec1941578448d001a205868a6cac979cbbbfd5d408f79553a2",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        14,
+        16,
+        16
+      ],
+      "task_id": "vtd-core-00-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "964857e8-60a5-43c4-9316-7ca053fc11e0"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "964857e8-60a5-43c4-9316-7ca053fc11e0"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "964857e8-60a5-43c4-9316-7ca053fc11e0"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-00",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "3dfecda7-a99b-4c7f-a236-07abf7a49254",
+          "event_position": 1,
+          "fact_sha256": "a0c1be8e60f361c5452b1005472c03b0b9ac7fb69daac38b648a93fcc4de5b9b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "1406fe6c-95ff-47e0-a783-17c7e7591712",
+          "event_position": 2,
+          "fact_sha256": "d680351a4d136e9351b7c2ef051f958c9940ee5a491f2f0efcca04e1a4f67943",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "6fa8c0cb-abfb-42ef-9058-9f8358c39d34",
+          "event_position": 3,
+          "fact_sha256": "39b0bc114da7f15b7bdd51fc3a7a8339c9ad5a960bd05049372ffb15624b7815",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c87a9d12-d5b8-4b84-9ee8-48836d9ad4f2",
+          "event_position": 4,
+          "fact_sha256": "2c002ccc0403f64aafefa378b7613a2046208300b2f97e041b02add28d82139a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "8b7351ec-2ba6-45e1-bf28-1728805a10c3",
+          "event_position": 5,
+          "fact_sha256": "cfb6f2d984271a94880b945caa8e05c0334f08c7383cd7e90e4ada1089926eac",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "5c5438ae-5c54-4314-be8d-619ed48f5817",
+          "event_position": 6,
+          "fact_sha256": "0a2be2f5586656dac9179ee56dabba378e81b55945bfaf5e23c22c19fca9259d",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "62ee6cf1-9e8b-4609-9f47-fbf5ccf7e782",
+          "event_position": 7,
+          "fact_sha256": "cc77bd4c84305648f52c0b1e7eb1636be30f348db2e84cd899f0bfde4ee444e8",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "b12bfd0a-97fc-4a6f-b64f-fb9b02e2ea48",
+          "event_position": 8,
+          "fact_sha256": "e067ad4d12f47a0f3c9c1855fb5e962ef1e1d104bf97007117cb92f69cf8de9d",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "964857e8-60a5-43c4-9316-7ca053fc11e0",
+          "event_position": 9,
+          "fact_sha256": "4f48ccf192be8ca156d9cf9d5a55fb5de498f9820195c3384df96bbd0e1bef49",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "080ad614-27ad-4962-8c15-26ab6d5b4392",
+          "event_position": 10,
+          "fact_sha256": "9ac05ea92a76125dd187a16d4720c1865b716e7e6a286d3603b644d0e06eca67",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e5e67529-48ea-4e28-b0fb-c6a53054fa71",
+          "event_position": 12,
+          "fact_sha256": "5cc0b4c809b83bd8b2d118e884bf360b55421116148ff2713bb31ae41a12cef7",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f7af5e10-9b6c-4a84-858e-920231ea0d51",
+          "event_position": 13,
+          "fact_sha256": "d836ba47f8ab7f5d93f8616eee2ca7837826846e0df6fec5904f5dafbd90e044",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "bb9e1b67-8f30-49ac-9e98-84900f0adecd",
+          "event_position": 14,
+          "fact_sha256": "a1e40dc4c4e315bdf0be010e5cd6164f933572b8b7bff4b03282ba6ceffde515",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "91afa304-6e61-453f-b417-454e0dacc23b",
+          "event_position": 15,
+          "fact_sha256": "436fc773cab528f9f6704ed63c1963ff99d2d2ee13f44fde32e65dcbb194b771",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "aea80db6-5b98-4f3a-92f4-7cbca1e29430",
+          "event_position": 16,
+          "fact_sha256": "4a5b909187de6a4b3de6330637efbc29fb91c9de1d2a20e17248063d17f85c61",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "task_id": "vtd-core-00-u16"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "9a369d99-b742-4a44-9afe-22b4cab4a1ec"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-01",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 1
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        3
+      ],
+      "target_invalidation_count": 3,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "9a369d99-b742-4a44-9afe-22b4cab4a1ec",
+          "event_position": 3,
+          "fact_sha256": "3bc3280f094bf4b105b23bad9a0b53b57ef6c5d6785b676021e287a9de034d02",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "3a9c3fbc-942a-492e-b42c-b595dcab5f3b",
+          "event_position": 15,
+          "fact_sha256": "fe4a49280299561a88fddf42facab349a2d24db9381e404738ab1b89d4f426d3",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "3ef749c6-f7d2-48aa-ab69-ff4af0ec93ea",
+          "event_position": 16,
+          "fact_sha256": "d1d2b887594b87c0dd532878083054b6cd5b0246cb91906c3e7501168da20a63",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        15,
+        16
+      ],
+      "task_id": "vtd-core-01-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "b555764d-d881-42a8-b608-4b1ac89a729e"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "b555764d-d881-42a8-b608-4b1ac89a729e"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "b555764d-d881-42a8-b608-4b1ac89a729e"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-01",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "77425309-98b7-42a4-9f61-6a18c8ffdbcf",
+          "event_position": 1,
+          "fact_sha256": "3bc3280f094bf4b105b23bad9a0b53b57ef6c5d6785b676021e287a9de034d02",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "084c833b-2aaa-4516-8a71-f89951d3d9ae",
+          "event_position": 2,
+          "fact_sha256": "87e363ced456d3bef059ea1c56481abd2b6348833e8ecd1ecff32edf9405a567",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "3df55e2c-2668-4b9e-b7dc-3d93a0f854d3",
+          "event_position": 3,
+          "fact_sha256": "6e3ac8f5976cf85a8669a92843b1b6fbcdcc32f9bd219077868ee9a8ffcc7f77",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "29c52b8a-25a8-4b13-9436-753c3e97c5d6",
+          "event_position": 4,
+          "fact_sha256": "83fb521a4fc119601a3151ee30f8c7a717fab8da73e37f7b551f5d00695758a9",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "8ecb76c3-27ff-44a5-b943-ac37651aac91",
+          "event_position": 5,
+          "fact_sha256": "8900725e6e9afeff73e886a873edf5402e31c84705821484d200692055df81c7",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9c7c3733-50ad-4e15-a652-bb6a4768c60a",
+          "event_position": 6,
+          "fact_sha256": "9ca4721ff71adb61b4c1ec696b38953284cd77bd34ea8791595b8d1891f7d35f",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "bf3d8c4b-b5d4-470d-8fff-d66ae91176dd",
+          "event_position": 7,
+          "fact_sha256": "ed79cf256778aa6753ba34a8208f432d1e63719aebfbadbaf33d686640a5f47b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "06e13bab-f3de-4213-a4bc-a1a8164b23e6",
+          "event_position": 8,
+          "fact_sha256": "823987d98d9b2225c8b78b03187f7de4bfa0ac824d0e70a19d327661ce5a1447",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "b555764d-d881-42a8-b608-4b1ac89a729e",
+          "event_position": 9,
+          "fact_sha256": "f991a8e43f015b5f2a5b84957e5ad22a97cafe7a1d9c3592af2ca4f90ee3d1f5",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c82ecc02-e5c7-4e61-99fb-c13628014493",
+          "event_position": 10,
+          "fact_sha256": "4dfca332e65e80705889459eb23cd90f7942179e736b17422df940828eae8190",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "a034ca94-1ecd-4845-9ee1-62772f8b899a",
+          "event_position": 11,
+          "fact_sha256": "0dbabe7153f8371264de4706e2557d61c179e7cef804ac96155b7c55eb146503",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-12T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "2dc32da5-0843-41a7-9a48-49e54be2f582",
+          "event_position": 13,
+          "fact_sha256": "916008363325b6307b232d5d256b307e4bf9941bbdcc020c92278a4aed9d18ff",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e2639844-08fa-447c-b8ec-f5076cfe2037",
+          "event_position": 14,
+          "fact_sha256": "d42c04670dd78d04dda7f2f8be44e25c713f186f7b39a5d214c84c76f831592b",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cb8bf5ed-4850-4ceb-9c24-21ae0a574495",
+          "event_position": 14,
+          "fact_sha256": "4f725f23e60fb88ecce3364bf26c549cf777046881345a94eaa7092c19c9428b",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "628b0449-bdb5-4bc7-b181-eb9544b85136",
+          "event_position": 16,
+          "fact_sha256": "fbe961fd64bdac2fc0c2fd775d57f45aa3995c6019bba57bd252f5920f5b2524",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        14,
+        14,
+        16
+      ],
+      "task_id": "vtd-core-01-u16"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "e96e97fa-034e-4a98-90f6-91098a8ce60f"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-01",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 1
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        3
+      ],
+      "target_invalidation_count": 1,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "e96e97fa-034e-4a98-90f6-91098a8ce60f",
+          "event_position": 3,
+          "fact_sha256": "3bc3280f094bf4b105b23bad9a0b53b57ef6c5d6785b676021e287a9de034d02",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-01-u1"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "642bce60-4b5d-4cc9-a634-1302e44db5da"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "642bce60-4b5d-4cc9-a634-1302e44db5da"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "642bce60-4b5d-4cc9-a634-1302e44db5da"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-02",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 13,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "154028e3-7968-4d02-9027-335b8ee61200",
+          "event_position": 1,
+          "fact_sha256": "e60f979dac94bb3d28401bf46c6c0a5ac4400293e410cdac2daa57268a8afcae",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "676ee295-e0c2-4903-9a07-23c0946aae3b",
+          "event_position": 2,
+          "fact_sha256": "98d1e0b6d57a86993699f812f8a79ece29144b663c7cb2e4f2b265f0c74834fb",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "af3cd9e8-ed8e-437f-bffe-5930212f2496",
+          "event_position": 3,
+          "fact_sha256": "deb6a41a4dda5629768c7214de4de03434aa5d6961f69ab13521e212a46aff9b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "745ef87a-9fdc-4b88-be55-015212f450ae",
+          "event_position": 4,
+          "fact_sha256": "717af54b13f38f1dbd0646721db4029e1e1cbf3cc8184ae85a899995b2c6772a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "0e6ecae5-a503-4717-8d68-b8857d99dc1c",
+          "event_position": 5,
+          "fact_sha256": "76f493fb146efaa0dd1e0f826afe5288487d5708eedcc56f5b633265ea8076e3",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4e24b409-cc8d-49c8-8dfc-e2ac33e00814",
+          "event_position": 6,
+          "fact_sha256": "de8dd6d0408eb9ef06adb2308dd78868a9e23272409a0f7cac4a05300e7814f8",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "6d80d47d-1c43-48c0-8e52-6661e8a8434c",
+          "event_position": 7,
+          "fact_sha256": "88caf68d17561bc96e78827d226125640e7d1367b3dce9bba47e7e625fbc1218",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "adc5476e-b5fe-4c93-b264-c8712e2e670e",
+          "event_position": 8,
+          "fact_sha256": "d3e0baab992b5637142d60025960235559f7809ed63fee5e902332f776b164b4",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "642bce60-4b5d-4cc9-a634-1302e44db5da",
+          "event_position": 10,
+          "fact_sha256": "7dca5127e1a90c8f0365c0383ee2ca8caccfaaf09aceeed63ccd85979d9e1fbf",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e486571c-0bd6-40c8-a4b3-3a5ff4b1880f",
+          "event_position": 12,
+          "fact_sha256": "1f3b00af8e2ffe6ac46a1bffae745f37151c26633a3550e81992ff00b1baa9b5",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e58a56db-c5a9-4779-95b0-5b893456719c",
+          "event_position": 12,
+          "fact_sha256": "ed10c22a04a622a9cfa48adf25d513d730b889fd0ef561892b28fdcba5ed0266",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "0afacceb-5dfe-4990-ad9d-4bfebdfbb151",
+          "event_position": 14,
+          "fact_sha256": "e582e1c93aa4d889f0afc830b8e0487a4da7b07c8ee10c70fda001684ef44fd8",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "153d8f69-4fe0-4851-a223-99724cf398d0",
+          "event_position": 15,
+          "fact_sha256": "5c282f0ead02a627d481e6459f4f7e19384fc7f5002392a2e1e623d5b861e64e",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        12,
+        12,
+        14,
+        15
+      ],
+      "task_id": "vtd-core-02-u16"
+    },
+    {
+      "answer": {
+        "correct": true,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "9873ec6e-95e8-4c2b-9ae1-fba4d5d6b33e"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "9873ec6e-95e8-4c2b-9ae1-fba4d5d6b33e"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "9873ec6e-95e8-4c2b-9ae1-fba4d5d6b33e"
+        ]
+      },
+      "core_id": "vtd-core-02",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 0,
+      "target_invalidations": [],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-02-u1"
+    },
+    {
+      "answer": {
+        "correct": true,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "63bca3eb-cb32-4caf-b4df-6dd3dbf4ea55"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "63bca3eb-cb32-4caf-b4df-6dd3dbf4ea55"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "63bca3eb-cb32-4caf-b4df-6dd3dbf4ea55"
+        ]
+      },
+      "core_id": "vtd-core-02",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 4,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c608c660-735c-4d57-9f4a-580c81cb849e",
+          "event_position": 14,
+          "fact_sha256": "e582e1c93aa4d889f0afc830b8e0487a4da7b07c8ee10c70fda001684ef44fd8",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "63bca3eb-cb32-4caf-b4df-6dd3dbf4ea55",
+          "event_position": 16,
+          "fact_sha256": "e60f979dac94bb3d28401bf46c6c0a5ac4400293e410cdac2daa57268a8afcae",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4fbd8b72-31eb-42d3-b323-5de83271a6a3",
+          "event_position": 16,
+          "fact_sha256": "5c282f0ead02a627d481e6459f4f7e19384fc7f5002392a2e1e623d5b861e64e",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "8b2ac72d-2e4e-406e-bd0b-a9aafe7885bd",
+          "event_position": 16,
+          "fact_sha256": "57d08ceb13aee406f611b8c95e5640a4017c80f7dccacb3c71536eaf479c8284",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        14,
+        16,
+        16,
+        16
+      ],
+      "task_id": "vtd-core-02-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-03",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 0,
+      "target_invalidations": [],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-03-u1"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-03",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 4,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "a986c454-b410-4210-864e-34716e480c82",
+          "event_position": 13,
+          "fact_sha256": "5ae7633054877598e41aa49c04bba47fb2d8c4b1232f16a20cf2e10fc204c40a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "46ff40a0-dc30-40de-96a5-4b741c417118",
+          "event_position": 14,
+          "fact_sha256": "ff21a973d9c03c293249d8b358bd57181a719f966ed6c342f5a765460a77c47d",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "b608e7b9-8dc6-4f16-a99a-700b10789c14",
+          "event_position": 15,
+          "fact_sha256": "79797443bc75d0f1cd5be3265df771813c525a71b4fa42f013c942008f778599",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "00535d4d-8865-48fa-a76e-a67669ba03f6",
+          "event_position": 16,
+          "fact_sha256": "fc3c3ab0c819d52748173b9b303be494aad85ef2e8263d12b7d829c5ad3b4923",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        13,
+        14,
+        15,
+        16
+      ],
+      "task_id": "vtd-core-03-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "9f3330ef-e3fd-40ca-a98b-9458f8544dad"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "9f3330ef-e3fd-40ca-a98b-9458f8544dad"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "9f3330ef-e3fd-40ca-a98b-9458f8544dad"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-03",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 16,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f3d5aeb7-11ab-47b0-8878-15f0939bc655",
+          "event_position": 1,
+          "fact_sha256": "5ae7633054877598e41aa49c04bba47fb2d8c4b1232f16a20cf2e10fc204c40a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "5634a31a-8928-4f20-8b9b-71cb531e807c",
+          "event_position": 2,
+          "fact_sha256": "01e6a47c11ae9b631cbb4ccae655e27874367f14a8ac07a2bac7781807dce858",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "ccc3c07c-1f6c-4697-a806-c8316b42b609",
+          "event_position": 3,
+          "fact_sha256": "152b57d2f4c783e1edc9dc4d77502f6d22178d0baeb7fec6e39a0a36aa9b166d",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "96abfc9d-5463-43a0-9a76-6e813e868674",
+          "event_position": 4,
+          "fact_sha256": "3f43f45cd6a5b560cfc71e0972af62cf8b006f1ce2a63cd32936423177ef3fe4",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4007e7e3-1264-40e5-a580-fdf389d857d5",
+          "event_position": 5,
+          "fact_sha256": "c56ed8893bf87fc6908a3131f816710554780368325df97347f4c90fa2f37824",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "696b2779-1493-482d-8815-8b9f809eed53",
+          "event_position": 6,
+          "fact_sha256": "e4b1fae05f74bb9a67be0c79190a46b3b832aaf90b435ab44f60bf73a29a024a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "fc5d89fe-19bc-4309-b159-c06e596f0e98",
+          "event_position": 7,
+          "fact_sha256": "c47b2b66b26db2826c0cc9dc28ffeda11d9b4c3c5d17d05a550a17874bc9ea8d",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "bd53d9fc-4496-402d-bc86-761b845dadae",
+          "event_position": 8,
+          "fact_sha256": "5588e1a145ce0844212e232d43350564b5ff009e4c76d969c486bee41cc0c49b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9f3330ef-e3fd-40ca-a98b-9458f8544dad",
+          "event_position": 9,
+          "fact_sha256": "9100d18fddf4a0af8547459ab85edd62fd291f5324076575517f1f9184935c6d",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d0c2c3ad-111c-49b6-8e9b-1966fb31763d",
+          "event_position": 10,
+          "fact_sha256": "116e5f9518401076bab38297fa9cf6719069686270aa335cc5331de9017dfb70",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "945ae1ca-7b72-43d8-b37c-f2c9d88cd159",
+          "event_position": 11,
+          "fact_sha256": "579ca7d432ef2d2ce60d12ff8ecba5fed95b4c865ade210832c895c9b5572cdd",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-12T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c89130f6-37cc-4dae-afcf-662b2fba2b94",
+          "event_position": 13,
+          "fact_sha256": "bf0d6fcfca6e233cee2b2dc427f102293f49fa96471f924289fa28f18d96408e",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cac07dc8-e265-4a86-8627-0e421abddf85",
+          "event_position": 14,
+          "fact_sha256": "e8a326ea96d825d73a52f3d92df0c8d81440023855c5204df75cff88a0e7dc25",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f086cdce-d234-4cf6-8893-7f6457d282bb",
+          "event_position": 14,
+          "fact_sha256": "450880193d33cc68995a0dd5d950e60c9eddfcd9a2564e3e4db7b19302438b84",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9ac4ceef-856c-4737-b88c-ed70b75cbb07",
+          "event_position": 15,
+          "fact_sha256": "ca250360968af10c7802b806d92b7c096c1de0303255e7e6f728841189218985",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cad8e16a-dd20-4971-8f77-16c6ecb1cc0b",
+          "event_position": 16,
+          "fact_sha256": "14569e7b8c1d646dc61cb000679ef3d7883a35662010fa89143472eeecb3f6eb",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        14,
+        14,
+        15,
+        16
+      ],
+      "task_id": "vtd-core-03-u16"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "9cc25641-ce3e-4e4d-a1a2-3d91ceeec10b"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "9cc25641-ce3e-4e4d-a1a2-3d91ceeec10b"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "9cc25641-ce3e-4e4d-a1a2-3d91ceeec10b"
+        ]
+      },
+      "core_id": "vtd-core-08",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 3,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9cc25641-ce3e-4e4d-a1a2-3d91ceeec10b",
+          "event_position": 13,
+          "fact_sha256": "c27d7f77ac9a22534341c36935d2898e20737e6fd62c432587e4d52a92c9d69b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7aecb1c8-38ba-4132-8936-3d66c3171a56",
+          "event_position": 14,
+          "fact_sha256": "608f28ebd86caaf659a2b871a3ae729da131c4ceb77bc46e4016ffee20292199",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "894b205d-9d4a-41f4-ae3a-e709f628fbf8",
+          "event_position": 16,
+          "fact_sha256": "ea27cdf4b00f4a316604f4a8edb782bba482f47a87d853027c4985ee7a54a373",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        13,
+        14,
+        16
+      ],
+      "task_id": "vtd-core-08-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "d761a654-ab31-4479-873a-26846bb79d70"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "d761a654-ab31-4479-873a-26846bb79d70"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "d761a654-ab31-4479-873a-26846bb79d70"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-08",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9fad91a0-dd06-409d-b957-eceede0626e9",
+          "event_position": 1,
+          "fact_sha256": "c27d7f77ac9a22534341c36935d2898e20737e6fd62c432587e4d52a92c9d69b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "51c86d9d-6633-4566-9c1f-631c19d45caf",
+          "event_position": 2,
+          "fact_sha256": "b2849a4a82a38c13dab7d0b3e1cdad3ba67e2102f1eec385bd18705c917f7549",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d9102118-ca81-423a-b3b9-b26c7a3859cb",
+          "event_position": 3,
+          "fact_sha256": "cc5b38aec9c3df937dacaf38c31e4984775b018858003ecaf9e576f3bad6963a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cd35a001-d51f-4dc6-8ec7-8f994cb58eff",
+          "event_position": 4,
+          "fact_sha256": "79e80a4ca2713a330fecb77bd5ec804e188fea8a7fffd8adffaeae0cb4b4fbac",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "12c839d4-e662-461c-b70a-e675c093e12d",
+          "event_position": 6,
+          "fact_sha256": "dc8cc483211abecf8d074ce769f7a1e61fc4cb0917750828bbb24b043e1f69ac",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "feb4aa4d-e8e2-4762-9d4d-973d3a233eec",
+          "event_position": 7,
+          "fact_sha256": "133b326872fb84c41acb1e36c7e5f17e9419e3cb7e23bd0b29e7ef2d5138248c",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "622f352a-bbd7-4ac9-bc30-b148fd99feb4",
+          "event_position": 8,
+          "fact_sha256": "6ab77afbcf952cee1a5f9c125479393c2f31c9a7f4a16925a2c00982a500e50f",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "53198cfe-b09a-4b13-8fca-7f0c469cffb4",
+          "event_position": 8,
+          "fact_sha256": "9147533d12c3b98b874ee358a3293d9bbf9d7907583e7a82753a661dcd31406e",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d761a654-ab31-4479-873a-26846bb79d70",
+          "event_position": 9,
+          "fact_sha256": "58e17bfb9c50502e572a415ddeda609c7c7b4e79fd445618be26f0936a607c56",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9143e0ef-166e-4317-a3f1-2767d0b2646c",
+          "event_position": 10,
+          "fact_sha256": "d925f5ff55610eb5f4381be02c65867b6080cee27f3645a0152462ab9756cc4f",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "318dd14e-e14d-4b50-835b-35846b040033",
+          "event_position": 12,
+          "fact_sha256": "5777d47202b2bef1685d021174f9f7e9407bf39d2d8515489df8cd92a24f93ac",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "5e202daf-e5f3-4b50-8b85-037b7f1e896c",
+          "event_position": 12,
+          "fact_sha256": "6f587a3cf518c48e046d6e2a486f7c1431f1e5b743bbb17d09ef0ca0924ff4b9",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d85bee07-6e43-42f9-95ef-01a19ed218e3",
+          "event_position": 14,
+          "fact_sha256": "f9dac403d42496c3c6d1c01532a577c93354cc9b1c486f18da6d88a08e794f48",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "780be60b-c95a-4c76-b30d-675b6eb448a6",
+          "event_position": 15,
+          "fact_sha256": "d3d10d4ac25af9afb5932372bb64b8ee884b0be73fe89cd5104d16452e602d88",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d243cfb1-804f-410f-99d6-7c8e4fa00117",
+          "event_position": 16,
+          "fact_sha256": "8beade2c65fdce67da25bf1c4c60b8c8c14b75fc3e88091fbb4f9dd41c93d286",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        8,
+        9,
+        10,
+        12,
+        12,
+        14,
+        15,
+        16
+      ],
+      "task_id": "vtd-core-08-u16"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "98251cf3-fe76-4381-9b06-2af75ec9032a"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "98251cf3-fe76-4381-9b06-2af75ec9032a"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "98251cf3-fe76-4381-9b06-2af75ec9032a"
+        ]
+      },
+      "core_id": "vtd-core-08",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 0,
+      "target_invalidations": [],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-08-u1"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "2da6f881-8fc5-4476-aef0-f119c35fe514"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "2da6f881-8fc5-4476-aef0-f119c35fe514"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "2da6f881-8fc5-4476-aef0-f119c35fe514"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-09",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "5b6513db-6613-4a25-86db-c3527d960e01",
+          "event_position": 1,
+          "fact_sha256": "617d15ef9e65672af6b6bb8a0f60cff24e273133acff8391de239b93fe36e076",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7d4c08c6-f01a-4f7f-9c29-6c2d316c085d",
+          "event_position": 2,
+          "fact_sha256": "0c2d59fc0718fd2e1cb143f0d36d573d5053b33a78e638da38eeabf63e6a862a",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "6c71e195-ac52-4252-be87-e387ede19ce0",
+          "event_position": 3,
+          "fact_sha256": "7cf625954de792f10fca5d58f80a16081c12e34576c5a3fe45302dc8069bccc3",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e8e234e6-85a5-4a4e-bd04-08fa9fafdb4a",
+          "event_position": 4,
+          "fact_sha256": "167d032aa1fdbdfd7142be544fbe01bf2f6e4acad74f5685629df31bd7100de0",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "ab9a7ace-66cb-46e8-b2cd-876cc96720a2",
+          "event_position": 5,
+          "fact_sha256": "ed58b1b58c7d0f3784176b581f11db8b289a4f811437e00e6298c654a27a9f99",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "29171ba9-61b8-4099-b33f-347f5f78640b",
+          "event_position": 6,
+          "fact_sha256": "54cc25c107f9a96ada1db7fa67c91dc5c2f89667ffad5f1307322fb809bc49fc",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f9790bf4-bebf-4afe-aac1-b33e2e307398",
+          "event_position": 8,
+          "fact_sha256": "dab4178902c8a3265b7466a0c07eb95439735922b9ccead1f125545472fd808f",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "28fb1f34-ea13-43cb-8d23-9362f53839f3",
+          "event_position": 8,
+          "fact_sha256": "40160ca3fc0d043fbc427acb5aab3b36eabe69a50927f85154d0501536a669b5",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "2da6f881-8fc5-4476-aef0-f119c35fe514",
+          "event_position": 9,
+          "fact_sha256": "90a096ee7a67d89d3f8c3c4317d0c68ab7fef5f716a353e6bcac0535e8484413",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "965544cb-c2c5-4788-bdbf-433cc0527e31",
+          "event_position": 10,
+          "fact_sha256": "112940d87f82c0ca40c39a3ee2804325e589a87d2b5f5af89391d449454f0cf1",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e667584b-dac9-4bba-bde7-8c08d445c17c",
+          "event_position": 11,
+          "fact_sha256": "b242d3d6d7c75859e56ceca609a16aa2e94993413da06d364e755253dd6aa922",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-12T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "93fd34a8-2d95-4f2a-8483-617ed8f8ce13",
+          "event_position": 12,
+          "fact_sha256": "11eed33c443129664908212eb38c6f671d2decde677e7fd0e38398286ae1e1b1",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4b6ee13e-383e-41ad-bb15-a32732008536",
+          "event_position": 13,
+          "fact_sha256": "813a98e2ee57e37855fe89e0ecdc2bb8a426c154c93fb037e021e9ba9de16f09",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c8e59565-33f7-4c64-8bff-321bbeb075fc",
+          "event_position": 14,
+          "fact_sha256": "0b330be8579cf2f44c81c1049b486df0a0b73e12a5a3589a27339e12de22b5c4",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "c40ddc88-c930-4f63-940a-f7ee43da9356",
+          "event_position": 16,
+          "fact_sha256": "5fa280ab86f893d3467edfc5236f45d64d7577e0b5e3ce4ca26f08924978253b",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16
+      ],
+      "task_id": "vtd-core-09-u16"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "20f67248-094e-4eac-b328-469928136002"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-09",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 1
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        1
+      ],
+      "target_invalidation_count": 1,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "20f67248-094e-4eac-b328-469928136002",
+          "event_position": 1,
+          "fact_sha256": "617d15ef9e65672af6b6bb8a0f60cff24e273133acff8391de239b93fe36e076",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-09-u1"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "f932f4df-b319-4a70-9f70-bc948f288d79"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-09",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 1
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        1
+      ],
+      "target_invalidation_count": 4,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "f932f4df-b319-4a70-9f70-bc948f288d79",
+          "event_position": 1,
+          "fact_sha256": "617d15ef9e65672af6b6bb8a0f60cff24e273133acff8391de239b93fe36e076",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "09904306-98a9-4cc5-a9ee-17766cf68225",
+          "event_position": 14,
+          "fact_sha256": "0b330be8579cf2f44c81c1049b486df0a0b73e12a5a3589a27339e12de22b5c4",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f8b09af9-351d-4d7b-8e1e-b0e9c9a42366",
+          "event_position": 16,
+          "fact_sha256": "94ddaa4ebccf7fee312afd7cde0987992a418dabfc4297ac153c73473d97788c",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "d778bec8-9abc-4033-b06b-f9a6c81e512b",
+          "event_position": 16,
+          "fact_sha256": "f1766333918c6dd396af970aab32b82153cf8d2f8a55e4ef2dfd63aa3480e7f5",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        14,
+        16,
+        16
+      ],
+      "task_id": "vtd-core-09-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "25933910-b5f3-4ea9-8f9d-a92d3968b949"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "25933910-b5f3-4ea9-8f9d-a92d3968b949"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "25933910-b5f3-4ea9-8f9d-a92d3968b949"
+        ]
+      },
+      "core_id": "vtd-core-10",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [
+        13
+      ],
+      "target_invalidation_count": 1,
+      "target_invalidations": [
+        {
+          "at_non_target_event": true,
+          "edge_uuid": "25933910-b5f3-4ea9-8f9d-a92d3968b949",
+          "event_position": 13,
+          "fact_sha256": "45d6f221d8552860d7f076e0a083fff667698d5d0b21ba3bf6a5a7e2bca1f35e",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-10-u1"
+    },
+    {
+      "answer": {
+        "correct": true,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "ef0e3525-60ae-4d64-9eda-d5a20574082e"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "ef0e3525-60ae-4d64-9eda-d5a20574082e"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "ef0e3525-60ae-4d64-9eda-d5a20574082e"
+        ]
+      },
+      "core_id": "vtd-core-10",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 2,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "80b3e099-10ad-40e7-99db-90bcbe636a0a",
+          "event_position": 14,
+          "fact_sha256": "d7e56d1838c14f4f5114414f096551c5ec89fbf3aaa841f61176f47c087a1c8c",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cd08acd0-0070-41c3-8d09-b317ac26ea98",
+          "event_position": 16,
+          "fact_sha256": "99e6c61b6b4d9f7516b567a6465bd363eecc88254e5f69501aba7b43b77ca822",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        14,
+        16
+      ],
+      "task_id": "vtd-core-10-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "2fac82e0-b36f-4ccf-8c1e-392f5cb37350"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "2fac82e0-b36f-4ccf-8c1e-392f5cb37350"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "2fac82e0-b36f-4ccf-8c1e-392f5cb37350"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-10",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 0,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 0,
+        "total_edges_returned": 0,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "8a952b73-a5f2-407b-a389-1c99a4645673",
+          "event_position": 1,
+          "fact_sha256": "45d6f221d8552860d7f076e0a083fff667698d5d0b21ba3bf6a5a7e2bca1f35e",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "3f852305-dac6-4922-83d6-50a3c7cf88d6",
+          "event_position": 2,
+          "fact_sha256": "7fb3a58a9b299d66e16d8791bfbc117727a166ab960ab67c73d78152f0c17da2",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "b106858d-6af8-4ac4-a120-8627fe5a843c",
+          "event_position": 3,
+          "fact_sha256": "2903810a3346e09ad97230169107f9cc8ea83c24cbf7cf76961486a0e4b918c1",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "047c7f42-baf8-4bc0-b8ab-2424dd1069e3",
+          "event_position": 4,
+          "fact_sha256": "2bda8d741ec49609c0d2dc69268503d86db0355017e21e3df3f00513d700fff9",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f9fba195-5c58-4907-98e3-ea989584236b",
+          "event_position": 5,
+          "fact_sha256": "be1747234f9eeb13aa72eeaa44e18134036fa14908d9f37f1846f48a304c2fe8",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "b8b83fab-340f-4f73-922a-bbf482734be8",
+          "event_position": 6,
+          "fact_sha256": "d0ae5b1d01a77efd52326c5ff7f13d8e7157e945defe7bd4d8b26385c94bb910",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "0695b275-5747-468d-8966-641f75fb85af",
+          "event_position": 8,
+          "fact_sha256": "16b3d37b023fe00941f408351098fceb93372d5a7a51fd9c152169a9ef48dc7b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9186429c-71e1-4558-9936-38d2f05bde15",
+          "event_position": 8,
+          "fact_sha256": "3db1ef0cb3b3f8e645cbe95bd1d9fc4332e8cb0f78d57c36d93f7f1de1d2cc6b",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-09T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "2fac82e0-b36f-4ccf-8c1e-392f5cb37350",
+          "event_position": 9,
+          "fact_sha256": "35daa643c8688ab249df1342f444c8a1fd0ebb6389128785905201bb1b4474ca",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "5013c142-bfb6-4e87-a98f-92a082e67fd0",
+          "event_position": 10,
+          "fact_sha256": "9750ef24014ad8c815499390050b769ce06ff2b1f6182f7d654e30245133c542",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "08786b35-f1a3-4872-9d97-eae807097368",
+          "event_position": 11,
+          "fact_sha256": "d89d34ec30b59c9dba65f36622fe1949d43c520e506ad88c06a1ab14d3eb1ab9",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-12T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "072fc8cb-0798-4a30-a1c1-e0f2f522bb92",
+          "event_position": 12,
+          "fact_sha256": "169577a3781c5575fd54c7e87d6262775913422b8ee3fe5c0e96c701d5ebdb90",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "99501c5a-7f45-4986-bb4b-f312658f9e6e",
+          "event_position": 13,
+          "fact_sha256": "5045110008b4ddfb67932c6f369da75e6107c73c51aa7091b1b091fa4d04091f",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "1eab5dba-1f5c-4448-99fb-a7127a3aa3d3",
+          "event_position": 14,
+          "fact_sha256": "c2b8816a270881afba6c1fd6b3ca1e2686f0fd22147c1b2badba1cec126f0dd1",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "e69b7b95-e0dd-46a2-bdcf-6df4d3b76915",
+          "event_position": 16,
+          "fact_sha256": "8b15a6cb6ff716b5310b5bde6ad7f25199301c7d5d127c634694e3ddc52e1d53",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16
+      ],
+      "task_id": "vtd-core-10-u16"
+    },
+    {
+      "answer": {
+        "correct": true,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "37730728-73f7-4d1b-9fe7-4ba945b06ad0"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "37730728-73f7-4d1b-9fe7-4ba945b06ad0"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "37730728-73f7-4d1b-9fe7-4ba945b06ad0"
+        ]
+      },
+      "core_id": "vtd-core-11",
+      "depth": 4,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 3,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9607a7cc-c907-4ed4-8214-5963a4bdbca6",
+          "event_position": 14,
+          "fact_sha256": "3d7657a6797c4908ef229f0502c8b3ec053d29b64c498ae1b445d79afc73d282",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-15T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "1e24061d-1f62-4307-883f-56402bd1f4c4",
+          "event_position": 15,
+          "fact_sha256": "1498ec0fb7ccce42b04f5a112b98c16e0391e268caae45853e8830b52fb47e01",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "1a081661-013b-4904-91d1-645fa61a6897",
+          "event_position": 16,
+          "fact_sha256": "2b73b9e65e3e91af0f55316ac0b4ab30246d8143c89a9eca6a1d0925740d5c9f",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-17T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 15,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-16T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        14,
+        15,
+        16
+      ],
+      "task_id": "vtd-core-11-u4"
+    },
+    {
+      "answer": {
+        "correct": false,
+        "disposition": "abstained",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [
+          "7fa5b0d4-3a30-4b32-94e2-5cb5930263a7"
+        ],
+        "gold_matching_observed_edge_ids": [
+          "7fa5b0d4-3a30-4b32-94e2-5cb5930263a7"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "7fa5b0d4-3a30-4b32-94e2-5cb5930263a7"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": []
+      },
+      "core_id": "vtd-core-11",
+      "depth": 16,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 15,
+      "target_invalidations": [
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "156ea359-292d-4940-a88e-1d17f7c4a15a",
+          "event_position": 1,
+          "fact_sha256": "ae613402c1d9664378caffa0dab7cffb6a4388ad26e38a8ec43775fb5ed3bc36",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-02T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 0,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7c74341b-37a1-43b8-b4a2-6887bebab87d",
+          "event_position": 2,
+          "fact_sha256": "c03310ab92c924698369b5e6279c4b9ac3217a97860c4386c33542621414a513",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-03T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 1,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-02T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "cafa1108-5684-403f-88be-4e0ae86d8d90",
+          "event_position": 3,
+          "fact_sha256": "0f3a77e7ab919de5a3185e8fbbd1e21fef5e85f24ceb85f1ed7c5e2a4e5b70f2",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-04T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 2,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-03T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9d1f69df-bb55-4cbd-81c1-250e781ba64f",
+          "event_position": 4,
+          "fact_sha256": "a91b1845c4856d506036e311645e8e2b9cb4a86ae587279e885da2cd89e2f2b3",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-05T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 3,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-04T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "bcf29a5e-2ae8-4198-8671-f944a6772a13",
+          "event_position": 5,
+          "fact_sha256": "9a405eaf5426bcb5b0c2ddbfd5d2df0352dba5d705b0325eb7979bbe3dc04678",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-06T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 4,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-05T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "f1cfac32-4886-4d97-a44a-13a39bf47827",
+          "event_position": 6,
+          "fact_sha256": "8b17360e507506818b2944ca038274fc2d79710efca5302d603abf7ffda98216",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-07T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 5,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-06T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "83b01a64-cff9-433a-9426-b028316a2f22",
+          "event_position": 7,
+          "fact_sha256": "eac5aab5cceb66b8a4d0df797187f2965694f04bc7e15a374d2fbd83c46823d9",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-08T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 6,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-07T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7918f1ba-da02-4b12-a9fb-94c6c87329e5",
+          "event_position": 9,
+          "fact_sha256": "fe7a9f95d226252eb8169bfbb6e31404d66907302fa6f2408eb18b0306de0492",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 7,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-08T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "7fa5b0d4-3a30-4b32-94e2-5cb5930263a7",
+          "event_position": 9,
+          "fact_sha256": "62411d476bbd0132a8515686bb82d25681bf8862cd715a2848271cb405626a50",
+          "interval_covered_query_before_change": true,
+          "interval_covers_query_after_change": true,
+          "invalid_at": "2025-01-10T00:00:00Z",
+          "mentions_gold_value": true,
+          "previous_event_position": 8,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-09T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "88431b83-7207-4ea2-b4fc-6e0696e01fb8",
+          "event_position": 10,
+          "fact_sha256": "b0c2f7956b11e4f24d69cf2c98be89f821fd72b0adcd239bd522accc070ae282",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-11T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 9,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "726b39e2-364e-4a8c-bdb3-89d22a86920b",
+          "event_position": 12,
+          "fact_sha256": "40a41afcf62f6919e31a51d39b58d76989d40872ea8470793ea45c364acf07f7",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 10,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-11T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "76692a74-1458-45d9-8119-81f4e6e5730d",
+          "event_position": 12,
+          "fact_sha256": "2d17ecc0d4bb643246cbc546b2a830cf3e3691e2f300ddfd7acf2abfdb0760b7",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-13T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 11,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-12T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "9935f1e6-80c8-4f9b-a82a-7e7307c0cb26",
+          "event_position": 13,
+          "fact_sha256": "a40a34f06f11b3dc127aed7fdd08dacffb848ee589b288544064967ea3743105",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-14T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 12,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-13T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "bc29d3bb-5983-4d4f-9e22-5591a4d28d2e",
+          "event_position": 15,
+          "fact_sha256": "3d7657a6797c4908ef229f0502c8b3ec053d29b64c498ae1b445d79afc73d282",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 13,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-14T00:00:00Z"
+        },
+        {
+          "at_non_target_event": false,
+          "edge_uuid": "4af605ae-f7f6-4bda-a40d-553d7636dc87",
+          "event_position": 15,
+          "fact_sha256": "4a51f27bbd70bab6ba3fa3e573ed4616fe271d384fd6109f0541122571f048fc",
+          "interval_covered_query_before_change": false,
+          "interval_covers_query_after_change": false,
+          "invalid_at": "2025-01-16T00:00:00Z",
+          "mentions_gold_value": false,
+          "previous_event_position": 14,
+          "same_fact_text": true,
+          "target_endpoint_witness": "exact_observed_name",
+          "valid_at": "2025-01-15T00:00:00Z"
+        }
+      ],
+      "target_update_event_invalidations": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        9,
+        9,
+        10,
+        12,
+        12,
+        13,
+        15,
+        15
+      ],
+      "task_id": "vtd-core-11-u16"
+    },
+    {
+      "answer": {
+        "correct": true,
+        "disposition": "answered",
+        "format_valid": true
+      },
+      "candidate_observations": {
+        "candidate_ids_absent_from_returned_set": [],
+        "gold_matching_observed_edge_ids": [
+          "cef7e8dd-248c-4e50-b7ac-496f2093722c"
+        ],
+        "last_seen_time_compatible_gold_candidate_ids": [
+          "cef7e8dd-248c-4e50-b7ac-496f2093722c"
+        ],
+        "scope": "lexical_last_observation_not_final_store",
+        "time_compatible_gold_candidate_ids_returned": [
+          "cef7e8dd-248c-4e50-b7ac-496f2093722c"
+        ]
+      },
+      "core_id": "vtd-core-11",
+      "depth": 1,
+      "final_persisted_state_observed": false,
+      "first_seen_invalidated_target_edges": 0,
+      "history": {
+        "target_edges_returned": 1,
+        "target_time_invalid_edges_returned": 0,
+        "target_time_unknown_edges_returned": 0,
+        "target_time_valid_edges_returned": 1,
+        "total_edges_returned": 1,
+        "without_target_mention_edges_returned": 0
+      },
+      "identity_method": "exact_synthetic_identifier_lexical_mention_with_optional_native_endpoint_witness",
+      "non_target_event_target_invalidations": [],
+      "target_invalidation_count": 0,
+      "target_invalidations": [],
+      "target_update_event_invalidations": [],
+      "task_id": "vtd-core-11-u1"
+    }
+  ],
+  "schema": "memupdatebench.version-transfer-mechanism-diagnostic.v1",
+  "scientific_decision": "PRIOR_INCONCLUSIVE_UNCHANGED",
+  "status": "OFFLINE_ARTIFACT_DIAGNOSTIC_ONLY"
+}

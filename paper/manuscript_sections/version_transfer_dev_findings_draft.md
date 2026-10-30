@@ -77,7 +77,15 @@ A separate post-run audit checked all 972 terminal-indexed artifacts, 408 native
 
 Internal integrity checks and a separate audit pass are not an independent human review or a cryptographic signature. Private raw provider/prompt material remains on the authorized cluster; only compact decision metadata is tracked here.
 
-## Reproducibility anchors
+## Offline mechanism follow-up
+
+A read-only diagnosis over the same 408 saved mutation outputs and 48 saved historical retrievals was run after the dev decision. It does not open the graph, rerun retrieval, call a model, or reconstruct a final graph state.
+
+The diagnosis found **7 observed target-edge invalidation transitions on non-target events**: four at u=1, three at u=4, and zero at u=16. All seven transitions had an exact observed endpoint-name witness and the same fact text before/after invalidation. A non-target event means the task-level target object was not scheduled for update at that sequence position; it does not prove why the Graphiti resolver made that transition. The pattern is consistent with a possible cross-entity/relationship conflict-resolution issue, but it is not yet a causal or universal Graphiti result. Because the number of non-target events changes as target-update density changes, this observation is also not an isolated estimate of update depth.
+
+Historical retrieval diagnosis found time-compatible target mentions in 5/8, 5/8 and 1/8 queries at u=1/4/16, with exact lexical gold-candidate mentions in 4/8, 4/8 and 0/8. At u=16, the last time-compatible candidate seen in mutation observations was absent from all eight historical retrieval result sets, but these are observations from mutation-returned edges, not final-store snapshots; they do not prove deletion. Nine historical retrievals were empty and 17/24 historical answers abstained. This supports a follow-up hypothesis about historical serving and evidence exposure, not a replacement primary claim about current-value degradation.
+
+The compact redacted artifact is `results/vnext/version_transfer_mechanism_diagnostic_20261030_v1/diagnostic.json`, SHA-256 `84d0300a5b0f9e96973756e62964cd1fd5cbfc5a8740e1212c00cfb1718a6d0e`; its index is `version-transfer-mechanism-index.v1`. It contains IDs, times, hashes and counts, not raw prompts/provider payloads or private paths. The prior INCONCLUSIVE development decision remains unchanged.
 
 - Execution revision: `1218c766f034f8a2e0268c90f6ea008442ee5c2e`.
 - Task packet index: `d84fcdc7eb7d09ff393b8e279d9c987252c033073b19ab950feb8b9d94490341`.
