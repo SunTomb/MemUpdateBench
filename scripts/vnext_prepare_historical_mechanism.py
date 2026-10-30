@@ -82,6 +82,7 @@ class ConfigSnapshot:
     raw_sha256: str
     canonical_sha256: str
     case_roles: tuple[str, ...]
+    namespace_template: str
     retrieval_k: int
     status: str
     scientific_release_allowed: bool
@@ -127,6 +128,7 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
     case_roles = tuple(data.get("case_roles", ()))
     status = data.get("status")
     scientific_release_allowed = data.get("scientific_release_allowed")
+    namespace_template = data.get("namespace_template")
     retrieval_k = data.get("retrieval_k")
     if case_roles != _ROLES:
         raise ValueError("historical mechanism config case roles disagree")
@@ -134,6 +136,14 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raise ValueError("historical mechanism config status disagrees")
     if scientific_release_allowed is not False:
         raise ValueError("historical mechanism config release policy disagrees")
+    if type(namespace_template) is not str or "{role}" not in namespace_template:
+        raise ValueError("historical mechanism config namespace_template is invalid")
+    try:
+        namespaces = tuple(namespace_template.format(role=role) for role in _ROLES)
+    except (IndexError, KeyError, ValueError) as exc:
+        raise ValueError("historical mechanism config namespace_template is invalid") from exc
+    if any(type(namespace) is not str or not namespace.strip() for namespace in namespaces):
+        raise ValueError("historical mechanism config namespace_template is invalid")
     if type(retrieval_k) is not int or retrieval_k <= 0:
         raise ValueError("historical mechanism config retrieval_k is invalid")
     canonical = _canonical(data)
@@ -143,6 +153,7 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raw_sha256=_sha256(raw),
         canonical_sha256=_sha256(canonical),
         case_roles=case_roles,
+        namespace_template=namespace_template,
         retrieval_k=retrieval_k,
         status=status,
         scientific_release_allowed=scientific_release_allowed,
@@ -355,7 +366,7 @@ def _build_task(role: str, code_revision: str, config: ConfigSnapshot) -> MemUpd
 
 def _public_case(role: str, code_revision: str, config: ConfigSnapshot) -> MechanismCase:
     task = _build_task(role, code_revision, config)
-    runtime_namespace = f"historical-mechanism-v1-{role}"
+    runtime_namespace = config.namespace_template.format(role=role)
     public_events = tuple(
         PublicEvent(
             source_event=event,
@@ -398,8 +409,15 @@ def _source_hashes() -> dict[str, str]:
     }
 
 
+def _path_identity(path: Path) -> tuple[int, int]:
+    stat = path.stat(follow_symlinks=False)
+    return stat.st_dev, stat.st_ino
+
+
 def _guard_output(output: Path) -> Path:
-    output = output.absolute()
+    lexical = output.absolute()
+    assert_no_reparse_components(lexical)
+    output = lexical.resolve(strict=False)
     assert_no_reparse_components(output)
     core = ROOT / "data/vnext/core"
     pilot = ROOT / "data/vnext/pilot"
@@ -483,17 +501,18 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         },
     }
     index_raw = _canonical(index)
-    created_output = not output.exists()
+    created_identity: tuple[int, int] | None = None
     try:
         output.mkdir(parents=True, exist_ok=False)
+        created_identity = _path_identity(output)
         publish_files_atomically(
             {output / name: raw for name, raw in {**artifacts, "index.json": index_raw}.items()},
             overwrite=False,
         )
     except BaseException:
-        if created_output and output.exists():
+        if created_identity is not None and output.exists():
             try:
-                if not any(output.iterdir()):
+                if _path_identity(output) == created_identity and not any(output.iterdir()):
                     output.rmdir()
             except OSError:
                 pass
@@ -574,6 +593,10 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     for case, record in zip(cases, records):
         if record.get("status") != case.status:
             raise ValueError(f"case status binding mismatch: {case.role}")
+        if record.get("runtime_namespace") != case.runtime_namespace:
+            raise ValueError(f"case runtime_namespace binding mismatch: {case.role}")
+        if record.get("source_code_revision") != case.source_revision:
+            raise ValueError(f"case source_code_revision binding mismatch: {case.role}")
         if record.get("task_hash") != case.task_hash or record.get("semantic_hash") != case.semantic_hash:
             raise ValueError(f"case hash binding mismatch: {case.role}")
         if record.get("public_events") != [event.public_payload for event in case.events]:

@@ -247,3 +247,81 @@ def test_failed_new_publication_cleans_empty_dir_for_retry(monkeypatch, tmp_path
     monkeypatch.setattr(prep, "publish_files_atomically", original_publish)
     receipt = publish_packet(output, code_revision="fixture-revision")
     assert read_packet(output, receipt["index_sha256"])["status"] == "PREPARED_NOT_EXECUTED"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "data/vnext/staging/../core/forbidden",
+        "results/vnext/staging/../pilot/forbidden",
+    ],
+)
+def test_packet_rejects_traversal_into_protected_roots(path):
+    with pytest.raises(ValueError, match="protected"):
+        publish_packet(CONFIG_PATH.parents[2] / path, code_revision="fixture-revision")
+
+
+def test_failed_competing_directory_is_not_deleted(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    real_mkdir = prep.Path.mkdir
+
+    def competing_mkdir(path, *args, **kwargs):
+        if path == output:
+            real_mkdir(path, parents=True, exist_ok=True)
+            raise FileExistsError(output)
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(prep.Path, "mkdir", competing_mkdir)
+    with pytest.raises(FileExistsError):
+        publish_packet(output, code_revision="fixture-revision")
+    assert output.is_dir()
+
+
+def test_namespace_template_from_config_controls_owned_runtime_namespaces(monkeypatch, tmp_path):
+    config = json.loads(CONFIG_PATH.read_bytes())
+    config["namespace_template"] = "owned-mechanism-{role}"
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    monkeypatch.setattr(prep, "CONFIG_PATH", config_path)
+    cases = build_cases(code_revision="fixture-revision")
+    assert [case.runtime_namespace for case in cases] == [
+        "owned-mechanism-target_only_control",
+        "owned-mechanism-cross_entity_same_relation",
+        "owned-mechanism-historical_serving",
+    ]
+
+
+def _rewrite_cases_and_index(output, mutate):
+    cases_path = output / "cases.jsonl"
+    records = [json.loads(line) for line in cases_path.read_bytes().splitlines()]
+    mutate(records)
+    cases_path.write_bytes(
+        b"".join(
+            json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode() + b"\n"
+            for record in records
+        )
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    cases_raw = cases_path.read_bytes()
+    index["artifacts"]["cases.jsonl"] = {
+        "sha256": hashlib.sha256(cases_raw).hexdigest(),
+        "bytes": len(cases_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    return hashlib.sha256(index_raw).hexdigest()
+
+
+@pytest.mark.parametrize("field", ["runtime_namespace", "source_code_revision"])
+def test_packet_rejects_tampered_case_binding_fields(tmp_path, field):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_cases_and_index(
+        output,
+        lambda records: records[0].update({field: "tampered-value"}),
+    )
+    with pytest.raises(ValueError, match="binding"):
+        read_packet(output, index_sha256)
