@@ -1,6 +1,6 @@
 # Historical Serving Mechanism Design
 
-**Status:** Approved bounded design; implementation and execution have not started.
+**Status:** Approved bounded design; offline implementation is in progress. No database/model execution or smoke trajectory has started under this protocol.
 
 ## Context and research boundary
 
@@ -16,7 +16,7 @@ This is a mechanism qualification, not a benchmark release, leaderboard, validat
 
 Use exactly the three unused Graphiti smoke trajectory slots. Each case is one fresh ingestion trajectory; a technical failure consumes its slot and is not retried. Do not run Mem0, held-out validation, paid APIs, additional models, or a broader factorial. Keep all code, temporary files, database data, model ledgers, logs and sockets under `/NAS/yesh`.
 
-Use the pinned Graphiti commit `5c27edfa8d3e0f49b2571bcebb4261bcc89ee037`, Neo4j 5.26.0, Qwen2.5-7B-Instruct revision `a09a35458c702b33dd1b3f61198066088edc5e2`, MiniLM revision `c9745ed1d9f207416be6d2e6f8de32d1f16199bf`, constrained schema decoding, and native `EDGE_HYBRID_SEARCH_RRF`. Reuse the already qualified environment and keep the aggregate study limits unchanged.
+Use the pinned Graphiti commit `5c27edfa8d3e0f49b2571bcebb4261bcc89ee037`, Neo4j 5.26.0, Qwen2.5-7B-Instruct revision `a09a35458c702b33eeacc393d103063234e8bc28`, MiniLM revision `c9745ed1d9f207416be6d2e6f8de32d1f16199bf`, constrained schema decoding, and native `EDGE_HYBRID_SEARCH_RRF`. Reuse the already qualified environment and keep the aggregate study limits unchanged.
 
 ## Three cases
 

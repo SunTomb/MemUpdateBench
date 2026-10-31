@@ -25,3 +25,6 @@ results/vnext/family_h_native_qdrant_full_20261012_attestation_v1/** -text
 results/vnext/version_transfer_development_decision_20261028_v1/** -text
 
 results/vnext/version_transfer_mechanism_diagnostic_20261030_v1/** -text
+
+configs/vnext/version_transfer_historical_mechanism_v1.json -text
+results/vnext/version_transfer_historical_mechanism_preparation_20261030_v2/** -text

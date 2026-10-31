@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing v3 task packet, Graphiti SDK, Neo4j runtime and readout contracts unchanged. Add a thin direct-state witness layer around the owned Neo4j database, a private extraction-observation recorder, and a no-gold mechanism runner. Publish only redacted/hash-bound case receipts and a typed `BLOCKED`/`NO_DISTINGUISHING_SIGNAL`/mechanism-lead decision; never promote a lead to validation or scientific GO.
 
-**Tech Stack:** Python 3.13 Graphiti 0.31.2, Neo4j Community 5.26.0, Qwen2.5-7B-Instruct with `lm-format-enforcer` 0.11.3, MiniLM-L6-v2, Pydantic v3 contracts, pytest, `/NAS/yesh`-local tmux and owned loopback services.
+**Tech Stack:** Python 3.13 Graphiti 0.31.2, Neo4j Community 5.26.0, Qwen2.5-7B-Instruct with `lm-format-enforcer` 0.11.3, MiniLM-L6-v2, Pydantic-backed v3 contracts, pytest, `/NAS/yesh`-local tmux and owned loopback services.
 
 ---
 
@@ -18,7 +18,7 @@
 - Create: `tests/vnext/test_historical_mechanism_preparation.py`
 - Modify: none of the frozen Core/Pilot/data roots
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add tests for:
 
@@ -52,7 +52,7 @@ python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism
 
 Expected: collection fails because the new preparation module is absent.
 
-- [ ] **Step 2: Implement the smallest deterministic preparation packet**
+- [x] **Step 2: Implement the smallest deterministic preparation packet**
 
 Reuse `MemUpdateTaskV3`, `MemoryEventV3`, `MemoryQueryV3`, `replay_task_v3`, `resolve_query_v3`, `visible_event_input`, and `visible_query_input`. Do not add another task dictionary. Define exactly three cases:
 
@@ -67,7 +67,9 @@ historical_serving:
 
 Every case must carry public UTC event times, an owned namespace template, source revision, task hash, and `PREPARED_NOT_EXECUTED` status. The packet must include an exact artifact index, SHA-256 bytes, no-replace output, path/reparse checks, zero execution counters, and `scientific_release_allowed=false`. Reject outputs inside Core/Pilot or unrelated result roots.
 
-- [ ] **Step 3: Run the focused tests**
+Exercise every generated public query through the existing `GraphitiNativeEpisode.retrieve` boundary with an injected fake client before accepting the packet. Its required `As of <UTC>, ` prefix must be in the public query itself, never added from a hidden selector at runtime. Anchor current queries to the final public event time, including the cross-entity case; target-only and historical-serving cases each include current and historical queries, giving exact query counts of 2, 1 and 2.
+
+- [x] **Step 3: Run the focused tests**
 
 ```bash
 python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism_preparation.py
@@ -75,20 +77,22 @@ python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism
 
 Expected: all preparation tests pass; no model, database or provider process starts.
 
-- [ ] **Step 4: Run deterministic replay and source audit**
+- [x] **Step 4: Run deterministic replay and source audit**
 
 ```bash
 PYTHONPATH=. python -B scripts/vnext_prepare_historical_mechanism.py \
-  --output-root results/vnext/version_transfer_historical_mechanism_preparation_20261030_v1 \
+  --output-root results/vnext/version_transfer_historical_mechanism_preparation_20261030_v2 \
   --code-revision <committed-revision>
 PYTHONPATH=. python -B scripts/vnext_prepare_historical_mechanism.py \
-  --output-root results/vnext/version_transfer_historical_mechanism_preparation_20261030_v1 \
+  --output-root results/vnext/version_transfer_historical_mechanism_preparation_20261030_v2 \
   --verify-index-sha256 <printed-index-sha256>
 ```
 
 Expected: exactly three cases, no execution, and independent task/query replay passes.
 
-- [ ] **Step 5: Commit the offline preparation unit**
+Completed at source `db8c8585d90b312db7d5f692882b2a52bc988f76`: 63 preparation/native-adapter tests passed; v2 reopened with index SHA-256 `b98b815b500a6e7594be39b4be78b233550c1f78f9acbee701ac1a106c027155`. The unchanged v1 packet is a superseded integration diagnostic and must not be executed.
+
+- [x] **Step 5: Commit the offline preparation unit**
 
 ```bash
 git add configs/vnext/version_transfer_historical_mechanism_v1.json scripts/vnext_prepare_historical_mechanism.py tests/vnext/test_historical_mechanism_preparation.py
@@ -238,8 +242,9 @@ def test_missing_final_state_is_blocked_not_storage_failure():
 
 
 def test_historical_retrieval_miss_is_distinct_from_readout_error():
-    assert classify_history(state_valid=True, native_returned=False, readout=None).label == "HISTORICAL_SERVING_LEAD"
-    assert classify_history(state_valid=True, native_returned=True, readout_correct=False).label == "READOUT_LEAD"
+    assert classify_history(state_valid=True, native_returned=False, readout=None).decision == "HISTORICAL_SERVING_LEAD"
+    assert classify_history(state_valid=True, native_returned=True, readout_correct=False).decision == "HISTORICAL_SERVING_LEAD"
+    assert classify_history(state_valid=True, native_returned=True, readout_correct=False).subtype == "readout"
 ```
 
 - [ ] **Step 2: Implement typed classification**
@@ -273,7 +278,7 @@ Expected: typed leads and blockers pass; no live execution.
 
 - [ ] **Step 1: Run the exact source-bound CLI admission on Tang-2**
 
-Run only under `/NAS/yesh` with a new NAS-local tmux socket and output root. Verify current GPU headroom immediately before model load. Preserve the three prior Graphiti smoke attempts as consumed budget. Do not run Mem0 or validation.
+Run only under `/NAS/yesh` with a new NAS-local tmux socket and output root. Verify current GPU headroom immediately before model load. Preserve all six consumed native smoke trajectory attempts (five Graphiti, one Mem0); reserve only the remaining three of nine for this protocol. Do not run Mem0 or validation.
 
 - [ ] **Step 2: Reopen terminal evidence before interpreting it**
 

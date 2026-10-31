@@ -1,0 +1,22 @@
+{
+  "schema": "memupdatebench.version-transfer-historical-mechanism.v1",
+  "study_id": "version-transfer-historical-mechanism-v1",
+  "case_roles": [
+    "target_only_control",
+    "cross_entity_same_relation",
+    "historical_serving"
+  ],
+  "event_pattern": "initial target -> replacement -> replacement",
+  "cross_entity_pattern": "initial target -> different entity same relation -> different entity same relation",
+  "historical_query_pattern": "current + as-of query",
+  "retrieval_k": 8,
+  "namespace_template": "historical-mechanism-v1-{role}",
+  "status": "PREPARED_NOT_EXECUTED",
+  "scientific_release_allowed": false,
+  "execution_counters": {
+    "model_calls": 0,
+    "provider_calls": 0,
+    "database_calls": 0,
+    "execution_attempts": 0
+  }
+}
