@@ -95,3 +95,9 @@ The compact redacted artifact is `results/vnext/version_transfer_mechanism_diagn
 - Independent audit: `25774fde2cd8f4440e19ea3f3893b6ae06736a37d5071f1f0da2d5fd0af2a879`.
 - Compact decision: `results/vnext/version_transfer_development_decision_20261028_v1/decision.json`, SHA-256 `514036ee90b795e5d89ce3da39d95376acff972458560314c81969773be0534a`.
 - Decision index: `22e81e99941e4075cc3dc13198f64ecbedb00d358249b855575cff6477592ae5`.
+
+## Historical-serving mechanism follow-up: startup-blocked technical attempt
+
+A separately specified three-case native Graphiti mechanism protocol was prepared with direct Neo4j state witnesses, public-time queries, private extraction observations and an independent offline audit. The one authorized execution attempt was admitted on Tang-2 GPU6 after a fresh 45,411 MiB-free check. Neo4j and the empty-state witness preflight succeeded for all three owned namespaces, but the offline Qwen2.5-7B-Instruct BF16 service did not become ready within the 600-second model-readiness bound: the log reached only two of four checkpoint shards. No provider LLM or embedding calls, episode writes, retrievals or readouts occurred. The terminal outcome was typed `BLOCKED`, with the first case `BLOCKED` and later cases `NOT_RUN`; this is a technical non-execution, not an accuracy result or Graphiti failure.
+
+The private terminal and independent audit are hash-bound in the workflow record. A compact sibling decision was published with `scientific_release_allowed=false`, `validation_tasks=0` and decision `BLOCKED`; it contains no new mechanism signal. The three smoke slots are consumed as an attempted allocation under the approved no-retry boundary. The earlier Graphiti development conclusion therefore remains `INCONCLUSIVE`, and no validation or broader confirmation is authorized by this technical outcome.
