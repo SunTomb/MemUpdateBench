@@ -235,3 +235,96 @@ def test_wrong_observed_usage_total_blocks(tmp_path):
     report, raw, obs = fixture(tmp_path)
     report['accounting']['llm']['charged']['input_tokens'] += 1
     assert finalizer.classify(report, cases(), raw, obs)['label'] == 'BLOCKED'
+
+
+def rebind_fact(report, artifacts, *, role, value, fact, stored=True):
+    """Rehash actual runner state/retrieval and rebuild its native/reverse reader requests."""
+    case = next(c for c in cases() if c.role == role)
+    row = next(r for r in report['cases'] if r['role'] == role)
+    uuid = 'edge-'+value
+    if stored:
+        def mutate(rows):
+            for edge in rows:
+                if edge.get('uuid') == uuid:
+                    edge['properties']['fact'] = fact
+        replace_state(report, artifacts, lambda s: s['namespace'] == case.runtime_namespace, mutate)
+    retrievals = {}
+    for kind, native in artifacts:
+        if kind != 'retrieval':
+            continue
+        old = runner.digest(native)
+        if not any(e.get('group_id') == case.runtime_namespace for e in native['edges']):
+            continue
+        for edge in native['edges']:
+            if edge['uuid'] == uuid:
+                edge['fact'] = fact
+        retrievals[old] = native
+    for receipt in row['queries']:
+        if receipt['retrieval_sha256'] in retrievals:
+            native = retrievals[receipt['retrieval_sha256']]
+            receipt['retrieval_sha256'] = runner.digest(native)
+            query = runner.project_readout_task(case.task).queries[receipt['position']]
+            for kind, item in artifacts:
+                if (kind == 'readout' and item['order'] in ('native', 'reverse')
+                        and item['request']['query']['query_id'] == query.query_id):
+                    request = runner.build_readout(query, native, namespace=case.runtime_namespace, order=item['order'])
+                    item['request'] = request.model_dump(mode='json')
+                    item['prediction'] = runner.parse_readout_response(request, item['response'], model_id=runner.MODEL_ID).model_dump(mode='json')
+
+
+@pytest.mark.parametrize('fact', [
+    "Target-00's relation is not target-beta.",
+    "If authorized, Target-00's relation is target-beta.",
+    '\"Target-00\'s relation is target-beta.\"',
+    "Target-00's relation is target-beta and target-gamma.",
+    "Target-00's relation is target-beta. Target-00's relation is not target-beta.",
+    "Target-00's relation is target-beta. This was quoted.",
+    "Target-00's relation may be target-beta.",
+])
+def test_nonaffirmative_stored_and_returned_fact_never_becomes_readout_lead(tmp_path, fact):
+    report, raw, obs = fixture(tmp_path, history='readout')
+    rebind_fact(report, raw, role='historical_serving', value='target-beta', fact=fact)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['cases'][2]['reason'] == 'TARGET_ASSERTION_UNKNOWN'
+    assert result['historical_subtype'] is None
+    assert fact not in json.dumps(result)
+
+
+@pytest.mark.parametrize('role', ['target_only_control', 'cross_entity_same_relation'])
+def test_nonaffirmative_direct_state_blocks_control_and_cross_labels(tmp_path, role):
+    report, raw, obs = fixture(tmp_path, cross=True)
+    rebind_fact(report, raw, role=role, value='target-alpha', fact="Target-00's relation is not target-alpha.")
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert next(r for r in result['cases'] if r['role'] == role)['reason'] == 'TARGET_ASSERTION_UNKNOWN'
+    assert result['cross_entity_transitions'] is None
+
+
+@pytest.mark.parametrize('fact', ["Target-00's relation is target-beta.", "Target-00's relation is target-beta"])
+def test_narrow_positive_surface_retains_readout_attribution(tmp_path, fact):
+    report, raw, obs = fixture(tmp_path, history='readout')
+    rebind_fact(report, raw, role='historical_serving', value='target-beta', fact=fact)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'HISTORICAL_SERVING_LEAD'
+    assert result['historical_subtype'] == 'readout'
+
+
+def test_negative_native_fact_with_positive_stored_fact_is_not_sufficient_reader_evidence(tmp_path):
+    report, raw, obs = fixture(tmp_path, history='readout')
+    rebind_fact(report, raw, role='historical_serving', value='target-beta',
+                fact="Target-00's relation is not target-beta.", stored=False)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['historical_subtype'] is None
+
+
+@pytest.mark.parametrize('history', ['correct', 'retrieval'])
+def test_negative_stored_assertion_blocks_no_signal_and_retrieval_paths(tmp_path, history):
+    report, raw, obs = fixture(tmp_path, history=history)
+    rebind_fact(report, raw, role='historical_serving', value='target-beta',
+                fact="Target-00's relation is not target-beta.")
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['cases'][2]['reason'] == 'TARGET_ASSERTION_UNKNOWN'
+    assert result['historical_subtype'] is None

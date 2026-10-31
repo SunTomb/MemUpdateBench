@@ -97,6 +97,20 @@ def public_schedule(case):
     return schedule
 
 
+def positive_relation_fact(fact, case, value):
+    """Pre-data whole-fact allowlist, not a general natural-language interpreter.
+
+    The sole admitted affirmative form is the public synthetic relation clause
+    ``<entity>'s relation is <value>`` with an optional final period. Entity/value
+    pairs come only from public_schedule, not gold. No prefix, suffix, quoting,
+    conditional, compound clause, or paraphrase is silently treated as evidence.
+    Endpoint identity, group, hash and temporal witnesses are separately required.
+    """
+    clauses = {f"{entity}'s relation is {public_value}" for entity, public_value, _ in public_schedule(case)
+               if entity == 'Target-00' and public_value == value}
+    return type(fact) is str and fact in clauses | {clause+'.' for clause in clauses}
+
+
 def direct_edges(snapshot, case):
     """Recompute actual Task 2 compact snapshot from its private state payload."""
     group, rows = snapshot['namespace'], snapshot['rows']
@@ -138,10 +152,10 @@ def direct_edges(snapshot, case):
         for side in ('source', 'target'):
             require(nodes.get(row.get(side+'_uuid')) == row.get(side+'_name')
                     and type(row.get(side+'_name')) is str, 'TARGET_ALIGNMENT_UNKNOWN')
-        values = [v for v in ('target-alpha', 'target-beta', 'target-gamma') if v in names]
-        require('Target-00' in names and len(values) == 1 and _mentions(fact, 'Target-00')
-                and _mentions(fact, values[0]) and re.search(r'\brelation\b', fact, re.I),
-                'TARGET_ALIGNMENT_UNKNOWN')
+        public_values = {value for entity, value, _ in public_schedule(case) if entity == 'Target-00'}
+        values = [value for value in public_values if value in names]
+        require('Target-00' in names and len(values) == 1, 'TARGET_ALIGNMENT_UNKNOWN')
+        require(positive_relation_fact(fact, case, values[0]), 'TARGET_ASSERTION_UNKNOWN')
         aligned[row['uuid']] = {**row, 'value': values[0]}
     return aligned
 
@@ -241,6 +255,7 @@ def query_evidence(case, row, final_state, artifacts, schedule):
             if order == 'native' and valid and valid[0]['uuid'] in ids:
                 edge = native['edges'][ids.index(valid[0]['uuid'])]
                 stored = valid[0]
+                require(positive_relation_fact(edge.get('fact'), case, stored['value']), 'TARGET_ASSERTION_UNKNOWN')
                 visible = (edge.get('group_id') == case.runtime_namespace
                     and edge.get('source_node_uuid') == stored['source_uuid']
                     and edge.get('target_node_uuid') == stored['target_uuid']
