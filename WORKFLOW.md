@@ -4776,3 +4776,30 @@ The independent review reproduced a false-attribution path: a negated native fac
 Controller verification: `python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism_analysis.py tests/vnext/test_historical_mechanism_decision.py` passed **57 tests in 61.10 seconds**; compilation and prior CLI `--help` checks passed. The original reviewer confirmed the specific attribution blocker resolved. These tests use explicitly synthetic injected-runtime records, not genuine experiment evidence. Task 5's independent auditor is being implemented; no real decision root, model load, database run or smoke trajectory has started under this protocol.
 
 **Cluster test-dependency preparation.** Read-only package inspection found Python 3.13.15 in the pinned SDK environment but no pytest. A new isolated target at `external/historical_mechanism_pytest_835_v1/packages` now holds pytest 8.3.5, iniconfig 2.1.0, pluggy 1.5.0 and packaging 25.0, installed with `--target --no-deps --no-cache-dir` and NAS-local HOME/TMPDIR. The SDK environment itself was not the installation target; import verification retained graphiti-core 0.31.2 and pydantic 2.14.1. Install-report SHA-256 is `9a742621e8480a347f44937bda53d40eccd7deaac2885521496759e8b9d6e5de`. This overlay is for CPU tests only and must not enter the live model/SDK service import path. No database or model started during preparation.
+
+### Task 5 audit code complete; cluster execution gate blocked (2026-10-31)
+
+**Audit implementation.** `3ea54496284fe4e4c0eb7e8d557bac1500acdaa5` adds the offline auditor and tests. It reopens indexed native artifacts, source/packet/projection bindings, public episode metadata, direct-state hashes, retrieval/readout/canonical-score bindings, transport and LLM/embedding accounting, and recorded cleanup outcomes. The implementer reported 46 passing tests before the later correction. The auditor does not establish current live process absence, regenerate erased vectors, reconstruct unretained pending request bodies, or supply an independent-human/signature guarantee.
+
+**Reviewed correction.** A targeted review showed that hash-consistent direct episode snapshots could disagree with public/mutation time or content because only UUID/name had been cross-bound. `7efb78438d96740576f856077f9e24ea52d6657e` binds every previously ingested episode in all later/final/query/interrupted snapshots to public input and mutation UUID/name/group, normalized `valid_at` and private `content`. Rehashed 2030 timestamps or changed content now fail with `SNAPSHOT_EPISODE_BINDING`; equivalent ISO timestamps remain accepted. The reviewer confirmed this defect resolved. Controller verification ran `python -B -m pytest -q -p no:cacheprovider tests/vnext/test_audit_historical_mechanism.py -k 'rehashed_episode_time_and_content or matching_episode_snapshot_time'`: **5 passed, 46 deselected in 45.07 seconds**. Both files compiled and CLI help passed. The complete latest 51-test audit suite has **not** been rerun.
+
+**Clean-source staging and blocker.** A clean `3ea5449` archive (2,357,331 bytes; SHA-256 `d163ea9f6566691e8d3f498e5abadd24562e0aa1e17c8e951f44aab011fe7849`) and 642-file source manifest (`6caa328168b0cf7e4d9e78cdf64d8c66b88d380a1b32d7ab096c86b1f7059a9b`) were transferred to the fresh `_local/historical_mechanism_3ea5449_validation_v1` staging directory on Tang-2 and their hashes verified. The host worktree guard then refused extraction and even a read-only `ls -A` of its `source` subdirectory, with "runs a string through source". Splitting the command and using literal arguments did not resolve it. No alternate shell, peer, script or protection-setting change was used to bypass the refusal. No archive extraction, remote test job, database, model or native episode was started.
+
+The staged `3ea5449` input is now a superseded diagnostic, not an executable final candidate. The corrected clean archive is local at `_local/historical_mechanism_7efb784_candidate_v1/source.tar.gz`, SHA-256 `1fc6da6b5f386f7850bf82ea303949860620864823db0df23250c9680f2a0830`; its 642-file `source-manifest.json` has SHA-256 `a8c0c6b8b9cfc2599286f873d9a47c5a14d7af74bdeb3300fb41d5108721c632`. It has not been deployed or admitted. Both candidates were exported from committed Git trees, excluding unrelated working changes. The frozen preparation packet remains unchanged.
+
+**Pending gate and next steps.** Collection of the eight focused modules found **256 tests in 7.29 seconds**; collection is not execution. After the host guard issue is resolved, deploy the corrected committed candidate to a fresh NAS root, verify archive/source/packet hashes, then run the exact CPU gate below in the isolated test overlay with a fresh NAS-local `--basetemp`. Do not expose the test overlay to the actual model/SDK service. Only after the full gate and nonexecuting admission pass may the single three-case job start under the existing one-shot budget. Then reopen the terminal, perform the offline audit, check owned resources on the actual host, and finalize compact metadata. If any gate fails, preserve the failure rather than retry a consumed case.
+
+```bash
+python -B -m pytest -q -p no:cacheprovider \
+  tests/vnext/test_historical_mechanism_preparation.py \
+  tests/vnext/test_graphiti_native_episode.py \
+  tests/vnext/test_graphiti_state_witness.py \
+  tests/vnext/test_graphiti_observation_recorder.py \
+  tests/vnext/test_historical_mechanism_runner.py \
+  tests/vnext/test_historical_mechanism_analysis.py \
+  tests/vnext/test_historical_mechanism_decision.py \
+  tests/vnext/test_audit_historical_mechanism.py \
+  --basetemp "$CONTROL/pytest"
+```
+
+Tasks 1–4 and auditor code/review are complete; Task 5 execution, full final regression, genuine audit and result publication are **not complete**. Native smoke consumption remains 6/9, with three unused; no held-out validation, Mem0 rerun or paid call was made. Push attempts after the last confirmed remote checkpoint `af35513` failed with TLS EOF/handshake timeouts, including an LFS lock-verification request. Certificate verification and hooks were not disabled; local commits are preserved.

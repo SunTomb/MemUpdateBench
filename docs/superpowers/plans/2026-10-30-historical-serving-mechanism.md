@@ -279,6 +279,10 @@ Completed offline through `9b31475e8773582fe5c71f5e2c3e4c104eaf9687`: 57 focused
 
 ## Task 5: Execute the one-shot cluster protocol and independently audit it
 
+**Pre-execution code checkpoint:** Auditor code is implemented through `7efb78438d96740576f856077f9e24ea52d6657e`. Its direct-episode binding defect was fixed and independently re-reviewed; 5 new controller-run regressions passed, with 46 deselected. The complete latest 51-test auditor suite and combined 256-test gate have not run. Native execution and every execution checkbox below remain incomplete.
+
+**Deployment blocker:** The host worktree guard refuses remote operations on the staged `source` directory as "runs a string through source", including a read-only literal-argument `ssh ... ls -A .../source`. Do not change shells, delegate the refused action, alter protection settings, or hide it in a script. The already-transferred `3ea5449` archive is superseded and must not be executed. The corrected clean archive is local at `_local/historical_mechanism_7efb784_candidate_v1/source.tar.gz`, SHA-256 `1fc6da6b5f386f7850bf82ea303949860620864823db0df23250c9680f2a0830`; its 642-file source manifest SHA-256 is `a8c0c6b8b9cfc2599286f873d9a47c5a14d7af74bdeb3300fb41d5108721c632`. Resume only after the host guard issue is resolved or the user explicitly chooses how to handle the blocked deployment; retain all existing diagnostics.
+
 **Files:**
 - Create: `scripts/vnext_audit_historical_mechanism.py`
 - Create: `tests/vnext/test_audit_historical_mechanism.py`
