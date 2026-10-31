@@ -109,7 +109,7 @@ Do not stage `docs/WORKSPACE_LAYOUT.md` or the unrelated deleted test file.
 - Create: `tests/vnext/test_graphiti_state_witness.py`
 - Create: `tests/vnext/test_graphiti_observation_recorder.py`
 
-- [ ] **Step 1: Write state-witness tests first**
+- [x] **Step 1: Write state-witness tests first**
 
 Use a fake `Neo4jDriver.execute_query` and assert the generated query is namespace-bound:
 
@@ -127,11 +127,11 @@ def test_cleanup_verifies_zero_nodes_and_edges():
     assert witness.verify_empty("owned-case") is True
 ```
 
-- [ ] **Step 2: Implement the direct witness query**
+- [x] **Step 2: Implement the direct witness query**
 
 `GraphitiStateWitness.snapshot(namespace)` must query only owned `Entity`, `Episodic`, and `RELATES_TO` records and return canonical redacted rows containing UUIDs, endpoint UUIDs/names, fact text hash, `valid_at`, `invalid_at`, `created_at`, `expired_at`, group ID, episode IDs, and vector hashes. Never export raw embeddings or private provider payloads. `delete_namespace` must issue a parameterized group-scoped deletion and `verify_empty` must query the same namespace after deletion.
 
-- [ ] **Step 3: Write extraction recorder tests**
+- [x] **Step 3: Write extraction recorder tests**
 
 ```python
 def test_recorder_keeps_schema_and_usage_but_not_prompt_or_raw_output():
@@ -145,17 +145,19 @@ def test_recorder_keeps_schema_and_usage_but_not_prompt_or_raw_output():
     assert "raw_output" not in row and "prompt" not in row
 ```
 
-- [ ] **Step 4: Implement the private recorder**
+- [x] **Step 4: Implement the private recorder**
 
 Wrap only the local constrained LLM transport callback. Record monotonic attempt ID, role, schema class, finish reason, exact usage, output hash and parsed top-level keys. Keep raw prompts/responses only in a private `/NAS/yesh` run root if the runtime requires them; compact receipts must contain hashes and counts only. A missing or malformed recorder event is a qualification error, not an empty successful extraction.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```bash
 python -B -m pytest -q -p no:cacheprovider tests/vnext/test_graphiti_state_witness.py tests/vnext/test_graphiti_observation_recorder.py
 ```
 
 Expected: all fake-boundary tests pass without importing a live Graphiti DB. Commit only these files after the tests pass.
+
+Completed offline at `af35513148d079eaa4b69291f2e62022ccdc80c8`: the two focused modules passed 63 tests, compilation passed, and the combined spec-then-quality review passed. Actual APIs are async `GraphitiStateWitness(driver, owned_namespaces=..., private_sink=...)` methods `snapshot`, `delete_namespace`, and `verify_empty`; compact snapshots expose `rows`, not a separate `edges` contract. `ObservationRecorder.record_response` accepts the actual local completion envelope and retains redacted failures. These tests do not establish live Cypher compatibility or cleanup; the runner must preflight the empty owned namespace before model loading.
 
 ## Task 3: Implement the three-case source-bound smoke runner
 
@@ -164,7 +166,7 @@ Expected: all fake-boundary tests pass without importing a live Graphiti DB. Com
 - Create: `tests/vnext/test_historical_mechanism_runner.py`
 - Reuse without changing: `mub/vnext/external/providers/graphiti_native_episode.py`, `scripts/vnext_run_version_transfer_decision.py`, `scripts/vnext_serve_version_transfer_local.py`, `mub/vnext/runtime/version_transfer_budget.py`, `mub/vnext/runtime/version_transfer_embedding.py`
 
-- [ ] **Step 1: Write runner tests before implementation**
+- [x] **Step 1: Write runner tests before implementation**
 
 Test a fake Graphiti client/driver with exactly three cases:
 
@@ -188,7 +190,7 @@ def test_runner_never_retries_a_consumed_case():
         runner.run_case(budget_exhausted_runtime, case)
 ```
 
-- [ ] **Step 2: Implement the one-shot runner**
+- [x] **Step 2: Implement the one-shot runner**
 
 The runner must:
 
@@ -205,7 +207,9 @@ The runner must:
 
 Use only the three remaining smoke slots. Do not run the Mem0 comparator or validation set in this plan.
 
-- [ ] **Step 3: Run fake runner tests and the static CLI check**
+The prepared task queries use `native_system`, while `PromptedAnswerRequestV3` requires `retrieved_prompt`. Preserve the prepared tasks and provider-visible inputs unchanged. Construct and revalidate a readout-only `MemUpdateTaskV3` projection that changes only query evaluation mode; bind both original and projected task hashes, the projected semantic hash and a named projection policy. Native/reversed/oracle readout and canonical scoring use that projection consistently. This is a separate local reader over native evidence, not Graphiti-native answer accuracy; do not silently rebind the preparation release.
+
+- [x] **Step 3: Run fake runner tests and the static CLI check**
 
 ```bash
 python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism_runner.py
@@ -214,7 +218,9 @@ action='python -B scripts/vnext_run_historical_mechanism.py --help'; eval "$acti
 
 Expected: all fake-boundary tests pass; no live provider/model starts.
 
-- [ ] **Step 4: Commit the runner only after fake tests pass**
+Completed offline at `16cc637e3ba8598bdea18ea5063301f400a0b357`: 22 runner tests passed in the controller's independent run, as did compilation and `--help`; concentrated spec/quality review passed. CLI admission is nonexecuting by default, with explicit `--execute` for the one-shot run. Runtime source flags are `--runtime-revision`, `--source-manifest`, and `--source-manifest-sha256`; manifest schema is `memupdatebench.historical-runtime-source.v1` with exact `runtime_revision` and `files` (relative path to raw SHA-256). Build it from the final committed archive, including the runner's `REQUIRED_SOURCE_FILES` and every deployed `mub/**/*.py`. Live service, Cypher, transport and cleanup behavior remain unverified.
+
+- [x] **Step 4: Commit the runner only after fake tests pass**
 
 ```bash
 git add scripts/vnext_run_historical_mechanism.py tests/vnext/test_historical_mechanism_runner.py

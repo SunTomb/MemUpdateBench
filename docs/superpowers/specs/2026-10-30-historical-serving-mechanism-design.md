@@ -59,7 +59,7 @@ Provider inputs are constructed only from visible event/query data. No gold acti
 
 - `BLOCKED`: database, extraction accounting, direct state query, time parsing, budget or owned cleanup fails. Do not score as zero.
 - `NO_DISTINGUISHING_SIGNAL`: target-only and cross-entity cases show no complete contrast, and historical case does not separate provider state from native retrieval.
-- `CROSS_ENTITY_INVALIDATION_LEAD`: Case 1 shows a target edge transition after a non-target event while Case 0 does not, with complete endpoint and time witnesses.
+- `CROSS_ENTITY_INVALIDATION_LEAD`: Case 1 shows a target edge transition after a non-target event while Case 0 does not show an unexplained invalidation, with complete endpoint and time witnesses. Normal invalidation of an older target version after a scheduled target replacement in Case 0 is expected; it is neither the cross-entity signal nor a reason by itself to reject that signal. Ambiguous target/version alignment is reported explicitly rather than filled from gold.
 - `HISTORICAL_SERVING_LEAD`: Case 2 shows a time-valid historical edge in the direct provider snapshot but not in native search, or shows the edge returned but a readout error.
 - `CROSS_ENTITY_AND_HISTORICAL_LEAD`: both leads satisfy their evidence requirements.
 
