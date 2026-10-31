@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from types import MappingProxyType
@@ -45,6 +46,12 @@ _ROLES = (
 _CONFIG_SCHEMA = "memupdatebench.version-transfer-historical-mechanism.v1"
 _MANIFEST_SCHEMA = "memupdatebench.version-transfer-historical-mechanism-manifest.v1"
 _INDEX_SCHEMA = "memupdatebench.version-transfer-historical-mechanism-index.v1"
+_SOURCE_HASH_POLICY = "python_lf_normalized"
+_PUBLIC_PAYLOAD_POLICY = "visible_event_input_and_visible_query_input_only"
+_STUDY_ID = "version-transfer-historical-mechanism-v1"
+_EVENT_PATTERN = "initial target -> replacement -> replacement"
+_CROSS_ENTITY_PATTERN = "initial target -> different entity same relation -> different entity same relation"
+_HISTORICAL_QUERY_PATTERN = "current + as-of query"
 _ZERO_EXECUTION_COUNTERS = {
     "model_calls": 0,
     "provider_calls": 0,
@@ -74,6 +81,10 @@ _MANIFEST_KEYS = frozenset(
         "status",
         "scientific_release_allowed",
         "code_revision",
+        "study_id",
+        "event_pattern",
+        "cross_entity_pattern",
+        "historical_query_pattern",
         "config_sha256",
         "config_artifact_sha256",
         "config_execution_counters",
@@ -193,6 +204,10 @@ class ConfigSnapshot:
     raw_sha256: str
     canonical_sha256: str
     case_roles: tuple[str, ...]
+    study_id: str
+    event_pattern: str
+    cross_entity_pattern: str
+    historical_query_pattern: str
     namespace_template: str
     retrieval_k: int
     execution_counters: MappingProxyType
@@ -261,6 +276,14 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
     namespace_template = data["namespace_template"]
     retrieval_k = data["retrieval_k"]
     execution_counters = data["execution_counters"]
+    if data["study_id"] != _STUDY_ID:
+        raise ValueError("config study_id protocol metadata mismatch")
+    if data["event_pattern"] != _EVENT_PATTERN:
+        raise ValueError("config event_pattern protocol metadata mismatch")
+    if data["cross_entity_pattern"] != _CROSS_ENTITY_PATTERN:
+        raise ValueError("config cross_entity_pattern protocol metadata mismatch")
+    if data["historical_query_pattern"] != _HISTORICAL_QUERY_PATTERN:
+        raise ValueError("config historical_query_pattern protocol metadata mismatch")
     if case_roles != _ROLES:
         raise ValueError("historical mechanism config case roles disagree")
     if status != "PREPARED_NOT_EXECUTED":
@@ -285,6 +308,10 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raw_sha256=_sha256(raw),
         canonical_sha256=_sha256(canonical),
         case_roles=case_roles,
+        study_id=data["study_id"],
+        event_pattern=data["event_pattern"],
+        cross_entity_pattern=data["cross_entity_pattern"],
+        historical_query_pattern=data["historical_query_pattern"],
         namespace_template=namespace_template,
         retrieval_k=retrieval_k,
         execution_counters=MappingProxyType(dict(execution_counters)),
@@ -316,12 +343,24 @@ def _validate_manifest_shape(manifest: Any) -> None:
         "schema",
         "status",
         "code_revision",
+        "study_id",
+        "event_pattern",
+        "cross_entity_pattern",
+        "historical_query_pattern",
         "config_sha256",
         "config_artifact_sha256",
         "source_hash_policy",
         "public_payload_policy",
     ):
         _require_string(manifest[field], f"manifest.{field}")
+    if manifest["study_id"] != _STUDY_ID or manifest["event_pattern"] != _EVENT_PATTERN:
+        raise ValueError("manifest protocol metadata mismatch")
+    if manifest["cross_entity_pattern"] != _CROSS_ENTITY_PATTERN or manifest["historical_query_pattern"] != _HISTORICAL_QUERY_PATTERN:
+        raise ValueError("manifest protocol metadata mismatch")
+    if manifest["source_hash_policy"] != _SOURCE_HASH_POLICY:
+        raise ValueError("manifest source_hash_policy mismatch")
+    if manifest["public_payload_policy"] != _PUBLIC_PAYLOAD_POLICY:
+        raise ValueError("manifest public_payload_policy mismatch")
     if manifest["status"] != "PREPARED_NOT_EXECUTED":
         raise ValueError("packet status is not preparation-only")
     if type(manifest["scientific_release_allowed"]) is not bool or manifest["scientific_release_allowed"] is not False:
@@ -646,6 +685,21 @@ def _source_hashes() -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class PacketOwnership:
+    root: Path
+    root_identity: tuple[int, int]
+    parent: Path
+    parent_identity: tuple[int, int]
+    index: Path
+    index_identity: tuple[int, int]
+    index_signature: tuple[int, int, int, int, int]
+    artifacts: dict[str, Path]
+    artifact_identities: dict[str, tuple[int, int]]
+    artifact_signatures: dict[str, tuple[int, int, int, int, int]]
+    contents: dict[str, bytes]
+
+
+@dataclass(frozen=True)
 class OutputOwnership:
     output: Path
     output_identity: tuple[int, int]
@@ -653,6 +707,83 @@ class OutputOwnership:
     parent_identity: tuple[int, int]
     anchor: Path
     anchor_identity: tuple[int, int]
+
+
+def _file_signature(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _capture_packet_ownership(root: Path) -> PacketOwnership:
+    assert_no_reparse_components(root)
+    index = root / "index.json"
+    assert_no_reparse_components(index)
+    return PacketOwnership(
+        root=root,
+        root_identity=_path_identity(root),
+        parent=root.parent,
+        parent_identity=_path_identity(root.parent),
+        index=index,
+        index_identity=_path_identity(index),
+        index_signature=_file_signature(index.stat(follow_symlinks=False)),
+        artifacts={},
+        artifact_identities={},
+        artifact_signatures={},
+        contents={},
+    )
+
+
+def _assert_packet_ownership(ownership: PacketOwnership) -> None:
+    try:
+        assert_no_reparse_components(ownership.root)
+        assert_no_reparse_components(ownership.index)
+        if _path_identity(ownership.parent) != ownership.parent_identity:
+            raise ValueError("packet parent ownership mismatch")
+        if _path_identity(ownership.root) != ownership.root_identity:
+            raise ValueError("packet root ownership mismatch")
+        if _path_identity(ownership.index) != ownership.index_identity:
+            raise ValueError("packet index ownership mismatch")
+        if _file_signature(ownership.index.stat(follow_symlinks=False)) != ownership.index_signature:
+            raise ValueError("packet index ownership/content changed")
+        for name, path in ownership.artifacts.items():
+            assert_no_reparse_components(path)
+            if _path_identity(path) != ownership.artifact_identities[name]:
+                raise ValueError(f"packet artifact ownership mismatch: {name}")
+            if _file_signature(path.stat(follow_symlinks=False)) != ownership.artifact_signatures[name]:
+                raise ValueError(f"packet artifact ownership/content changed: {name}")
+    except OSError as exc:
+        raise ValueError("packet ownership changed during read") from exc
+
+
+def _read_packet_file(ownership: PacketOwnership, name: str) -> bytes:
+    path = ownership.index if name == "index.json" else ownership.root / name
+    _assert_packet_ownership(ownership)
+    if name in ownership.contents:
+        return ownership.contents[name]
+    assert_no_reparse_components(path)
+    signature = _file_signature(path.stat(follow_symlinks=False))
+    with path.open("rb") as handle:
+        handle_signature = _file_signature(os.fstat(handle.fileno()))
+        # Windows path stat and fstat expose different ctime semantics.
+        if handle_signature[:4] != signature[:4]:
+            raise ValueError(f"packet file ownership changed before read: {name}")
+        raw = handle.read()
+        if _file_signature(os.fstat(handle.fileno())) != handle_signature:
+            raise ValueError(f"packet file ownership/content changed during read: {name}")
+    if _file_signature(path.stat(follow_symlinks=False)) != signature:
+        raise ValueError(f"packet file ownership changed during read: {name}")
+    if name != "index.json":
+        ownership.artifacts[name] = path
+        ownership.artifact_identities[name] = signature[:2]
+        ownership.artifact_signatures[name] = signature
+    ownership.contents[name] = raw
+    _assert_packet_ownership(ownership)
+    return raw
 
 
 def _existing_anchor(path: Path) -> Path:
@@ -741,13 +872,17 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         "status": "PREPARED_NOT_EXECUTED",
         "scientific_release_allowed": False,
         "code_revision": code_revision,
+        "study_id": config.study_id,
+        "event_pattern": config.event_pattern,
+        "cross_entity_pattern": config.cross_entity_pattern,
+        "historical_query_pattern": config.historical_query_pattern,
         "config_sha256": config.canonical_sha256,
         "config_artifact_sha256": config.raw_sha256,
         "config_execution_counters": dict(config.execution_counters),
         "case_count": len(cases),
         "roles": list(_ROLES),
         "retrieval_k": config.retrieval_k,
-        "source_hash_policy": "python_lf_normalized",
+        "source_hash_policy": _SOURCE_HASH_POLICY,
         "source_hashes": _source_hashes(),
         "task_hashes": {case.role: case.task_hash for case in cases},
         "semantic_hashes": {case.role: case.semantic_hash for case in cases},
@@ -756,7 +891,7 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         "provider_calls": config.execution_counters["provider_calls"],
         "database_calls": config.execution_counters["database_calls"],
         "execution_attempts": config.execution_counters["execution_attempts"],
-        "public_payload_policy": "visible_event_input_and_visible_query_input_only",
+        "public_payload_policy": _PUBLIC_PAYLOAD_POLICY,
         "protected_roots": ["data/vnext/core", "data/vnext/pilot", "results/unrelated"],
     }
     artifacts = {
@@ -805,7 +940,8 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
 def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     root = _guard_output(Path(root))
     assert_no_reparse_components(root)
-    index_raw = (root / "index.json").read_bytes()
+    ownership = _capture_packet_ownership(root)
+    index_raw = _read_packet_file(ownership, "index.json")
     if _sha256(index_raw) != index_sha256:
         raise ValueError("index hash mismatch")
     index = json.loads(index_raw)
@@ -818,13 +954,13 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     for name, reference in index["artifacts"].items():
         path = root / name
         assert_no_reparse_components(path)
-        content = path.read_bytes()
+        content = _read_packet_file(ownership, name)
         if len(content) != reference["bytes"] or _sha256(content) != reference["sha256"]:
             raise ValueError(f"artifact hash mismatch: {name}")
-    manifest = json.loads((root / "manifest.json").read_bytes())
+    manifest = json.loads(_read_packet_file(ownership, "manifest.json"))
     _validate_manifest_shape(manifest)
     current_config = _load_config()
-    packet_config = _load_config((root / "config.json").read_bytes())
+    packet_config = _load_config(_read_packet_file(ownership, "config.json"))
     if (
         packet_config.canonical_sha256 != current_config.canonical_sha256
         or packet_config.raw_sha256 != current_config.raw_sha256
@@ -867,7 +1003,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         raise ValueError("manifest task_hashes binding mismatch")
     if manifest.get("semantic_hashes") != expected_semantic_hashes:
         raise ValueError("manifest semantic_hashes binding mismatch")
-    records = [json.loads(line) for line in (root / "cases.jsonl").read_bytes().splitlines()]
+    records = [json.loads(line) for line in _read_packet_file(ownership, "cases.jsonl").splitlines()]
     if len(records) != 3 or [record.get("role") for record in records] != list(_ROLES):
         raise ValueError("case role or count mismatch")
     for case, record in zip(cases, records):
@@ -888,6 +1024,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
             raise ValueError(f"public query binding mismatch: {case.role}")
         if any(record.get(name) != 0 for name in ("model_calls", "provider_calls", "database_calls", "execution_attempts")):
             raise ValueError(f"case execution counters are nonzero: {case.role}")
+    _assert_packet_ownership(ownership)
     manifest["index_sha256"] = index_sha256
     return manifest
 

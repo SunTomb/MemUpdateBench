@@ -519,3 +519,145 @@ def test_case_record_rejects_boolean_execution_counter_after_rehash(tmp_path):
     )
     with pytest.raises(ValueError, match="execution counters"):
         read_packet(output, index_sha256)
+
+
+@pytest.mark.parametrize("policy", ["source_hash_policy", "public_payload_policy"])
+def test_packet_rejects_tampered_policy_metadata(tmp_path, policy):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output,
+        lambda manifest: manifest.update({policy: "tampered"}),
+    )
+    with pytest.raises(ValueError, match="policy"):
+        read_packet(output, index_sha256)
+
+
+def test_packet_rejects_tampered_protocol_metadata(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    config_path = output / "config.json"
+    config = json.loads(config_path.read_bytes())
+    config["study_id"] = "tampered"
+    config_path.write_bytes(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    config_raw = config_path.read_bytes()
+    index["artifacts"]["config.json"] = {
+        "sha256": hashlib.sha256(config_raw).hexdigest(),
+        "bytes": len(config_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    with pytest.raises(ValueError, match="config"):
+        read_packet(output, hashlib.sha256(index_raw).hexdigest())
+
+
+@pytest.mark.parametrize(
+    "field", ["study_id", "event_pattern", "cross_entity_pattern", "historical_query_pattern"]
+)
+def test_current_config_rejects_changed_protocol_metadata(monkeypatch, tmp_path, field):
+    config = json.loads(CONFIG_PATH.read_bytes())
+    config[field] = "tampered"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(prep, "CONFIG_PATH", path)
+    with pytest.raises(ValueError, match="protocol metadata"):
+        build_cases(code_revision="fixture-revision")
+
+
+def test_read_packet_rejects_root_replacement_after_open(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    original = prep._assert_packet_ownership
+    state = {"called": False}
+
+    def replace_root(ownership):
+        if not state["called"]:
+            state["called"] = True
+            replacement = tmp_path / "replacement"
+            output.rename(replacement)
+            output.mkdir()
+        return original(ownership)
+
+    monkeypatch.setattr(prep, "_assert_packet_ownership", replace_root)
+    with pytest.raises(ValueError, match="ownership"):
+        read_packet(output, receipt["index_sha256"])
+
+
+def test_read_packet_rejects_parent_replacement(monkeypatch, tmp_path):
+    parent = tmp_path / "owned-parent"
+    parent.mkdir()
+    output = parent / "packet"
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    original = prep._assert_packet_ownership
+    replaced = False
+
+    def replace_parent(ownership):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            parent.rename(tmp_path / "old-parent")
+            parent.mkdir()
+        return original(ownership)
+
+    monkeypatch.setattr(prep, "_assert_packet_ownership", replace_parent)
+    with pytest.raises(ValueError, match="ownership"):
+        read_packet(output, receipt["index_sha256"])
+
+
+def test_read_packet_rejects_index_replacement_between_reads(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    original = prep._assert_packet_ownership
+    calls = {"count": 0}
+
+    def replace_index(ownership):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            ownership.index.rename(tmp_path / "index-backup.json")
+        return original(ownership)
+
+    monkeypatch.setattr(prep, "_assert_packet_ownership", replace_index)
+    with pytest.raises(ValueError, match="ownership"):
+        read_packet(output, receipt["index_sha256"])
+
+
+@pytest.mark.parametrize("name", ["index.json", "manifest.json"])
+def test_packet_rejects_in_place_change_after_verified_read(monkeypatch, tmp_path, name):
+    output = tmp_path / "packet"
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    original = prep._read_packet_file
+    changed = False
+
+    def rewrite_after_read(ownership, filename):
+        nonlocal changed
+        raw = original(ownership, filename)
+        if filename == name and not changed:
+            changed = True
+            path = output / name
+            path.write_bytes(path.read_bytes() + b" ")
+        return raw
+
+    monkeypatch.setattr(prep, "_read_packet_file", rewrite_after_read)
+    with pytest.raises(ValueError, match="ownership"):
+        read_packet(output, receipt["index_sha256"])
+
+
+def test_read_packet_rejects_artifact_replacement_between_reads(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    receipt = publish_packet(output, code_revision="fixture-revision")
+    original = prep._assert_packet_ownership
+    state = {"replaced": False}
+
+    def replace_artifact(ownership):
+        if "config.json" in ownership.artifacts and not state["replaced"]:
+            state["replaced"] = True
+            ownership.artifacts["config.json"].rename(tmp_path / "config-backup.json")
+        return original(ownership)
+
+    monkeypatch.setattr(prep, "_assert_packet_ownership", replace_artifact)
+    with pytest.raises(ValueError, match="ownership"):
+        read_packet(output, receipt["index_sha256"])
