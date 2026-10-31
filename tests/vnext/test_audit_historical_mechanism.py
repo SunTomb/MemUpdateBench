@@ -391,6 +391,46 @@ def test_no_unaccounted_state_or_cleanup_or_compact_payloads(tmp_path, monkeypat
         auditor().audit(**kwargs)
 
 
+def rewrite_episode_snapshots(kwargs, report, *, field, value, final_only=False, first_only=False):
+    paths = sorted(p for p in (kwargs['run_root']/'private').iterdir() if p.name != 'index.json')
+    artifacts = [(path.name.split('_', 1)[1][:-5], json.loads(path.read_bytes())) for path in paths]
+    case = cases()[0]
+    final_hash = report['cases'][0]['snapshots'][-1]['sha256']
+    first_id = case.events[0].public_payload['event_id']
+    def mutate(rows):
+        for row in rows:
+            if row['kind'] == 'Episodic' and (not first_only or row['name'] == first_id):
+                row['properties'][field] = value
+                if field == 'valid_at':
+                    row[field] = value
+    analysis.replace_state(report, artifacts,
+        lambda snapshot: snapshot['namespace'] == case.runtime_namespace
+            and (not final_only or snapshot['sha256'] == final_hash), mutate)
+    for path, (_, payload) in zip(paths, artifacts):
+        write(path, payload)
+    rebind(kwargs, report)
+
+
+@pytest.mark.parametrize('field,value', [('valid_at', '2030-01-01T00:00:00Z'), ('content', 'tampered persisted episode text')])
+@pytest.mark.parametrize('final_only', [False, True])
+def test_rehashed_episode_time_and_content_cannot_diverge_from_mutation_and_public_event(tmp_path, monkeypatch, field, value, final_only):
+    kwargs, report = archive(tmp_path, monkeypatch)
+    rewrite_episode_snapshots(kwargs, report, field=field, value=value,
+                              final_only=final_only, first_only=final_only)
+    with pytest.raises(auditor().AuditError, match='SNAPSHOT_EPISODE_BINDING'):
+        auditor().audit(**kwargs)
+    assert not kwargs['output_path'].exists()
+
+
+def test_matching_episode_snapshot_time_accepts_equivalent_sdk_iso_format(tmp_path, monkeypatch):
+    kwargs, report = archive(tmp_path, monkeypatch)
+    rewrite_episode_snapshots(kwargs, report, field='valid_at', value='2025-01-01T00:00:00+00:00', first_only=True)
+    pin = auditor().audit(**kwargs)
+    receipt = json.loads(kwargs['output_path'].read_bytes())
+    finalizer.verify_audit(kwargs['output_path'], pin, receipt['bindings'], report)
+    assert receipt['cases'] == finalizer.audit_projection(report)
+
+
 def test_sdk_null_defaults_do_not_change_wire_response_identity(tmp_path, monkeypatch):
     kwargs, _ = archive(tmp_path, monkeypatch, sdk_defaults=True)
     pin = auditor().audit(**kwargs)

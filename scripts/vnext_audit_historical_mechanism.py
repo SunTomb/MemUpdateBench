@@ -159,6 +159,28 @@ def verify_mutation(value, case, position):
                 _time(item[key])
 
 
+def verify_snapshot_episodes(snapshot, case, prior_mutations):
+    """Bind every ingested episode, including old episodes in later/query states."""
+    for event, mutation in zip(case.events, prior_mutations):
+        public, episode = event.public_payload, mutation['episode']
+        matches = [r for r in snapshot['rows'] if r['kind'] == 'Episodic'
+                   and r.get('name') == public['event_id']]
+        require(len(matches) == 1, 'SNAPSHOT_EPISODE_BINDING')
+        row = matches[0]
+        properties = row['properties']
+        require(row.get('uuid') == properties.get('uuid') == episode['uuid']
+                and row.get('name') == properties.get('name') == episode['name'] == public['event_id']
+                and row.get('group_id') == properties.get('group_id') == episode['group_id']
+                == public['runtime_namespace'] == case.runtime_namespace
+                and properties.get('content') == episode['content'] == public['raw_text'],
+                'SNAPSHOT_EPISODE_BINDING')
+        try:
+            require(_time(row.get('valid_at')) == _time(properties.get('valid_at'))
+                    == _time(episode['valid_at']) == _time(public['logical_time']), 'SNAPSHOT_EPISODE_BINDING')
+        except ValueError:
+            raise AuditError('SNAPSHOT_EPISODE_BINDING') from None
+
+
 def verify_cases(report, cases, evidence):
     require(report['status'] in ('BLOCKED', 'OBSERVATIONS_COMPLETE') and len(report['cases']) == 3, 'TERMINAL_STATUS')
     require(tuple(c.role for c in cases) == finalizer.ROLES, 'CASE_MEMBERSHIP')
@@ -195,6 +217,10 @@ def verify_cases(report, cases, evidence):
         for position, (index, mutation) in enumerate(case_mutations):
             evidence.used.add(index)
             verify_mutation(mutation, case, position)
+        for snapshot_index, snapshot in evidence.of('state'):
+            if snapshot['namespace'] == case.runtime_namespace:
+                prior_mutations = [mutation for index, mutation in case_mutations if index < snapshot_index]
+                verify_snapshot_episodes(snapshot, case, prior_mutations)
         mutation_cursor += len(case_mutations)
         states = []
         for position, receipt in enumerate(row['snapshots']):
@@ -205,10 +231,6 @@ def verify_cases(report, cases, evidence):
             require(si > mi, 'SNAPSHOT_BEFORE_MUTATION')
             if position+1 < len(case_mutations):
                 require(si < case_mutations[position+1][0], 'SNAPSHOT_AFTER_LATER_MUTATION')
-            episodes = {r.get('name'): r for r in state['rows'] if r['kind'] == 'Episodic'}
-            for previous in range(position+1):
-                episode = case_mutations[previous][1]['episode']
-                require(episode['name'] in episodes and episodes[episode['name']]['uuid'] == episode['uuid'], 'SNAPSHOT_EPISODE_BINDING')
             states.append(state)
         if 'interrupted_event_snapshot' in row:
             require(counts['event_attempts'] > len(states), 'UNEXPECTED_INTERRUPTED_STATE')
