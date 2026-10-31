@@ -236,7 +236,7 @@ git commit -m "Add bounded historical serving smoke runner" -m "Co-Authored-By: 
 - Create: `tests/vnext/test_historical_mechanism_decision.py`
 - Output: `results/vnext/version_transfer_historical_mechanism_20261030_v1/`
 
-- [ ] **Step 1: Write classification tests**
+- [x] **Step 1: Write classification tests**
 
 ```python
 def test_cross_entity_lead_requires_direct_state_transition():
@@ -253,7 +253,7 @@ def test_historical_retrieval_miss_is_distinct_from_readout_error():
     assert classify_history(state_valid=True, native_returned=True, readout_correct=False).subtype == "readout"
 ```
 
-- [ ] **Step 2: Implement typed classification**
+- [x] **Step 2: Implement typed classification**
 
 Use only direct snapshot/retrieval/readout records. Emit exactly one decision:
 
@@ -267,13 +267,15 @@ CROSS_ENTITY_AND_HISTORICAL_LEAD
 
 The output must state `scientific_release_allowed=false`, `validation_tasks=0`, `independent_signer=false`, sample/case denominators, all NOT_RUN rows, resource totals, source/packet/terminal hashes and a short non-causal interpretation. It must never write raw prompts, raw model output or private absolute paths.
 
-- [ ] **Step 3: Run the analysis tests**
+- [x] **Step 3: Run the analysis tests**
 
 ```bash
 python -B -m pytest -q -p no:cacheprovider tests/vnext/test_historical_mechanism_analysis.py tests/vnext/test_historical_mechanism_decision.py
 ```
 
 Expected: typed leads and blockers pass; no live execution.
+
+Completed offline through `9b31475e8773582fe5c71f5e2c3e4c104eaf9687`: 57 focused tests, compilation and CLI checks passed; independent review's false-assertion attribution blocker was fixed and the targeted recheck passed. The assertion grammar is deliberately limited to the exact public-derived affirmative clause (optional final period); unsupported paraphrases are unknown/BLOCKED, not model errors. Publication requires an externally pinned `memupdatebench.historical-mechanism-audit.v1` receipt with exact bindings/checks/case projections; `PASS` means faithful evidence verification and can accompany a `BLOCKED` execution. No real decision root has been published.
 
 ## Task 5: Execute the one-shot cluster protocol and independently audit it
 

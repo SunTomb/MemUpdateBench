@@ -65,6 +65,8 @@ Provider inputs are constructed only from visible event/query data. No gold acti
 
 None of the lead labels is a scientific GO or general Graphiti claim. A lead only authorizes a separately designed confirmation protocol; no validation data is consumed automatically. A blocked or no-signal outcome stops this historical mechanism branch unless the user approves a new design.
 
+**Pre-execution assertion boundary:** endpoint identity, token co-occurrence and matching hashes do not establish a correct relation assertion. For this controlled protocol, automatic attribution accepts only the exact public-derived affirmative clause `<entity>'s relation is <value>`, optionally ending in a period, together with the required endpoint/time witnesses. Negated, conditional, quoted, compound or other unrecognized forms yield `TARGET_ASSERTION_UNKNOWN` / `BLOCKED`. This deliberately may block a legitimate native paraphrase; it is an evaluator coverage limit, not a model accuracy error. No assertion repair or additional model judge is allowed.
+
 ## Publication and cleanup
 
 Publish a sibling no-replace root:
