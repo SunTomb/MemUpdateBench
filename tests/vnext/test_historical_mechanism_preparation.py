@@ -315,7 +315,7 @@ def _rewrite_cases_and_index(output, mutate):
     return hashlib.sha256(index_raw).hexdigest()
 
 
-@pytest.mark.parametrize("field", ["runtime_namespace", "source_code_revision"])
+@pytest.mark.parametrize("field", ["runtime_namespace", "source_code_revision", "namespace_template"])
 def test_packet_rejects_tampered_case_binding_fields(tmp_path, field):
     output = tmp_path / "packet"
     publish_packet(output, code_revision="fixture-revision")
@@ -325,3 +325,112 @@ def test_packet_rejects_tampered_case_binding_fields(tmp_path, field):
     )
     with pytest.raises(ValueError, match="binding"):
         read_packet(output, index_sha256)
+
+
+def test_config_snapshot_retains_exact_zero_execution_counters():
+    snapshot = prep._load_config()
+    assert snapshot.execution_counters == {
+        "model_calls": 0,
+        "provider_calls": 0,
+        "database_calls": 0,
+        "execution_attempts": 0,
+    }
+
+
+def test_nonzero_config_execution_counters_are_rejected(monkeypatch, tmp_path):
+    config = json.loads(CONFIG_PATH.read_bytes())
+    config["execution_counters"]["model_calls"] = 1
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    monkeypatch.setattr(prep, "CONFIG_PATH", config_path)
+    with pytest.raises(ValueError, match="execution counters"):
+        build_cases(code_revision="fixture-revision")
+
+
+def test_packet_rejects_tampered_config_execution_counters(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output,
+        lambda manifest: manifest["execution_counters"].update({"provider_calls": 1}),
+    )
+    with pytest.raises(ValueError, match="execution counters"):
+        read_packet(output, index_sha256)
+
+
+def test_packet_rejects_tampered_packet_config_execution_counters(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    config_path = output / "config.json"
+    config = json.loads(config_path.read_bytes())
+    config["execution_counters"]["provider_calls"] = 1
+    config_path.write_bytes(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    config_raw = config_path.read_bytes()
+    index["artifacts"]["config.json"] = {
+        "sha256": hashlib.sha256(config_raw).hexdigest(),
+        "bytes": len(config_raw),
+    }
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    with pytest.raises(ValueError, match="execution counters"):
+        read_packet(output, hashlib.sha256(index_raw).hexdigest())
+
+
+@pytest.mark.parametrize("artifact", ["index", "manifest", "config"])
+def test_packet_rejects_wrong_artifact_schema_after_rehash(tmp_path, artifact):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    if artifact == "index":
+        index_path = output / "index.json"
+        index = json.loads(index_path.read_bytes())
+        index["schema"] = "tampered.index.schema"
+        index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        index_path.write_bytes(index_raw)
+    elif artifact == "manifest":
+        index_sha256 = _rewrite_manifest_and_index(
+            output, lambda manifest: manifest.update({"schema": "tampered.manifest.schema"})
+        )
+        with pytest.raises(ValueError, match="schema"):
+            read_packet(output, index_sha256)
+        return
+    else:
+        config_path = output / "config.json"
+        config = json.loads(config_path.read_bytes())
+        config["schema"] = "tampered.config.schema"
+        config_path.write_bytes(
+            json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        )
+        index_path = output / "index.json"
+        index = json.loads(index_path.read_bytes())
+        config_raw = config_path.read_bytes()
+        index["artifacts"]["config.json"] = {
+            "sha256": hashlib.sha256(config_raw).hexdigest(),
+            "bytes": len(config_raw),
+        }
+        index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        index_path.write_bytes(index_raw)
+    with pytest.raises(ValueError, match="schema"):
+        read_packet(output, hashlib.sha256(index_raw).hexdigest())
+
+
+def test_parent_replacement_after_identity_capture_preserves_old_output(monkeypatch, tmp_path):
+    output = tmp_path / "packet"
+    parent = output.parent
+    backup = tmp_path.with_name(tmp_path.name + "-backup")
+    original_check = prep._assert_output_ownership
+
+    def replace_then_check(ownership):
+        parent.rename(backup)
+        parent.mkdir()
+        return original_check(ownership)
+
+    monkeypatch.setattr(prep, "_assert_output_ownership", replace_then_check)
+    with pytest.raises(RuntimeError, match="parent"):
+        publish_packet(output, code_revision="fixture-revision")
+    assert (backup / "packet").is_dir()

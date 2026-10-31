@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+from types import MappingProxyType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,15 @@ _ROLES = (
     "cross_entity_same_relation",
     "historical_serving",
 )
+_CONFIG_SCHEMA = "memupdatebench.version-transfer-historical-mechanism.v1"
+_MANIFEST_SCHEMA = "memupdatebench.version-transfer-historical-mechanism-manifest.v1"
+_INDEX_SCHEMA = "memupdatebench.version-transfer-historical-mechanism-index.v1"
+_ZERO_EXECUTION_COUNTERS = {
+    "model_calls": 0,
+    "provider_calls": 0,
+    "database_calls": 0,
+    "execution_attempts": 0,
+}
 
 
 def _canonical(value: Any) -> bytes:
@@ -77,6 +87,7 @@ class PublicQuery:
 
 @dataclass(frozen=True)
 class ConfigSnapshot:
+    schema: str
     raw_bytes: bytes
     canonical_bytes: bytes
     raw_sha256: str
@@ -84,6 +95,7 @@ class ConfigSnapshot:
     case_roles: tuple[str, ...]
     namespace_template: str
     retrieval_k: int
+    execution_counters: MappingProxyType
     status: str
     scientific_release_allowed: bool
 
@@ -92,6 +104,7 @@ class ConfigSnapshot:
 class MechanismCase:
     role: str
     runtime_namespace: str
+    namespace_template: str
     task: MemUpdateTaskV3
     events: tuple[PublicEvent, ...]
     queries: tuple[PublicQuery, ...]
@@ -130,6 +143,9 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
     scientific_release_allowed = data.get("scientific_release_allowed")
     namespace_template = data.get("namespace_template")
     retrieval_k = data.get("retrieval_k")
+    execution_counters = data.get("execution_counters")
+    if data.get("schema") != _CONFIG_SCHEMA:
+        raise ValueError("historical mechanism config schema disagrees")
     if case_roles != _ROLES:
         raise ValueError("historical mechanism config case roles disagree")
     if status != "PREPARED_NOT_EXECUTED":
@@ -146,8 +162,11 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raise ValueError("historical mechanism config namespace_template is invalid")
     if type(retrieval_k) is not int or retrieval_k <= 0:
         raise ValueError("historical mechanism config retrieval_k is invalid")
+    if execution_counters != _ZERO_EXECUTION_COUNTERS:
+        raise ValueError("historical mechanism config execution counters must be zero")
     canonical = _canonical(data)
     return ConfigSnapshot(
+        schema=_CONFIG_SCHEMA,
         raw_bytes=raw,
         canonical_bytes=canonical,
         raw_sha256=_sha256(raw),
@@ -155,6 +174,7 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         case_roles=case_roles,
         namespace_template=namespace_template,
         retrieval_k=retrieval_k,
+        execution_counters=MappingProxyType(dict(execution_counters)),
         status=status,
         scientific_release_allowed=scientific_release_allowed,
     )
@@ -388,6 +408,7 @@ def _public_case(role: str, code_revision: str, config: ConfigSnapshot) -> Mecha
     return MechanismCase(
         role=role,
         runtime_namespace=runtime_namespace,
+        namespace_template=config.namespace_template,
         task=task,
         events=public_events,
         queries=public_queries,
@@ -407,6 +428,44 @@ def _source_hashes() -> dict[str, str]:
         name: _sha256((ROOT / name).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
         for name in SOURCE_FILES
     }
+
+
+@dataclass(frozen=True)
+class OutputOwnership:
+    output: Path
+    output_identity: tuple[int, int]
+    parent: Path
+    parent_identity: tuple[int, int]
+    anchor: Path
+    anchor_identity: tuple[int, int]
+
+
+def _existing_anchor(path: Path) -> Path:
+    candidate = path.parent
+    while not candidate.exists():
+        candidate = candidate.parent
+    return candidate
+
+
+def _capture_output_ownership(output: Path, anchor: Path, anchor_identity: tuple[int, int]) -> OutputOwnership:
+    return OutputOwnership(
+        output=output,
+        output_identity=_path_identity(output),
+        parent=output.parent,
+        parent_identity=_path_identity(output.parent),
+        anchor=anchor,
+        anchor_identity=anchor_identity,
+    )
+
+
+def _assert_output_ownership(ownership: OutputOwnership) -> None:
+    assert_no_reparse_components(ownership.output)
+    if _path_identity(ownership.anchor) != ownership.anchor_identity:
+        raise RuntimeError("output parent anchor ownership changed")
+    if _path_identity(ownership.parent) != ownership.parent_identity:
+        raise RuntimeError("output parent ownership changed")
+    if _path_identity(ownership.output) != ownership.output_identity:
+        raise RuntimeError("output directory ownership changed")
 
 
 def _path_identity(path: Path) -> tuple[int, int]:
@@ -441,6 +500,7 @@ def _case_record(case: MechanismCase) -> dict[str, Any]:
     return {
         "role": case.role,
         "runtime_namespace": case.runtime_namespace,
+        "namespace_template": case.namespace_template,
         "task_hash": case.task_hash,
         "semantic_hash": case.semantic_hash,
         "source_code_revision": case.task.source.generator.code_revision,
@@ -462,12 +522,13 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
     cases = build_cases(code_revision=code_revision, config=config)
     records_raw = b"".join(_canonical(_case_record(case)) + b"\n" for case in cases)
     manifest: dict[str, Any] = {
-        "schema": "memupdatebench.version-transfer-historical-mechanism-manifest.v1",
+        "schema": _MANIFEST_SCHEMA,
         "status": "PREPARED_NOT_EXECUTED",
         "scientific_release_allowed": False,
         "code_revision": code_revision,
         "config_sha256": config.canonical_sha256,
         "config_artifact_sha256": config.raw_sha256,
+        "config_execution_counters": dict(config.execution_counters),
         "case_count": len(cases),
         "roles": list(_ROLES),
         "retrieval_k": config.retrieval_k,
@@ -475,16 +536,11 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         "source_hashes": _source_hashes(),
         "task_hashes": {case.role: case.task_hash for case in cases},
         "semantic_hashes": {case.role: case.semantic_hash for case in cases},
-        "execution_counters": {
-            "model_calls": 0,
-            "provider_calls": 0,
-            "database_calls": 0,
-            "execution_attempts": 0,
-        },
-        "model_calls": 0,
-        "provider_calls": 0,
-        "database_calls": 0,
-        "execution_attempts": 0,
+        "execution_counters": dict(config.execution_counters),
+        "model_calls": config.execution_counters["model_calls"],
+        "provider_calls": config.execution_counters["provider_calls"],
+        "database_calls": config.execution_counters["database_calls"],
+        "execution_attempts": config.execution_counters["execution_attempts"],
         "public_payload_policy": "visible_event_input_and_visible_query_input_only",
         "protected_roots": ["data/vnext/core", "data/vnext/pilot", "results/unrelated"],
     }
@@ -494,27 +550,32 @@ def publish_packet(output_root: str | Path, *, code_revision: str) -> dict[str, 
         "manifest.json": _canonical(manifest),
     }
     index = {
-        "schema": "memupdatebench.version-transfer-historical-mechanism-index.v1",
+        "schema": _INDEX_SCHEMA,
         "artifacts": {
             name: {"sha256": _sha256(raw), "bytes": len(raw)}
             for name, raw in artifacts.items()
         },
     }
     index_raw = _canonical(index)
-    created_identity: tuple[int, int] | None = None
+    anchor = _existing_anchor(output)
+    anchor_identity = _path_identity(anchor)
+    ownership: OutputOwnership | None = None
     try:
         output.mkdir(parents=True, exist_ok=False)
-        created_identity = _path_identity(output)
+        ownership = _capture_output_ownership(output, anchor, anchor_identity)
+        _assert_output_ownership(ownership)
         publish_files_atomically(
             {output / name: raw for name, raw in {**artifacts, "index.json": index_raw}.items()},
             overwrite=False,
+            pre_publish=lambda: _assert_output_ownership(ownership),
         )
     except BaseException:
-        if created_identity is not None and output.exists():
+        if ownership is not None and output.exists():
             try:
-                if _path_identity(output) == created_identity and not any(output.iterdir()):
+                _assert_output_ownership(ownership)
+                if not any(output.iterdir()):
                     output.rmdir()
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 pass
         raise
     return {
@@ -533,6 +594,8 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     if _sha256(index_raw) != index_sha256:
         raise ValueError("index hash mismatch")
     index = json.loads(index_raw)
+    if index.get("schema") != _INDEX_SCHEMA:
+        raise ValueError("index schema mismatch")
     expected_artifacts = {"config.json", "cases.jsonl", "manifest.json"}
     if set(index.get("artifacts", {})) != expected_artifacts:
         raise ValueError("artifact membership mismatch")
@@ -545,6 +608,8 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         if len(content) != reference["bytes"] or _sha256(content) != reference["sha256"]:
             raise ValueError(f"artifact hash mismatch: {name}")
     manifest = json.loads((root / "manifest.json").read_bytes())
+    if manifest.get("schema") != _MANIFEST_SCHEMA:
+        raise ValueError("manifest schema mismatch")
     current_config = _load_config()
     packet_config = _load_config((root / "config.json").read_bytes())
     if (
@@ -556,6 +621,8 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         raise ValueError("config manifest binding mismatch")
     if manifest.get("config_artifact_sha256") != current_config.raw_sha256:
         raise ValueError("config artifact manifest binding mismatch")
+    if manifest.get("config_execution_counters") != dict(current_config.execution_counters):
+        raise ValueError("config execution counters manifest binding mismatch")
     if manifest.get("retrieval_k") != current_config.retrieval_k:
         raise ValueError("config retrieval_k manifest binding mismatch")
     if manifest.get("status") != "PREPARED_NOT_EXECUTED":
@@ -595,6 +662,8 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
             raise ValueError(f"case status binding mismatch: {case.role}")
         if record.get("runtime_namespace") != case.runtime_namespace:
             raise ValueError(f"case runtime_namespace binding mismatch: {case.role}")
+        if record.get("namespace_template") != case.namespace_template:
+            raise ValueError(f"case namespace_template binding mismatch: {case.role}")
         if record.get("source_code_revision") != case.source_revision:
             raise ValueError(f"case source_code_revision binding mismatch: {case.role}")
         if record.get("task_hash") != case.task_hash or record.get("semantic_hash") != case.semantic_hash:
