@@ -51,6 +51,69 @@ _ZERO_EXECUTION_COUNTERS = {
     "database_calls": 0,
     "execution_attempts": 0,
 }
+_CONFIG_KEYS = frozenset(
+    {
+        "schema",
+        "study_id",
+        "case_roles",
+        "event_pattern",
+        "cross_entity_pattern",
+        "historical_query_pattern",
+        "retrieval_k",
+        "namespace_template",
+        "status",
+        "scientific_release_allowed",
+        "execution_counters",
+    }
+)
+_INDEX_KEYS = frozenset({"schema", "artifacts"})
+_ARTIFACT_KEYS = frozenset({"config.json", "cases.jsonl", "manifest.json"})
+_MANIFEST_KEYS = frozenset(
+    {
+        "schema",
+        "status",
+        "scientific_release_allowed",
+        "code_revision",
+        "config_sha256",
+        "config_artifact_sha256",
+        "config_execution_counters",
+        "case_count",
+        "roles",
+        "retrieval_k",
+        "source_hash_policy",
+        "source_hashes",
+        "task_hashes",
+        "semantic_hashes",
+        "execution_counters",
+        "model_calls",
+        "provider_calls",
+        "database_calls",
+        "execution_attempts",
+        "public_payload_policy",
+        "protected_roots",
+    }
+)
+_CASE_KEYS = frozenset(
+    {
+        "role",
+        "runtime_namespace",
+        "namespace_template",
+        "task_hash",
+        "semantic_hash",
+        "source_code_revision",
+        "status",
+        "model_calls",
+        "provider_calls",
+        "database_calls",
+        "execution_attempts",
+        "public_events",
+        "public_queries",
+    }
+)
+_PUBLIC_EVENT_KEYS = frozenset(
+    {"event_id", "sequence_index", "logical_time", "raw_text", "runtime_namespace"}
+)
+_PUBLIC_QUERY_KEYS = frozenset({"query_id", "query_text", "k", "runtime_namespace"})
 
 
 def _canonical(value: Any) -> bytes:
@@ -71,6 +134,43 @@ def _time(position: int) -> str:
     return (
         datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=position)
     ).isoformat().replace("+00:00", "Z")
+
+
+def _require_exact_keys(value: Any, expected: frozenset[str], label: str) -> None:
+    if type(value) is not dict or set(value) != expected:
+        raise ValueError(f"{label} keys mismatch")
+
+
+def _require_sha256(value: Any, label: str) -> None:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256")
+
+
+def _require_zero_execution_counters(value: Any, label: str) -> dict[str, int]:
+    if type(value) is not dict or set(value) != set(_ZERO_EXECUTION_COUNTERS):
+        raise ValueError(f"{label} keys mismatch")
+    if any(type(counter) is not int or counter != 0 for counter in value.values()):
+        raise ValueError(f"{label} (execution counters) must contain exact integer zeros")
+    return dict(value)
+
+
+def _require_string(value: Any, label: str) -> None:
+    if type(value) is not str:
+        raise ValueError(f"{label} must be a string")
+
+
+def _require_nonnegative_int(value: Any, label: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{label} must be a nonnegative integer")
+
+
+def _require_positive_int(value: Any, label: str) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -138,19 +238,34 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raise ValueError("historical mechanism config is not valid JSON") from exc
     if not isinstance(data, dict):
         raise ValueError("historical mechanism config must be an object")
-    case_roles = tuple(data.get("case_roles", ()))
-    status = data.get("status")
-    scientific_release_allowed = data.get("scientific_release_allowed")
-    namespace_template = data.get("namespace_template")
-    retrieval_k = data.get("retrieval_k")
-    execution_counters = data.get("execution_counters")
-    if data.get("schema") != _CONFIG_SCHEMA:
+    _require_exact_keys(data, _CONFIG_KEYS, "config")
+    if data["schema"] != _CONFIG_SCHEMA:
         raise ValueError("historical mechanism config schema disagrees")
+    for field in (
+        "schema",
+        "study_id",
+        "event_pattern",
+        "cross_entity_pattern",
+        "historical_query_pattern",
+        "namespace_template",
+        "status",
+    ):
+        _require_string(data[field], f"config.{field}")
+    if type(data["case_roles"]) is not list or any(
+        type(role) is not str for role in data["case_roles"]
+    ):
+        raise ValueError("config.case_roles must be a string list")
+    case_roles = tuple(data["case_roles"])
+    status = data["status"]
+    scientific_release_allowed = data["scientific_release_allowed"]
+    namespace_template = data["namespace_template"]
+    retrieval_k = data["retrieval_k"]
+    execution_counters = data["execution_counters"]
     if case_roles != _ROLES:
         raise ValueError("historical mechanism config case roles disagree")
     if status != "PREPARED_NOT_EXECUTED":
         raise ValueError("historical mechanism config status disagrees")
-    if scientific_release_allowed is not False:
+    if type(scientific_release_allowed) is not bool or scientific_release_allowed is not False:
         raise ValueError("historical mechanism config release policy disagrees")
     if type(namespace_template) is not str or "{role}" not in namespace_template:
         raise ValueError("historical mechanism config namespace_template is invalid")
@@ -160,10 +275,8 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         raise ValueError("historical mechanism config namespace_template is invalid") from exc
     if any(type(namespace) is not str or not namespace.strip() for namespace in namespaces):
         raise ValueError("historical mechanism config namespace_template is invalid")
-    if type(retrieval_k) is not int or retrieval_k <= 0:
-        raise ValueError("historical mechanism config retrieval_k is invalid")
-    if execution_counters != _ZERO_EXECUTION_COUNTERS:
-        raise ValueError("historical mechanism config execution counters must be zero")
+    _require_positive_int(retrieval_k, "config.retrieval_k")
+    _require_zero_execution_counters(execution_counters, "config.execution_counters")
     canonical = _canonical(data)
     return ConfigSnapshot(
         schema=_CONFIG_SCHEMA,
@@ -178,6 +291,108 @@ def _load_config(raw_bytes: bytes | None = None) -> ConfigSnapshot:
         status=status,
         scientific_release_allowed=scientific_release_allowed,
     )
+
+
+
+
+def _validate_index_shape(index: Any) -> None:
+    _require_exact_keys(index, _INDEX_KEYS, "index")
+    if index["schema"] != _INDEX_SCHEMA:
+        raise ValueError("index schema mismatch")
+    artifacts = index["artifacts"]
+    if type(artifacts) is not dict or set(artifacts) != _ARTIFACT_KEYS:
+        raise ValueError("index artifacts keys mismatch")
+    for name, reference in artifacts.items():
+        _require_exact_keys(reference, frozenset({"sha256", "bytes"}), f"index.artifacts.{name}")
+        _require_sha256(reference["sha256"], f"index.artifacts.{name}.sha256")
+        _require_nonnegative_int(reference["bytes"], f"index.artifacts.{name}.bytes")
+
+
+def _validate_manifest_shape(manifest: Any) -> None:
+    _require_exact_keys(manifest, _MANIFEST_KEYS, "manifest")
+    if manifest["schema"] != _MANIFEST_SCHEMA:
+        raise ValueError("manifest schema mismatch")
+    for field in (
+        "schema",
+        "status",
+        "code_revision",
+        "config_sha256",
+        "config_artifact_sha256",
+        "source_hash_policy",
+        "public_payload_policy",
+    ):
+        _require_string(manifest[field], f"manifest.{field}")
+    if manifest["status"] != "PREPARED_NOT_EXECUTED":
+        raise ValueError("packet status is not preparation-only")
+    if type(manifest["scientific_release_allowed"]) is not bool or manifest["scientific_release_allowed"] is not False:
+        raise ValueError("scientific release policy is not locked")
+    _require_sha256(manifest["config_sha256"], "manifest.config_sha256")
+    _require_sha256(manifest["config_artifact_sha256"], "manifest.config_artifact_sha256")
+    _require_zero_execution_counters(manifest["config_execution_counters"], "manifest.config_execution_counters")
+    _require_nonnegative_int(manifest["case_count"], "manifest.case_count")
+    if manifest["case_count"] != len(_ROLES):
+        raise ValueError("manifest case_count mismatch")
+    if type(manifest["roles"]) is not list or manifest["roles"] != list(_ROLES):
+        raise ValueError("manifest roles mismatch")
+    _require_positive_int(manifest["retrieval_k"], "manifest.retrieval_k")
+    source_hashes = manifest["source_hashes"]
+    if type(source_hashes) is not dict or set(source_hashes) != set(SOURCE_FILES):
+        raise ValueError("manifest.source_hashes keys mismatch")
+    for name, value in source_hashes.items():
+        _require_sha256(value, f"manifest.source_hashes.{name}")
+    for field in ("task_hashes", "semantic_hashes"):
+        hashes = manifest[field]
+        if type(hashes) is not dict or set(hashes) != set(_ROLES):
+            raise ValueError(f"manifest.{field} keys mismatch")
+        for role, value in hashes.items():
+            _require_sha256(value, f"manifest.{field}.{role}")
+    _require_zero_execution_counters(manifest["execution_counters"], "manifest.execution_counters")
+    for field in ("model_calls", "provider_calls", "database_calls", "execution_attempts"):
+        if type(manifest[field]) is not int or manifest[field] != 0:
+            raise ValueError("manifest execution counters must contain exact integer zeros")
+    if manifest["roles"] != list(_ROLES):
+        raise ValueError("manifest roles mismatch")
+    if manifest["protected_roots"] != ["data/vnext/core", "data/vnext/pilot", "results/unrelated"]:
+        raise ValueError("manifest protected_roots mismatch")
+    if type(manifest["protected_roots"]) is not list or any(
+        type(root) is not str for root in manifest["protected_roots"]
+    ):
+        raise ValueError("manifest.protected_roots must be a string list")
+
+
+def _validate_case_record_shape(record: Any) -> None:
+    _require_exact_keys(record, _CASE_KEYS, "case record")
+    for field in (
+        "role",
+        "runtime_namespace",
+        "namespace_template",
+        "source_code_revision",
+        "status",
+    ):
+        _require_string(record[field], f"case record.{field}")
+    for field in ("task_hash", "semantic_hash"):
+        _require_sha256(record[field], f"case record.{field}")
+    if record["status"] != "PREPARED_NOT_EXECUTED":
+        raise ValueError("case record status mismatch")
+    for field in ("model_calls", "provider_calls", "database_calls", "execution_attempts"):
+        if type(record[field]) is not int or record[field] != 0:
+            raise ValueError("case record execution counters must contain exact integer zeros")
+    if type(record["public_events"]) is not list or type(record["public_queries"]) is not list:
+        raise ValueError("case record public payloads must be lists")
+    for event in record["public_events"]:
+        _require_exact_keys(event, _PUBLIC_EVENT_KEYS, "case public event")
+        _require_string(event["event_id"], "case public event.event_id")
+        _require_nonnegative_int(event["sequence_index"], "case public event.sequence_index")
+        if event["logical_time"] is not None:
+            _require_string(event["logical_time"], "case public event.logical_time")
+        _require_string(event["raw_text"], "case public event.raw_text")
+        _require_string(event["runtime_namespace"], "case public event.runtime_namespace")
+    for query in record["public_queries"]:
+        _require_exact_keys(query, _PUBLIC_QUERY_KEYS, "case public query")
+        _require_string(query["query_id"], "case public query.query_id")
+        _require_string(query["query_text"], "case public query.query_text")
+        _require_positive_int(query["k"], "case public query.k")
+        _require_string(query["runtime_namespace"], "case public query.runtime_namespace")
 
 
 def _key(entity: str, attribute: str = "relation") -> dict[str, Any]:
@@ -594,8 +809,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     if _sha256(index_raw) != index_sha256:
         raise ValueError("index hash mismatch")
     index = json.loads(index_raw)
-    if index.get("schema") != _INDEX_SCHEMA:
-        raise ValueError("index schema mismatch")
+    _validate_index_shape(index)
     expected_artifacts = {"config.json", "cases.jsonl", "manifest.json"}
     if set(index.get("artifacts", {})) != expected_artifacts:
         raise ValueError("artifact membership mismatch")
@@ -608,8 +822,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
         if len(content) != reference["bytes"] or _sha256(content) != reference["sha256"]:
             raise ValueError(f"artifact hash mismatch: {name}")
     manifest = json.loads((root / "manifest.json").read_bytes())
-    if manifest.get("schema") != _MANIFEST_SCHEMA:
-        raise ValueError("manifest schema mismatch")
+    _validate_manifest_shape(manifest)
     current_config = _load_config()
     packet_config = _load_config((root / "config.json").read_bytes())
     if (
@@ -658,6 +871,7 @@ def read_packet(root: str | Path, index_sha256: str) -> dict[str, Any]:
     if len(records) != 3 or [record.get("role") for record in records] != list(_ROLES):
         raise ValueError("case role or count mismatch")
     for case, record in zip(cases, records):
+        _validate_case_record_shape(record)
         if record.get("status") != case.status:
             raise ValueError(f"case status binding mismatch: {case.role}")
         if record.get("runtime_namespace") != case.runtime_namespace:

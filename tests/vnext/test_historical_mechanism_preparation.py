@@ -419,18 +419,103 @@ def test_packet_rejects_wrong_artifact_schema_after_rehash(tmp_path, artifact):
         read_packet(output, hashlib.sha256(index_raw).hexdigest())
 
 
-def test_parent_replacement_after_identity_capture_preserves_old_output(monkeypatch, tmp_path):
+
+
+
+def _rewrite_index_and_return_hash(output, mutate):
+    index_path = output / "index.json"
+    index = json.loads(index_path.read_bytes())
+    mutate(index)
+    index_raw = json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    index_path.write_bytes(index_raw)
+    return hashlib.sha256(index_raw).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("artifact", "operation"),
+    [
+        ("config", "extra"),
+        ("config", "missing"),
+        ("index", "extra"),
+        ("index", "missing"),
+        ("manifest", "extra"),
+        ("manifest", "missing"),
+        ("cases", "extra"),
+        ("cases", "missing"),
+    ],
+)
+def test_packet_rejects_extra_or_missing_declared_keys(tmp_path, artifact, operation):
     output = tmp_path / "packet"
-    parent = output.parent
-    backup = tmp_path.with_name(tmp_path.name + "-backup")
-    original_check = prep._assert_output_ownership
+    publish_packet(output, code_revision="fixture-revision")
+    if artifact == "config":
+        path = output / "config.json"
+        payload = json.loads(path.read_bytes())
+        if operation == "extra":
+            payload["unexpected"] = True
+        else:
+            payload.pop("retrieval_k")
+        path.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+        index_sha256 = _rewrite_index_and_return_hash(
+            output,
+            lambda index: index["artifacts"]["config.json"].update({
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "bytes": len(path.read_bytes()),
+            }),
+        )
+    elif artifact == "index":
+        index_sha256 = _rewrite_index_and_return_hash(
+            output,
+            lambda index: index.update(
+                {"unexpected": True} if operation == "extra" else {"schema": None}
+            )
+            if operation == "extra"
+            else index.pop("schema"),
+        )
+    elif artifact == "manifest":
+        index_sha256 = _rewrite_manifest_and_index(
+            output,
+            lambda manifest: manifest.update({"unexpected": True})
+            if operation == "extra"
+            else manifest.pop("retrieval_k"),
+        )
+    else:
+        index_sha256 = _rewrite_cases_and_index(
+            output,
+            lambda records: records[0].update({"unexpected": True})
+            if operation == "extra"
+            else records[0].pop("status"),
+        )
+    with pytest.raises(ValueError, match="keys"):
+        read_packet(output, index_sha256)
 
-    def replace_then_check(ownership):
-        parent.rename(backup)
-        parent.mkdir()
-        return original_check(ownership)
 
-    monkeypatch.setattr(prep, "_assert_output_ownership", replace_then_check)
-    with pytest.raises(RuntimeError, match="parent"):
-        publish_packet(output, code_revision="fixture-revision")
-    assert (backup / "packet").is_dir()
+def test_config_rejects_boolean_execution_counter(tmp_path, monkeypatch):
+    config = json.loads(CONFIG_PATH.read_bytes())
+    config["execution_counters"]["model_calls"] = False
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+    monkeypatch.setattr(prep, "CONFIG_PATH", config_path)
+    with pytest.raises(ValueError, match="execution counters"):
+        build_cases(code_revision="fixture-revision")
+
+
+def test_manifest_rejects_boolean_execution_counter_after_rehash(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_manifest_and_index(
+        output,
+        lambda manifest: manifest.update({"model_calls": False}),
+    )
+    with pytest.raises(ValueError, match="execution counters"):
+        read_packet(output, index_sha256)
+
+
+def test_case_record_rejects_boolean_execution_counter_after_rehash(tmp_path):
+    output = tmp_path / "packet"
+    publish_packet(output, code_revision="fixture-revision")
+    index_sha256 = _rewrite_cases_and_index(
+        output,
+        lambda records: records[0].update({"model_calls": False}),
+    )
+    with pytest.raises(ValueError, match="execution counters"):
+        read_packet(output, index_sha256)
