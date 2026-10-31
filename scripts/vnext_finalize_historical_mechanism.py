@@ -375,7 +375,7 @@ def reopen_run(*, run_root, terminal_sha256, packet_root, source_manifest, sourc
     result['bindings'] = {**bindings, 'audit_sha256': audit_sha256,
                           'packet_source_revision': runner.PACKET_SOURCE, 'runtime_revision': runtime_revision,
                           'analysis_source_sha256': sha_bytes(Path(__file__).read_bytes())}
-    result['resources'] = resource_projection(terminal, observations)
+    result['resources'] = resource_projection(terminal, observations if bindings['observations_sha256'] is not None else None)
     return result
 
 

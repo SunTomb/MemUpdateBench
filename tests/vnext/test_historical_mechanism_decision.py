@@ -160,3 +160,22 @@ def test_resource_totals_keep_role_finish_and_retry_unknowns():
     assert resources['finish_reasons'] == {'stop': 1, 'length': 1, 'other': 0, 'unknown': 1}
     assert resources['openai_transport_retries'] == 0
     assert resources['native_retry_attempts'] is None
+
+
+def test_unavailable_compact_observations_have_null_finish_totals(tmp_path):
+    kwargs, report, audit = publication_fixture(tmp_path)
+    report['status'] = 'BLOCKED'
+    report['accounting'] = None
+    report.pop('observations_sha256')
+    report.pop('transport_sha256')
+    for name in ('observations.json', 'transport.json'):
+        (kwargs['run_root']/'compact'/name).unlink()
+    for row in report['cases']:
+        row['status'] = 'NOT_RUN'
+    kwargs['terminal_sha256'] = write(kwargs['run_root']/'terminal.json', report)
+    audit['bindings'].update(terminal_sha256=kwargs['terminal_sha256'], observations_sha256=None, transport_sha256=None)
+    audit['cases'] = finalizer.audit_projection(report)
+    kwargs['audit_sha256'] = write(kwargs['audit_receipt'], audit)
+    result = finalizer.finalize(**kwargs)
+    assert result['label'] == 'BLOCKED'
+    assert result['resources']['finish_reasons'] is None
