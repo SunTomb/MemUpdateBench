@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 import hashlib
 import json
+from types import SimpleNamespace
+
+from pydantic import BaseModel
 
 import pytest
 
-from mub.vnext.external.visibility import visible_event_input, visible_query_input
+from mub.vnext.external.providers.graphiti_native_episode import GraphitiNativeEpisode
+from mub.vnext.external.visibility import ProviderQueryInputV1, visible_event_input, visible_query_input
 from mub.vnext.validation.replay_v3 import replay_task_v3, resolve_query_v3
 from scripts import vnext_prepare_historical_mechanism as prep
 from scripts.vnext_prepare_historical_mechanism import (
@@ -29,7 +35,7 @@ def test_builds_exactly_three_cases_with_distinct_roles():
 @pytest.mark.parametrize("case_index", [0, 1, 2])
 def test_cases_replay_and_queries_resolve_independently(case_index):
     case = build_cases(code_revision="fixture-revision")[case_index]
-    if case.role == "historical_serving":
+    if case.role in {"target_only_control", "historical_serving"}:
         assert len(case.task.queries) == 2
         assert {query.query_type.value for query in case.task.queries} == {"current", "point_in_time"}
     else:
@@ -39,6 +45,76 @@ def test_cases_replay_and_queries_resolve_independently(case_index):
         resolved = resolve_query_v3(query, replay, case.task.events)
         assert not resolved.issues
         assert resolved.answer == gold.answer
+
+
+def test_current_query_time_is_final_public_event_even_for_cross_entity_case():
+    case = build_cases(code_revision="fixture-revision")[1]
+    assert case.task.actions[0].effective_at == "2025-01-01T00:00:00Z"
+    assert case.queries[0].public_payload["query_text"].startswith(
+        "As of 2025-01-03T00:00:00Z, "
+    )
+
+
+@pytest.mark.parametrize("explicit_search_config", [False, True])
+def test_all_public_queries_integrate_with_native_graphiti_retrieval(explicit_search_config):
+    class SearchConfig(BaseModel):
+        limit: int = 10
+
+    class FakeClient:
+        def __init__(self):
+            self.searches = []
+            self.native_result = SimpleNamespace(edges=["native-edge"])
+
+        async def search(self, **kwargs):
+            self.searches.append(kwargs)
+            return self.native_result
+
+        async def search_(self, **kwargs):
+            self.searches.append(kwargs)
+            return self.native_result
+
+    class Filter:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    cases = build_cases(code_revision="fixture-revision")
+    assert [len(case.queries) for case in cases] == [2, 1, 2]
+    factory = GraphitiNativeEpisode.validity_filter_factory(
+        Filter, Filter, SimpleNamespace(less_than_equal="<=", greater_than=">", is_null="IS NULL")
+    )
+    for case in cases:
+        client = FakeClient()
+        search_config = SearchConfig() if explicit_search_config else None
+        bridge = GraphitiNativeEpisode(
+            client, namespace=case.runtime_namespace, source_type="text",
+            filter_factory=factory, search_config=search_config,
+        )
+        for index, query in enumerate(case.queries):
+            # Current time comes from the final public event, not the target's last gold update.
+            timestamp = case.task.events[2 if index == 0 else 1].timestamp
+            assert timestamp == ("2025-01-03T00:00:00Z" if index == 0 else "2025-01-02T00:00:00Z")
+            payload = query.public_payload
+            assert payload["query_text"].startswith(f"As of {timestamp}, ")
+            assert "gold" not in json.dumps(payload).lower()
+            assert "selector" not in json.dumps(payload).lower()
+            assert "target_object_keys" not in payload
+            result = asyncio.run(bridge.retrieve(ProviderQueryInputV1.model_validate(payload)))
+            assert result is client.native_result
+            call = client.searches[-1]
+            assert call["query"] == payload["query_text"]
+            assert call["group_ids"] == [case.runtime_namespace]
+            when = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            assert when.tzinfo == timezone.utc
+            assert call["search_filter"].valid_at[0][0].date == when
+            assert call["search_filter"].invalid_at[1][0].date == when
+            if explicit_search_config:
+                assert call["config"].limit == payload["k"]
+                assert search_config.limit == 10
+            else:
+                assert call["num_results"] == payload["k"]
+        assert len(client.searches) == len(case.queries)
+        assert bridge.counts == {"episode_attempts": 0, "retrieval_attempts": len(case.queries)}
+        assert (case.model_calls, case.provider_calls, case.database_calls, case.execution_attempts) == (0, 0, 0, 0)
 
 
 def test_public_event_and_query_payloads_are_gold_free():

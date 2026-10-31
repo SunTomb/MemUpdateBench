@@ -512,28 +512,23 @@ def _build_task(role: str, code_revision: str, config: ConfigSnapshot) -> MemUpd
             }
         )
     event_models = tuple(MemoryEventV3.model_validate(item) for item in events)
-    target_values = {
-        "target_only_control": ("target-gamma", _time(2)),
-        "cross_entity_same_relation": ("target-alpha", _time(0)),
-        "historical_serving": ("target-gamma", _time(2)),
-    }
-    current_answer, _ = target_values[role]
+    current_answer = "target-alpha" if role == "cross_entity_same_relation" else "target-gamma"
     query_specs: list[tuple[str, str, dict[str, Any], str, str]] = [
         (
             "current",
             "current",
             {"kind": "current"},
-            f"What is Target-00's relation now? Return the value only.",
+            f"As of {event_models[-1].timestamp}, what is Target-00's relation? Return the value only.",
             current_answer,
         )
     ]
-    if role == "historical_serving":
+    if role in {"target_only_control", "historical_serving"}:
         query_specs.append(
             (
                 "as_of",
                 "point_in_time",
                 {"kind": "logical_time_anchor", "logical_time": _time(1)},
-                f"What was Target-00's relation at {_time(1)}? Return the value only.",
+                f"As of {event_models[1].timestamp}, what is Target-00's relation? Return the value only.",
                 "target-beta",
             )
         )
