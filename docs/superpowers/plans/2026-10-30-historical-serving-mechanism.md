@@ -315,3 +315,9 @@ Add a dated `WORKFLOW.md` entry and, if the result is complete, append a concise
 - The three cases can create a historical mechanism lead, but cannot create a paper-level GO or justify running the held-out validation set. Any broader confirmation requires a new design and explicit approval.
 - If the result is `NO_DISTINGUISHING_SIGNAL`, stop the historical mechanism branch. If it is a lead, write the next hypothesis but do not expand the Cartesian product automatically.
 - Preserve all frozen releases and previous smoke/qualification receipts; never overwrite or rebind them.
+
+### Task 5 validation update (2026-10-31)
+
+The previous `source`-directory host-guard rejection was resolved without bypassing protection by using the neutral NAS root `/NAS/yesh/MemUpdateBench/_local/historical_mechanism_7efb784_v2/tree`. The corrected committed candidate `7efb78438d96740576f856077f9e24ea52d6657e` was extracted there; archive SHA-256 is `1fc6da6b5f386f7850bf82ea303949860620864823db0df23250c9680f2a0830`, source-manifest SHA-256 is `a8c0c6b8b9cfc2599286f873d9a47c5a14d7af74bdeb3300fb41d5108721c632`, and the frozen packet index remains `b98b815b500a6e7594be39b4be78b233550c1f78f9acbee701ac1a106c027155`.
+
+The source-bound clean CPU gate passed **256 tests in 70.29 seconds** after runner admission and source/packet reopening. The clean runner help check and default `NONEXECUTING` admission also passed; admission reserved zero smoke slots and launched no service. A current GPU snapshot had no A40 with the required 24,576 MiB free, so no `--execute` invocation was made. Steps 1–5 below remain incomplete until a fresh GPU admission, one-shot run, independent audit and compact publication actually occur.
