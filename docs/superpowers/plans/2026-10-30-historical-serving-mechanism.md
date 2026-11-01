@@ -336,3 +336,7 @@ All cleanup outcomes recorded by the runner passed, and a separate post-run host
 - Index SHA-256: `af741d103f18908577ecd475953800cc3716f5034a938f2597955c2d5cb77bd4`.
 
 The one-shot reservation remains intact: three slots were reserved, but zero new trajectories began ingestion. Do not equate the allocation with three executed trajectories or release it automatically. No further model load, changed readiness limit, new native run, Mem0 run, or validation run is authorized by this closure. Earlier incomplete/checkpoint statements above are historical; this closure supersedes them.
+
+### Post-closure load-only preflight (2026-11-01)
+
+A separate user-authorized load-only check used Song-1 GPU2 and the fixed historical Qwen/MiniLM identities; it did not reopen the closed three-case allocation. Qwen2.5-7B-Instruct BF16 loaded all four shards and passed the local health identity/schema check in approximately 3:25, then unloaded with zero model calls and zero tokens. The combined path is blocked before Qwen load by the retained `gmsra` MiniLM dependency chain: Song-1 glibc 2.18 cannot load the installed pyarrow binary requiring glibc 2.25. No shared environment was changed, no package was downloaded, and no new trajectory or provider request occurred. This does not alter the historical mechanism `BLOCKED` decision or authorize a new native run.
