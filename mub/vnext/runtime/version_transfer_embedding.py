@@ -75,26 +75,63 @@ class LocalEmbeddingBoundary:
         self._stream.close()
 
 
+def _mean_pool_normalize(token_embeddings, attention_mask):
+    """Mean-pool unmasked token vectors and L2-normalize each item."""
+    result = []
+    for tokens, mask in zip(token_embeddings, attention_mask):
+        if not tokens or len(tokens) != len(mask):
+            raise ValueError('embedding token/mask shape mismatch')
+        active = sum(int(value) for value in mask)
+        if active <= 0:
+            raise ValueError('embedding input has no active tokens')
+        dimensions = len(tokens[0])
+        pooled = [sum(float(row[index]) * int(weight) for row, weight in zip(tokens, mask)) / active
+                  for index in range(dimensions)]
+        norm = math.sqrt(sum(value * value for value in pooled))
+        if not math.isfinite(norm) or norm <= 0:
+            raise ValueError('embedding pooled vector is not normalizable')
+        result.append([value / norm for value in pooled])
+    return result
+
+
 class MiniLMBackend:
     dimension = 384
 
     def __init__(self, snapshot):
         import os
+        import torch
+        from transformers import AutoModel, AutoTokenizer
         snapshot = Path(snapshot).resolve(strict=True)
         if Path('/NAS/yesh') not in snapshot.parents:
             raise ValueError('embedding snapshot outside authorized path')
         if os.environ.get('HF_HUB_OFFLINE') != '1' or os.environ.get('TRANSFORMERS_OFFLINE') != '1':
             raise ValueError('offline embedding flags required')
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(str(snapshot), device='cpu', local_files_only=True, trust_remote_code=False)
-        self.max_tokens = self.model.max_seq_length
+        self._torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            snapshot, local_files_only=True, trust_remote_code=False)
+        self.model = AutoModel.from_pretrained(
+            snapshot, local_files_only=True, trust_remote_code=False)
+        self.model.eval()
+        configured = int(getattr(self.model.config, 'max_position_embeddings', 512))
+        tokenizer_limit = int(getattr(self.tokenizer, 'model_max_length', configured))
+        if tokenizer_limit <= 0 or tokenizer_limit > 1_000_000:
+            tokenizer_limit = configured
+        self.max_tokens = min(configured, tokenizer_limit)
 
     def token_count(self, text):
-        return len(self.model.tokenizer.encode(text, truncation=False, add_special_tokens=True))
+        return len(self.tokenizer.encode(text, truncation=False, add_special_tokens=True))
 
     def encode(self, texts):
-        return self.model.encode(texts, batch_size=1, show_progress_bar=False,
-                                 normalize_embeddings=True, convert_to_numpy=True).tolist()
+        encoded = self.tokenizer(list(texts), padding=True, truncation=False, return_tensors='pt')
+        with self._torch.inference_mode():
+            output = self.model(**encoded)
+        hidden = output.last_hidden_state.detach().cpu().tolist()
+        mask = encoded['attention_mask'].detach().cpu().tolist()
+        vectors = _mean_pool_normalize(hidden, mask)
+        if any(len(vector) != self.dimension for vector in vectors):
+            raise ValueError('MiniLM embedding dimension mismatch')
+        return vectors
 
     def close(self):
-        self.model = None
+        self.model = self.tokenizer = None
+        self._torch = None

@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from mub.vnext.runtime.version_transfer_embedding import LocalEmbeddingBoundary
+from mub.vnext.runtime.version_transfer_embedding import LocalEmbeddingBoundary, _mean_pool_normalize
 
 
 class Embedder:
@@ -87,3 +87,13 @@ def test_native_mem0_batch_of_100_keeps_item_and_token_ceilings(tmp_path):
         boundary.create({'model':'fixed-embedding','input':'a'}, role='mem0')
     assert backend.calls == 1
     boundary.close()
+
+
+def test_minilm_pooling_is_dependency_free_and_normalized():
+    vectors = _mean_pool_normalize([[[3.0, 4.0], [100.0, 100.0]]], [[1, 0]])
+    assert vectors == [[0.6, 0.8]]
+
+
+def test_minilm_pooling_uses_only_unmasked_tokens():
+    vectors = _mean_pool_normalize([[[1.0, 0.0], [0.0, 2.0]]], [[1, 1]])
+    assert vectors == [[0.4472135954999579, 0.8944271909999159]]
