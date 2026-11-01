@@ -101,7 +101,7 @@ class Evidence:
 
 def verify_snapshot(snapshot, namespaces):
     require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces, 'STATE_SHAPE')
-    require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces)
+    require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces, 'STATE_SHAPE')
     group = snapshot['namespace']
     compact = []
     seen, nodes, endpoint_rows = set(), {}, {}
