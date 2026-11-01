@@ -101,7 +101,10 @@ class Evidence:
 
 def verify_snapshot(snapshot, namespaces):
     require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces, 'STATE_SHAPE')
-    group, compact, seen, nodes = snapshot['namespace'], [], set(), {}
+    require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces)
+    group = snapshot['namespace']
+    compact = []
+    seen, nodes, endpoint_rows = set(), {}, {}
     for row in snapshot['rows']:
         kind, properties = row['kind'], row['properties']
         require(kind in ('Entity', 'Episodic', 'RELATES_TO') and type(properties) is dict, 'STATE_ROW_SHAPE')
@@ -125,9 +128,8 @@ def verify_snapshot(snapshot, namespaces):
                     require(endpoint_values[side+'_'+suffix] is not None, 'STATE_ENDPOINT_MISSING')
                     if suffix == 'group_id':
                         require(endpoint_values[side+'_'+suffix] == group, 'STATE_ENDPOINT_NAMESPACE')
-            expected_endpoint = {key: value for key, value in endpoint_values.items()
-                                 if key in row}
-            expected.update(expected_endpoint)
+            endpoint_rows[row['uuid']] = endpoint_values
+            expected.update(endpoint_values)
         else:
             nodes[row['uuid']] = row.get('name')
             for key in ('linked_episode_uuids', 'linked_entity_uuids'):
@@ -142,8 +144,10 @@ def verify_snapshot(snapshot, namespaces):
         compact.append(expected)
     for row in snapshot['rows']:
         if row['kind'] == 'RELATES_TO':
+            endpoints = endpoint_rows[row['uuid']]
             for side in ('source', 'target'):
-                require(row[side+'_uuid'] in nodes and nodes[row[side+'_uuid']] == row[side+'_name'], 'STATE_ENDPOINT_BINDING')
+                require(endpoints[side+'_uuid'] in nodes and nodes[endpoints[side+'_uuid']] == endpoints[side+'_name'], 'STATE_ENDPOINT_BINDING')
+
     compact.sort(key=lambda r: (r['kind'], str(r.get('uuid')), Witness._encoded(r)))
     same(runner.digest({'namespace': group, 'rows': compact, 'anomalies': []}), snapshot['sha256'], 'DIRECT_STATE_HASH')
 
