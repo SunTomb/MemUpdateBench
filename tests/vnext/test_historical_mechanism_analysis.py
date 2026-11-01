@@ -97,6 +97,24 @@ def test_actual_runner_shapes_all_positive_labels(tmp_path, cross, history, labe
     assert all(row['layers']['state'] == 'INTERPRETABLE' for row in result['cases'])
 
 
+def test_property_backed_endpoint_projection_is_supported(tmp_path):
+    report, raw, obs = fixture(tmp_path)
+
+    def move_endpoints(rows):
+        for row in rows:
+            if row['kind'] != 'RELATES_TO':
+                continue
+            for side in ('source', 'target'):
+                row['properties'][f'{side}_node_uuid'] = row.pop(f'{side}_uuid')
+                row.pop(f'{side}_name')
+                row.pop(f'{side}_group_id')
+
+    replace_state(report, raw, lambda snapshot: snapshot['namespace'].startswith('historical-mechanism-v1-'), move_endpoints)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['reason'] in ('TARGET_ASSERTION_UNKNOWN', 'MALFORMED_CASE_EVIDENCE', 'CASE_EVIDENCE_BLOCKED')
+
+
 def test_missing_final_state_blocks_with_null_not_zero(tmp_path):
     report, raw, obs = fixture(tmp_path)
     pin = report['cases'][2]['snapshots'][-1]['sha256']
