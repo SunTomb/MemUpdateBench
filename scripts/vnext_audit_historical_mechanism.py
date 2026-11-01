@@ -528,13 +528,14 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
             b[row['attempt']] = row
     require(len(a) <= len(embedding_rows), 'EMBEDDING_ATTEMPT_MEMBERSHIP')
     for reservation, row in zip(a, embedding_rows):
-        matches = [v for _, v in transport_private if v['operation'] == row['operation']
+        matches = [(i, v) for i, v in evidence.of('transport') if i not in evidence.used
+                   and v['operation'] == row['operation']
                    and runner.digest(v['request']) == row['request_sha256'] and 'input' in v['request']]
         if not matches:
             require(row['status'] == 'PENDING' and report['status'] == 'BLOCKED', 'EMBEDDING_PRIVATE_MISSING')
             continue
-        require(len(matches) == 1, 'EMBEDDING_PRIVATE_AMBIGUOUS')
-        raw = matches[0]
+        index, raw = matches[0]
+        evidence.used.add(index)
         texts = raw['request']['input']
         texts = [texts] if type(texts) is str else texts
         require(len(texts) == reservation['items'] and hashlib.sha256(json.dumps(texts, ensure_ascii=False).encode()).hexdigest()
