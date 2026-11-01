@@ -532,6 +532,8 @@ def main(argv=None):
     parser.add_argument('--source-manifest', required=True, type=Path)
     parser.add_argument('--source-manifest-sha256', required=True)
     parser.add_argument('--gpu-uuid')
+    parser.add_argument('--reservation-root', type=Path, default=RESERVATION,
+                        help='fresh NAS-local reservation root; required to differ from closed attempts')
     parser.add_argument('--execute', action='store_true')
     args = parser.parse_args(argv)
     source = verify_runtime_source(args.source_manifest, args.source_manifest_sha256, args.runtime_revision)
@@ -556,7 +558,8 @@ def main(argv=None):
     # Only execution imports installed SDK metadata or launches owned processes.
     sdk = verify_sdk_python_sources()
     admission['sdk_identity'] = sdk
-    return run_owned(args, cases, run, admission)
+    reservation_root = admit_reservation(args.reservation_root)
+    return run_owned(args, cases, run, admission, reservation_root=reservation_root)
 
 
 def admit_output(path):
@@ -564,6 +567,15 @@ def admit_output(path):
     if ('..' in path.parts or not path.is_relative_to(BASE/'_local')
             or path.exists() or path.is_symlink()):
         raise ValueError('fresh project-local NAS output required')
+    assert_no_reparse_components(path)
+    return path
+
+
+def admit_reservation(path):
+    path = Path(path).absolute()
+    if ('..' in path.parts or not path.is_relative_to(BASE/'_local')
+            or path.exists() or path.is_symlink()):
+        raise ValueError('fresh project-local NAS reservation required')
     assert_no_reparse_components(path)
     return path
 
@@ -695,12 +707,13 @@ def owned_group_pids(processes, *, proc_root=Path('/proc')):
     return members
 
 
-def run_owned(args, cases, run, admission):
+def run_owned(args, cases, run, admission, *, reservation_root=None):
+    reservation_root = RESERVATION if reservation_root is None else reservation_root
     """Local Linux/NAS orchestration only; never called during offline tests."""
     for port in (17687, 18043):
         available(port)
     admission['gpu_admission'] = fresh_gpu(args.gpu_uuid)
-    reserve_once(RESERVATION, admission)
+    reserve_once(reservation_root, admission)
     report = initial_report(cases)
     report.update({k: v for k, v in admission.items() if k != 'status'})
     created = False
@@ -714,7 +727,7 @@ def run_owned(args, cases, run, admission):
         blocked(report, exc)
         if created:
             write_new(run/'terminal.json', report)
-        write_new(RESERVATION/'terminal.json', report)
+        write_new(reservation_root/'terminal.json', report)
         print(json.dumps(report, sort_keys=True), flush=True)
         return 1
     started = time.monotonic()
@@ -903,7 +916,7 @@ def run_owned(args, cases, run, admission):
             blocked(report, RuntimeError(), next((i for i, c in enumerate(report['cases']) if c['status'] != 'OBSERVED'), 2),
                     field='terminal_cleanup_or_limit_error_type')
         write_new(run/'terminal.json', report)
-        write_new(RESERVATION/'terminal.json', {'status': report['status'], 'terminal_sha256': sha(run/'terminal.json')})
+        write_new(reservation_root/'terminal.json', {'status': report['status'], 'terminal_sha256': sha(run/'terminal.json')})
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
         print(json.dumps(report, sort_keys=True), flush=True)

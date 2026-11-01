@@ -324,6 +324,31 @@ def test_default_admission_never_reserves_or_loads_sdk(tmp_path, monkeypatch, ca
         runner.main([*flags, '--execute'])
 
 
+def test_execute_accepts_a_fresh_explicit_reservation_root(tmp_path, monkeypatch):
+    manifest = {'files': {'bound.py': 'a'*64}}
+    monkeypatch.setattr(runner, 'verify_runtime_source', lambda *args: manifest)
+    packet = {'code_revision': runner.PACKET_SOURCE}
+    monkeypatch.setattr(runner, 'load_cases', lambda *args: (packet, cases()))
+    monkeypatch.setattr(runner, 'verify_qualification', lambda: {'elapsed_seconds': 1})
+    monkeypatch.setattr(runner, 'verify_prior_consumption', lambda: runner.PRIOR_TOTALS)
+    monkeypatch.setattr(runner, 'verify_sdk_python_sources', lambda: {'version': '0.31.2'})
+    monkeypatch.setattr(runner, 'admit_output', lambda path: tmp_path/'run')
+    (tmp_path/'_local').mkdir()
+    monkeypatch.setattr(runner, 'BASE', tmp_path)
+    captured = {}
+    def capture(*args, **kwargs):
+        captured['reservation_root'] = kwargs['reservation_root']
+        return 1
+    monkeypatch.setattr(runner, 'run_owned', capture)
+    reservation = tmp_path/'_local'/'reservation'
+    flags = ['--output-root', 'run', '--packet-root', str(PACKET),
+             '--packet-index-sha256', runner.PACKET_PIN, '--runtime-revision', 'a'*40,
+             '--source-manifest', 'source.json', '--source-manifest-sha256', 'b'*64,
+             '--gpu-uuid', 'GPU-123', '--reservation-root', str(reservation), '--execute']
+    assert runner.main(flags) == 1
+    assert captured['reservation_root'] == reservation
+
+
 def test_service_command_constrains_actual_budget_and_pinned_inputs(tmp_path):
     command = runner.service_command(tmp_path, 'GPU-123', 123)
     for name, value in (('--attempts',192), ('--input-tokens',512000),
