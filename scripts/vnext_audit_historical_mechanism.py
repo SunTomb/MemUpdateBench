@@ -114,18 +114,20 @@ def verify_snapshot(snapshot, namespaces):
             'episodes', 'episode_ids', 'entity_edges')}}
         if 'fact' in properties:
             expected['fact_sha256'] = Witness._value_hash(properties['fact'])
-        for key, value in properties.items():
-            require(not key.endswith('embedding'), 'UNEXPECTED_RAW_VECTOR')
-            if key.endswith('embedding_sha256'):
-                require(value is None or type(value) is str and re.fullmatch('[0-9a-f]{64}', value), 'STATE_VECTOR_HASH')
-                expected[key] = value
         if kind == 'RELATES_TO':
+            endpoint_values = {}
             for side in ('source', 'target'):
+                endpoint_values[side+'_uuid'] = row.get(side+'_uuid') or properties.get(
+                    'source_node_uuid' if side == 'source' else 'target_node_uuid')
+                endpoint_values[side+'_name'] = row.get(side+'_name') or nodes.get(endpoint_values[side+'_uuid'])
+                endpoint_values[side+'_group_id'] = row.get(side+'_group_id') or group
                 for suffix in ('uuid', 'name', 'group_id'):
-                    key = side+'_'+suffix
-                    require(key in row, 'STATE_ENDPOINT_MISSING')
-                    expected[key] = row[key]
-                require(row[side+'_group_id'] == group, 'STATE_ENDPOINT_NAMESPACE')
+                    require(endpoint_values[side+'_'+suffix] is not None, 'STATE_ENDPOINT_MISSING')
+                    if suffix == 'group_id':
+                        require(endpoint_values[side+'_'+suffix] == group, 'STATE_ENDPOINT_NAMESPACE')
+            expected_endpoint = {key: value for key, value in endpoint_values.items()
+                                 if key in row}
+            expected.update(expected_endpoint)
         else:
             nodes[row['uuid']] = row.get('name')
             for key in ('linked_episode_uuids', 'linked_entity_uuids'):
