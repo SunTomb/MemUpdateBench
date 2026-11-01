@@ -141,9 +141,20 @@ class GraphitiStateWitness:
             private_properties = self._private_properties(properties)
             row['properties_sha256'] = self._value_hash(private_properties)
             if kind == 'RELATES_TO':
-                row.update({key: self._stable_value(record[key]) for key in _ENDPOINTS if key in record})
+                endpoint_values = dict(record)
+                endpoint_values.update({key: properties.get(key) for key in _ENDPOINTS if key in properties})
+                source_uuid = endpoint_values.get('source_uuid') or properties.get('source_node_uuid')
+                target_uuid = endpoint_values.get('target_uuid') or properties.get('target_node_uuid')
+                endpoint_values.update({'source_uuid': source_uuid, 'target_uuid': target_uuid})
+                entities = {item.get('uuid'): item.get('name') for item in rows if item.get('kind') == 'Entity'}
+                endpoint_values.setdefault('source_name', entities.get(source_uuid))
+                endpoint_values.setdefault('target_name', entities.get(target_uuid))
+                endpoint_values.setdefault('source_group_id', group)
+                endpoint_values.setdefault('target_group_id', group)
+                row.update({key: self._stable_value(endpoint_values[key]) for key in _ENDPOINTS
+                            if endpoint_values.get(key) is not None})
                 if any(value != group for value in (properties.get('group_id'),
-                       record.get('source_group_id'), record.get('target_group_id'))):
+                       endpoint_values.get('source_group_id'), endpoint_values.get('target_group_id'))):
                     anomalies.append({'kind': kind, 'uuid': properties.get('uuid'),
                                       'error': 'cross_namespace_relationship'})
             else:

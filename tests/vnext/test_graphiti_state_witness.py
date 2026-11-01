@@ -201,3 +201,22 @@ def test_native_episode_entity_edge_ids_are_not_lost_in_compact_evidence():
                 'entity_edges': ['r1', 'r2'], 'valid_at': None}}
     snapshot = run(witness(FakeDriver([episodic])).snapshot('case-a'))
     assert snapshot.rows[0]['entity_edges'] == ['r1', 'r2']
+
+
+def test_edge_endpoint_properties_are_projected_when_driver_record_fields_are_absent():
+    rows = [
+        entity('source', name='Target-00'),
+        entity('target', name='target-alpha'),
+        {'kind': 'RELATES_TO', 'properties': {
+            'uuid': 'r-props', 'group_id': 'case-a',
+            'source_node_uuid': 'source', 'target_node_uuid': 'target',
+            'fact': "Target-00's relation is target-alpha.",
+        }},
+    ]
+    snapshot = run(witness(FakeDriver(rows)).snapshot('case-a'))
+    row = next(item for item in snapshot.rows if item['kind'] == 'RELATES_TO')
+    assert row['source_uuid'] == 'source'
+    assert row['target_uuid'] == 'target'
+    assert row['source_name'] == 'Target-00'
+    assert row['target_name'] == 'target-alpha'
+    assert row['source_group_id'] == row['target_group_id'] == 'case-a'
