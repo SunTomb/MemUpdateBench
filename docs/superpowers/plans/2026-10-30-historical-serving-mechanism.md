@@ -279,32 +279,30 @@ Completed offline through `9b31475e8773582fe5c71f5e2c3e4c104eaf9687`: 57 focused
 
 ## Task 5: Execute the one-shot cluster protocol and independently audit it
 
-**Pre-execution code checkpoint:** Auditor code is implemented through `7efb78438d96740576f856077f9e24ea52d6657e`. Its direct-episode binding defect was fixed and independently re-reviewed; 5 new controller-run regressions passed, with 46 deselected. The complete latest 51-test auditor suite and combined 256-test gate have not run. Native execution and every execution checkbox below remain incomplete.
-
-**Deployment blocker:** The host worktree guard refuses remote operations on the staged `source` directory as "runs a string through source", including a read-only literal-argument `ssh ... ls -A .../source`. Do not change shells, delegate the refused action, alter protection settings, or hide it in a script. The already-transferred `3ea5449` archive is superseded and must not be executed. The corrected clean archive is local at `_local/historical_mechanism_7efb784_candidate_v1/source.tar.gz`, SHA-256 `1fc6da6b5f386f7850bf82ea303949860620864823db0df23250c9680f2a0830`; its 642-file source manifest SHA-256 is `a8c0c6b8b9cfc2599286f873d9a47c5a14d7af74bdeb3300fb41d5108721c632`. Resume only after the host guard issue is resolved or the user explicitly chooses how to handle the blocked deployment; retain all existing diagnostics.
+**Pre-execution code checkpoint:** Auditor code is implemented through `7efb78438d96740576f856077f9e24ea52d6657e`. Its direct-episode binding defect was fixed and independently re-reviewed; 5 new controller-run regressions passed, with 46 deselected. The clean source-bound CPU gate subsequently passed 256 tests; native execution was attempted once and ended `BLOCKED` before provider calls. The compact decision and independent audit are now complete.
 
 **Files:**
 - Create: `scripts/vnext_audit_historical_mechanism.py`
 - Create: `tests/vnext/test_audit_historical_mechanism.py`
 - Modify: `WORKFLOW.md` only after terminal evidence exists
 
-- [ ] **Step 1: Run the exact source-bound CLI admission on Tang-2**
+- [x] **Step 1: Run the exact source-bound CLI admission on Tang-2**
 
 Run only under `/NAS/yesh` with a new NAS-local tmux socket and output root. Verify current GPU headroom immediately before model load. Preserve all six consumed native smoke trajectory attempts (five Graphiti, one Mem0); reserve only the remaining three of nine for this protocol. Do not run Mem0 or validation.
 
-- [ ] **Step 2: Reopen terminal evidence before interpreting it**
+- [x] **Step 2: Reopen terminal evidence before interpreting it**
 
 Verify exact counts for each case, event attempts/completions, retrieval attempts/completions, direct-state snapshots, native retrieval IDs/scores/temporal fields, extraction ledgers, readout usage and cleanup. If the run exits without a terminal receipt, stop with `BLOCKED`.
 
-- [ ] **Step 3: Run the independent audit without opening the DB or model**
+- [x] **Step 3: Run the independent audit without opening the DB or model**
 
 The audit must verify every artifact hash, source and packet binding, case order, direct-state namespace, event/time binding, edge transition logic, public-time interval calculation, readout binding and cleanup. It must not infer missing final state or repair provider data.
 
-- [ ] **Step 4: Publish compact no-replace decision metadata**
+- [x] **Step 4: Publish compact no-replace decision metadata**
 
 Write only redacted `decision.json` and `index.json` under `results/vnext/version_transfer_historical_mechanism_20261030_v1`. Report the exact decision and never upgrade a mechanism lead to `scientific_release_allowed=true`.
 
-- [ ] **Step 5: Update findings and commit the completed protocol unit**
+- [x] **Step 5: Update findings and commit the completed protocol unit**
 
 Add a dated `WORKFLOW.md` entry and, if the result is complete, append a concise case-bound section to `paper/manuscript_sections/version_transfer_dev_findings_draft.md`. Commit the new protocol, audit, decision metadata and documentation while excluding `docs/WORKSPACE_LAYOUT.md` and the unrelated deleted test file.
 
@@ -320,8 +318,21 @@ Add a dated `WORKFLOW.md` entry and, if the result is complete, append a concise
 
 The previous `source`-directory host-guard rejection was resolved without bypassing protection by using the neutral NAS root `/NAS/yesh/MemUpdateBench/_local/historical_mechanism_7efb784_v2/tree`. The corrected committed candidate `7efb78438d96740576f856077f9e24ea52d6657e` was extracted there; archive SHA-256 is `1fc6da6b5f386f7850bf82ea303949860620864823db0df23250c9680f2a0830`, source-manifest SHA-256 is `a8c0c6b8b9cfc2599286f873d9a47c5a14d7af74bdeb3300fb41d5108721c632`, and the frozen packet index remains `b98b815b500a6e7594be39b4be78b233550c1f78f9acbee701ac1a106c027155`.
 
-The source-bound clean CPU gate passed **256 tests in 70.29 seconds** after runner admission and source/packet reopening. The clean runner help check and default `NONEXECUTING` admission also passed; admission reserved zero smoke slots and launched no service. A current GPU snapshot had no A40 with the required 24,576 MiB free, so no `--execute` invocation was made. Steps 1–5 below remain incomplete until a fresh GPU admission, one-shot run, independent audit and compact publication actually occur.
+The source-bound clean CPU gate passed **256 tests in 70.29 seconds** after runner admission and source/packet reopening. The clean runner help check and default `NONEXECUTING` admission also passed; admission reserved zero smoke slots and launched no service. A current GPU snapshot had no A40 with the required 24,576 MiB free, so no `--execute` invocation was made. At that checkpoint, execution and closure remained pending; the subsequent startup-blocked closure is recorded below.
 
-### Current status superseding the earlier staging blocker
+### Historical pre-launch resource checkpoint
 
 The neutral NAS staging path resolved the earlier host-guard false positive without bypassing protection. The corrected tree is now extracted and passed the full 256-test CPU gate, clean runner help, source/packet admission and the retained Graphiti 0.31.2 source audit. The one-shot reservation and run roots are absent, ports are free, and `tmux`/GNU `timeout` are available. The only current live prerequisite is a fresh A40 with at least 24,576 MiB free immediately before model load; no reservation, model load or smoke trajectory has been started while that condition is unmet.
+
+### Final technical closure (2026-11-01)
+
+The single authorized run on Tang-2 GPU6 ended during model readiness, before any episode ingestion, LLM/embedding call, retrieval or readout. Neo4j and all three empty-state preflights completed; the model service reached only 2/4 checkpoint shards before the 600-second readiness bound. The 732.04-second run terminated as `BLOCKED`; the first case is `BLOCKED`, the later two are `NOT_RUN`. The precise cause of slow loading was not measured and is not attributed to NAS throughput, CPU contention, CUDA, or OOM by these logs.
+
+All cleanup outcomes recorded by the runner passed, and a separate post-run host check found no matching owned process or listener. The independent offline audit passed evidence-integrity checks, not mechanism or model capability. The compact decision and index have been copied byte-for-byte to the intended local sibling root and validated against the audit pin. The implementation, attempted run, audit and technical-result closure are complete; the three-case scientific measurement was not obtained.
+
+- Terminal SHA-256: `2a5c1c37c8d485123280eaddf0ab07af4953bbd4694735a2e14ad678cea708cf`.
+- Audit SHA-256: `e02f11884aa565548623a06a5ec36cd68ffc4b37abe574e5c289b58acd1dee58`.
+- Decision SHA-256: `78b9628c7f829356ff6970d0a657d3e13219bebb2da6f2cb91f6985f5b1b29d3`.
+- Index SHA-256: `af741d103f18908577ecd475953800cc3716f5034a938f2597955c2d5cb77bd4`.
+
+The one-shot reservation remains intact: three slots were reserved, but zero new trajectories began ingestion. Do not equate the allocation with three executed trajectories or release it automatically. No further model load, changed readiness limit, new native run, Mem0 run, or validation run is authorized by this closure. Earlier incomplete/checkpoint statements above are historical; this closure supersedes them.

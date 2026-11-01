@@ -1,6 +1,6 @@
 # Historical Serving Mechanism Design
 
-**Status:** Approved bounded design; Tasks 1–4 and the independent auditor code are implemented. The auditor's targeted correction is reviewed/tested, but the final full cluster regression and all native execution remain pending because deployment is blocked by the host worktree command guard. No database/model execution or smoke trajectory has started under this protocol.
+**Status:** Approved bounded design; Tasks 1–4, the independent auditor, and the one authorized execution attempt are complete. The execution was startup-blocked before any provider call; the compact decision is typed `BLOCKED`. No mechanism lead, accuracy result, validation authorization or scientific GO was produced.
 
 ## Context and research boundary
 
