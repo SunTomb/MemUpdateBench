@@ -100,9 +100,14 @@ class Evidence:
 
 
 def take_transport(evidence, operation, request_sha256, response_sha256):
-    return evidence.take('transport', lambda v: v['operation'] == operation
-        and runner.digest(v['request']) == request_sha256
-        and runner.digest(v['response']) == response_sha256)
+    matches = [(i, value) for i, value in evidence.of('transport') if i not in evidence.used
+               and value['operation'] == operation
+               and runner.digest(value['request']) == request_sha256
+               and runner.digest(value['response']) == response_sha256]
+    require(matches, 'TRANSPORT_ARTIFACT_MISSING')
+    index, value = matches[0]
+    evidence.used.add(index)
+    return index, value
 
 
 def verify_snapshot(snapshot, namespaces):
