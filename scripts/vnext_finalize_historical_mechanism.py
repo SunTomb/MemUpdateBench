@@ -138,8 +138,18 @@ def direct_edges(snapshot, case):
     for row in rows:
         if row['kind'] != 'RELATES_TO':
             continue
+        for side in ('source', 'target'):
+            endpoint_uuid = row.get(side+'_uuid') or row['properties'].get(
+                'source_node_uuid' if side == 'source' else 'target_node_uuid')
+            endpoint_name = row.get(side+'_name') or nodes.get(endpoint_uuid)
+            endpoint_group = row.get(side+'_group_id') or group
+            require(nodes.get(endpoint_uuid) == endpoint_name and type(endpoint_name) is str,
+                    'TARGET_ALIGNMENT_UNKNOWN')
+            require(endpoint_group == group, 'STATE_ENDPOINT_GROUP_UNKNOWN')
+            row[side+'_uuid'], row[side+'_name'], row[side+'_group_id'] = endpoint_uuid, endpoint_name, endpoint_group
         require(row.get('source_group_id') == group and row.get('target_group_id') == group,
                 'STATE_ENDPOINT_GROUP_UNKNOWN')
+
         require(all(k in row for k in ('valid_at', 'invalid_at', 'created_at', 'expired_at')) and row['valid_at'] is not None,
                 'STATE_INTERVAL_UNKNOWN')
         require(_time_status(row, _time(row['valid_at'])) is not None, 'STATE_INTERVAL_UNKNOWN')

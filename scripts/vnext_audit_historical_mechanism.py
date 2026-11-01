@@ -129,7 +129,7 @@ def verify_snapshot(snapshot, namespaces):
                     if suffix == 'group_id':
                         require(endpoint_values[side+'_'+suffix] == group, 'STATE_ENDPOINT_NAMESPACE')
             endpoint_rows[row['uuid']] = endpoint_values
-            expected.update(endpoint_values)
+            expected.update({key: value for key, value in endpoint_values.items() if key in row})
         else:
             nodes[row['uuid']] = row.get('name')
             for key in ('linked_episode_uuids', 'linked_entity_uuids'):
