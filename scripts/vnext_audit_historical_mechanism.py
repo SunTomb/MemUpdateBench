@@ -117,6 +117,11 @@ def verify_snapshot(snapshot, namespaces):
             'episodes', 'episode_ids', 'entity_edges')}}
         if 'fact' in properties:
             expected['fact_sha256'] = Witness._value_hash(properties['fact'])
+        for key, value in properties.items():
+            require(not key.endswith('embedding'), 'UNEXPECTED_RAW_VECTOR')
+            if key.endswith('embedding_sha256'):
+                require(value is None or type(value) is str and re.fullmatch('[0-9a-f]{64}', value), 'STATE_VECTOR_HASH')
+                expected[key] = value
         if kind == 'RELATES_TO':
             endpoint_values = {}
             for side in ('source', 'target'):
