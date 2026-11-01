@@ -99,8 +99,13 @@ class Evidence:
         return matches[0]
 
 
+def take_transport(evidence, operation, request_sha256, response_sha256):
+    return evidence.take('transport', lambda v: v['operation'] == operation
+        and runner.digest(v['request']) == request_sha256
+        and runner.digest(v['response']) == response_sha256)
+
+
 def verify_snapshot(snapshot, namespaces):
-    require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces, 'STATE_SHAPE')
     require(set(snapshot) == {'namespace', 'sha256', 'rows'} and snapshot['namespace'] in namespaces, 'STATE_SHAPE')
     group = snapshot['namespace']
     compact = []
@@ -437,8 +442,7 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
             require(row['status'] == 'PENDING' and report['status'] == 'BLOCKED', 'MISSING_TRANSPORT_RESPONSE')
             pending.append(row)
             continue
-        index, raw = evidence.take('transport', lambda v: v['operation'] == op
-            and runner.digest(v['request']) == row['request_sha256'] and runner.digest(v['response']) == row['response_sha256'])
+        index, raw = take_transport(evidence, op, row['request_sha256'], row['response_sha256'])
         request, response = raw['request'], raw['response']
         require(request['model'] == (runner.MODEL_ID if row['kind'] == 'completions' else runner.EMBEDDING_ID), 'TRANSPORT_MODEL')
         if row['kind'] == 'embeddings':
