@@ -97,3 +97,44 @@ def test_minilm_pooling_is_dependency_free_and_normalized():
 def test_minilm_pooling_uses_only_unmasked_tokens():
     vectors = _mean_pool_normalize([[[1.0, 0.0], [0.0, 2.0]]], [[1, 1]])
     assert vectors == [[0.4472135954999579, 0.8944271909999159]]
+
+
+def test_minilm_backend_uses_transformers_hidden_states_without_sentence_transformers():
+    from types import SimpleNamespace
+
+    class Tensor:
+        def __init__(self, value):
+            self.value = value
+        def detach(self):
+            return self
+        def cpu(self):
+            return self
+        def tolist(self):
+            return self.value
+
+    class Torch:
+        class _Inference:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+        @staticmethod
+        def inference_mode(): return Torch._Inference()
+
+    class Tokenizer:
+        def __call__(self, texts, **kwargs):
+            assert kwargs == {'padding': True, 'truncation': False, 'return_tensors': 'pt'}
+            return {'attention_mask': Tensor([[1, 1], [1, 0]])}
+
+    class Model:
+        def __call__(self, **encoded):
+            assert set(encoded) == {'attention_mask'}
+            return SimpleNamespace(last_hidden_state=Tensor([
+                [[3.0, 4.0], [0.0, 0.0]],
+                [[8.0, 6.0], [100.0, 100.0]],
+            ]))
+
+    from mub.vnext.runtime.version_transfer_embedding import MiniLMBackend
+    backend = object.__new__(MiniLMBackend)
+    backend.dimension = 2
+    backend._torch, backend.tokenizer, backend.model = Torch, Tokenizer(), Model()
+    vectors = backend.encode(['first', 'second'])
+    assert vectors == [[0.6, 0.8], [0.8, 0.6]]
