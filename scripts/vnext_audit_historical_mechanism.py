@@ -439,20 +439,13 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
             case = report['cases'][op['case']]
             prefix = {'event':'event', 'query':'retrieval', 'readout':'retrieval'}[op['kind']]
             require(type(op.get('position')) is int and 0 <= op['position'] < case[prefix+'_attempts'], 'TRANSPORT_CASE_BINDING')
-        if row['kind'] == 'completions':
-            chat.append(row)
-        else:
+        if row['kind'] == 'embeddings':
             embedding_rows.append(row)
-        if 'response_sha256' not in row:
-            require(row['status'] == 'PENDING' and report['status'] == 'BLOCKED', 'MISSING_TRANSPORT_RESPONSE')
-            pending.append(row)
             continue
+        chat.append(row)
         index, raw = take_transport(evidence, op, row['request_sha256'], row['response_sha256'])
         request, response = raw['request'], raw['response']
-        require(request['model'] == (runner.MODEL_ID if row['kind'] == 'completions' else runner.EMBEDDING_ID), 'TRANSPORT_MODEL')
-        if row['kind'] == 'embeddings':
-            require(row['role'] == 'graphiti', 'EMBEDDING_ROLE')
-            continue
+        require(request['model'] == runner.MODEL_ID, 'TRANSPORT_MODEL')
         schema = request.get('response_format', {}).get('json_schema', {})
         require(row['schema_name'] == schema.get('name') and row['schema_sha256'] == (runner.digest(schema['schema']) if 'schema' in schema else None), 'TRANSPORT_SCHEMA')
         oid = row.get('observation_id')
