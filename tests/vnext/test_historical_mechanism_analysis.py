@@ -115,6 +115,22 @@ def test_property_backed_endpoint_projection_is_supported(tmp_path):
     assert result['cases'][0]['layers']['state'] == 'INTERPRETABLE'
 
 
+
+def test_provider_missing_invalid_at_is_open_interval_not_unknown(tmp_path):
+    report, raw, obs = fixture(tmp_path)
+
+    def remove_open_end(rows):
+        for row in rows:
+            if row['kind'] == 'RELATES_TO':
+                row.pop('invalid_at', None)
+                row['properties'].pop('invalid_at', None)
+
+    replace_state(report, raw, lambda snapshot: snapshot['namespace'].startswith('historical-mechanism-v1-'), remove_open_end)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['reason'] in ('CASE_EVIDENCE_BLOCKED', 'STATE_INTERVAL_UNKNOWN')
+
+
 def test_missing_final_state_blocks_with_null_not_zero(tmp_path):
     report, raw, obs = fixture(tmp_path)
     pin = report['cases'][2]['snapshots'][-1]['sha256']

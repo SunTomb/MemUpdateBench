@@ -153,9 +153,9 @@ def direct_edges(snapshot, case):
         for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at'):
             if key in row['properties'] and key not in row:
                 row[key] = row['properties'][key]
-        require(row.get('valid_at') is not None and row.get('invalid_at') is not None
-                or row.get('valid_at') is not None, 'STATE_INTERVAL_UNKNOWN')
         require(row.get('valid_at') is not None, 'STATE_INTERVAL_UNKNOWN')
+        for key in ('invalid_at', 'created_at', 'expired_at'):
+            row.setdefault(key, None)
         if row.get('invalid_at') is not None:
             _time(row['invalid_at'])
         if row.get('created_at') is not None:
