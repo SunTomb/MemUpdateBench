@@ -30,3 +30,5 @@ configs/vnext/version_transfer_historical_mechanism_v1.json -text
 results/vnext/version_transfer_historical_mechanism_preparation_20261030_v2/** -text
 
 results/vnext/version_transfer_historical_mechanism_20261030_v1/** -text
+
+results/vnext/version_transfer_historical_mechanism_20261030_v2/** -text
