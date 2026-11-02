@@ -16,7 +16,24 @@ Correctly invalidated historical records are not memory errors. Oracle latest/ou
 
 Primary sources: [Graphiti](https://github.com/getzep/graphiti), [Zep](https://arxiv.org/abs/2501.13956), [LongMemEval](https://arxiv.org/abs/2410.10813), [STALE](https://arxiv.org/abs/2605.06527), [MINTEval](https://arxiv.org/abs/2605.18565), and [LAPSE](https://arxiv.org/abs/2609.36457). These are the directly inspected sources, not a claim of exhaustive novelty search.
 
-## Historical manuscript framing
+## Current evidence boundary
+
+The manuscript should separate internal benchmark accuracy, external joint-pipeline performance, capability/preflight evidence and native-system diagnostics. Letta and the LangGraph Store/custom-adapter pipeline are supported-scope joint pipelines, not native Letta-only or native LangMem-only rows. Mem0 is a preliminary runnable probe rather than a matched main-table baseline. The Graphiti development screen is `INCONCLUSIVE` for current-value degradation, while the completed historical-serving retry is `BLOCKED` because the frozen evaluator could not interpret the native Chinese relation facts under its deliberately narrow English assertion grammar. None of these boundaries is a zero-accuracy result or a universal system claim.
+
+## Related-work synthesis
+
+Prior work falls into several complementary groups. Long-term memory benchmarks such as LoCoMo and LongMemEval evaluate memory usefulness over long histories and multi-session interactions; agent-memory benchmarks extend this question to downstream decisions and task success. Their breadth is valuable, but their errors often combine state loss, retrieval failure, ambiguity and answer reasoning. MemUpdateBench narrows the stressor to repeated explicit updates of one slot so stale same-slot burden can be measured directly.
+
+Temporal memory and dynamic-knowledge systems, including Graphiti/Zep, knowledge-editing benchmarks, STALE, MINTEval and LAPSE, already establish that temporal validity, interference and knowledge change are important concerns. MemUpdateBench therefore does not claim first use of updates, temporal metadata or layered evaluation. Its distinction is a controlled external-memory measurement package: it places update density on a declared axis and reports final-state recoverability, stale burden, compactness and prompted-answer robustness separately.
+
+Persistent memory systems such as Mem0 and MemGPT/Letta are external-validity targets rather than settled main-table baselines. Their extraction, storage and retrieval interfaces differ, and exact slot semantics may not be preserved by natural-language memory text. A fair comparison therefore requires a documented support envelope, matched reader protocol and explicit attribution of unsupported tasks. The current Letta and LangGraph Store/custom-adapter evidence demonstrates how such a boundary can be reported; it does not establish a universal product ranking.
+
+Learned memory-management methods such as Memory-R1, ReMemR1, AgeMem and related CRUD/RL approaches are methodological neighbors. They motivate the need to measure operation quality and downstream stale contamination together, but MemUpdateBench is not itself a new manager. Long25 is reported as one learned compact point on the internal tradeoff curve; local approximations of external methods are not presented as original-code baselines.
+
+Dialogue state tracking provides a useful conceptual precedent for explicit slot-value evaluation, but its ontology-tracking objective differs from persistent external memory. MemUpdateBench borrows the slot clarity while adding lifecycle history, memory compactness and answer-context robustness.
+
+**Positioning statement.** MemUpdateBench is best presented as a controlled diagnostic complement to broad memory benchmarks and memory-agent systems. Its contribution is not a claim that repeated updates universally break memory, nor a general leaderboard. It is a reproducible way to expose when final-state lookup hides stale evidence and answer-layer failure, and to keep those layers distinct in external-system comparisons.
+
 
 
 MemUpdateBench should be positioned as a controlled diagnostic benchmark for repeated updates to the same `(entity, attribute)` slot. It is not a broad long-term memory benchmark, not a general agent leaderboard, and not a replacement for realistic dialogue-history evaluations. Its value is that it makes final-state reliability, stale same-slot burden, memory compactness, and slot-conditioned answer robustness jointly measurable under an exact update-frequency axis.

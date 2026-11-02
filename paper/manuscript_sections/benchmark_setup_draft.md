@@ -38,7 +38,17 @@ We report four metrics together:
 
 No single metric is sufficient. State accuracy alone can hide stale evidence; memory size alone can reward overly aggressive deletion; answer EM alone can conflate state errors and answer-layer failures.
 
-## Compared systems
+## External-validity evidence classes
+
+The paper keeps four evidence classes separate:
+
+- **Internal controlled benchmark results:** P6.3/P8 methods and answer conditions on the declared synthetic splits.
+- **External joint-pipeline results:** Letta and the LangGraph Store/custom-adapter pipeline, reported only on their supported subsets and with extraction, storage and reader roles disclosed.
+- **Preliminary external probes:** Mem0 dev20, which is runnable and inspectable but not yet a matched main-table baseline.
+- **Native-system diagnostics and capability checks:** Graphiti development/serving evidence and model/SDK load preflights. Capability and startup evidence are not accuracy; the Graphiti current-value screen is `INCONCLUSIVE`, and the historical-serving retry is `BLOCKED` under its frozen semantic attribution gate.
+
+Unsupported tasks, technical blockers and unavailable state alignment remain typed null/`NOT_SUPPORTED`/`BLOCKED`; they are never converted to accuracy zero.
+
 
 The main P6.3 comparison includes four systems:
 

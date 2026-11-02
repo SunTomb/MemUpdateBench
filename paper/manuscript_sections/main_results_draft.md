@@ -2,26 +2,24 @@
 
 ## Repeated updates separate recoverability from answer robustness
 
-Figure~\\ref{fig:p63-update-frequency-tradeoff} summarizes the P6.3 hard update-frequency results. The first panel shows that Constrained CRUD, Raw append, and Heuristic CRUD all maintain slot-direct state accuracy 1.00 through k=16. Under oracle-like slot-state evaluation, the final value remains recoverable for these methods even after many repeated updates.
+To test whether repeated same-slot updates affect state and answering in the same way, we compare the P6.3 hard update-frequency conditions under exact slot lookup and slot-conditioned answering. Constrained CRUD, Raw append and Heuristic CRUD all retain `slot_direct` state accuracy 1.00 through `k=16`, so the final value remains recoverable under the state diagnostic. The corresponding prompted-answer results diverge sharply: Raw append falls from 0.90/0.91 EM/F1 at `k=1` to 0.07/0.10 at `k=16`, while Heuristic CRUD reaches 0.10/0.13.
 
-The slot-prompt panel tells a different story. Raw append falls from 0.90 / 0.91 EM/F1 at k=1 to 0.07 / 0.10 at k=16. Heuristic CRUD follows the same qualitative pattern, reaching 0.10 / 0.13 at k=16. These methods can preserve the final value under exact slot lookup, but stale same-slot evidence remains in memory and causes answer-layer collapse.
+## Stale burden and compactness define a tradeoff curve
 
-## Stale same-slot burden explains the collapse
+The memory traces explain part of this divergence. At `k=16`, Raw append retains 14.25 stale same-slot entries and final memory size 52.00. Heuristic CRUD reduces final memory size to 26.73 but retains 7.44 stale same-slot entries. These values show why final-state recoverability alone is insufficient: the final value can remain present while obsolete values remain available to the answer layer. The result is a tested tradeoff, not a universal law about all memory systems.
 
-The stale-burden and memory-size panels show why append-only methods degrade under slot-conditioned answering. Raw append retains 14.25 stale same-slot entries at k=16 and grows to final memory size 52.00. Heuristic CRUD is more compact but still leaves 7.44 stale same-slot entries and final memory size 26.73. The answer layer is therefore exposed to many obsolete values for the same entity and attribute.
+Long25 occupies a different point on the curve. It reduces stale burden to 1.13 and final memory size to 9.43, while reaching 0.48/0.53 EM/F1 under prompted answering. Its `slot_direct` state accuracy is 0.91, however. Compactness therefore improves the stale-context condition in this panel while introducing missed-final-update errors; Long25 is not a uniformly superior method.
 
-This pattern shows why final-state recoverability alone is insufficient. A memory system can contain the correct final value while still exposing enough stale same-slot evidence to make answer generation unreliable.
+## Clean state does not guarantee a correct prompted answer
 
-## Compact learned memory trades stale burden for reliability
+Constrained CRUD provides a useful diagnostic upper bound: it has no stale same-slot entries and reaches state accuracy 1.00 at every tested `k`. Nevertheless, its `k=16` prompted-answer EM/F1 is 0.70/0.70. Within this controlled setup, the residual gap is consistent with reader serialization, prompt conditioning or answer-model behavior rather than stale-state retention. We report this as a layer separation, not as a claim that the state diagnostic is a deployable memory interface.
 
-Long25 occupies a different point on the curve. At k=16, it reduces stale same-slot burden to 1.13 and final memory size to 9.43. Its slot-prompt EM/F1, 0.48 / 0.53, is substantially above Raw append and Heuristic CRUD at the same update frequency. However, compactness comes with imperfect state tracking: Long25 slot-direct state accuracy is 0.91 rather than 1.00.
+## Mechanism diagnostics and answer-model boundaries
 
-Thus Long25 should not be presented as simply better or worse. It demonstrates that learned compact managers can reduce stale burden, but may miss final updates under hard distractors.
+The later P8 diagnostics examine why stale evidence can affect answering. Earlier answer-model controls show dose-response and order/metadata effects in tested stale-context conditions, while stale filtering recovers those controls toward their own zero-stale ceilings. The qualified Qwen3.5-9B matrix supplies an important boundary: it remains nearly perfect on the frozen Raw Append contexts (overall EM 0.9979167), including reverse/no-label high-`k` cells. Thus version arbitration and stale-context sensitivity are answer-model-dependent; the evidence does not support a universal answer-layer failure claim.
 
-## Oracle-like constrained CRUD is an upper-bound diagnostic
+## External systems and native-system evidence are separate layers
 
-Constrained CRUD has no stale same-slot entries and reaches slot-direct state accuracy 1.00 at every k. At k=16, it still obtains only 0.70 / 0.70 under slot-prompt answering. State-level analysis finds 100 / 100 correct state predictions and no state errors, so the remaining gap should be interpreted as answer-layer or prompt-conditioned failure rather than stale-state retention.
+External-system probes are reported with explicit support envelopes. Letta and the LangGraph Store/custom-adapter pipeline each support 52/80 Family-A tasks in their disclosed joint extraction/storage/reader configurations, with 28 multi-object tasks typed `NOT_SUPPORTED`; their supported rows are not native Letta-only or native LangMem-only accuracy. Mem0 is a real but preliminary off-the-shelf probe with inspectable memory and near-zero exact-slot performance on the small dev20 configuration; it is not a matched main-table baseline.
 
-Long25's residual k=16 failures look different. The canonical local analysis finds 9 `wrong_value` state errors and no wrong-entity or wrong-attribute state errors. A remote Sui-3-Wu rerun provides close confirmation with state accuracy 0.92, slot-prompt EM/F1 0.49 / 0.5467, and 8 `wrong_value` errors concentrated in `company` slots. This supports a compactness/reliability interpretation rather than a simple learned-manager win.
-
-Table~\\ref{tab:p63-k16-tradeoff} highlights the high-frequency endpoint. The main result is not a single best method, but a tradeoff: append-only methods preserve recoverability but accumulate stale burden, heuristic compaction only partially helps, and learned compact memory reduces stale burden at the cost of final-state reliability.
+The native Graphiti development screen did not observe the prespecified current-value degradation signal and was formally `INCONCLUSIVE`; held-out validation was not consumed. A separately authorized historical-serving retry completed all three runtime cases, but the frozen evaluator rejected the native Chinese relation facts under its conservative exact-English assertion grammar. The resulting compact decision is `BLOCKED` with null mechanism labels. This technical/evaluator boundary supplies no additional accuracy or mechanism result.
