@@ -441,8 +441,14 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
             require(type(op.get('position')) is int and 0 <= op['position'] < case[prefix+'_attempts'], 'TRANSPORT_CASE_BINDING')
         if row['kind'] == 'embeddings':
             embedding_rows.append(row)
+        else:
+            chat.append(row)
+        if 'response_sha256' not in row:
+            require(row['status'] == 'PENDING' and report['status'] == 'BLOCKED', 'MISSING_TRANSPORT_RESPONSE')
+            pending.append(row)
             continue
-        chat.append(row)
+        if row['kind'] == 'embeddings':
+            continue
         index, raw = take_transport(evidence, op, row['request_sha256'], row['response_sha256'])
         request, response = raw['request'], raw['response']
         require(request['model'] == runner.MODEL_ID, 'TRANSPORT_MODEL')
@@ -486,7 +492,8 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
                 and report.get('llm_ledger_audit') is None, 'LLM_LEDGER_MISSING')
         reserved, settled, audit = [], {}, None
     seen = set()
-    unknown = [r for r in chat if not re.fullmatch(r'study-attempt-[1-9][0-9]*', r.get('call_id') or '')]
+    unknown = [r for r in chat if not re.fullmatch(r'study-attempt-[1-9][0-9]*', r.get('call_id') or '')
+               or r.get('status') == 'PENDING']
     for reservation in reserved:
         ticket = reservation['attempt']
         require(reservation['reserved_output_tokens'] <= 2048 and reservation['elapsed_seconds'] >= 0, 'LEDGER_RESERVATION')
@@ -503,6 +510,8 @@ def verify_accounting(root, report, observations, transport, evidence, readouts)
             require(report['status'] == 'BLOCKED' and unknown, 'RESERVATION_WITHOUT_TRANSPORT')
             candidate = unknown.pop(0)
             require(candidate['role'] == reservation['role'] and (ticket not in settled or settled[ticket]['finish_reason'] == 'error'), 'UNSETTLED_TRANSPORT_BINDING')
+            if candidate.get('status') == 'PENDING':
+                require(ticket not in settled, 'PENDING_CALL_SETTLED')
     for row in observations:
         require(row['observation_id'] in seen or row['status'] == 'BLOCKED'
                 and not re.fullmatch(r'study-attempt-[1-9][0-9]*', row.get('call_id') or ''), 'OBSERVATION_WITHOUT_RESERVATION')

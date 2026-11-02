@@ -111,8 +111,7 @@ def test_property_backed_endpoint_projection_is_supported(tmp_path):
 
     replace_state(report, raw, lambda snapshot: snapshot['namespace'].startswith('historical-mechanism-v1-'), move_endpoints)
     result = finalizer.classify(report, cases(), raw, obs)
-    assert result['label'] == 'BLOCKED'
-    assert result['reason'] in ('CASE_EVIDENCE_BLOCKED', 'TARGET_ASSERTION_UNKNOWN')
+    assert result['label'] == 'NO_DISTINGUISHING_SIGNAL'
     assert result['cases'][0]['layers']['state'] == 'INTERPRETABLE'
 
 
