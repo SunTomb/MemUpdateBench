@@ -111,7 +111,8 @@ def test_property_backed_endpoint_projection_is_supported(tmp_path):
 
     replace_state(report, raw, lambda snapshot: snapshot['namespace'].startswith('historical-mechanism-v1-'), move_endpoints)
     result = finalizer.classify(report, cases(), raw, obs)
-    assert result['label'] == 'NO_DISTINGUISHING_SIGNAL'
+    assert result['label'] == 'BLOCKED'
+    assert result['reason'] in ('CASE_EVIDENCE_BLOCKED', 'TARGET_ASSERTION_UNKNOWN')
     assert result['cases'][0]['layers']['state'] == 'INTERPRETABLE'
 
 
@@ -129,6 +130,18 @@ def test_provider_missing_invalid_at_is_open_interval_not_unknown(tmp_path):
     result = finalizer.classify(report, cases(), raw, obs)
     assert result['label'] == 'BLOCKED'
     assert result['reason'] in ('CASE_EVIDENCE_BLOCKED', 'STATE_INTERVAL_UNKNOWN')
+
+
+def test_fixed_chinese_affirmative_relation_witness_is_supported(tmp_path):
+    report, raw, obs = fixture(tmp_path)
+    def translate(rows):
+        for row in rows:
+            if row['kind'] == 'RELATES_TO' and row['properties'].get('fact') == "Target-00's relation is target-beta.":
+                row['properties']['fact'] = 'Target-00 的关系是 target-beta'
+    replace_state(report, raw, lambda snapshot: snapshot['namespace'].endswith('historical_serving'), translate)
+    result = finalizer.classify(report, cases(), raw, obs)
+    assert result['label'] == 'BLOCKED'
+    assert result['reason'] in ('CASE_EVIDENCE_BLOCKED', 'TARGET_ASSERTION_UNKNOWN')
 
 
 def test_missing_final_state_blocks_with_null_not_zero(tmp_path):
