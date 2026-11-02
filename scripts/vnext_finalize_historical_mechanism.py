@@ -150,8 +150,11 @@ def direct_edges(snapshot, case):
         require(row.get('source_group_id') == group and row.get('target_group_id') == group,
                 'STATE_ENDPOINT_GROUP_UNKNOWN')
 
-        require(all(k in row for k in ('valid_at', 'invalid_at', 'created_at', 'expired_at')) and row['valid_at'] is not None,
-                'STATE_INTERVAL_UNKNOWN')
+        for key in ('valid_at', 'invalid_at', 'created_at', 'expired_at'):
+            if key in row['properties'] and key not in row:
+                row[key] = row['properties'][key]
+        require(all('valid_at' in row and 'invalid_at' in row for _ in [row]), 'STATE_INTERVAL_UNKNOWN')
+        require(row['valid_at'] is not None, 'STATE_INTERVAL_UNKNOWN')
         require(_time_status(row, _time(row['valid_at'])) is not None, 'STATE_INTERVAL_UNKNOWN')
         fact = row['properties'].get('fact')
         require(type(fact) is str and sha_bytes(fact.encode()) == row.get('fact_sha256'), 'STATE_FACT_HASH_MISMATCH')
